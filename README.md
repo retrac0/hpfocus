@@ -36,7 +36,7 @@ software/
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
   cpu/focus/           FOCUS disassembler for MAME (symlinked into the tree)
-  test/                standalone build + differential test harness
+  test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
 tools/
   focusdis.py          FOCUS disassembler + validation harness
@@ -66,7 +66,7 @@ tested against it over **550,030 instructions with byte-identical output**.
 ```sh
 git submodule update --init --depth 1 mame   # ~930 MB
 ./tools/link_into_mame.sh
-cd src/test && make && ./run_difftest.sh
+cd src/test && make test
 ```
 
 ## Documentation

@@ -118,17 +118,38 @@ malformed encodings that real code never produces, which is where two
 implementations of the same spec are most likely to drift apart.
 
 ```sh
-cd src/test && make && ./run_difftest.sh
+cd src/test && make test
 ```
 
 Debugger integration is wired up: `STEP_OVER` on `PCL`/`PCLS`, `STEP_OUT` on
 `EXIT`/`SXIT`/`IXIT`.
 
-**1.2 — Register model and state.** `device_execute_interface` plus
-`device_state_interface`. The 18 machine-visible registers (HARDWARE.md §2),
-`STATUS` with its condition-code and rounding fields, and the A/B/C/D
-top-of-stack cache. Adopt the SIMH `hp3000` renamer so pushes and pops do not
-copy.
+**1.2 — Register model and state** ✅ **done**.
+[`src/cpu/focus/focusstate.h`](../src/cpu/focus/focusstate.h) holds the 18
+machine-visible registers (HARDWARE.md §2), the `STATUS` fields, and the
+A/B/C/D top-of-stack cache using the SIMH `hp3000` renaming approach — pushing
+rotates an index rather than copying four values, and returns the word
+displaced off the bottom so the caller can spill it.
+
+Deliberately free of MAME dependencies, so it unit tests on its own and the
+CPU device can simply embed it.
+
+Resolving this step required settling the `STATUS` layout, which had been an
+open question since the OCR of the ERS field diagram is unusable. Read from
+the page image at 400 dpi, and the reading is *forced*: all seventeen named
+fields tile the register with only bits 15 and 18 left over (HARDWARE.md §2.5).
+
+The `ers_field` helper converts ERS bit numbering (bit 0 = MSB) exactly once,
+so nothing else has to think about it — the single most likely source of
+silent bugs in this architecture.
+
+81 assertions, covering bit-numbering conversion, the layout tiling property,
+field independence under write, the pointer alignment invariants, and the
+renamer's push/pop/`XCH`/`DXCH`/`CAB` semantics.
+
+```sh
+cd src/test && make && ./statetest
+```
 
 **1.3 — Memory and addressing.** 29-bit address space, big-endian. Effective
 address computation for all six formats including indirect and post-indexing,

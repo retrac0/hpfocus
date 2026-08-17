@@ -136,17 +136,37 @@ right-justified in `CIR` with zero in the left halfword *(ISET ERS, 57)*.
 > bit N *(ISET ERS, 57)*. This is the opposite of the modern convention — get
 > it wrong and nothing will work.
 
-### 2.5 STATUS register layout *(ISET ERS, 11–13)*
+### 2.5 STATUS register layout *(ISET ERS, 12)*
 
-```
- bit 0    1    2    3    4    5    6    7    8    9   10   11..12  13   14..15  16..19  20..31
-     P   TV   SL   EP   SS   ES    M    I    T    O    C     MI/EM   CC     RM     IR      CSN
-```
+The OCR of the field diagram is unusable, so this was read from the page image
+at 400 dpi. Bit 0 is the MSB.
 
-The OCR of the field diagram is damaged; the bit *positions* above are inferred
-from the tick marks 0 / 6 / 11 / 16 / 20 / 31 printed under the diagram and
-should be **verified against the page image** before implementing. The field
-*meanings* are unambiguous:
+| Bits | Field | | Bits | Field |
+|---|---|---|---|---|
+| 0 | `TV` | | 11–12 | `RM` |
+| 1 | `SL` | | 13 | `I` |
+| 2 | `EP` | | 14 | `M` |
+| 3 | `SS` | | 15 | *reserved* |
+| 4 | `ES` | | 16–17 | `CC` |
+| 5 | `IR` | | 18 | *reserved* |
+| 6 | `C` | | 19 | `P` |
+| 7 | `O` | | 20–31 | `CSN` |
+| 8 | `T` | | | |
+| 9 | `EM` | | | |
+| 10 | `MI` | | | |
+
+What makes this reading trustworthy is that it is *forced*: all seventeen
+fields named in the accompanying text land in distinct, non-overlapping slots,
+and together with bits 15 and 18 they tile the register exactly. There is no
+slack for an alternative assignment. Bits 15 and 18 carry no label in the
+diagram and no description in the text.
+
+The layout is asserted in code — `test_status_layout()` in
+[`src/test/statetest.cpp`](../src/test/statetest.cpp) checks the
+non-overlap-and-tiling property, so a future edit that breaks it fails the
+build rather than silently corrupting the model.
+
+Field meanings:
 
 | Field | Meaning |
 |---|---|
@@ -341,6 +361,29 @@ Sign is 0 = `+`, 1 = `−`. The mask bits select which condition codes branch:
 is an unconditional branch. The target is relative to `P`, which holds the
 address of the *executing* instruction — confirmed empirically against real
 code (§5.2).
+
+### 5.1.2 Bit-field instructions *(ISET ERS, 116)*
+
+`EXF` (Extract Field, format 6 opcode 0) and `DPF` (Deposit Field, format 6
+opcode 1) also depart from the `I X BASE OFFSET` layout:
+
+| Field | Bits | Meaning |
+|---|---|---|
+| sign | 8 | `EXF` only: 0 zero-extends the result, 1 sign-extends it |
+| index | 9 | if set, `CIR(22:10) += X` before use |
+| — | 10–21 | must be zero |
+| `K` | 22–26 | 32 − the number of bits in the field |
+| `J` | 27–31 | the first (leftmost) bit of the field |
+
+The field width is `L = 32 − K`. `EXF` extracts bits `J … J+L-1` from the
+top-of-stack, right-justifies them and pushes the result; `DPF` deposits the
+`L` least significant bits of the top-of-stack into bits `J … J+L-1` of the
+second stack word. Bits beyond 31 read as 0 and are lost on deposit. Both set
+`CCA` on the new top-of-stack.
+
+The requirement that bits 10–21 be zero is a useful decoder sanity check, and
+it holds in real code: `e00003b1` in the HP-UX kernel decodes to
+`EXF start=17, width=3` with those bits clear.
 
 ### 5.1 Opcode map
 
@@ -647,17 +690,18 @@ instruction**; the low 32 bits are 8 hex digits, `YYYYMMDD`.
    soft blocker.
 2. **Memory Controller ERS** — referenced repeatedly by the Instruction Set ERS
    (for `SAR`/`SDR` and MPB semantics) but **not present on bitsavers**.
-3. **STATUS bit positions** — field meanings are certain, exact bit offsets are
-   inferred from a damaged OCR diagram (§2.5). Verify against the page image.
-4. **`EXF`/`DPF` sub-field boundaries** — format 6 opcodes 0 and 1 carry
-   "32−#bits" and "start bit" fields whose exact positions are not yet pinned
-   down; the disassembler prints them raw.
-5. **Stack marker layout** — ERS §2.3.5, sheet 23; not yet transcribed.
-6. **Disc interface** — the internal 9.9 MB drive's controller and protocol are
+3. **Stack marker layout** — ERS §2.3.5, sheet 23; not yet transcribed.
+4. **Disc interface** — the internal 9.9 MB drive's controller and protocol are
    not yet pinned down.
+5. **SYSTEM POWERUP entry point** — the module layout is understood (32-byte
+   binary header, 16-byte name, variable-length SCCS string, body) but the
+   header words `1ffc / 0000ce2c / 00001064 / e307fffc` are unidentified and
+   the exact entry offset is not yet known. Dense code begins around `0x100`.
 
 *Resolved:* format 6 `BASE` width (3 bits, §5) and the `BCCS`/`BCC` branch
-encoding (§5.1.1), both confirmed against real code.
+encoding (§5.1.1), both confirmed against real code; the `STATUS` bit layout
+(§2.5), read from the page image and forced by a tiling argument; and the
+`EXF`/`DPF` sub-fields (§5.1.2).
 
 ---
 
