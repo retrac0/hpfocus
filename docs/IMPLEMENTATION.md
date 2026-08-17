@@ -90,7 +90,7 @@ true entry point of `SYSTEM POWERUP` (offset `0x30` is the ASCII SCCS string
 Broken into five steps, smallest useful artifact first.
 
 **1.1 — Disassembler** ✅ **done**. `util::disasm_interface`, in
-[`mame/cpu/focus/`](../mame/cpu/focus/), ready to drop into MAME at
+[`src/cpu/focus/`](../src/cpu/focus/), ready to drop into MAME at
 `src/devices/cpu/focus/`. The natural first MAME artifact: MAME requires a
 disassembler for any new CPU, it is a standalone compilable unit with no
 dependency on the execution core, and it was fully specifiable today.
@@ -101,7 +101,7 @@ To avoid two divergent opcode tables, the C++ table is **generated** from
 six formats. `opcodes.csv` remains the single source of truth.
 
 Verified by **differential testing against `focusdis.py`**. A small shim
-([`mame/test/emu.h`](../mame/test/emu.h)) supplies the handful of MAME types
+([`src/test/emu.h`](../src/test/emu.h)) supplies the handful of MAME types
 so the same source builds standalone; both implementations then disassemble
 the same corpora and their output is diffed line by line:
 
@@ -118,7 +118,7 @@ malformed encodings that real code never produces, which is where two
 implementations of the same spec are most likely to drift apart.
 
 ```sh
-cd mame/test && make && ./run_difftest.sh
+cd src/test && make && ./run_difftest.sh
 ```
 
 Debugger integration is wired up: `STEP_OVER` on `PCL`/`PCLS`, `STEP_OUT` on

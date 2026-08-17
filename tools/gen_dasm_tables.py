@@ -5,14 +5,14 @@ docs/opcodes.csv is the single source of truth for the opcode map. Keeping a
 second, hand-maintained copy in C++ would guarantee the two drift apart, so the
 C++ table is generated from the CSV instead.
 
-Writes mame/cpu/focus/focusdasm_tables.ipp.
+Writes src/cpu/focus/focusdasm_tables.ipp.
 """
 import csv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "docs/opcodes.csv"
-DST = ROOT / "mame/cpu/focus/focusdasm_tables.ipp"
+DST = ROOT / "src/cpu/focus/focusdasm_tables.ipp"
 
 # Operand-kind strings in the CSV -> the C++ enumerator that renders them.
 # ORDER MATTERS: these are substring tests, and several keys are suffixes of

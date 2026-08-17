@@ -1,0 +1,4 @@
+[submodule "mame"]
+	path = mame
+	url = https://github.com/mamedev/mame.git
+	shallow = true

@@ -100,7 +100,7 @@ def decode(data: bytes, p: int, base_addr: int = 0):
     """Return (length, text, branch_target_or_None).
 
     Output text is byte-identical to the MAME C++ disassembler in
-    mame/cpu/focus/focusdasm.cpp, so the two can be compared with plain diff.
+    src/cpu/focus/focusdasm.cpp, so the two can be compared with plain diff.
     """
     if p + 2 > len(data):
         return None

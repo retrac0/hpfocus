@@ -34,8 +34,14 @@ software/
   README.md            provenance and per-image analysis
   97089C.hpi           HP-UX 5.01 tape (damaged)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
+src/
+  cpu/focus/           FOCUS disassembler for MAME (symlinked into the tree)
+  test/                standalone build + differential test harness
+mame/                  MAME upstream, shallow submodule
 tools/
   focusdis.py          FOCUS disassembler + validation harness
+  gen_dasm_tables.py   generate the C++ opcode tables from opcodes.csv
+  link_into_mame.sh    symlink src/cpu/focus into the MAME tree
   td0.py               decode Teledisk images to raw sectors
   lifdir.py            list/extract LIF volumes
   cpiolist.py          list/extract big-endian old-binary cpio
@@ -51,13 +57,16 @@ and no framework saves the ISA work since no FOCUS emulation exists anywhere.
 Read SIMH's `hp3000` as the architectural reference: FOCUS is the HP 3000 stack
 architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
-**Phase 0 is complete.** [tools/focusdis.py](tools/focusdis.py) disassembles
-FOCUS and has confirmed the opcode map against the real HP-UX kernel and BASIC
-boot disc, resolving two encoding questions along the way.
+**Phases 0 and 1.1 are complete.** [tools/focusdis.py](tools/focusdis.py)
+disassembles FOCUS and confirmed the opcode map against the real HP-UX kernel
+and BASIC boot disc, resolving two encoding questions along the way. The MAME
+disassembler in [src/cpu/focus/](src/cpu/focus/) is written and differentially
+tested against it over **550,030 instructions with byte-identical output**.
 
 ```sh
-python3 tools/focusdis.py os.req --start 0x100 --count 40
-python3 tools/focusdis.py os.req --start 0x100 --end 0x8000 --validate
+git submodule update --init --depth 1 mame   # ~930 MB
+./tools/link_into_mame.sh
+cd src/test && make && ./run_difftest.sh
 ```
 
 ## Documentation
