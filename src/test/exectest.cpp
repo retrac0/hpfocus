@@ -75,6 +75,12 @@ static u16 bccs(u8 ccf, bool back, u8 halfwords)
 	return u16((6 << 13) | (ccf << 9) | (back ? 0x100 : 0) | halfwords);
 }
 
+// Format 6, 32 bits: 111 OP2(3:5) I(8) X(9) BASE(10:3) OFFSET(13:19)
+static u32 u32_insn(u8 op2, u8 base, u32 off)
+{
+	return (7u << 29) | (u32(op2) << 24) | (u32(base) << 19) | off;
+}
+
 // Writes 16-bit instructions into 32-bit memory cells, big endian.
 class assembler
 {
@@ -275,6 +281,13 @@ struct harness
 		put(0x1000, insn);
 		return cpu.step();
 	}
+
+	exec_trap one(u32 insn)
+	{
+		cpu.r.p = 0x1000;
+		mem.write32(0x1000, insn);
+		return cpu.step();
+	}
 };
 
 static void test_arithmetic()
@@ -445,9 +458,127 @@ static void test_unimplemented_is_reported()
 	// Format 4 specials are not modelled yet; they must not be silently
 	// treated as no-ops.
 	CHECK(h.one(u16(1 << 6 | 040)) == exec_trap::unimplemented);   // TRY
-	CHECK(h.one(f3(051)) == exec_trap::unimplemented);             // FADD
+	CHECK(h.one(u16(051 << 6)) == exec_trap::unimplemented);       // MVB
 }
 
+
+static void test_floating_point()
+{
+	std::printf("floating point\n");
+	harness h;
+
+	// FLTD converts the integer top of stack to a 64-bit double occupying
+	// two words, high word below low.
+	h.cpu.push(u32(7));
+	CHECK(h.one(f3(042)) == exec_trap::none);          // FLTD
+	CHECK_EQ(h.cpu.stk(1), 0x401c0000);                // 7.0 high word
+	CHECK_EQ(h.cpu.stk(0), 0);
+
+	h.cpu.push(0); h.cpu.push(0);
+	h.mem.write32(h.cpu.r.s - 3 - 4, 0x40080000);      // 3.0
+	CHECK(h.one(f3(051)) == exec_trap::none);          // FADD -> 10.0
+	CHECK_EQ(h.cpu.stk(1), 0x40240000);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	CHECK(h.one(f3(041)) == exec_trap::none);          // FIXD -> 10
+	CHECK_EQ(h.cpu.stk(0), 10);
+
+	// A round trip through double and back must be exact for integers.
+	h.cpu.pop();
+	h.cpu.push(u32(-12345));
+	CHECK(h.one(f3(042)) == exec_trap::none);
+	CHECK(h.one(f3(041)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -12345);
+
+	// Single precision.
+	h.cpu.pop();
+	h.cpu.push(5);
+	CHECK(h.one(f3(070)) == exec_trap::none);          // FLTS
+	CHECK_EQ(h.cpu.stk(0), s32(0x40a00000u));          // 5.0f
+	h.cpu.push(0x40000000);                            // 2.0f
+	CHECK(h.one(f3(074)) == exec_trap::none);          // FMPS -> 10.0f
+	CHECK_EQ(h.cpu.stk(0), s32(0x41200000u));
+	CHECK(h.one(f3(071)) == exec_trap::none);          // FIXS
+	CHECK_EQ(h.cpu.stk(0), 10);
+
+	// Division and negation.
+	h.cpu.pop();
+	h.cpu.push(0); h.cpu.push(0);
+	h.mem.write32(h.cpu.r.s - 3 - 4, 0x40240000);      // 10.0
+	h.cpu.push(0); h.cpu.push(0);
+	h.mem.write32(h.cpu.r.s - 3 - 4, 0x40100000);      // 4.0
+	CHECK(h.one(f3(054)) == exec_trap::none);          // FDIV -> 2.5
+	CHECK_EQ(h.cpu.stk(1), 0x40040000);
+	CHECK(h.one(f3(055)) == exec_trap::none);          // FNEG
+	CHECK_EQ(h.cpu.stk(1), s32(0xc0040000u));
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+}
+
+static void test_new_groups()
+{
+	std::printf("shifts, bit fields, privileged access\n");
+	harness h;
+
+	// Circular shifts.
+	h.cpu.push(0x80000001);
+	CHECK(h.one(u16((004 << 6) | 1)) == exec_trap::none);     // CSL 1
+	CHECK_EQ(h.cpu.stk(0), 3);
+	h.cpu.pop();
+	h.cpu.push(0x80000001);
+	CHECK(h.one(u16((005 << 6) | 1)) == exec_trap::none);     // CSR 1
+	CHECK_EQ(h.cpu.stk(0), s32(0xc0000000u));
+
+	// PSHN pushes X copies of zero.
+	h.cpu.pop();
+	const u32 base = h.cpu.r.s;
+	h.cpu.r.x = 3;
+	CHECK(h.one(f3(005)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.s, base + 12);
+	CHECK_EQ(h.cpu.r.x, 0);
+
+	// DIVS yields quotient then remainder.
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-17)); h.cpu.push(5);
+	CHECK(h.one(f3(033)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), -3);                                // quotient
+	CHECK_EQ(h.cpu.stk(0), -2);                                // remainder
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-17)); h.cpu.push(5);
+	CHECK(h.one(f3(033, true)) == exec_trap::none);            // positive rem
+	CHECK_EQ(h.cpu.stk(0), 2);
+
+	// Privileged absolute load and store.
+	h.cpu.r.s = base;
+	h.cpu.r.put(sf::M, 1);
+	h.mem.write32(0x20000, 0xa5a5a5a5);
+	h.cpu.push(0x20000);
+	CHECK(h.one(u16((1 << 6) | 064)) == exec_trap::none);      // PLDA
+	CHECK_EQ(h.cpu.stk(0), s32(0xa5a5a5a5u));
+	h.cpu.push(0x20004); h.cpu.push(0x1234);
+	CHECK(h.one(u16((1 << 6) | 065)) == exec_trap::none);      // PSTA
+	CHECK_EQ(h.mem.read32(0x20004), 0x1234);
+
+	// Unprivileged use must not be allowed.
+	h.cpu.r.put(sf::M, 0);
+	h.cpu.push(0x20000);
+	CHECK(h.one(u16((1 << 6) | 064)) == exec_trap::unimplemented);
+	h.cpu.r.put(sf::M, 1);
+
+	// Byte and halfword access.
+	h.cpu.r.s = base;
+	h.mem.write32(h.cpu.r.db + 64, 0x11223344);
+	CHECK(h.one(u32_insn(014, 2, 64)) == exec_trap::none);     // LDB DB+64
+	CHECK_EQ(h.cpu.stk(0), 0x11);
+	CHECK(h.one(u32_insn(022, 2, 64)) == exec_trap::none);     // LDH DB+64
+	CHECK_EQ(h.cpu.stk(0), 0x1122);
+
+	// SOL is a no-op while the start-of-line trap is disabled.
+	h.cpu.r.put(sf::SL, 0);
+	CHECK(h.one(f5(000, 0)) == exec_trap::none);
+	h.cpu.r.put(sf::SL, 1);
+	CHECK(h.one(f5(000, 0)) != exec_trap::none);
+	h.cpu.r.put(sf::SL, 1 - 1);
+}
 
 int main()
 {
@@ -457,6 +588,8 @@ int main()
 	test_branches();
 	test_load_store();
 	test_unimplemented_is_reported();
+	test_floating_point();
+	test_new_groups();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

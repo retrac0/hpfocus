@@ -189,16 +189,44 @@ n = 0…12, producing 479001600 for 12!. That exercises procedure call and
 return with stack markers, recursion twelve deep, the doubleword `MPY` with
 `DELB`, Q-relative parameter access, and both `BCCS` targets the listing names.
 
-Implemented: format 1 loads and stores, format 2 shifts and short branches,
-format 3 stack and integer arithmetic and logic, format 5 immediates and
-`PCLS`/`EXIT`, and the format 6 loads, stores and branches. Roughly 80 of 218
-opcodes.
+Implemented: format 1 loads and stores; format 2 shifts, circular shifts and
+short branches; format 3 stack, integer arithmetic and logic, and the full
+single and double floating-point group; format 4 stack-indirect, bit access
+and the privileged absolute-address group; format 5 immediates, debug aids and
+`PCLS`/`EXIT`; format 6 loads, stores, branches, bit fields and `CHEK`.
 
-Not yet: floating point, decimal, move/scan/string, I/O, the privileged and
-debug-aid groups, and the trap and interrupt sequences. Procedure calls take
-local program pointers only — external pointers need the Code Segment Table
-walk and the U-bit check. Unimplemented opcodes return `trap::unimplemented`
-rather than behaving as no-ops, so gaps surface immediately.
+Floating point uses the host's own `float` and `double`. That is sound rather
+than lazy: the ERS targets IEEE 754 **Draft 5.11**, whose single and double
+basic formats are identical to the ratified binary32 and binary64 (Appendix F).
+What differs is the four selectable rounding modes and the inexact-result flag,
+neither of which is modelled yet.
+
+Not yet: decimal (BCD), move/scan/string, I/O, `TRY`/`ESCP` exception handling,
+and the trap and interrupt sequences. Procedure calls take local program
+pointers only — external pointers need the Code Segment Table walk and the
+U-bit check. Unimplemented opcodes return `trap::unimplemented` rather than
+behaving as no-ops, so gaps surface immediately instead of corrupting state.
+
+### Measuring progress
+
+[`tools/isa_coverage.py`](../tools/isa_coverage.py) parses the dispatch tables
+out of the core, disassembles the HP-UX kernel and the BASIC boot disc, and
+weights coverage by how often each opcode actually occurs — so effort goes
+where the real code is rather than where the opcode table looks empty.
+
+```
+298,238 instructions decoded
+279,976 would execute  (93.9%)
+```
+
+Two caveats on that number. It is a static count over whole images, so data
+regions decoded as instructions inflate the denominator — several of the
+"missing" entries are encodings Appendix B leaves unassigned, which cannot be
+real code. And static frequency is not dynamic frequency: a rare opcode inside
+a hot loop matters more than the count suggests.
+
+Largest remaining gaps by frequency: `TRY` and `ESCP` (2,767 and 1,828), `MVB`,
+`INT`, `CPTR`, `TCC`, `CRB`, `LPP`/`LPPS`, `LIA`/`LIAS`.
 
 The stack is memory-backed for now. The tested `tos_cache` renamer from step
 1.2 is a later optimisation; correctness first.

@@ -61,6 +61,34 @@ public:
 	virtual ~memory_interface() = default;
 	virtual u32 read32(u32 addr) = 0;
 	virtual void write32(u32 addr, u32 data) = 0;
+
+	// Sub-word access, defaulted in terms of the word accessors so existing
+	// implementations need not change. FOCUS is big-endian: byte 0 of a word
+	// is its most significant.
+	virtual u8 read8(u32 addr)
+	{
+		return u8(read32(addr & ~3u) >> (8 * (3 - (addr & 3))));
+	}
+
+	virtual void write8(u32 addr, u8 data)
+	{
+		const unsigned sh = 8 * (3 - (addr & 3));
+		const u32 w = read32(addr & ~3u);
+		write32(addr & ~3u, (w & ~(u32(0xff) << sh)) | (u32(data) << sh));
+	}
+
+	virtual u16 read16(u32 addr)
+	{
+		const u32 w = read32(addr & ~3u);
+		return u16((addr & 2) ? (w & 0xffff) : (w >> 16));
+	}
+
+	virtual void write16(u32 addr, u16 data)
+	{
+		const u32 w = read32(addr & ~3u);
+		write32(addr & ~3u, (addr & 2) ? ((w & 0xffff0000u) | data)
+				: ((w & 0x0000ffffu) | (u32(data) << 16)));
+	}
 };
 
 // Resolution of an external data segment reference to an absolute address.

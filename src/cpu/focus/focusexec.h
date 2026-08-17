@@ -33,6 +33,7 @@
 #include "focusdst.h"
 
 #include <cstdint>
+#include <cstring>
 
 namespace focus {
 
@@ -155,6 +156,42 @@ private:
 	void cca(u32 v) { r.set_cca(s32(v)); }
 
 	//----------------------------------------------------------------
+	//  floating point
+	//----------------------------------------------------------------
+	//
+	// The ERS targets IEEE 754 Draft 5.11, whose single and double basic
+	// formats are the same as the ratified standard's binary32 and binary64
+	// (ERS Appendix F), so the host's own types can carry the values. Only
+	// the four rounding modes and the inexact flag differ in their handling,
+	// and neither is modelled yet -- see the note in HARDWARE.md 7.1.
+	//
+	// A double occupies two stack words, high word below low, matching the
+	// order LDD pushes them in.
+
+	static double to_double(u64 b) { double d; std::memcpy(&d, &b, 8); return d; }
+	static u64 from_double(double d) { u64 b; std::memcpy(&b, &d, 8); return b; }
+	static float to_float(u32 b) { float f; std::memcpy(&f, &b, 4); return f; }
+	static u32 from_float(float f) { u32 b; std::memcpy(&b, &f, 4); return b; }
+
+	double pop_double()
+	{
+		const u32 low = pop(), high = pop();
+		return to_double((u64(high) << 32) | low);
+	}
+
+	void push_double(double d)
+	{
+		const u64 b = from_double(d);
+		push(u32(b >> 32));
+		push(u32(b));
+	}
+
+	void set_fp_cc(double v)
+	{
+		r.put(sf::CC, (v < 0) ? CCL : (v == 0) ? CCE : CCG);
+	}
+
+	//----------------------------------------------------------------
 	//  16-bit formats
 	//----------------------------------------------------------------
 
@@ -244,7 +281,7 @@ private:
 		if (op2 == 0)
 			return exec_fmt3(operand, b3);
 		if (op2 == 1)
-			return exec_trap::unimplemented;      // specials
+			return exec_fmt4(operand, b3);
 		return exec_fmt2(op2, operand, b3);
 	}
 
@@ -261,6 +298,15 @@ private:
 			return exec_trap::none;
 		}
 		case 002: pop(); pop(); return exec_trap::none;        // DDEL
+		case 005: {                                            // PSHN
+			// Pushes X copies of either zero or the current top of stack
+			// (ERS sheet 67).
+			u32 fill = 0;
+			if (b3)
+				fill = pop();
+			while (r.x > 0) { push(fill); r.x--; }
+			return exec_trap::none;
+		}
 		case 006: push(0); return exec_trap::none;             // ZERO
 		case 007: push(0); push(0); return exec_trap::none;    // DZRO
 		case 016: {                                            // DXCH
@@ -326,9 +372,24 @@ private:
 			return exec_trap::none;
 		}
 		case 025: cca(stk(0)); return exec_trap::none;         // TEST
+		case 026: cca(stk(0)); return exec_trap::none;         // TSTD
+		case 027: r.put(sf::CC, (stk(0) & 0xff) ? CCG : CCE);
+			return exec_trap::none;                            // TSTB
 		case 032: {                                            // XCH
 			const u32 a = stk(0), b = stk(1);
 			set_stk(0, b); set_stk(1, a);
+			return exec_trap::none;
+		}
+		case 033: {                                            // DIVS
+			// Quotient replaces (S-1), remainder replaces (S); with bit 3
+			// set the remainder is forced positive (ERS sheet 78).
+			const s32 divisor = s32(stk(0)), dividend = s32(stk(1));
+			if (divisor == 0)
+				return exec_trap::divide_by_zero;
+			s32 quot = dividend / divisor, rem = dividend % divisor;
+			if (b3 && rem < 0) { rem = -rem; }
+			set_stk(1, u32(quot));
+			set_stk(0, u32(rem));
 			return exec_trap::none;
 		}
 		case 035: {                                            // XAX
@@ -350,6 +411,85 @@ private:
 			set_stk(0, c); set_stk(1, a); set_stk(2, b);
 			return exec_trap::none;
 		}
+		case 003: set_fp_cc(to_double((u64(stk(1)) << 32) | stk(0)));
+			return exec_trap::none;                            // FTST
+		case 004: set_fp_cc(to_float(stk(0)));
+			return exec_trap::none;                            // FTSS
+		case 041: { const double d = pop_double();             // FIXD
+			const u32 v = u32(s32(d)); push(v); cca(v);
+			return exec_trap::none; }
+		case 042: { const s32 v = s32(pop()); push_double(double(v));
+			return exec_trap::none; }                          // FLTD
+		case 050: {                                            // FCMP
+			const double y = pop_double();
+			const double x = to_double((u64(stk(1)) << 32) | stk(0));
+			r.put(sf::CC, (x < y) ? CCL : (x == y) ? CCE : CCG);
+			if (b3) r.s -= 8;
+			return exec_trap::none;
+		}
+		case 051: { const double y = pop_double(), x = pop_double();
+			push_double(x + y); set_fp_cc(x + y);
+			return exec_trap::none; }                          // FADD
+		case 052: { const double y = pop_double(), x = pop_double();
+			push_double(x - y); set_fp_cc(x - y);
+			return exec_trap::none; }                          // FSUB
+		case 053: { const double y = pop_double(), x = pop_double();
+			push_double(x * y); set_fp_cc(x * y);
+			return exec_trap::none; }                          // FMPY
+		case 054: { const double y = pop_double(), x = pop_double();
+			push_double(x / y); set_fp_cc(x / y);
+			return exec_trap::none; }                          // FDIV
+		case 055: { const double x = pop_double(); push_double(-x);
+			set_fp_cc(-x); return exec_trap::none; }           // FNEG
+		case 070: { const s32 v = s32(pop()); push(from_float(float(v)));
+			return exec_trap::none; }                          // FLTS
+		case 071: { const u32 v = u32(s32(to_float(pop()))); push(v);
+			cca(v); return exec_trap::none; }                  // FIXS
+		case 072: { const float y = to_float(pop()), x = to_float(pop());
+			push(from_float(x + y)); set_fp_cc(x + y);
+			return exec_trap::none; }                          // FADS
+		case 073: { const float y = to_float(pop()), x = to_float(pop());
+			push(from_float(x - y)); set_fp_cc(x - y);
+			return exec_trap::none; }                          // FSBS
+		case 074: { const float y = to_float(pop()), x = to_float(pop());
+			push(from_float(x * y)); set_fp_cc(x * y);
+			return exec_trap::none; }                          // FMPS
+		case 075: { const float y = to_float(pop()), x = to_float(pop());
+			push(from_float(x / y)); set_fp_cc(x / y);
+			return exec_trap::none; }                          // FDVS
+		case 076: { const float x = to_float(pop()); push(from_float(-x));
+			set_fp_cc(-x); return exec_trap::none; }           // FNGS
+		case 077: {                                            // FCPS
+			const float y = to_float(pop()), x = to_float(stk(0));
+			r.put(sf::CC, (x < y) ? CCL : (x == y) ? CCE : CCG);
+			if (b3) r.s -= 4;
+			return exec_trap::none;
+		}
+		case 057: {                                            // LCMP
+			const u32 a = stk(0), b = stk(1);
+			r.s -= 8;
+			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
+			return exec_trap::none;
+		}
+		case 060: {                                            // LADD
+			const u32 a = pop(), b = pop();
+			const u64 sum = u64(b) + u64(a);
+			r.put(sf::C, (sum >> 32) & 1);
+			push(u32(sum)); cca(u32(sum));
+			return exec_trap::none;
+		}
+		case 061: {                                            // LSUB
+			const u32 a = pop(), b = pop();
+			const u64 diff = u64(b) - u64(a);
+			r.put(sf::C, (diff >> 32) & 1);
+			push(u32(diff)); cca(u32(diff));
+			return exec_trap::none;
+		}
+		case 062: {                                            // LMPY
+			const u64 prod = u64(pop()) * u64(pop());
+			push(u32(prod >> 32)); push(u32(prod));
+			return exec_trap::none;
+		}
 		case 064: { const u32 v = ~pop(); push(v); cca(v);
 			return exec_trap::none; }                          // NOT
 		case 065: { const u32 a = pop(), b = pop(); const u32 v = b | a;
@@ -360,6 +500,136 @@ private:
 			push(v); cca(v); return exec_trap::none; }         // AND
 		}
 		return exec_trap::unimplemented;
+	}
+
+	// Format 4: specials. Bit 3 of the instruction is CIR(19:1), which most
+	// of these use as their index flag.
+	exec_trap exec_fmt4(u8 op3, bool b3)
+	{
+		// The privileged absolute-address group: the operand is an absolute
+		// address rather than a segment-relative one, optionally indexed
+		// (ERS sheets 60, 65).
+		const u32 xx = b3 ? r.x : 0;
+
+		switch (op3)
+		{
+		case 002: {                                             // LBIT
+			// The top of stack is a bit offset: bits 0-28 give the byte
+			// index, which goes to X, and bits 29-31 the bit within that
+			// byte, counted from the most significant (ERS sheet 61).
+			const u32 spec = stk(0);
+			const u32 bitno = spec & 7;
+			r.x = u32(s32(spec) >> 3);
+			const u32 ptr = stk(1);
+			r.s -= 8;
+			const ea_result e = m_au.resolve_data_pointer(ptr, true, false);
+			m_addr_trap = e.t;
+			if (!e.ok()) return exec_trap::address_error;
+			const u32 v = (m_mem.read8(e.addr) >> (7 - bitno)) & 1;
+			push(v); cca(v);
+			return exec_trap::none;
+		}
+		case 003: {                                             // SBIT
+			const u32 spec = stk(0);
+			const u32 bitno = spec & 7;
+			r.x = u32(s32(spec) >> 3);
+			const u32 ptr = stk(1);
+			const u32 bit = stk(2) & 1;
+			r.s -= 12;
+			const ea_result e = m_au.resolve_data_pointer(ptr, true, true);
+			m_addr_trap = e.t;
+			if (!e.ok()) return exec_trap::address_error;
+			const u8 mask = u8(1u << (7 - bitno));
+			const u8 old = m_mem.read8(e.addr);
+			m_mem.write8(e.addr, bit ? (old | mask) : (old & u8(~mask)));
+			return exec_trap::none;
+		}
+		case 005: return stack_indirect(b3, 4, false);          // LSI
+		case 006: return stack_indirect(b3, 1, false);          // LBSI
+		case 007: return stack_indirect(b3, 8, false);          // LDSI
+		case 010: return stack_indirect(b3, 2, false);          // LHSI
+		case 025: return stack_indirect(b3, 4, true);           // SSI
+		case 026: return stack_indirect(b3, 1, true);           // SBSI
+		case 027: return stack_indirect(b3, 8, true);           // SDSI
+		case 030: return stack_indirect(b3, 2, true);           // SHSI
+
+		case 047: {                                             // PLBA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = m_mem.read8(stk(0) + xx);
+			set_stk(0, v); cca(v);
+			return exec_trap::none;
+		}
+		case 050: {                                             // PSBA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = pop(), a = pop();
+			m_mem.write8(a + xx, u8(v));
+			return exec_trap::none;
+		}
+		case 051: {                                             // PLHA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = m_mem.read16(stk(0) + xx);
+			set_stk(0, v); cca(v);
+			return exec_trap::none;
+		}
+		case 052: {                                             // PSHA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = pop(), a = pop();
+			m_mem.write16(a + xx, u16(v));
+			return exec_trap::none;
+		}
+		case 064: {                                             // PLDA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = m_mem.read32(stk(0) + xx);
+			set_stk(0, v); cca(v);
+			return exec_trap::none;
+		}
+		case 065: {                                             // PSTA
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 v = pop(), a = pop();
+			m_mem.write32(a + xx, v);
+			return exec_trap::none;
+		}
+
+		case 077: m_halted = true; return exec_trap::halted;    // STOP
+		}
+		return exec_trap::unimplemented;
+	}
+
+	// The stack-indirect family: the top of stack holds a data segment
+	// pointer, which is evaluated and then either loaded from or stored to
+	// (ERS sheets 58-59, 63-64). `width` selects byte, halfword, word or
+	// doubleword.
+	exec_trap stack_indirect(bool indexed, unsigned width, bool store)
+	{
+		const u32 ptr = pop();
+		const ea_result e = m_au.resolve_data_pointer(ptr, indexed, store);
+		m_addr_trap = e.t;
+		if (!e.ok())
+			return exec_trap::address_error;
+
+		if (!store)
+		{
+			switch (width)
+			{
+			case 1: push(m_mem.read8(e.addr)); break;
+			case 2: push(m_mem.read16(e.addr)); break;
+			case 4: push(m_mem.read32(e.addr)); break;
+			case 8: push(m_mem.read32(e.addr));
+				push(m_mem.read32(e.addr + 4)); break;
+			}
+			cca(stk(0));
+			return exec_trap::none;
+		}
+
+		switch (width)
+		{
+		case 1: m_mem.write8(e.addr, u8(pop())); break;
+		case 2: m_mem.write16(e.addr, u16(pop())); break;
+		case 4: m_mem.write32(e.addr, pop()); break;
+		case 8: { const u32 low = pop(), high = pop();
+			m_mem.write32(e.addr, high); m_mem.write32(e.addr + 4, low); } break;
+		}
+		return exec_trap::none;
 	}
 
 	void set_overflow_add(u32 a, u32 b, u32 res)
@@ -384,6 +654,14 @@ private:
 			return exec_trap::none; }                            // LSL
 		case 003: { u32 v = stk(0) >> operand; set_stk(0, v); cca(v);
 			return exec_trap::none; }                            // LSR
+		case 004: { const unsigned n = operand & 31;              // CSL
+			const u32 x = stk(0);
+			const u32 v = n ? ((x << n) | (x >> (32 - n))) : x;
+			set_stk(0, v); cca(v); return exec_trap::none; }
+		case 005: { const unsigned n = operand & 31;              // CSR
+			const u32 x = stk(0);
+			const u32 v = n ? ((x >> n) | (x << (32 - n))) : x;
+			set_stk(0, v); cca(v); return exec_trap::none; }
 		case 006: { u32 v = stk(0) << operand; set_stk(0, v); cca(v);
 			return exec_trap::none; }                            // ASL
 		case 007: { u32 v = u32(s32(stk(0)) >> operand); set_stk(0, v);
@@ -428,6 +706,23 @@ private:
 
 		switch (op2)
 		{
+		// Debug aids. Each traps only when its enable bit is set in STATUS;
+		// with tracing off they are the cheapest instruction there is, which
+		// is why compilers emit SOL at every source line (ERS sheet 121).
+		case 000: return r.test(sf::SL) ? exec_trap::unimplemented
+				: exec_trap::none;                               // SOL
+		case 001: return r.test(sf::EP) ? exec_trap::unimplemented
+				: exec_trap::none;                               // SOP
+		case 016: return r.test(sf::SS) ? exec_trap::unimplemented
+				: exec_trap::none;                               // SOS
+		case 031: return r.test(sf::SL) ? exec_trap::unimplemented
+				: exec_trap::none;                               // SOLC
+		case 002: {                                             // CMPN
+			const s32 a = s32(pop());
+			const s32 b = -s32(u32(imm));
+			r.put(sf::CC, (a < b) ? CCL : (a == b) ? CCE : CCG);
+			return exec_trap::none;
+		}
 		case 003: {                                             // CMPI
 			const s32 a = s32(pop());
 			r.put(sf::CC, (a < s32(imm)) ? CCL : (a == s32(imm)) ? CCE : CCG);
@@ -451,6 +746,7 @@ private:
 			return exec_trap::none; }                            // LNIS
 		case 022: return do_call(4u * imm);                      // PCLS
 		case 023: return do_exit(imm);                           // EXIT
+		case 024: return do_exit(imm);                           // SXIT
 		case 026: r.x += imm; return exec_trap::none;            // ADXI
 		case 027: r.x -= imm; return exec_trap::none;            // SBXI
 		case 032: r.s += 4u * imm; return exec_trap::none;       // ADDS
@@ -476,6 +772,37 @@ private:
 
 		switch (op2)
 		{
+		case 000: {                                               // EXF
+			// J = CIR(27:5) start bit, K = CIR(22:5) = 32 - width; bit 8
+			// sign extends, bit 9 indexes (ERS sheet 116).
+			u32 fields = d & 0x3ff;
+			if (idx) fields += r.x;
+			const u32 j = fields & 0x1f, k = (fields >> 5) & 0x1f;
+			const u32 len = 32 - k;
+			const u32 src = pop();
+			u32 v = (len >= 32) ? src : ((src << j) >> (32 - len));
+			if (ind && len < 32 && (v >> (len - 1)) & 1)
+				v |= ~((u32(1) << len) - 1);      // sign extend
+			push(v); cca(v);
+			return exec_trap::none;
+		}
+		case 001: {                                               // DPF
+			u32 fields = d & 0x3ff;
+			if (idx) fields += r.x;
+			const u32 j = fields & 0x1f, k = (fields >> 5) & 0x1f;
+			const u32 len = 32 - k;
+			const u32 src = pop();
+			u32 dst = stk(0);
+			if (len < 32)
+			{
+				const u32 mask = ((u32(1) << len) - 1) << (32 - j - len);
+				dst = (dst & ~mask) | ((src << (32 - j - len)) & mask);
+			}
+			else
+				dst = src;
+			set_stk(0, dst); cca(dst);
+			return exec_trap::none;
+		}
 		case 003: return do_call(off);                            // PCL
 		case 006: push(off); cca(off); return exec_trap::none;    // LDI
 		case 007: { const u32 v = u32(-s32(off)); push(v); cca(v);
@@ -487,11 +814,37 @@ private:
 			push(m_mem.read32(a)); cca(stk(0));
 			return exec_trap::none;
 		}
+		case 002: {                                               // CHEK
+			// Range check: traps if the top of stack lies outside the two
+			// immediate bounds (ERS sheet 128).
+			const s32 v = s32(stk(0));
+			const s32 lo = s32(u32((d >> 12) & 0x3ff));
+			const s32 hi = s32(u32(d & 0xfff));
+			if (v < lo || v > hi)
+				return exec_trap::bounds_violation;
+			return exec_trap::none;
+		}
 		case 013: {                                               // ST
 			u32 a;
 			if (!ea(base, off, ind, idx, true, a))
 				return exec_trap::address_error;
 			m_mem.write32(a, pop());
+			return exec_trap::none;
+		}
+		case 014: {                                               // LDB
+			u32 a;
+			if (!ea(base, off, ind, idx, false, a))
+				return exec_trap::address_error;
+			const u32 v = m_mem.read8(a);
+			push(v); cca(v);
+			return exec_trap::none;
+		}
+		case 015: {                                               // CMPM
+			u32 a;
+			if (!ea(base, off, ind, idx, false, a))
+				return exec_trap::address_error;
+			const s32 x = s32(pop()), y = s32(m_mem.read32(a));
+			r.put(sf::CC, (x < y) ? CCL : (x == y) ? CCE : CCG);
 			return exec_trap::none;
 		}
 		case 020: {                                               // LDD
@@ -507,6 +860,21 @@ private:
 				return exec_trap::address_error;
 			const u32 v = m_mem.read32(a) + ((op2 == 024) ? 1u : u32(-1));
 			m_mem.write32(a, v); cca(v);
+			return exec_trap::none;
+		}
+		case 022: {                                               // LDH
+			u32 a;
+			if (!ea(base, off, ind, idx, false, a))
+				return exec_trap::address_error;
+			const u32 v = m_mem.read16(a);
+			push(v); cca(v);
+			return exec_trap::none;
+		}
+		case 025: {                                               // STH
+			u32 a;
+			if (!ea(base, off, ind, idx, true, a))
+				return exec_trap::address_error;
+			m_mem.write16(a, u16(pop()));
 			return exec_trap::none;
 		}
 		case 026: {                                               // LDX
@@ -530,6 +898,21 @@ private:
 				const s32 delta = ((d >> 19) & 1) ? -s32(off) : s32(off);
 				branch_to(u32(r.p + delta));
 			}
+			return exec_trap::none;
+		}
+		case 027: case 032: {                                     // INCF/DECF
+			u32 a;
+			if (!ea(base, off, ind, idx, true, a))
+				return exec_trap::address_error;
+			const u32 v = m_mem.read32(a) + ((op2 == 027) ? 1u : u32(-1));
+			m_mem.write32(a, v); cca(v);
+			return exec_trap::none;
+		}
+		case 034: {                                               // STB
+			u32 a;
+			if (!ea(base, off, ind, idx, true, a))
+				return exec_trap::address_error;
+			m_mem.write8(a, u8(pop()));
 			return exec_trap::none;
 		}
 		case 035: {                                               // STD
