@@ -205,8 +205,24 @@ neither of which is modelled yet.
 its chain head at `(SB+2)`. `ESCP` unwinds by pointing `Q` at the frame and
 performing an `EXIT 0`, exactly as the ERS specifies.
 
-Not yet: decimal (BCD), move/scan/string, I/O, and the trap and interrupt
-sequences. Procedure calls take local program
+**Internal traps are in.** The sequence on ERS sheet 44 is implemented: form
+an external program pointer to code segment 1 with the STT entry number set
+from the cause, push a stack marker, push the parameter, load `PB` and `PL`
+from CST entry 1, clear `STATUS` except the mode bit and the code segment
+number, and take `P` from the STT entry. `trap_cause` carries all 40 causes
+from §5.2.2 with their octal STT entry numbers.
+
+Faults the core already detected — unimplemented opcodes, bounds violations,
+divide by zero, every addressing trap — now vector through this path once a
+Code Segment Table exists. Until one does they are still reported to the
+caller, which is what unit tests want and what a cold machine has to do
+anyway.
+
+Step 3 of the sequence, adjusting code segment use counts, is not modelled:
+the counts exist for the operating system's benefit and nothing in the CPU
+depends on them.
+
+Not yet: decimal (BCD), move/scan/string, external interrupts and `IXIT`. Procedure calls take local program
 pointers only — external pointers need the Code Segment Table walk and the
 U-bit check. Unimplemented opcodes return `trap::unimplemented` rather than
 behaving as no-ops, so gaps surface immediately instead of corrupting state.
@@ -220,7 +236,7 @@ where the real code is rather than where the opcode table looks empty.
 
 ```
 298,238 instructions decoded
-286,141 would execute  (95.9%)
+286,563 would execute  (96.1%)
 ```
 
 The three largest remaining entries — format 6 opcode 37 and format 4 opcodes
@@ -235,7 +251,13 @@ real code. And static frequency is not dynamic frequency: a rare opcode inside
 a hot loop matters more than the count suggests.
 
 Largest genuine gaps by frequency: `MVB` and the move/scan/string group,
-`TCC`, `CRB`, `LPP`/`LPPS`, `LIA`/`LIAS`, and the decimal instructions.
+`CRB`, `LPP`/`LPPS`, `LIA`/`LIAS`, and the decimal instructions. The string
+group needs the four-word string descriptor machinery of ERS §2.3.4, which is
+a subsystem rather than a handful of opcodes.
+
+One open question from the trap sequence: step 4 says the parameter is pushed
+"at Q+3", but after the marker `S` equals `Q`, making the next free word
+`Q+1`. The implementation pushes normally; the discrepancy is unresolved.
 
 The stack is memory-backed for now. The tested `tos_cache` renamer from step
 1.2 is a later optimisation; correctness first.

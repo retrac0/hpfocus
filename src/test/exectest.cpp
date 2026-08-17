@@ -657,6 +657,93 @@ static void test_try_escp()
 	CHECK(h.one(u16((1 << 6) | 070)) == exec_trap::pointer_conversion);
 }
 
+static void test_traps()
+{
+	std::printf("internal traps (sheets 44-45)\n");
+	harness h;
+
+	// Without a handler segment, faults are reported to the caller.
+	CHECK(!h.cpu.traps_enabled());
+	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);
+
+	// Install a Code Segment Table whose entry 1 describes the handler
+	// segment. The system CST pointer lives at absolute location 0.
+	const u32 CST = 0x200;
+	const u32 HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);                  // entry 1 flags
+	h.mem.write32(CST + 16 + 4, HLEN - 1);           // LENGTH - 1
+	h.mem.write32(CST + 16 + 8, HB);                 // LOCATION
+	const u32 HPL = HB + (HLEN - 1) - 3;
+
+	// STT entry for the unimplemented-instruction trap, octal 20.
+	h.mem.write32(HPL - 4 * 020, 0x100);             // handler at HB + 0x100
+	// ...and for a bounds violation, octal 1.
+	h.mem.write32(HPL - 4 * 001, 0x200);
+
+	h.cpu.enable_traps(true);
+	h.cpu.r.status = 0;
+	h.cpu.r.put(sf::M, 1);
+	h.cpu.r.put(sf::CSN, 5);
+	h.cpu.r.put(sf::C, 1);                           // must be cleared
+	const u32 q0 = h.cpu.r.q;
+
+	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::none);   // DTB, unimplemented
+	CHECK(h.cpu.last_trap() == trap_cause::unimplemented_instruction);
+
+	// PB and PL come from CST entry 1, and P from the STT entry.
+	CHECK_EQ(h.cpu.r.pb, HB);
+	CHECK_EQ(h.cpu.r.pl, HPL);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+
+	// A stack marker was pushed and Q now points at it.
+	CHECK_EQ(h.cpu.r.q, q0 + 16);
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.q, 0), 16);     // delta Q
+
+	// Only the mode bit and the code segment number survive in STATUS.
+	CHECK(h.cpu.r.test(sf::M));
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 5);
+	CHECK(!h.cpu.r.test(sf::C));
+
+	// A bounds violation vectors through its own STT entry.
+	h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+	h.cpu.r.dl = h.cpu.r.db + 0x3f;
+	h.cpu.push(1);
+	CHECK(h.one(f1(5, false, false, 2, 255)) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::bounds_violation);
+	CHECK_EQ(h.cpu.r.p, HB + 0x200);
+
+	// The debug aids raise their own causes once enabled in STATUS.
+	h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+	h.mem.write32(HPL - 4 * 044, 0x300);
+	h.cpu.r.put(sf::SL, 1);
+	CHECK(h.one(f5(000, 0)) == exec_trap::none);           // SOL
+	CHECK(h.cpu.last_trap() == trap_cause::start_of_line);
+	CHECK_EQ(h.cpu.r.p, HB + 0x300);
+
+	// The cause values are the STT entry numbers, in octal.
+	CHECK_EQ(unsigned(trap_cause::bounds_violation), 001u);
+	CHECK_EQ(unsigned(trap_cause::unimplemented_instruction), 020u);
+	CHECK_EQ(unsigned(trap_cause::data_segment_write), 057u);
+	CHECK_EQ(unsigned(trap_cause::absent_page), 040u);
+}
+
+static void test_tcc()
+{
+	std::printf("TCC\n");
+	harness h;
+
+	h.cpu.r.put(sf::CC, CCE);
+	CHECK(h.one(u16((037 << 6) | 2)) == exec_trap::none);   // mask = CCE
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK(h.one(u16((037 << 6) | 4)) == exec_trap::none);   // mask = CCG
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.one(u16((037 << 6) | 0)) == exec_trap::none);   // mask = never
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.one(u16((037 << 6) | 7)) == exec_trap::none);   // mask = always
+	CHECK_EQ(h.cpu.stk(0), 1);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -668,6 +755,8 @@ int main()
 	test_floating_point();
 	test_new_groups();
 	test_try_escp();
+	test_tcc();
+	test_traps();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

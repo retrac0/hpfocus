@@ -51,7 +51,55 @@ enum class exec_trap : u8
 	address_error,       // from the addressing unit; see last_addr_trap()
 	stack_overflow,
 	pointer_conversion,  // CPTR produced a misaligned pointer
+	trapped,             // a trap fired but no handler is installed
 	halted               // STOP executed
+};
+
+// Internal interrupt and trap causes. The value is the Segment Transfer Table
+// entry number within code segment 1, which is reserved for these handlers
+// (ERS section 5.2.2, sheets 45-52). The ERS numbers them in octal.
+enum class trap_cause : u8
+{
+	bounds_violation          = 001,
+	check_trap                = 002,
+	machine_instruction       = 004,
+	string_trap               = 005,
+	reset                     = 010,
+	page_table_violation      = 011,
+	inconsistent_registers    = 012,
+	pointer_conversion        = 016,
+	external_program_pointer  = 017,
+	unimplemented_instruction = 020,
+	stt_violation             = 021,
+	cst_violation             = 022,
+	dst_violation             = 023,
+	stack_overflow            = 024,
+	stack_underflow           = 025,
+	privileged_mode           = 026,
+	privileged_mode_data      = 027,
+	unexpected_pointer_type   = 030,
+	user_trap                 = 031,   // 1 = integer overflow, 2 = divide by zero
+	illegal_decimal           = 032,
+	exponent_size             = 033,
+	fp_operand                = 034,
+	fp_result                 = 035,
+	unexpected_eds_type       = 036,
+	absent_page               = 040,
+	uncallable_procedure      = 041,
+	absent_data_segment       = 042,
+	absent_page_table         = 043,
+	start_of_line             = 044,
+	variable_trace            = 045,
+	start_of_procedure        = 046,
+	end_of_procedure          = 047,
+	start_of_subroutine       = 050,
+	end_of_subroutine         = 051,
+	code_segment_violation    = 052,
+	branch_violation          = 053,
+	message_trap              = 054,
+	instruction_sequencing    = 055,
+	start_of_line_check       = 056,
+	data_segment_write        = 057
 };
 
 class cpu_core
@@ -70,6 +118,13 @@ public:
 	}
 
 	bool halted() const { return m_halted; }
+
+	// Traps vector through code segment 1 only once a Code Segment Table is
+	// in place. Until then faults are reported to the caller instead, which
+	// is what unit tests want and what a cold machine has to do anyway.
+	void enable_traps(bool on) { m_traps_enabled = on; }
+	bool traps_enabled() const { return m_traps_enabled; }
+	trap_cause last_trap() const { return m_last_trap; }
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
 
@@ -125,11 +180,56 @@ public:
 		m_cir = is32 ? m_mem.read32(r.p) : u32(w);
 		m_next = r.p + (is32 ? 4 : 2);
 
-		const exec_trap t = is32 ? exec_fmt6() : exec_16(op1, w);
+		exec_trap t = is32 ? exec_fmt6() : exec_16(op1, w);
+
+		// Faults the core detects become architectural traps once a handler
+		// segment exists.
+		if (t != exec_trap::none && t != exec_trap::halted && m_traps_enabled)
+			t = vector_fault(t);
 
 		if (t == exec_trap::none && !m_branched)
 			r.p = m_next;
 		return t;
+	}
+
+	// Map an execution fault onto the architectural trap that represents it.
+	exec_trap vector_fault(exec_trap t)
+	{
+		switch (t)
+		{
+		case exec_trap::unimplemented:
+			return take_trap(trap_cause::unimplemented_instruction, 0);
+		case exec_trap::code_bounds:
+			return take_trap(trap_cause::instruction_sequencing, r.p);
+		case exec_trap::bounds_violation:
+			return take_trap(trap_cause::bounds_violation, r.p);
+		case exec_trap::divide_by_zero:
+			return take_trap(trap_cause::user_trap, 2);
+		case exec_trap::pointer_conversion:
+			return take_trap(trap_cause::pointer_conversion, 0);
+		case exec_trap::address_error:
+			return take_trap(addr_trap_cause(), 0);
+		default:
+			return t;
+		}
+	}
+
+	trap_cause addr_trap_cause() const
+	{
+		switch (m_addr_trap)
+		{
+		case trap::eds_pointer_violation:    return trap_cause::unexpected_pointer_type;
+		case trap::dst_violation:            return trap_cause::dst_violation;
+		case trap::eds_bounds_violation:     return trap_cause::bounds_violation;
+		case trap::data_seg_write_violation: return trap_cause::data_segment_write;
+		case trap::priv_mode_data_violation: return trap_cause::privileged_mode_data;
+		case trap::absent_segment:           return trap_cause::absent_data_segment;
+		case trap::absent_page_table:        return trap_cause::absent_page_table;
+		case trap::absent_page:              return trap_cause::absent_page;
+		case trap::page_table_violation:     return trap_cause::page_table_violation;
+		case trap::unexpected_eds_type:      return trap_cause::unexpected_eds_type;
+		default:                             return trap_cause::bounds_violation;
+		}
 	}
 
 	// Run until halted, a trap, or the step budget runs out. Returns the
@@ -755,6 +855,14 @@ private:
 		case 007: { u32 v = u32(s32(stk(0)) >> operand); set_stk(0, v);
 			cca(v); return exec_trap::none; }                    // ASR
 		case 010: r.x <<= operand; return exec_trap::none;        // LSXL
+		case 037: {                                               // TCC
+			// Pushes 1 if the condition code matches the mask, else 0
+			// (ERS sheet 123). The mask is CIR(29:3), the low three bits
+			// of the operand.
+			const u32 v = cc_taken(operand & 7) ? 1u : 0u;
+			push(v);
+			return exec_trap::none;
+		}
 
 		case 040: case 044:                                       // BIR
 			if (r.test(sf::IR)) { r.put(sf::IR, 0); rel(); }
@@ -797,13 +905,17 @@ private:
 		// Debug aids. Each traps only when its enable bit is set in STATUS;
 		// with tracing off they are the cheapest instruction there is, which
 		// is why compilers emit SOL at every source line (ERS sheet 121).
-		case 000: return r.test(sf::SL) ? exec_trap::unimplemented
+		case 000: return r.test(sf::SL)
+				? take_trap(trap_cause::start_of_line, imm)
 				: exec_trap::none;                               // SOL
-		case 001: return r.test(sf::EP) ? exec_trap::unimplemented
+		case 001: return r.test(sf::EP)
+				? take_trap(trap_cause::start_of_procedure, imm)
 				: exec_trap::none;                               // SOP
-		case 016: return r.test(sf::SS) ? exec_trap::unimplemented
+		case 016: return r.test(sf::SS)
+				? take_trap(trap_cause::start_of_subroutine, imm)
 				: exec_trap::none;                               // SOS
-		case 031: return r.test(sf::SL) ? exec_trap::unimplemented
+		case 031: return r.test(sf::SL)
+				? take_trap(trap_cause::start_of_line_check, imm)
 				: exec_trap::none;                               // SOLC
 		case 002: {                                             // CMPN
 			const s32 a = s32(pop());
@@ -1023,6 +1135,64 @@ private:
 	}
 
 	//----------------------------------------------------------------
+	//  internal interrupts and traps (ERS sheets 44-45)
+	//----------------------------------------------------------------
+
+	// Code segment 1 is reserved for trap handlers and is assumed resident,
+	// so the usual trap conditions are not retested while entering it.
+	//
+	// The sequence, per sheet 44:
+	//   1  clear the condition; form an external program pointer to segment
+	//      1, STT entry = the cause
+	//   2  push a stack marker
+	//   3  adjust the code segment use counts
+	//   4  push a parameter; if none is needed it is the program pointer
+	//   5  set PB and PL from CST entry 1
+	//   6  clear STATUS except the mode bit and the code segment number
+	//   7  set P from the STT entry
+	//
+	// Step 3 is not modelled: use counts exist for the operating system's
+	// benefit and nothing in the CPU depends on them yet.
+	exec_trap take_trap(trap_cause cause, u32 parameter)
+	{
+		m_last_trap = cause;
+		if (!m_traps_enabled)
+			return exec_trap::trapped;
+
+		// CST entry 1, from the system Code Segment Table pointer at
+		// absolute location 0 (ERS Appendix D).
+		const u32 cst = m_mem.read32(0);
+		const u32 entry = cst + 16;
+		const u32 len_m1 = m_mem.read32(entry + 4);
+		const u32 location = m_mem.read32(entry + 8);
+
+		const u32 ret = m_next - r.pb;
+		const u32 old_q = r.q;
+
+		r.s += 16;
+		set_stk(3, r.x);
+		set_stk(2, ret);
+		set_stk(1, r.status);
+		set_stk(0, r.s - old_q);
+		r.q = r.s;
+
+		push(parameter);
+
+		r.pb = location;
+		// LENGTH-1 always ends in 11 and PL must end in 00, so the last
+		// word of the segment starts three bytes lower.
+		r.pl = location + len_m1 - 3;
+
+		// Only the mode bit and the code segment number survive.
+		const u32 keep = ers32::mask(14, 1) | ers32::mask(20, 12);
+		r.status &= keep;
+
+		const u32 stt = m_mem.read32(r.pl - 4 * u32(cause));
+		branch_to(r.pb + stt);
+		return exec_trap::none;
+	}
+
+	//----------------------------------------------------------------
 	//  procedure call and return (ERS sheets 92, 96)
 	//----------------------------------------------------------------
 
@@ -1083,7 +1253,9 @@ private:
 	u32 m_next = 0;
 	bool m_branched = false;
 	bool m_halted = false;
+	bool m_traps_enabled = false;
 	trap m_addr_trap = trap::none;
+	trap_cause m_last_trap = trap_cause::reset;
 };
 
 } // namespace focus
