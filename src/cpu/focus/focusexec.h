@@ -50,6 +50,7 @@ enum class exec_trap : u8
 	divide_by_zero,
 	address_error,       // from the addressing unit; see last_addr_trap()
 	stack_overflow,
+	pointer_conversion,  // CPTR produced a misaligned pointer
 	halted               // STOP executed
 };
 
@@ -82,6 +83,23 @@ public:
 
 	void push(u32 v) { r.s += 4; set_stk(0, v); }
 	u32 pop() { const u32 v = stk(0); r.s -= 4; return v; }
+
+	// The ERS pseudocode uses two conventions. A top-of-stack style pointer
+	// such as S or Q ends in 11 and addresses the last byte of its word, so
+	// "(S-n)" is n words below it. A base pointer such as SB is word aligned
+	// and "(SB+n)" is n words above it.
+	u32 word_below(u32 sptr, unsigned n) const
+	{
+		return m_mem.read32(sptr - 3 - 4 * n);
+	}
+	void set_word_below(u32 sptr, unsigned n, u32 v)
+	{
+		m_mem.write32(sptr - 3 - 4 * n, v);
+	}
+	u32 sb_word(unsigned n) const { return m_mem.read32(r.sb + 4 * n); }
+	// Read-only view of word_below for tests and the debugger.
+	u32 word_below_pub(u32 sptr, unsigned n) const { return word_below(sptr, n); }
+	void set_sb_word(unsigned n, u32 v) { m_mem.write32(r.sb + 4 * n, v); }
 
 	//----------------------------------------------------------------
 	//  execution
@@ -587,6 +605,76 @@ private:
 			if (!r.privileged()) return exec_trap::unimplemented;
 			const u32 v = pop(), a = pop();
 			m_mem.write32(a + xx, v);
+			return exec_trap::none;
+		}
+
+		case 011: r.put(sf::I, b3 ? 1 : 0);                     // INT
+			return exec_trap::none;
+
+		case 040: {                                             // TRY
+			// Creates or deletes a pseudo stack marker for the high level
+			// language TRY feature (ERS sheet 126). The frame has the same
+			// four-word shape as a real stack marker, but its first slot
+			// chains to the previous frame instead of holding X. The chain
+			// head lives at (SB+2) as an SB-relative byte offset.
+			if (b3)
+			{
+				r.s += 12;                          // three more words
+				set_word_below(r.s, 0, r.s - r.q);              // delta Q
+				set_word_below(r.s, 1, r.status);
+				set_word_below(r.s, 2, word_below(r.s, 3));     // recovery addr
+				set_word_below(r.s, 3, sb_word(2));             // previous head
+				set_sb_word(2, r.s - r.sb);
+				return exec_trap::none;
+			}
+			const u32 temp = r.sb + sb_word(2);
+			if (!(r.q + 16 < temp && temp < r.s))
+				return exec_trap::bounds_violation;
+			set_sb_word(2, word_below(temp, 3));
+			r.s = temp - 16;
+			set_sb_word(4, 0);
+			return exec_trap::none;
+		}
+
+		case 041: {                                             // ESCP
+			// Unwinds to the innermost TRY frame by pointing Q at it and
+			// then performing an EXIT 0, which restores STATUS and the
+			// recovery address from the pseudo marker (ERS sheet 127).
+			bool flag;
+			if (b3)
+				flag = sb_word(4) != 0;
+			else
+			{
+				set_sb_word(3, stk(0));
+				r.s -= 4;
+				flag = true;
+			}
+			if (!flag)
+				return exec_trap::none;
+
+			set_sb_word(4, 0xffffffffu);
+			const u32 temp = r.sb + sb_word(2);
+			if (!(r.sb + 48 < temp && temp < r.s))
+				return exec_trap::bounds_violation;
+			set_sb_word(2, word_below(temp, 3));
+			r.q = temp;
+			return do_exit(0);
+		}
+
+		case 070: {                                             // CPTR
+			// Adds a byte offset to a data segment pointer, yielding a new
+			// pointer to the same segment (ERS sheet 124). The external
+			// data segment path, taken when bit 3 is set and the pointer's
+			// top bit is clear, is not modelled yet.
+			const u32 delta = stk(0);
+			const u32 ptr = stk(1);
+			if (b3 && ers32::get(ptr, 0, 1) == 0)
+				return exec_trap::unimplemented;
+			const u32 offset = ers32::get(ptr, 2, 30) + delta;
+			if (ers32::get(offset, 0, 2) != 0)
+				return exec_trap::pointer_conversion;
+			r.s -= 4;
+			set_stk(0, ers32::set(ptr, 2, 30, offset));
 			return exec_trap::none;
 		}
 

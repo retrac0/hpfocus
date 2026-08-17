@@ -457,7 +457,7 @@ static void test_unimplemented_is_reported()
 
 	// Format 4 specials are not modelled yet; they must not be silently
 	// treated as no-ops.
-	CHECK(h.one(u16(1 << 6 | 040)) == exec_trap::unimplemented);   // TRY
+	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);   // DTB
 	CHECK(h.one(u16(051 << 6)) == exec_trap::unimplemented);       // MVB
 }
 
@@ -580,6 +580,83 @@ static void test_new_groups()
 	h.cpu.r.put(sf::SL, 1 - 1);
 }
 
+static void test_try_escp()
+{
+	std::printf("TRY / ESCP exception frames\n");
+	harness h;
+
+	// (SB+2) is the TRY chain head, (SB+3) the escape value and (SB+4) the
+	// escape flag. ESCP additionally requires a frame above SB+12 words, so
+	// the stack proper has to start clear of all of that.
+	h.cpu.r.s = h.cpu.r.sb + 4 * 16 + 3;
+	h.cpu.r.q = h.cpu.r.s;
+	h.mem.write32(h.cpu.r.sb + 8, 0);
+	h.mem.write32(h.cpu.r.sb + 16, 0);
+
+	const u32 s0 = h.cpu.r.s;
+	const u32 q0 = h.cpu.r.q;
+	h.cpu.r.status = 0x1234;
+
+	// TRY with bit 3 set takes a PB-relative recovery address from the top
+	// of stack and builds a four-word frame.
+	h.cpu.push(0x40);                                   // recovery address
+	CHECK(h.one(u16((1 << 6) | 040 | 0x1000)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.s, s0 + 16);                       // one word plus three
+	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), h.cpu.r.s - h.cpu.r.sb);
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 0), 16);   // delta Q
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 1), 0x1234); // saved STATUS
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 2), 0x40); // recovery address
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 3), 0);    // previous chain head
+
+	// A nested TRY chains to the first. Between the two there is body code,
+	// so the stack has grown past the frame -- which matters, because both
+	// TRY-delete and ESCP require the frame to lie strictly below S.
+	const u32 first = h.cpu.r.s;
+	h.cpu.push(0xbeef);                                 // a local
+	h.cpu.push(0x80);                                   // recovery address
+	CHECK(h.one(u16((1 << 6) | 040 | 0x1000)) == exec_trap::none);
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 3), first - h.cpu.r.sb);
+
+	// TRY with bit 3 clear deletes the innermost frame, restores the chain
+	// head, and unwinds S to below the frame -- discarding the local too.
+	h.cpu.push(0xcafe);                                 // body local
+	CHECK(h.one(u16((1 << 6) | 040)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), first - h.cpu.r.sb);
+
+	// ESCP unwinds to the remaining frame: Q moves to it, STATUS is
+	// restored and control resumes at PB + the recovery address.
+	h.cpu.r.s = first + 8;                              // body locals
+	h.cpu.r.status = 0;
+	h.cpu.push(0xdead);                                 // escape value
+	const exec_trap t = h.one(u16((1 << 6) | 041));
+	CHECK(t == exec_trap::none);
+	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 12), 0xdead);    // stashed at (SB+3)
+	CHECK_EQ(h.cpu.r.status, 0x1234);                   // restored
+	CHECK_EQ(h.cpu.r.p, h.cpu.r.pb + 0x40);             // recovery address
+	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), 0);          // chain head popped
+	CHECK_EQ(h.cpu.r.q, q0);                            // delta Q unwound
+
+	// INT sets and clears the interrupt enable bit.
+	h.cpu.r.put(sf::I, 0);
+	CHECK(h.one(u16((1 << 6) | 011 | 0x1000)) == exec_trap::none);
+	CHECK(h.cpu.r.test(sf::I));
+	CHECK(h.one(u16((1 << 6) | 011)) == exec_trap::none);
+	CHECK(!h.cpu.r.test(sf::I));
+
+	// CPTR adds a byte offset to a global data segment pointer.
+	h.cpu.r.s = s0;
+	h.cpu.push(0x80000000u | 100);                      // DB-relative, offset 100
+	h.cpu.push(20);
+	CHECK(h.one(u16((1 << 6) | 070)) == exec_trap::none);
+	CHECK_EQ(ers32::get(h.cpu.stk(0), 2, 30), 120);
+	CHECK_EQ(ers32::get(h.cpu.stk(0), 0, 2), 2);        // tag preserved
+
+	// Offset(0:2) is the top two bits, so the violation is a 30-bit
+	// overflow rather than a misalignment.
+	h.cpu.push(0x40000000);
+	CHECK(h.one(u16((1 << 6) | 070)) == exec_trap::pointer_conversion);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -590,6 +667,7 @@ int main()
 	test_unimplemented_is_reported();
 	test_floating_point();
 	test_new_groups();
+	test_try_escp();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

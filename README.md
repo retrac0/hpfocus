@@ -20,9 +20,9 @@ of the Instruction Set ERS runs correctly on the emulated CPU for n = 0…12 —
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
 
 Disassembler, register model, addressing, DST walk and an execution core that
-covers **93.9% of the instructions in the real HP-UX kernel and BASIC boot
-disc**, weighted by frequency. Still to come: exception handling, the string
-and decimal groups, traps and interrupts, then the machine around the CPU.
+covers **95.9% of the instructions in the real HP-UX kernel and BASIC boot
+disc**, weighted by frequency. Still to come: the string and decimal
+groups, traps and interrupts, then the machine around the CPU.
 
 Media in hand: BASIC Language System 2.0, the 9020 factory diagnostics, the
 BASIC demo suite (all undamaged), and an HP-UX 5.01 system tape that is 77%
@@ -36,6 +36,7 @@ docs/
   SOFTWARE.md          target media, HP-UX versions, boot ordering
   opcodes.csv          full FOCUS opcode map, from ERS Appendix B
   bitsavers/           11 primary PDFs (~46 MB)
+  hpjournal/           3 HP Journal issues on the Series 500
   notes/               pdftotext extractions, Appendix B + loader flowchart
 software/
   README.md            provenance and per-image analysis
@@ -69,7 +70,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing, DST walk and execution core carry 318 unit
+register model, addressing, DST walk and execution core carry 343 unit
 assertions — including all ten worked examples from ERS Figure 2.1 and the
 recursive factorial from ERS section 7.
 

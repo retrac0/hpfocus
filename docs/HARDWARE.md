@@ -812,7 +812,11 @@ instruction**; the low 32 bits are 8 hex digits, `YYYYMMDD`.
    both acquired systems supply the `SYSTEM POWERUP` entry point, so this is a
    soft blocker.
 2. **Memory Controller ERS** — referenced repeatedly by the Instruction Set ERS
-   (for `SAR`/`SDR` and MPB semantics) but **not present on bitsavers**.
+   (for `SAR`/`SDR` and MPB semantics) and still not located. Partly mitigated:
+   *HP Journal* August 1983 carries a detailed article on the chip set with a
+   block diagram of the memory controller, its ECC and memory-healing
+   behaviour, and its role as an MPB processor hardwired to channel 0. See
+   [hpjournal/](hpjournal/).
 3. **Stack marker layout** — ERS §2.3.5, sheet 23; not yet transcribed.
 4. **Disc interface** — the internal 9.9 MB drive's controller and protocol are
    not yet pinned down.
@@ -845,6 +849,19 @@ Primary, in [bitsavers/](bitsavers/):
 | `98760-90039_HP_98760_CE_Handbook_Mar84.pdf` | graphics |
 | `97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf` | graphics processor |
 | `MODCAL_6.3_ERS.pdf` | Modular Pascal — the Series 500 systems language. **No text layer; scanned images only.** |
+
+Also in [hpjournal/](hpjournal/), three issues of the *HP Journal* devoted to
+the Series 500, retrieved from [hparchive.com](http://www.hparchive.com/):
+
+| Issue | Covers |
+|---|---|
+| August 1983 | the CPU, IOP, clock, RAM and **memory controller** chips; MPB protocol |
+| March 1984 | HP-UX on the Series 500; LAN 9000 |
+| May 1984 | the three Series 500 models; wraps up the design story |
+
+The HP Computer Museum lists the same articles at
+<https://hpmuseum.net/exhibit.php?catdoc=12>, but its copies are lower
+resolution and carry **no text layer**; the hparchive scans are OCR'd.
 
 Secondary: [OpenPA — HP FOCUS Processor](https://www.openpa.net/focus_processor_hp.html),
 [OpenPA — HP 9000 500 FOCUS Computers](https://www.openpa.net/systems/hp-9000_520.html).
