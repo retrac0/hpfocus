@@ -1,5 +1,5 @@
 # Build artifacts
-mame/test/dasmtest
+src/test/dasmtest
 *.o
 
 # Python
