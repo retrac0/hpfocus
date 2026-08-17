@@ -15,7 +15,8 @@ the acquired media was written for.
 
 ## Current state
 
-Documentation, specification, and media analysis. No simulator code yet.
+Specification complete enough to build against; disassembler and register
+model done and tested. Execution core next.
 
 Media in hand: BASIC Language System 2.0, the 9020 factory diagnostics, the
 BASIC demo suite (all undamaged), and an HP-UX 5.01 system tape that is 77%
@@ -35,7 +36,7 @@ software/
   97089C.hpi           HP-UX 5.01 tape (damaged)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
-  cpu/focus/           FOCUS disassembler for MAME (symlinked into the tree)
+  cpu/focus/           FOCUS disassembler + register model (symlinked in)
   test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
 tools/
@@ -57,11 +58,16 @@ and no framework saves the ISA work since no FOCUS emulation exists anywhere.
 Read SIMH's `hp3000` as the architectural reference: FOCUS is the HP 3000 stack
 architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
-**Phases 0 and 1.1 are complete.** [tools/focusdis.py](tools/focusdis.py)
-disassembles FOCUS and confirmed the opcode map against the real HP-UX kernel
-and BASIC boot disc, resolving two encoding questions along the way. The MAME
-disassembler in [src/cpu/focus/](src/cpu/focus/) is written and differentially
-tested against it over **550,030 instructions with byte-identical output**.
+**Phase 0 and steps 1.1-1.2 are complete.**
+[tools/focusdis.py](tools/focusdis.py) disassembles FOCUS and confirmed the
+opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
+disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
+against it over **550,030 instructions with byte-identical output**, and the
+register model carries 81 unit assertions.
+
+Four encoding questions were resolved along the way and folded back into the
+spec: format 6's `BASE` width, the `BCCS`/`BCC` branch fields, the `EXF`/`DPF`
+sub-fields, and the full `STATUS` bit layout.
 
 ```sh
 git submodule update --init --depth 1 mame   # ~930 MB

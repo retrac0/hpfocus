@@ -81,9 +81,11 @@ python3 tools/focusdis.py os.req --start 0x100 --count 40
 python3 tools/focusdis.py os.req --start 0x100 --end 0x8000 --validate
 ```
 
-Still open from this phase: `EXF`/`DPF` sub-field boundaries, and locating the
-true entry point of `SYSTEM POWERUP` (offset `0x30` is the ASCII SCCS string
-`@(#)05.01`, not code; dense code begins around `0x100`).
+Still open from this phase: locating the true entry point of `SYSTEM POWERUP`.
+The module layout is understood — 32-byte binary header, 16-byte name field,
+variable-length SCCS version string, then body — which is why offset `0x30` is
+the ASCII string `@(#)05.01` rather than code. Dense code begins around
+`0x100`, but the header words are still unidentified.
 
 ### Phase 1 — MAME CPU device
 
@@ -148,7 +150,7 @@ field independence under write, the pointer alignment invariants, and the
 renamer's push/pop/`XCH`/`DXCH`/`CAB` semantics.
 
 ```sh
-cd src/test && make && ./statetest
+cd src/test && make test
 ```
 
 **1.3 — Memory and addressing.** 29-bit address space, big-endian. Effective
