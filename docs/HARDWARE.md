@@ -267,6 +267,64 @@ All indirect pointers are full words and must be word-aligned *(ISET ERS, 57)*.
 The three most significant bits of every absolute address must be zero
 *(ISET ERS, 54)* — so the architectural address space is 29 bits.
 
+### 3.1.1 Indirect pointer formats *(ISET ERS, 16–17)*
+
+Four pointer formats. The latter three are collectively *data segment
+pointers*; the first is used only with code segments.
+
+| Format | Tag (bits 0–1) | Payload | Target |
+|---|---|---|---|
+| Self-relative | — | 32-bit **signed** byte offset | address of the pointer + offset |
+| Stack segment | `11` | 30-bit offset, bits 2–31 | `SB` + offset |
+| Global data segment | `10` | 30-bit offset, bits 2–31 | `DB` + offset |
+| External data segment | bit 0 = `0` | bit 1 selects system/user DST, segment number (2:11), offset (13:19) | via the DST |
+
+Self-relative pointers "can be distinguished from machine instructions only by
+their usage" *(ISET ERS, 16)* — nothing in the encoding marks them.
+
+### 3.1.2 Bounds *(ISET ERS, 18)*
+
+The microcode detects every access outside these ranges:
+
+| Segment | Range |
+|---|---|
+| Code | `PB` to `PL` |
+| Stack | `SB` to **`S`** |
+| Global data | `DB` to `DL` |
+| Unpaged external data | starting address to starting address + length − 1 |
+
+Note the stack is bounded by `S`, the stack *pointer*, not by `SL` — addresses
+above the top of stack are out of bounds even though the segment extends
+further. For chained external data segments the tests are applied individually
+to each segment in the chain.
+
+### 3.1.3 Worked example — ERS Figure 2.1 *(sheet 19)*
+
+The ERS supplies a complete worked address computation: memory contents for a
+program, stack, global data and external data segment, an index register of
+20, and the resulting top-of-stack for ten `LOAD` instructions. It is the best
+available conformance test for an addressing implementation, and it is
+reproduced exactly by
+[`src/test/addrtest.cpp`](../src/test/addrtest.cpp).
+
+| Instruction | Result | Path exercised |
+|---|---|---|
+| `LOAD P+20` | −60 | direct |
+| `LOAD P+20,I` | 10 | self-relative pointer |
+| `LOAD P+20,X` | 100 | indexed |
+| `LOAD P+20,I,X` | 5 | **post**-indexing after indirection |
+| `LOAD Q+12,I` | 300 | stack segment pointer |
+| `LOAD Q+32,I` | 27 | global data segment pointer |
+| `LOAD Q−20,I` | −63 | external data segment pointer |
+| `LOAD Q−20,I,X` | 31 | index applied to the EDS *offset* |
+| `LOAD DB+60,I` | 18 | global pointer from global data |
+| `LOAD DB+72,I` | 52 | EDS pointer from global data |
+
+Two semantics are pinned down by this figure that the prose leaves implicit:
+indirection resolves **before** indexing, and for an external data segment the
+index is added to the offset within the segment rather than to the resolved
+absolute address.
+
 ### 3.2 Data segment pointer evaluation
 
 The ERS gives explicit pseudocode for resolving a data segment pointer `PTR`

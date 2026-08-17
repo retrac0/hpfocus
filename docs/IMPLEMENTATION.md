@@ -153,9 +153,25 @@ renamer's push/pop/`XCH`/`DXCH`/`CAB` semantics.
 cd src/test && make test
 ```
 
-**1.3 — Memory and addressing.** 29-bit address space, big-endian. Effective
-address computation for all six formats including indirect and post-indexing,
-plus the bounds checks the microcode performs on every reference.
+**1.3 — Memory and addressing** ◐ **mostly done**.
+[`src/cpu/focus/focusaddr.h`](../src/cpu/focus/focusaddr.h): effective address
+computation for every base register, all four indirect pointer formats,
+post-indexing, and the segment bounds checks the microcode applies to every
+reference (HARDWARE.md §3.1.1–3.1.3).
+
+Verified against **ERS Figure 2.1** (sheet 19), a worked example HP supplied
+with the memory contents and the expected top-of-stack for ten `LOAD`
+instructions spanning every addressing mode and pointer format. All ten
+reproduce exactly. 35 assertions in total, adding bounds and trap cases.
+
+Memory and external-data-segment lookup are abstract interfaces, so the unit
+tests against a flat array and the CPU device will plug in an `address_space`.
+
+**Remaining:** the external data segment path is behind an `eds_resolver`
+seam with a test double standing in. The real walk — Data Segment Table entry,
+segment chaining, and the paged path with its page table — is specified on ERS
+sheets 30–36 and 55–56 but needs the **DST entry bit layout transcribed**,
+which is the next piece of document work.
 
 **1.4 — Instruction execution.** Grouped as the ERS groups them: loads/stores,
 stack and register, arithmetic and logical, program control, move/scan/string,
