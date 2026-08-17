@@ -458,7 +458,7 @@ static void test_unimplemented_is_reported()
 	// Format 4 specials are not modelled yet; they must not be silently
 	// treated as no-ops.
 	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);   // DTB
-	CHECK(h.one(u16(051 << 6)) == exec_trap::unimplemented);       // MVB
+	CHECK(h.one(u16(052 << 6)) == exec_trap::unimplemented);       // SCW
 }
 
 
@@ -728,6 +728,36 @@ static void test_traps()
 	CHECK_EQ(unsigned(trap_cause::absent_page), 040u);
 }
 
+static void test_mvb()
+{
+	std::printf("MVB move bytes\n");
+	harness h;
+
+	// Source in the global data segment, target further along it. Both
+	// pointers are global data segment pointers, tagged 10.
+	for (int i = 0; i < 8; i++)
+		h.mem.write8(h.cpu.r.db + 0x40 + i, u8(0x10 + i));
+
+	h.cpu.push(0x80000000u | 0x40);      // source pointer
+	h.cpu.push(0x80000000u | 0x80);      // target pointer
+	h.cpu.push(8);                       // byte count
+	// operand: SDEC = 3 words popped, source is a data segment pointer.
+	CHECK(h.one(u16((051 << 6) | (1 << 2) | 3)) == exec_trap::none);
+
+	for (int i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(h.cpu.r.db + 0x80 + i), 0x10 + i);
+	CHECK_EQ(h.cpu.r.x, 8);
+
+	// Descending: bit 3 of the instruction reverses the direction, so the
+	// pointers name the highest byte of each area.
+	h.cpu.push(0x80000000u | 0x47);
+	h.cpu.push(0x80000000u | 0xc7);
+	h.cpu.push(8);
+	CHECK(h.one(u16(0x1000 | (051 << 6) | (1 << 2) | 3)) == exec_trap::none);
+	for (int i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(h.cpu.r.db + 0xc0 + i), 0x10 + i);
+}
+
 static void test_tcc()
 {
 	std::printf("TCC\n");
@@ -755,6 +785,7 @@ int main()
 	test_floating_point();
 	test_new_groups();
 	test_try_escp();
+	test_mvb();
 	test_tcc();
 	test_traps();
 	test_factorial();

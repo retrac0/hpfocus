@@ -1,33 +1,39 @@
 # hpfocus
 
-A simulator for the **HP 9000 Series 500 Model 540** (HP 9040) and its
-**HP FOCUS** 32-bit stack processor.
+## Introduction
+
+This is an ongoing quest to attempt to emulate the HP 9000 Series Model 520
+with the HP FOCUS microprocessor.
 
 FOCUS, introduced in 1982, was the first commercial 32-bit microprocessor —
-a fully microcoded, segmented, stack-oriented machine with no
-programmer-visible general-purpose registers, implementing the HP 3000
-architecture widened to 32 bits. The goal here is to boot original media:
-HP-UX, and (via the closely related Model 520) HP BASIC.
+a microcoded, segmented, stack-oriented machine with no programmer-visible 
+general-purpose registers, implementing something similar to the HP 3000
+architecture widened to 32 bits.
 
-**Targets: the Model 540 (9040) and the Model 520 (9020).** They share the
-entire processor stack; the 520 additionally runs BASIC and is the machine all
-the acquired media was written for.
+The goal is to run HP-UX and BASIC.
 
 ## Current state
 
-**HP's own sample program executes.** The recursive factorial from section 7
-of the Instruction Set ERS runs correctly on the emulated CPU for n = 0…12 —
+There's a sample factorial program in section 7 of the Instruction Set ERS
+which runs correctly on the emulated CPU for n = 0 to 12 which means
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
 
 Disassembler, register model, addressing, DST walk and an execution core that
-covers **96.1% of the instructions in the real HP-UX kernel and BASIC boot
-disc**, weighted by frequency. Internal traps vector correctly through code segment 1. Still to come: the
+covers **96.4% of the instructions in the real HP-UX kernel and BASIC boot
+disc**, weighted by frequency. Internal traps vector correctly through code 
+segment 1. Still to come: the
 string and decimal groups, external interrupts, then the machine around the
 CPU.
 
-Media in hand: BASIC Language System 2.0, the 9020 factory diagnostics, the
-BASIC demo suite (all undamaged), and an HP-UX 5.01 system tape that is 77%
-lost but yielded a **complete kernel**.
+Digital archaeology results: very little survives for this machine!  There's
+a few disk images preserved by hpmuseum.net but that's it.  This repository
+includes copies of: 
+ * BASIC Language System 2.0
+ * 9020 factory diagnostics,
+ * BASIC demo suite (all undamaged), 
+ * an HP-UX 5.01 system tape (preliminary analysis suggests this tape image is
+   truncated) and most of the length is lost but there does seem to be a complete
+   kernel!
 
 ## Layout
 
@@ -44,7 +50,9 @@ software/
   97089C.hpi           HP-UX 5.01 tape (damaged)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
-  cpu/focus/           disassembler, registers, addressing, DST, execution
+  cpu/focus/           MAME CPU device + disassembler, registers,
+                       addressing, DST walk, execution core
+  mame/                the hp9020 / hp9040 machine driver
   test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
 tools/
@@ -71,7 +79,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing, DST walk and execution core carry 373 unit
+register model, addressing, DST walk and execution core carry 392 unit
 assertions — including all ten worked examples from ERS Figure 2.1 and the
 recursive factorial from ERS section 7.
 

@@ -659,6 +659,20 @@ Channel Adapter" *(IO ERS, 4)*.
 
 Backplane slots are physically labelled with their select code numbers.
 
+The **520** divides the same eight select codes differently, because its
+peripherals are built in *(520 Service, sheet 2-29)*:
+
+| Select code | Assignment |
+|---|---|
+| 0 | Display Alphanumeric (§8.6) |
+| 1 | Display Graphics (§8.6) |
+| 2–5 | I/O backplane slots 2–5 (the only four available to the user) |
+| 6 | keyboard, printer, real-time clock, beeper, optional input device — one interface, one RX register or more per device |
+| 7 | internal mass storage (fixed and flexible disc share the select code, one at a time, switched by the IOP) |
+
+Additional IOPs take 8–15 and 16–23 as on the 540, and reach the outside world
+through a 97098A I/O Expander.
+
 ### 8.2 IOP functional areas *(IO ERS, table of contents)*
 
 System communication; interface polling; direct I/O; DMA (single and multiple
@@ -670,6 +684,15 @@ initialisation and self-test.
 CPU-side I/O is done with three instructions — **`IOW`, `IOR`, `IOC`** (format
 5, opcodes 17, 20, 21 octal), each taking an I/O opcode as its 8-bit operand
 *(IO ERS, §6)*.
+
+Every interface exposes sixteen addressable registers, **FR0–FR15**,
+corresponding to interface-card addresses `0000`–`1111`. Older HP interfaces
+called these R4–R7 (addresses `0000`–`0011`); FOCUS-era documents use the FR
+names throughout *(IO ERS, sheet 4)*. The 520 service manual calls the same
+things **RX registers**. RAMD-mode transfers — a Greyhound compatibility feature
+the ERS advises against using in new designs — always go through **FR8 or FR10**
+*(IO ERS, sheet 5)*. Each interface also owns a four-word Device Reference Table
+entry; see §6 for the layout and addressing.
 
 ### 8.3 System Control Module *(530/540 Service, sheet 2-27)*
 
@@ -762,8 +785,179 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 | 27128A | single-channel asynchronous serial, RS-232C / V.24 / V.28 |
 | 27130A | 8-channel asynchronous multiplexer, two 512-byte buffers per channel |
 | 27132A | MP-CIO, 8/16-bit parallel with DMA; clocked and transparent modes |
-| 98760 | graphics |
-| 97060A | graphics processor, with built-in HP-IB |
+| 98760 | 520 built-in colour graphics display — see §8.6 |
+| 97060A | external graphics processor, with built-in HP-IB — see §8.6.5 |
+
+### 8.6 Display subsystem *(Model 520 only)*
+
+The 540 ships with no display; the 520 has one built in, and it is the machine
+BASIC was written for. Whatever the option, the display presents to software as
+**two ordinary I/O interfaces** on the first IOP:
+
+| Select code | Assignment *(520 Service, sheet 2-29)* |
+|---|---|
+| 0 | Display Alphanumeric |
+| 1 | Display Graphics |
+
+They are addressed through **FR0–FR15** like any other interface (§8.2; *IO ERS,
+sheet 4*), and both appear as separately-orderable line items in the
+memory/processor module configuration *(520 CE Handbook, sheet 1-2)*. So the
+transport is fully specified — what no document in hand gives is the meaning of
+the individual FRs (§8.6.4).
+
+#### 8.6.1 The three options
+
+| Model | Display | Interface hardware | Graphics raster | Colours |
+|---|---|---|---|---|
+| 9020A | **98760A** Standard Color, 12.2 in | alpha/interface + graphics/digital video boards, inside the display casting | 512 × 390 × 4 planes | 16 of 4096 |
+| 9020B | **98780A** Monochromatic, 12.2 in | Display Interface Module (DIM) | 560 × 455 | mono |
+| 9020C | **98770A** High-Performance Color, 13 in | Display Interface Module (DIM) | 560 × 455 | "8 pure, 4913" |
+
+All three give 26 lines × 80 characters. The 98760A runs at 50 or 60 Hz; the
+other two are 60 Hz only *(520 CE Handbook, sheets 1-2/1-3)*.
+
+**Only the 98760A is documented in the collection.** The 98770A and 98780A have
+their own service manuals — `98770-90031` and `98780-90030`, referenced as
+Appendices I and J of the 520 Service manual — and neither is in
+[bitsavers/](bitsavers/) (§10). What *is* documented for those two is the DIM,
+the part that faces the IOP bus (§8.6.3).
+
+#### 8.6.2 98760A — the standard colour display (9020A)
+
+Two boards *(520 Service, sheets 2-37…2-40; HP Journal May 1984, "Color Graphics
+Display for an Engineering Workstation", D.G. Schmidt)*.
+
+**Alpha/interface board** — mounted under the CRT, faces the IOP bus.
+
+- receives IOD 0–15, buffers, then either stores into **8 KB of alpha memory** or
+  passes the data straight on to the graphics board
+- controlled by an **MC6845 CRT controller**, which also generates the alpha
+  timing consumed by the graphics board
+- the 6845 **requires software initialisation** to produce correct sync for 50 or
+  60 Hz; there is additionally a physical 50/60 Hz slide switch on the board,
+  factory-preset and reachable through a hole in the casting
+- connectors: P1 (40-pin) and P2 (50-pin) to the graphics board, P3 (50-pin)
+  power, P4 (50-pin) IOP bus
+
+**Graphics/digital video board**
+
+- the graphics controller is a **NEC µPD7220 GDC** with **64K × 16 (128 KB)** of
+  dynamic graphics RAM
+- graphics raster **512 × 390**, four memory planes, every pixel individually
+  addressable; the GDC generates vectors at > 28,000 pixels/s
+- colour map is three high-speed 16 × 4 static RAMs → 16 entries × 12 bits, four
+  bits per gun: **16 simultaneous colours out of 4096**
+- the CPU reaches the colour-map RAM over the IOP bus on **DB12–DB15**, through a
+  multiplexer that otherwise feeds the map from the graphics shift registers
+  during refresh
+- character and attribute ROMs, English/European or Katakana, fitted at the
+  factory; alpha is **not** colour-mapped — 1-of-8 direct RGB
+- the output gate array is three 16-bit latches plus four 16-bit shift registers,
+  shifting four bits at a time at the graphics video rate
+- a **51 MHz** crystal oscillator drives both boards; a sync generator supplies
+  Hsync, Vsync and Vblank to the video board
+- three D-to-A converters produce the R, G, B analogue streams
+
+**Screen geometry.** Alpha raster 720 × 390, 26 lines × 80 characters in a 9 × 15
+cell. A graphics pixel is 1.5 alpha pixels wide, so the graphics raster (512 px ≡
+768 alpha dots) is 32 graphics pixels wider than the alpha raster, which sits
+centred inside it.
+
+**Alpha attributes** are carried as six signals — UL (underline), IV (inverse
+video), BL (blink), R, G, B — per character cell, so any character may be any of
+eight colours in any combination of underline / blink / inverse. **Alpha pixels
+are dominant over graphics**: wherever an alpha pixel is present, the graphics
+pixel at the same location is suppressed. Inverse-video characters have the
+rising edge of each pixel stretched by half a pixel for legibility; the stretch
+circuit is disabled for non-inverse characters. The attribute set is identical on
+the 98770A "so that user programs will run on both displays", and the subsystem
+emulates the earlier **HP 9845C** display.
+
+> **Conflict to resolve.** The Journal gives a 9 × 15 character cell for the
+> 98760A, while the CE Handbook's CRT table gives "7 × 9 font in a 9 × 12 cell"
+> for all three displays *(520 CE Handbook, sheet 1-3)*. 26 × 15 = 390 matches
+> the stated 390-line alpha raster exactly and 26 × 12 = 312 does not, so the
+> Journal is the likelier figure for the 98760A — confirm before relying on it.
+
+#### 8.6.3 Display Interface Module — 98770A and 98780A (9020B/9020C)
+
+The DIM is mounted under the display and translates the general IOP interface
+into the specialised alphanumeric bus the display expects *(520 Service, sheets
+2-34…2-37)*. Its purpose is alpha refresh; it holds a full frame of characters so
+that only changed characters need be written. **Graphics data and control pass
+straight through to the display**, so nothing about the graphics side of those
+two displays is documented here.
+
+- connectors: J1 (36-pin) alpha data to display, J3 (36-pin) graphics data to
+  display, J2 (50-pin) power, J4 (50-pin) IOP bus
+- **frame buffer** — four static RAMs, 2480 × 16 bits = 31 rows of 80 characters,
+  one full frame. Written from the IOP by DMA or direct I/O; readable back for
+  diagnostics. The controller addresses it with 12 address lines
+- **line buffer** — an NMOS-II chip: word counter, two 80-character shift
+  registers, self-test logic. 16 data paths, of which the display uses 15. It
+  shifts register 1 to the display while loading register 2 from the frame
+  buffer, then toggles
+- display timing drives the transfer: NW (new word), NL (new line), NP (new
+  page); NP also resets the controller's frame-buffer address counters
+- self-test enters via the TST line, raised either by pushbutton S1 at the bottom
+  of the display or by software; the chip emits a test pattern and raises ERR on
+  mismatch
+- the controller is in display mode ~12% of the time and in IOP mode ~88%,
+  servicing the IOP and frame-buffer updates
+
+#### 8.6.4 What the diagnostics reveal about the register interface
+
+The power-up self tests are the best available spec fragment for the software
+interface, because they name registers and failure modes *(520 CE Handbook,
+sheets 5-3/5-4; same tables in the 520 Service manual, Appendix)*. Device address
+0 is alpha and 1 is graphics, matching the two select codes.
+
+98760A (9020A), abridged:
+
+| DA | Code | Meaning |
+|---|---|---|
+| 0 | 06 / 07 | status false / timeout during DMA transfer (alpha/interface board) |
+| 0 | 08 | alpha memory test failed |
+| 0 | 09 | channel end does not clear poll response |
+| 1 | 01 | **timed out while initialising GDC** |
+| 1 | 03 | control register fails readback |
+| 1 | 06 | graphics memory test failed |
+| 1 | 07 / 08 | timeout waiting for DMA / direct I/O transfer |
+| 1 | 09 | GDC not functioning properly |
+
+The DIM tests (9020B/9020C) do loopback on **FR0, FR1, FR8, FR9, FR10, FR12** and
+**FR15**, and include a "Weasel chip failed selftest" entry — presumably the
+NMOS-II line buffer, the one DIM part with its own self-test, though no document
+names it that way **[unconfirmed]**. Further DIM tests: frame buffer memory,
+space substitution, display interrupt, synchronous startup, window, reset.
+Graphics side: rubber-band memory, line drawing, erase memory.
+
+> **Simulator note.** Both principal parts of the 98760A are standard and already
+> modelled in MAME (`upd7220`, `mc6845`), and the geometry, colour map and
+> attribute semantics above are enough to drive them. The missing piece is purely
+> HP glue: which FR on select codes 0 and 1 maps to the 6845 address/data ports,
+> to the GDC command and parameter FIFO, to the colour-map write path and to the
+> control register. That is recoverable from the BASIC display driver in the
+> acquired media, and the self-test codes above give a graded target — the boot
+> diagnostics exercise the GDC before BASIC ever draws anything.
+
+#### 8.6.5 97060A external graphics processor *(optional, not part of the display)*
+
+An outboard box driving an RS-343 monitor (HP 13279B or compatible), connected
+through a **27112A** GP-IO 16-bit parallel DMA interface. Bit-slice (2901) and
+microcoded: a 1024 × 768 × 8 addressable frame, 576 × 455 × 4 displayed at 60 Hz
+non-interlaced, 29.4 kHz horizontal, 16 colours from 4096; area shading
+approaching 16M pixels/s. It carries its own HP-IB for a 9111A graphics tablet so
+it can take over cursor tracking from the host *(Hardware Technical Data, sheet
+9)*.
+
+Its service manual is **the only document in the collection with a real graphics
+command set** — Chapter 2 gives the microcode word definition and the full op-code
+list: `CMAP` 51 (load colour map), `CRTWR` 46 (write 6845-1 CRT controller
+register), `CLEAR` 60, `DRAW` 61, `ARC` 62, `FFILL` 65, `AFILL1/2` 68/69, `CHAR`
+6B, `CURS` 71, `COMPDR` 72, `BLANK` 4B, `BLINK` 4D, `GRAFIN` 4A, and so on. It is
+a useful model of how HP structured graphics commands of this era, but the
+built-in display shares none of it.
 
 ---
 
@@ -824,6 +1018,17 @@ instruction**; the low 32 bits are 8 hex digits, `YYYYMMDD`.
    binary header, 16-byte name, variable-length SCCS string, body) but the
    header words `1ffc / 0000ce2c / 00001064 / e307fffc` are unidentified and
    the exact entry offset is not yet known. Dense code begins around `0x100`.
+6. **Display register map** — nothing in hand assigns meaning to FR0–FR15 on
+   select codes 0 and 1: how the 6845 ports, the µPD7220 command/parameter FIFO
+   and the colour map are reached from the CPU is unknown (§8.6.4). The BASIC
+   display driver in the acquired media is the likely source.
+7. **98770A / 98780A display internals** — service manuals `98770-90031` and
+   `98780-90030` are cited as Appendices I and J of the 520 Service manual and
+   are not in [bitsavers/](bitsavers/). Only the shared Display Interface Module
+   is documented (§8.6.3); the graphics side of both displays is undocumented
+   here. Blocks 9020B/9020C emulation only — the 9020A is unaffected.
+8. **98760A character cell** — 9 × 15 (*HP Journal*) versus 9 × 12 (*520 CE
+   Handbook*); see the note in §8.6.2.
 
 *Resolved:* format 6 `BASE` width (3 bits, §5) and the `BCCS`/`BCC` branch
 encoding (§5.1.1), both confirmed against real code; the `STATUS` bit layout
@@ -857,7 +1062,7 @@ the Series 500, retrieved from [hparchive.com](http://www.hparchive.com/):
 |---|---|
 | August 1983 | the CPU, IOP, clock, RAM and **memory controller** chips; MPB protocol |
 | March 1984 | HP-UX on the Series 500; LAN 9000 |
-| May 1984 | the three Series 500 models; wraps up the design story |
+| May 1984 | the three Series 500 models; the **98760A colour graphics display** (§8.6.2) and the BASIC graphics subsystem; wraps up the design story |
 
 The HP Computer Museum lists the same articles at
 <https://hpmuseum.net/exhibit.php?catdoc=12>, but its copies are lower

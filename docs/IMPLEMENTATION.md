@@ -236,7 +236,7 @@ where the real code is rather than where the opcode table looks empty.
 
 ```
 298,238 instructions decoded
-286,563 would execute  (96.1%)
+287,516 would execute  (96.4%)
 ```
 
 The three largest remaining entries — format 6 opcode 37 and format 4 opcodes
@@ -250,7 +250,11 @@ regions decoded as instructions inflate the denominator — several of the
 real code. And static frequency is not dynamic frequency: a rare opcode inside
 a hot loop matters more than the count suggests.
 
-Largest genuine gaps by frequency: `MVB` and the move/scan/string group,
+`MVB` is in — the highest-frequency string instruction, moving bytes in
+either direction between a data segment and either another data segment or
+the code segment.
+
+Largest genuine gaps by frequency: the rest of the move/scan/string group,
 `CRB`, `LPP`/`LPPS`, `LIA`/`LIAS`, and the decimal instructions. The string
 group needs the four-word string descriptor machinery of ERS §2.3.4, which is
 a subsystem rather than a handful of opcodes.
@@ -267,6 +271,23 @@ floating-point conversion sequences *(sheet 144)* as unit tests, then the 9020
 diagnostics as the real conformance suite.
 
 Target throughout: single CPU, no MPB multiprocessing.
+
+**1.6 — MAME device** ✅ **done**.
+[`src/cpu/focus/focus.h`](../src/cpu/focus/focus.h) and
+[`focus.cpp`](../src/cpu/focus/focus.cpp) wrap the core as `focus_device`:
+`cpu_device` with the execute, memory, disassemble and state interfaces, a
+29-bit big-endian program space over 32-bit words, all eighteen registers
+exposed to the debugger, and save-state entries.
+
+The device also implements `focus::memory_interface`, so the core's accesses
+route straight to the MAME address space. The architectural headers keep no
+MAME dependency, which is what lets the same code carry 198 unit assertions
+outside a MAME tree.
+
+Registered in `scripts/src/cpu.lua` as `CPUS["FOCUS"]`, with the disassembler
+as a separate `opt_tool` entry so `unidasm` can pick it up.
+
+All three sources compile clean against real MAME headers (C++20).
 
 ### Phase 2 — machine
 

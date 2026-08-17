@@ -855,6 +855,56 @@ private:
 		case 007: { u32 v = u32(s32(stk(0)) >> operand); set_stk(0, v);
 			cca(v); return exec_trap::none; }                    // ASR
 		case 010: r.x <<= operand; return exec_trap::none;        // LSXL
+		case 051: {                                               // MVB
+			// Move Bytes (ERS sheet 101). The stack holds a byte count on
+			// top, then a target pointer, then a source pointer. Bit 3 of
+			// the instruction picks the direction; within the 6-bit
+			// operand, bit 3 says the source is a data segment pointer
+			// rather than a local program pointer, and bits 4-5 give how
+			// many words to pop at the end.
+			const int d = b3 ? -1 : 1;
+			const unsigned sdec = operand & 3;
+			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+			const s32 count = s32(stk(0));
+			const u32 tptr = stk(1);
+			const u32 sptr = stk(2);
+
+			u32 sba;
+			if (src_is_ds)
+			{
+				const ea_result e = m_au.resolve_data_pointer(sptr, false, false);
+				m_addr_trap = e.t;
+				if (!e.ok()) return exec_trap::address_error;
+				sba = e.addr;
+			}
+			else
+			{
+				// A local program pointer is a byte offset from PB, bounds
+				// checked against PB and PL (ERS convention note 18).
+				sba = r.pb + sptr;
+				if (!m_au.in_code(sba))
+					return exec_trap::bounds_violation;
+			}
+
+			const ea_result te = m_au.resolve_data_pointer(tptr, false, true);
+			m_addr_trap = te.t;
+			if (!te.ok()) return exec_trap::address_error;
+			u32 tba = te.addr;
+
+			s32 x = 0;
+			while (count > d * x)
+			{
+				m_mem.write8(tba, m_mem.read8(sba));
+				tba = u32(s32(tba) + d);
+				sba = u32(s32(sba) + d);
+				x += d;
+			}
+			r.x = u32(x);
+			set_stk(0, u32(count - d * x));
+			r.s -= 4 * sdec;
+			return exec_trap::none;
+		}
 		case 037: {                                               // TCC
 			// Pushes 1 if the condition code matches the mask, else 0
 			// (ERS sheet 123). The mask is CIR(29:3), the low three bits
