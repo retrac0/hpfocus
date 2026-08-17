@@ -1,0 +1,128 @@
+# hpfocus
+
+A simulator for the **HP 9000 Series 500 Model 540** (HP 9040) and its
+**HP FOCUS** 32-bit stack processor.
+
+FOCUS, introduced in 1982, was the first commercial 32-bit microprocessor —
+a fully microcoded, segmented, stack-oriented machine with no
+programmer-visible general-purpose registers, implementing the HP 3000
+architecture widened to 32 bits. The goal here is to boot original media:
+HP-UX, and (via the closely related Model 520) HP BASIC.
+
+**Targets: the Model 540 (9040) and the Model 520 (9020).** They share the
+entire processor stack; the 520 additionally runs BASIC and is the machine all
+the acquired media was written for.
+
+## Current state
+
+Documentation, specification, and media analysis. No simulator code yet.
+
+Media in hand: BASIC Language System 2.0, the 9020 factory diagnostics, the
+BASIC demo suite (all undamaged), and an HP-UX 5.01 system tape that is 77%
+lost but yielded a **complete kernel**.
+
+## Layout
+
+```
+docs/
+  HARDWARE.md          consolidated 520/540 hardware spec  <- start here
+  SOFTWARE.md          target media, HP-UX versions, boot ordering
+  opcodes.csv          full FOCUS opcode map, from ERS Appendix B
+  bitsavers/           11 primary PDFs (~46 MB)
+  notes/               pdftotext extractions, Appendix B + loader flowchart
+software/
+  README.md            provenance and per-image analysis
+  97089C.hpi           HP-UX 5.01 tape (damaged)
+  basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
+tools/
+  focusdis.py          FOCUS disassembler + validation harness
+  td0.py               decode Teledisk images to raw sectors
+  lifdir.py            list/extract LIF volumes
+  cpiolist.py          list/extract big-endian old-binary cpio
+  modmap.py            map named modules in a boot image
+  extract_opcodes.py   scrape opcodes from the ERS text layer
+  check_opcodes.py     diff that scrape against the Appendix B transcription
+```
+
+## Plan
+
+Build inside **MAME** — it supplies HP-IB, Teledisk, display, and a debugger,
+and no framework saves the ISA work since no FOCUS emulation exists anywhere.
+Read SIMH's `hp3000` as the architectural reference: FOCUS is the HP 3000 stack
+architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+
+**Phase 0 is complete.** [tools/focusdis.py](tools/focusdis.py) disassembles
+FOCUS and has confirmed the opcode map against the real HP-UX kernel and BASIC
+boot disc, resolving two encoding questions along the way.
+
+```sh
+python3 tools/focusdis.py os.req --start 0x100 --count 40
+python3 tools/focusdis.py os.req --start 0x100 --end 0x8000 --validate
+```
+
+## Documentation
+
+Eleven primary documents are in [docs/bitsavers/](docs/bitsavers/), mirrored
+from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
+
+- **FOCUS Instruction Set ERS** (Dec 1982, 150 sheets) — the CPU reference.
+  Registers, addressing, segmentation, interrupts, every instruction, plus
+  appendices covering the opcode bit patterns, dedicated memory locations,
+  IEEE floating-point conformance, and known silicon bugs.
+- **FOCUS I/O ERS** (Dec 1982, 80 sheets) — the IOP, DMA, interrupts, and the
+  interval timer.
+
+Both have usable OCR text layers, extracted into [docs/notes/](docs/notes/).
+
+## The opcode map
+
+[docs/opcodes.csv](docs/opcodes.csv) is a hand transcription of **Appendix B**,
+the fold-out chart on sheet 137 that gives bit patterns for all six instruction
+formats. The chart is authoritative — the OCR of the prose descriptions
+disagrees with it in several places.
+
+The page is rendered at 400 dpi as
+[docs/notes/appendixB-137.png](docs/notes/appendixB-137.png) and is fully
+legible.
+
+The transcription is validated against a second, independent derivation:
+[tools/extract_opcodes.py](tools/extract_opcodes.py) scrapes opcode
+assignments out of the section 6.2 prose, and
+[tools/check_opcodes.py](tools/check_opcodes.py) diffs the two. Current result
+is 25 conflicts, **all** of them OCR damage in the prose (`S8IT` for `SBIT`,
+`IXTT` for `IXIT`, `LOB` for `LDB`, `TOR` for `IOR`, `DR` for `BR`, and so on).
+No conflict pointed at an error in the chart transcription.
+
+```
+python3 tools/check_opcodes.py
+```
+
+## Known gaps
+
+1. **No SCM loader ROM dump** (09020-80000/80001). The *mechanism* is fully
+   documented — select-code scan, DMA handshake, complete flowchart — and both
+   acquired systems begin with the `SYSTEM POWERUP` module the loader jumps to,
+   giving two independent samples of the handoff contract. Nothing in the CPU,
+   memory, trap, or IOP work depends on it.
+2. **The HP-UX tape is 77% lost.** The kernel survived; the entire userland
+   (`SCOMMANDS`) did not. Full HP-UX needs a better image. BASIC and the
+   diagnostics are undamaged, so this is **not on the critical path**.
+3. **Memory Controller ERS is missing** from bitsavers. The Instruction Set ERS
+   defers MPB slave-register semantics to it.
+
+## Boot order
+
+1. 9020 diagnostics — best CPU workout, fewest dependencies
+2. **BASIC 2.0** — first realistic interactive milestone, undamaged media
+3. HP-UX kernel bring-up — complete kernel, but stops at `init`
+4. BASIC demos — graphics and I/O
+5. Full HP-UX — blocked on a better tape
+
+See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
+
+## Sources
+
+- [bitsavers.org — HP 9000/500](http://www.bitsavers.org/pdf/hp/9000_500/)
+- [HP Computer Museum — 500 Series](https://www.hpmuseum.net/exhibit.php?class=1&cat=12)
+- [OpenPA — HP FOCUS Processor](https://www.openpa.net/focus_processor_hp.html)
+- [The HPDir Project](https://www.hp9845.net/9845/projects/hpdir/)

@@ -1,0 +1,11 @@
+# Build artifacts
+mame/test/dasmtest
+*.o
+
+# Python
+__pycache__/
+*.pyc
+
+# Scratch
+/scratch/
+*.img

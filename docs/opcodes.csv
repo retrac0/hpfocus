@@ -1,0 +1,236 @@
+# FOCUS machine instruction opcode map.
+# Transcribed by hand from Appendix B ("Bit Patterns for the Instructions"),
+# sheet 137 of the Focus Machine Instruction Set ERS, A-1FE1-3020-B, 12/06/82.
+# Appendix B is the authoritative source: it disagrees with the OCR of the
+# section 6.2 prose in several places (e.g. LRA is 36, not 35).
+#
+# format  : instruction format number, per ERS section 6.1
+# field   : which opcode field the value occupies (OP1/OP2/OP3)
+# octal   : opcode value, octal, as printed in Appendix B
+# operand : operand field layout
+# flags   : per-instruction modifier bits shown in the chart (I=indirect,
+#           X=index, and instruction-specific bits); "" when none
+#
+# "-" in the mnemonic column marks an unassigned encoding. Format 4 opcodes
+# 32-36 are struck through in the chart (explicitly unused); format 5 opcode 30
+# and format 6 opcode 37 are unassigned but, per Appendix G, fail to raise the
+# unimplemented-instruction trap on CPU 4.0 and earlier.
+format,field,octal,mnemonic,operand,flags
+1,OP1,0,ESCAPE_6BIT,"escape to 6-bit operand forms (formats 2/3/4)",
+1,OP1,1,ESCAPE_8BIT,"escape to 8-bit operand form (format 5)",
+1,OP1,2,LDS,"word offset",I X BASE
+1,OP1,3,LRAS,"byte offset",I X BASE
+1,OP1,4,LDDS,"word offset",I X BASE
+1,OP1,5,STS,"word offset",I X BASE
+1,OP1,6,BCCS,"halfword offset",CC
+1,OP1,7,ESCAPE_32BIT,"escape to 32-bit instructions (format 6)",
+2,OP2,0,ESCAPE_STACK,"escape to stack ops (format 3)",
+2,OP2,1,ESCAPE_SPECIAL,"escape to specials (format 4)",
+2,OP2,2,LSL,"shift count",X
+2,OP2,3,LSR,"shift count",X
+2,OP2,4,CSL,"shift count",X
+2,OP2,5,CSR,"shift count",X
+2,OP2,6,ASL,"shift count",X
+2,OP2,7,ASR,"shift count",X
+2,OP2,10,LSXL,"shift count",X
+2,OP2,25,SLD,"",N DB
+2,OP2,26,SVAL,"",N DB
+2,OP2,27,SCON,"",N DST/NST
+2,OP2,30,SAS,"",N SB DST/NST
+2,OP2,31,PMPB,"",CN MEM
+2,OP2,32,SMPB,"",CN MEM
+2,OP2,33,SRM,"",A RM
+2,OP2,34,PSHR,"",L PB/HD/TST/Q/S
+2,OP2,35,SETR,"",PB/HD/TST/Q/S
+2,OP2,36,LLSH,"",G E U
+2,OP2,37,TCC,"",G E U
+2,OP2,40,BIR,"halfword offset (forward)",I
+2,OP2,41,BUN,"halfword offset (forward)",I
+2,OP2,44,BIR,"halfword offset (backward)",I
+2,OP2,45,BUN,"halfword offset (backward)",I
+2,OP2,50,PMVA,"",D SDEC
+2,OP2,51,MVB,"",D DS SDEC
+2,OP2,52,SCW,"",D DS SDEC
+2,OP2,53,SCU,"",D DS SDEC
+2,OP2,54,CMPB,"",D DS SDEC
+2,OP2,56,TRAN,"",D DS SDEC
+2,OP2,57,FILB,"",SDEC
+2,OP2,60,BCY,"halfword offset (forward)",I
+2,OP2,61,BNC,"halfword offset (forward)",I
+2,OP2,62,BOV,"halfword offset (forward)",I
+2,OP2,63,BNO,"halfword offset (forward)",I
+2,OP2,64,BCY,"halfword offset (backward)",I
+2,OP2,65,BNC,"halfword offset (backward)",I
+2,OP2,66,BOV,"halfword offset (backward)",I
+2,OP2,67,BNO,"halfword offset (backward)",I
+2,OP2,70,BRZ,"halfword offset (forward)",I
+2,OP2,71,BRE,"halfword offset (forward)",I
+2,OP2,72,BRO,"halfword offset (forward)",I
+2,OP2,73,CRB,"halfword offset (forward)",I
+2,OP2,74,BRZ,"halfword offset (backward)",I
+2,OP2,75,BRE,"halfword offset (backward)",I
+2,OP2,76,BRO,"halfword offset (backward)",I
+2,OP2,77,CRB,"halfword offset (backward)",I
+3,OP3,0,NOP,"",
+3,OP3,1,DELB,"",
+3,OP3,2,DDEL,"",
+3,OP3,3,FTST,"",F
+3,OP3,4,FTSS,"",F
+3,OP3,5,PSHN,"",A
+3,OP3,6,ZERO,"",
+3,OP3,7,DZRO,"",
+3,OP3,11,DLAD,"",C
+3,OP3,12,DLSB,"",C
+3,OP3,16,DXCH,"",
+3,OP3,17,CMP,"",H
+3,OP3,20,ADD,"",C
+3,OP3,21,SUB,"",C
+3,OP3,22,MPY,"",C
+3,OP3,23,DIV,"",E
+3,OP3,24,NEG,"",
+3,OP3,25,TEST,"",F
+3,OP3,26,TSTD,"",F
+3,OP3,27,TSTB,"",F
+3,OP3,30,CDSF,"",
+3,OP3,31,CSDF,"",
+3,OP3,32,XCH,"",
+3,OP3,33,DIVS,"",E
+3,OP3,34,ISC,"",
+3,OP3,35,XAX,"",
+3,OP3,36,ADAX,"",F
+3,OP3,37,ADXA,"",
+3,OP3,40,DEL,"",
+3,OP3,41,FIXD,"",R
+3,OP3,42,FLTD,"",
+3,OP3,43,STAX,"",F
+3,OP3,44,LDXA,"",
+3,OP3,45,DUP,"",
+3,OP3,46,DDUP,"",
+3,OP3,50,FCMP,"",T
+3,OP3,51,FADD,"",
+3,OP3,52,FSUB,"",
+3,OP3,53,FMPY,"",
+3,OP3,54,FDIV,"",
+3,OP3,55,FNEG,"",
+3,OP3,56,CAB,"",
+3,OP3,57,LCMP,"",T
+3,OP3,60,LADD,"",C
+3,OP3,61,LSUB,"",C
+3,OP3,62,LMPY,"",
+3,OP3,64,NOT,"",
+3,OP3,65,OR,"",
+3,OP3,66,XOR,"",
+3,OP3,67,AND,"",
+3,OP3,70,FLTS,"",
+3,OP3,71,FIXS,"",R
+3,OP3,72,FADS,"",
+3,OP3,73,FSBS,"",
+3,OP3,74,FMPS,"",
+3,OP3,75,FDVS,"",
+3,OP3,76,FNGS,"",
+3,OP3,77,FCPS,"",
+4,OP3,0,DTB,"",
+4,OP3,1,BTD,"",E
+4,OP3,2,LBIT,"",I
+4,OP3,3,SBIT,"",I
+4,OP3,4,EOS,"",
+4,OP3,5,LSI,"",X
+4,OP3,6,LBSI,"",X
+4,OP3,7,LDSI,"",X
+4,OP3,10,LHSI,"",X
+4,OP3,11,INT,"",E
+4,OP3,12,GTSP,"",
+4,OP3,13,MUC,"",U
+4,OP3,14,XGDS,"",
+4,OP3,15,PSDB,"",
+4,OP3,16,DISP,"",
+4,OP3,17,PSEB,"",
+4,OP3,25,SSI,"",X
+4,OP3,26,SBSI,"",X
+4,OP3,27,SDSI,"",X
+4,OP3,30,SHSI,"",X
+4,OP3,31,RCS,"",
+4,OP3,37,SRSI,"",
+4,OP3,40,TRY,"",I
+4,OP3,41,ESCP,"",C
+4,OP3,42,ALM,"",E
+4,OP3,43,CCI,"",
+4,OP3,44,EOP,"",
+4,OP3,47,PLBA,"",X
+4,OP3,50,PSBA,"",X
+4,OP3,51,PLHA,"",X
+4,OP3,52,PSHA,"",X
+4,OP3,53,POT,"",
+4,OP3,54,CNTO,"",F
+4,OP3,55,FLMO,"",F
+4,OP3,56,RPC,"",S
+4,OP3,57,WTC,"",S
+4,OP3,60,SMSG,"",B
+4,OP3,62,RSC,"",
+4,OP3,63,PSLA,"",X
+4,OP3,64,PLDA,"",X
+4,OP3,65,PSTA,"",X
+4,OP3,66,CPAA,"",X
+4,OP3,67,CPEP,"",X
+4,OP3,70,CPTR,"",E
+4,OP3,71,VPTR,"",X
+4,OP3,72,LINS,"",
+4,OP3,73,LDEL,"",
+4,OP3,74,IXIT,"",
+4,OP3,76,WAIT,"",L
+4,OP3,77,STOP,"",S
+5,OP2,0,SOL,"parameter",
+5,OP2,1,SOP,"parameter",
+5,OP2,2,CMPN,"immediate operand",
+5,OP2,3,CMPI,"immediate operand",
+5,OP2,4,ADDI,"immediate operand",
+5,OP2,5,SUBI,"immediate operand",
+5,OP2,6,MPYI,"immediate operand",
+5,OP2,7,DIVI,"immediate operand",
+5,OP2,12,LDXI,"immediate operand",
+5,OP2,13,LDXN,"immediate operand",
+5,OP2,14,LDIS,"immediate operand",
+5,OP2,15,LNIS,"immediate operand",
+5,OP2,16,SOS,"parameter",
+5,OP2,17,IOW,"I/O opcode",
+5,OP2,20,IOR,"I/O opcode",
+5,OP2,21,IOC,"I/O opcode",
+5,OP2,22,PCLS,"STT entry number",
+5,OP2,23,EXIT,"N field",
+5,OP2,24,SXIT,"N field",
+5,OP2,25,LIAS,"level + byte offset",
+5,OP2,26,ADXI,"immediate operand",
+5,OP2,27,SBXI,"immediate operand",
+5,OP2,31,SOLC,"parameter",
+5,OP2,32,ADDS,"immediate operand",
+5,OP2,33,SUBS,"immediate operand",
+5,OP2,34,LPPS,"STT entry number",
+5,OP2,35,ORI,"immediate operand",
+5,OP2,36,XORI,"immediate operand",
+5,OP2,37,ANDI,"immediate operand",
+6,OP2,0,EXF,"32-#bits, start bit",SW
+6,OP2,1,DPF,"32-#bits, start bit",X
+6,OP2,2,CHEK,"immediate operand 2",IMM_OPD1
+6,OP2,3,PCL,"four times STT entry number",
+6,OP2,4,LPP,"four times STT entry number",
+6,OP2,5,LIA,"byte offset",LEVEL
+6,OP2,6,LDI,"immediate operand",
+6,OP2,7,LNI,"immediate operand",
+6,OP2,10,LD,"byte offset",I X BASE
+6,OP2,13,ST,"byte offset",I X BASE
+6,OP2,14,LDB,"byte offset",I X BASE
+6,OP2,15,CMPM,"byte offset",I X BASE
+6,OP2,20,LDD,"byte offset",I X BASE
+6,OP2,22,LDH,"byte offset",I X BASE
+6,OP2,23,DECM,"byte offset",I X BASE
+6,OP2,24,INCM,"byte offset",I X BASE
+6,OP2,25,STH,"byte offset",I X BASE
+6,OP2,26,LDX,"byte offset",I X BASE
+6,OP2,27,INCF,"byte offset",I X BASE
+6,OP2,30,BR,"byte offset",I X BASE
+6,OP2,31,BCC,"byte offset",CC
+6,OP2,32,DECF,"byte offset",I X BASE
+6,OP2,33,SEML,"byte offset",I X BASE
+6,OP2,34,STB,"byte offset",I X BASE
+6,OP2,35,STD,"byte offset",I X BASE
+6,OP2,36,LRA,"byte offset",I X BASE
