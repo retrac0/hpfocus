@@ -153,7 +153,7 @@ renamer's push/pop/`XCH`/`DXCH`/`CAB` semantics.
 cd src/test && make test
 ```
 
-**1.3 — Memory and addressing** ◐ **mostly done**.
+**1.3 — Memory and addressing** ✅ **done**.
 [`src/cpu/focus/focusaddr.h`](../src/cpu/focus/focusaddr.h): effective address
 computation for every base register, all four indirect pointer formats,
 post-indexing, and the segment bounds checks the microcode applies to every
@@ -167,11 +167,16 @@ reproduce exactly. 35 assertions in total, adding bounds and trap cases.
 Memory and external-data-segment lookup are abstract interfaces, so the unit
 tests against a flat array and the CPU device will plug in an `address_space`.
 
-**Remaining:** the external data segment path is behind an `eds_resolver`
-seam with a test double standing in. The real walk — Data Segment Table entry,
-segment chaining, and the paged path with its page table — is specified on ERS
-sheets 30–36 and 55–56 but needs the **DST entry bit layout transcribed**,
-which is the next piece of document work.
+The external data segment path is complete in
+[`src/cpu/focus/focusdst.h`](../src/cpu/focus/focusdst.h): the DST entry and
+page table entry layouts (now transcribed, HARDWARE.md §4.1), the unpaged
+path, both chaining modes, the paged path, and every protection trap.
+78 further assertions.
+
+One documentation discrepancy surfaced and is recorded in §4.1: sheet 55's
+pseudocode tests `OFFSET < LENGTH-1` where sheet 18 gives the valid range as
+inclusive of `Length-1`. Read literally the pseudocode would make the last
+word of every segment unreachable, so the implementation follows sheet 18.
 
 **1.4 — Instruction execution.** Grouped as the ERS groups them: loads/stores,
 stack and register, arithmetic and logical, program control, move/scan/string,

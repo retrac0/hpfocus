@@ -363,7 +363,72 @@ Two segment kinds — **code** and **data** — described by two tables.
 - **Code Segment Table (CST)** with an associated **Segment Transfer Table
   (STT)** *(ISET ERS, 25–28)*. `PCL`/`PCLS`/`LPP`/`LPPS` take STT entry numbers.
 - **Data Segment Table (DST)**, with **data segment chaining** and optional
-  paging *(ISET ERS, 30–36)*.
+  paging *(ISET ERS, 30–36)*. See §4.1.
+
+### 4.1 The Data Segment Table *(ISET ERS, 32–34)*
+
+Up to **4096 four-word entries**. The first 2048 are reserved for operating
+system data and the remaining 2048 for user data. Entry zero of each half is
+special: its first word holds **16 × the number of entries** in that half,
+excluding entry zero itself, which is exactly the byte size of the table and
+so doubles as the bound for the `DST Violation` check. Entry *N* lives at
+`base + 16N`.
+
+The system half's entry zero is assumed to start at memory location **2200
+octal**; the user half's base is in the `DST` register.
+
+**DST entry** — four words:
+
+```
+word 0  |0| USE COUNT |  OS  | rsv |PAGESIZE|P|W|D|R|M|A|
+         0  1......12  13..17 18.21 22....25 26 ....... 31
+word 1  LENGTH - 1
+word 2  LOCATION
+word 3  |C|  LINK  |          OS use          |
+         0  1...12   13.....................31
+```
+
+| Field | Meaning |
+|---|---|
+| `A` | Absence — segment or page table is not in main memory. When set, the rest of the entry is free for OS use |
+| `M` | Mode — access allowed only in privileged mode. *Ignored for paged segments* |
+| `R` | Reference — set when the segment or page table is accessed |
+| `D` | Dirty — set when the segment is altered. *Ignored for paged* |
+| `W` | Write — segment may be altered. *Ignored for paged* |
+| `P` | Paged |
+| `PAGESIZE` | Number of low bits of an EDS pointer taken as the within-page offset; page size is 2^`PAGESIZE` bytes. **Values 0 and 1 must not be used.** Ignored for unpaged |
+| `LENGTH-1` | Length in bytes, less one. Bits 30–31 must both be 1, so lengths are multiples of four |
+| `LOCATION` | Absolute address of the segment or page table when `A`=0. Bits 30–31 must be 0 for unpaged segments |
+| `C` | Consecutive Link. Ignored for paged |
+| `LINK` | Chain link; 0 when unchained. Ignored for paged |
+| `USE COUNT` | Tasks currently using the segment. An internal trap fires on decrementing zero or incrementing 4095 |
+
+**Page table entry** — two words:
+
+```
+word 0  |0| USE COUNT |  OS  |          |1|W|D|R|M|A|
+         0  1......12  13..17            26 ....... 31
+word 1  LOCATION      (low PAGESIZE bits must be zero)
+```
+
+Resolution of a paged reference splits the offset at `PAGESIZE`, indexes the
+page table at `LOCATION + 8 × page number`, and forms the final address as
+`page LOCATION OR within-page offset` — an OR rather than an add because the
+page location is page-aligned.
+
+**Chaining** *(ISET ERS, 36)*. When an offset runs past a segment's length the
+walk follows the chain. With `C`=0 the segments are scattered: `LINK` names the
+next entry and the current length is subtracted from the offset. With `C`=1
+they occupy consecutive DST entries, so the walk indexes directly —
+`segment += offset / length`, `offset %= length` — and `LINK` is the highest
+entry number in the run.
+
+> **A discrepancy worth noting.** The evaluation pseudocode on sheet 55 tests
+> `If OFFSET < LENGTH-1`, but sheet 18 states the valid range as *starting
+> address to starting address + Length − 1* inclusive, and the entry field
+> already holds `LENGTH-1`. Taken literally the pseudocode would exclude the
+> last word of every segment. The implementation follows sheet 18 and treats
+> the test as inclusive.
 
 There are three CST pointers — system, sharable, and per-user — plus a Device
 Reference Table (DRT) with one entry per I/O device. See §6 for where they live.

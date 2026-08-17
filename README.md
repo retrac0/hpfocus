@@ -36,7 +36,7 @@ software/
   97089C.hpi           HP-UX 5.01 tape (damaged)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
-  cpu/focus/           disassembler, register model, addressing (symlinked in)
+  cpu/focus/           disassembler, registers, addressing, DST (symlinked in)
   test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
 tools/
@@ -63,7 +63,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model and addressing unit carry 116 unit assertions — including
+register model, addressing unit and DST walk carry 194 unit assertions — including
 all ten worked examples from ERS Figure 2.1.
 
 Four encoding questions were resolved along the way and folded back into the
