@@ -15,8 +15,13 @@ the acquired media was written for.
 
 ## Current state
 
-Specification complete enough to build against; disassembler and register
-model done and tested. Execution core next.
+**HP's own sample program executes.** The recursive factorial from section 7
+of the Instruction Set ERS runs correctly on the emulated CPU for n = 0…12 —
+procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
+
+Disassembler, register model, addressing, DST walk and a partial execution
+core (~80 of 218 opcodes) are done and tested. Still to come: the rest of the
+instruction set, traps and interrupts, then the machine around the CPU.
 
 Media in hand: BASIC Language System 2.0, the 9020 factory diagnostics, the
 BASIC demo suite (all undamaged), and an HP-UX 5.01 system tape that is 77%
@@ -36,7 +41,7 @@ software/
   97089C.hpi           HP-UX 5.01 tape (damaged)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
-  cpu/focus/           disassembler, registers, addressing, DST (symlinked in)
+  cpu/focus/           disassembler, registers, addressing, DST, execution
   test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
 tools/
@@ -63,8 +68,9 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing unit and DST walk carry 194 unit assertions — including
-all ten worked examples from ERS Figure 2.1.
+register model, addressing, DST walk and execution core carry 273 unit
+assertions — including all ten worked examples from ERS Figure 2.1 and the
+recursive factorial from ERS section 7.
 
 Four encoding questions were resolved along the way and folded back into the
 spec: format 6's `BASE` width, the `BCCS`/`BCC` branch fields, the `EXF`/`DPF`

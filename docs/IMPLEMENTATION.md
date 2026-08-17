@@ -178,9 +178,30 @@ pseudocode tests `OFFSET < LENGTH-1` where sheet 18 gives the valid range as
 inclusive of `Length-1`. Read literally the pseudocode would make the last
 word of every segment unreachable, so the implementation follows sheet 18.
 
-**1.4 — Instruction execution.** Grouped as the ERS groups them: loads/stores,
-stack and register, arithmetic and logical, program control, move/scan/string,
-I/O, special. Traps and the interrupt sequence last.
+**1.4 — Instruction execution** ◐ **in progress**.
+[`src/cpu/focus/focusexec.h`](../src/cpu/focus/focusexec.h) is an
+instruction-at-a-time interpreter over the register model, addressing unit and
+DST walk.
+
+**Milestone: the ERS's own sample program runs.** Section 7 (sheet 129) gives
+a recursive factorial in FOCUS machine code, and it executes correctly for
+n = 0…12, producing 479001600 for 12!. That exercises procedure call and
+return with stack markers, recursion twelve deep, the doubleword `MPY` with
+`DELB`, Q-relative parameter access, and both `BCCS` targets the listing names.
+
+Implemented: format 1 loads and stores, format 2 shifts and short branches,
+format 3 stack and integer arithmetic and logic, format 5 immediates and
+`PCLS`/`EXIT`, and the format 6 loads, stores and branches. Roughly 80 of 218
+opcodes.
+
+Not yet: floating point, decimal, move/scan/string, I/O, the privileged and
+debug-aid groups, and the trap and interrupt sequences. Procedure calls take
+local program pointers only — external pointers need the Code Segment Table
+walk and the U-bit check. Unimplemented opcodes return `trap::unimplemented`
+rather than behaving as no-ops, so gaps surface immediately.
+
+The stack is memory-backed for now. The tested `tos_cache` renamer from step
+1.2 is a later optimisation; correctness first.
 
 **1.5 — Validation.** The ERS sample program *(sheet 130)* and the Appendix E
 floating-point conversion sequences *(sheet 144)* as unit tests, then the 9020
