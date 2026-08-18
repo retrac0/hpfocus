@@ -6,7 +6,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter
 SRCDIR    = ../cpu/focus
 
-all: dasmtest statetest addrtest dsttest exectest ioptest
+all: dasmtest statetest addrtest dsttest exectest ioptest bootprobe
 
 dasmtest: dasmtest.cpp $(SRCDIR)/focusdasm.cpp $(SRCDIR)/focusdasm.h \
           $(SRCDIR)/focusdasm_tables.ipp emu.h
@@ -29,6 +29,10 @@ exectest: exectest.cpp $(SRCDIR)/focusexec.h $(SRCDIR)/focusdst.h \
 ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
 	$(CXX) $(CXXFLAGS) ioptest.cpp -o $@
 
+# Not a test: an experiment harness for locating a boot module's entry point.
+bootprobe: bootprobe.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
+	$(CXX) $(CXXFLAGS) bootprobe.cpp -o $@
+
 # The opcode tables are generated; docs/opcodes.csv is the source of truth.
 $(SRCDIR)/focusdasm_tables.ipp: ../../docs/opcodes.csv ../../tools/gen_dasm_tables.py
 	python3 ../../tools/gen_dasm_tables.py
@@ -48,4 +52,4 @@ test: all
 	@./run_difftest.sh
 
 clean:
-	rm -f dasmtest statetest addrtest dsttest exectest ioptest
+	rm -f dasmtest statetest addrtest dsttest exectest ioptest bootprobe

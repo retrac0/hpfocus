@@ -408,9 +408,50 @@ from a global-segment address computed out of the code segment.
 > `S ≥ Q + 97` constraint derived above is only as good as that entry
 > assumption and should be treated as provisional.
 >
-> Finding the real entry point is now the blocking question. The module
-> header is 32 bytes of unidentified words before the name field; one of them
-> may hold it, and two samples are available to compare.
+> Finding the real entry point is now the blocking question.
+
+### The module header
+
+Comparing the 32 bytes ahead of the name field across every module in
+`os.req` settles part of it:
+
+| Word | Content |
+|---|---|
+| 0 | varies per module — most likely a checksum |
+| 1 | `00nn0001`, a small ascending index |
+| 2 | **module length**, measured from the name field |
+| 3 | **`e307fffc` in every module** — a signature |
+| 4 | `1x......` flags |
+| 7 | `4100` in every module |
+
+**There is no entry vector.** So the loader must derive the entry from a rule
+— a fixed offset, or `PB` pointing somewhere specific — rather than reading it
+out of the header.
+
+### Searching for the entry point
+
+[`src/test/bootprobe.cpp`](../src/test/bootprobe.cpp) sweeps candidate entries
+through the standalone core, which runs thousands of trials in a second and
+needs no MAME rebuild.
+
+Ranking matters: an initial version scored candidates by instruction count and
+every top result was the same ten-instruction spin loop. Ranking by **distinct
+addresses reached** separates code that makes forward progress from code going
+in circles, and immediately produced meaningful candidates.
+
+Successive constraints, each found by raising whatever the previous run
+tripped over:
+
+| Constraint | Evidence |
+|---|---|
+| `Q` must sit well above `SB` | `STS Q-44` stored below `SB` |
+| `S` must sit well above `Q` | the `FILB` overrun |
+| code exists *below* the entry | a backward `BCCS` of 160 bytes left `PB..PL` |
+
+Best run so far: **284 instructions over 59 distinct addresses**, entering at
+`PB` with `PB` at module offset `0x2d0`. Still not the answer — the backward
+branch shows real code lies below that — but the search is now cheap and
+systematic rather than guesswork.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
