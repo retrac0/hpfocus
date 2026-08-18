@@ -1595,8 +1595,28 @@ against the raw chart transcription:
   Prose §158 gives "RFC (Read from Channel)", the natural pair to §159
   `WTC` "Write to Channel". Read as **RFC**.
 
+**Both readings are now confirmed by HP.** `/usr/lib/pascomp`, the Pascal
+compiler recovered from the 7914 tapes, carries the instruction set as an
+array of 16-byte records — mnemonic, opcode bits in place, operand class,
+attribute flags — and it spells them `brsi` and `rfc`.
+[`tools/hptable.py`](../tools/hptable.py) reads that table and diffs it
+against `opcodes.csv`: **208 assignments agree, none disagree.** This is
+HP's own machine-readable table rather than a transcription of a degraded
+chart, so it is the strongest check this project has on the opcode map,
+and it independently validates the whole Appendix B reading.
+
+It is equally informative about what is *absent*. HP's 1987 tools leave
+exactly the same fourteen format 4 slots unassigned as the Dec-82 chart —
+`020`–`024`, `032`–`036`, `045`, `046`, `061`, `075` — even though the same
+table lists every documented privileged instruction (`PLDA`, `PSTA`,
+`PSLA`, `SEML`, `XGDS`, `GTSP`, `DISP`, `IXIT`, `RCS`, `WTC`, `SMSG`).
+The HP-UX kernels nonetheless execute `020` and `021`, so those two are
+implemented in silicon but were never exposed through the shipped
+assembler or compilers — systems instructions emitted by HP's internal
+MODCAL compiler, which is not on the tapes.
+
 (`opcodes.csv` and the generated disassembler tables carried `SRSI` and
-`RPC` when this document was written.)
+`RPC` until then.)
 
 **Encoding questions resolved empirically** (against the HP-UX kernels and
 BASIC 2.0):

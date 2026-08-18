@@ -150,7 +150,7 @@ format,field,octal,mnemonic,operand,flags
 4,OP3,27,SDSI,"",X
 4,OP3,30,SHSI,"",X
 4,OP3,31,RCS,"",
-4,OP3,37,SRSI,"",
+4,OP3,37,BRSI,"",
 4,OP3,40,TRY,"",I
 4,OP3,41,ESCP,"",C
 4,OP3,42,ALM,"",E
@@ -163,7 +163,7 @@ format,field,octal,mnemonic,operand,flags
 4,OP3,53,POT,"",
 4,OP3,54,CNTO,"",F
 4,OP3,55,FLMO,"",F
-4,OP3,56,RPC,"",S
+4,OP3,56,RFC,"",S
 4,OP3,57,WTC,"",S
 4,OP3,60,SMSG,"",B
 4,OP3,62,RSC,"",

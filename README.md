@@ -64,7 +64,7 @@ and `MUC` (segment use counts). Then the byte scan and compare group —
 kernel-weighted figure understates it.
 
 What is still named in the gap is four string-descriptor instructions
-(`SLD`, `SVAL`, `SCON`, `SAS`), `SRSI`, and the decimal group. Everything
+(`SLD`, `SVAL`, `SCON`, `SAS`) and the decimal group. Everything
 else left is an opcode Appendix B does not assign — data that a linear scan
 misreads as code, since a run of `0xff` decodes as format 6 opcode 37.
 
@@ -138,15 +138,35 @@ src/test/bootrun hpux501.bin --p64 0x1000000
 ```
 
 **Both HP-UX versions then stop on the same thing**: format 4 opcodes
-**020 and 021**, which the Dec-82 Appendix B leaves unassigned. 5.01 uses
+**020 and 021**, which the Dec-82 Appendix B leaves unassigned — and so,
+it turns out, does HP's own toolchain. 5.01 uses
 them 1,192 times and 5.30 1,514 times; BASIC and the diagnostics never
 execute either. 5.01 reaches its first `021` after 1.26M instructions, in
-the `CORE SYSTEM` segment. The 530/540 service manual settles that they are
-real: it describes **"an instruction set consisting of 230 operation
-codes"** where Appendix B assigns 218 — about twelve later additions, of
-which these are two. Their semantics are the prerequisite for either HP-UX,
-and nothing in hand names them; the recovered userland has the C compiler's
-peephole optimiser but no assembler mnemonic table.
+the `CORE SYSTEM` segment.
+
+**What the recovered toolchain says.** The 5.30 tapes carry HP's own
+assembler (`/bin/as`) and Pascal compiler (`/usr/lib/pascomp`), and the
+compiler holds the instruction set as a table of 16-byte records — mnemonic,
+opcode bits in place, operand class, flags. [`tools/hptable.py`](tools/hptable.py)
+reads it. Two results:
+
+- It is the strongest check yet on the opcode map: **208 assignments agree,
+  none disagree**, and it settles two glyphs the chart had damaged —
+  `SRSI` is really `BRSI`, `RPC` is really `RFC` (both now fixed in
+  `docs/opcodes.csv`).
+- It leaves **exactly the same fourteen format 4 slots empty** as the 1982
+  chart — `020`-`024`, `032`-`036`, `045`, `046`, `061`, `075` — while
+  listing every documented privileged instruction. So `020` and `021` are
+  implemented in silicon but were never exposed through the shipped tools:
+  systems instructions emitted by HP's internal MODCAL compiler, which is
+  not on the tapes.
+
+That also matches how the kernels use them. Decoding code segments properly,
+`020` (746) and `021` (419) are *more* frequent in the 5.01 kernel than
+`SSI`, yet they are absent from every hand-written module (`SYSTEM POWERUP`,
+`POWERUP SELFTEST`, `MATH LIBRARY`) and from user programs — where they are
+as rare as the privileged absolute-access instructions `PLDA`/`PSTA`. They
+are kernel-only, privileged, and compiler-generated.
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository

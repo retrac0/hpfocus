@@ -181,7 +181,7 @@ const focus_disassembler::op focus_disassembler::s_fmt4[64] = {
 	{ nullptr, OK_NONE },  // 034
 	{ nullptr, OK_NONE },  // 035
 	{ nullptr, OK_NONE },  // 036
-	{ "SRSI", OK_NONE },  // 037
+	{ "BRSI", OK_NONE },  // 037
 	{ "TRY", OK_NONE },  // 040
 	{ "ESCP", OK_NONE },  // 041
 	{ "ALM", OK_NONE },  // 042
@@ -196,7 +196,7 @@ const focus_disassembler::op focus_disassembler::s_fmt4[64] = {
 	{ "POT", OK_NONE },  // 053
 	{ "CNTO", OK_NONE },  // 054
 	{ "FLMO", OK_NONE },  // 055
-	{ "RPC", OK_NONE },  // 056
+	{ "RFC", OK_NONE },  // 056
 	{ "WTC", OK_NONE },  // 057
 	{ "SMSG", OK_NONE },  // 060
 	{ nullptr, OK_NONE },  // 061
