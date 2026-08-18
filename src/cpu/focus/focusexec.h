@@ -106,7 +106,11 @@ class cpu_core
 {
 public:
 	cpu_core(memory_interface &mem)
-		: m_mem(mem), m_dst(r, mem), m_au(r, mem, m_dst) { }
+		: m_mem(mem), m_dst(r, mem), m_au(r, mem, m_dst), m_io(&m_null_io) { }
+
+	// Attach an IOP. Without one the I/O instructions report an illegal
+	// opcode, which is what a machine with no IOP would do.
+	void set_io(io_interface *io) { m_io = io ? io : &m_null_io; }
 
 	registers r;
 
@@ -994,6 +998,9 @@ private:
 		case 014: push(imm); cca(imm); return exec_trap::none;   // LDIS
 		case 015: { const u32 v = u32(-s32(u32(imm))); push(v); cca(v);
 			return exec_trap::none; }                            // LNIS
+		case 017: return do_io(io_kind::write, imm);             // IOW
+		case 020: return do_io(io_kind::read, imm);              // IOR
+		case 021: return do_io(io_kind::control, imm);           // IOC
 		case 022: return do_call(4u * imm);                      // PCLS
 		case 023: return do_exit(imm);                           // EXIT
 		case 024: return do_exit(imm);                           // SXIT
@@ -1185,6 +1192,51 @@ private:
 	}
 
 	//----------------------------------------------------------------
+	//  I/O (FOCUS I/O ERS section 6)
+	//----------------------------------------------------------------
+
+	enum class io_kind { write, read, control };
+
+	exec_trap do_io(io_kind kind, u8 opcode)
+	{
+		// A write takes its data from the top of stack and the interface
+		// address from the word beneath; a read or control takes the
+		// interface address from the top.
+		u32 data = 0;
+		if (kind == io_kind::write)
+			data = pop();
+		const u32 iface = pop();
+
+		io_interface::target t;
+		t.opcode  = opcode;
+		t.ic      = u8(ers32::get(iface, 22, 4));
+		t.channel = u8(ers32::get(iface, 26, 3));
+		t.pa      = u8(ers32::get(iface, 29, 3));
+
+		bool ok = false;
+		switch (kind)
+		{
+		case io_kind::write:   ok = m_io->io_write(t, data); break;
+		case io_kind::read:    ok = m_io->io_read(t, data); break;
+		case io_kind::control: ok = m_io->io_control(t); break;
+		}
+
+		if (!ok)
+		{
+			// Message register bit 7 is "illegal I/O opcode" (ERS sheet 13).
+			r.msg |= ers32::mask(7, 1);
+			return take_trap(trap_cause::message_trap, opcode);
+		}
+
+		if (kind == io_kind::read)
+		{
+			push(data);
+			cca(data);
+		}
+		return exec_trap::none;
+	}
+
+	//----------------------------------------------------------------
 	//  internal interrupts and traps (ERS sheets 44-45)
 	//----------------------------------------------------------------
 
@@ -1298,6 +1350,8 @@ private:
 	memory_interface &m_mem;
 	dst_walker m_dst;
 	addressing_unit m_au;
+	null_io m_null_io;
+	io_interface *m_io;
 
 	u32 m_cir = 0;
 	u32 m_next = 0;

@@ -108,6 +108,47 @@ public:
 			bool modify, u32 &addr, trap &t) = 0;
 };
 
+// The CPU side of the Memory Processor Bus I/O path (FOCUS I/O ERS section 6,
+// sheet 43). IOW, IOR and IOC each carry an 8-bit I/O operation code in the
+// instruction, which becomes bits 24-31 of the MPB channel address. The rest
+// of the address comes from an interface-address word on the stack:
+//
+//     bits 22-25  IC, the interface command field
+//     bits 26-28  the IOP channel number
+//     bits 29-31  PA, the peripheral address
+//
+// A WRITE pops a data word and sends it; a READ pushes the word the IOP
+// returns; a CONTROL sends a zero data word which the IOP ignores.
+//
+// Implementations return false when no IOP answers for that channel, which
+// the CPU reports as an illegal I/O opcode.
+class io_interface
+{
+public:
+	virtual ~io_interface() = default;
+
+	struct target
+	{
+		u8 opcode;    // from the instruction
+		u8 channel;   // interface address bits 26-28
+		u8 pa;        // interface address bits 29-31
+		u8 ic;        // interface address bits 22-25
+	};
+
+	virtual bool io_write(const target &t, u32 data) = 0;
+	virtual bool io_read(const target &t, u32 &data) = 0;
+	virtual bool io_control(const target &t) = 0;
+};
+
+// Stands in when no IOP is attached, so the core can run without one.
+class null_io : public io_interface
+{
+public:
+	virtual bool io_write(const target &, u32) override { return false; }
+	virtual bool io_read(const target &, u32 &) override { return false; }
+	virtual bool io_control(const target &) override { return false; }
+};
+
 //**************************************************************************
 //  ADDRESSING
 //**************************************************************************

@@ -758,6 +758,79 @@ static void test_mvb()
 		CHECK_EQ(h.mem.read8(h.cpu.r.db + 0xc0 + i), 0x10 + i);
 }
 
+// Records what the CPU sends over the MPB.
+class mock_iop : public io_interface
+{
+public:
+	target last{};
+	u32 last_data = 0;
+	u32 next_read = 0;
+	bool answer = true;
+	int writes = 0, reads = 0, controls = 0;
+
+	bool io_write(const target &t, u32 data) override
+	{ last = t; last_data = data; writes++; return answer; }
+	bool io_read(const target &t, u32 &data) override
+	{ last = t; data = next_read; reads++; return answer; }
+	bool io_control(const target &t) override
+	{ last = t; controls++; return answer; }
+};
+
+static void test_io()
+{
+	std::printf("I/O instructions\n");
+	harness h;
+	mock_iop iop;
+	h.cpu.set_io(&iop);
+
+	// Interface address: IC in bits 22-25, channel in 26-28, PA in 29-31.
+	const u32 iface = ers32::set(ers32::set(ers32::set(0, 22, 4, 0xb),
+			26, 3, 3), 29, 3, 5);
+
+	// IOW pops the data word, then the interface address beneath it.
+	h.cpu.push(iface);
+	h.cpu.push(0xdeadbeef);
+	CHECK(h.one(f5(017, 0x42)) == exec_trap::none);
+	CHECK_EQ(iop.writes, 1);
+	CHECK_EQ(iop.last.opcode, 0x42);
+	CHECK_EQ(iop.last.ic, 0xb);
+	CHECK_EQ(iop.last.channel, 3);
+	CHECK_EQ(iop.last.pa, 5);
+	CHECK_EQ(iop.last_data, s32(0xdeadbeefu));
+
+	// IOR takes the interface address from the top and pushes the reply.
+	iop.next_read = 0x1234;
+	h.cpu.push(iface);
+	CHECK(h.one(f5(020, 0x43)) == exec_trap::none);
+	CHECK_EQ(iop.reads, 1);
+	CHECK_EQ(h.cpu.stk(0), 0x1234);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	// IOC sends no data.
+	h.cpu.pop();
+	h.cpu.push(iface);
+	CHECK(h.one(f5(021, 0x44)) == exec_trap::none);
+	CHECK_EQ(iop.controls, 1);
+	CHECK_EQ(iop.last.opcode, 0x44);
+
+	// An unanswered channel sets Message register bit 7, "illegal I/O
+	// opcode", and raises a message trap.
+	iop.answer = false;
+	h.cpu.r.msg = 0;
+	h.cpu.push(iface);
+	CHECK(h.one(f5(021, 0x45)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::message_trap);
+	CHECK_EQ(ers32::get(h.cpu.r.msg, 7, 1), 1u);
+
+	// With no IOP at all the same thing happens, so a machine without one
+	// still behaves predictably.
+	h.cpu.set_io(nullptr);
+	h.cpu.r.msg = 0;
+	h.cpu.push(iface);
+	CHECK(h.one(f5(020, 0x46)) == exec_trap::trapped);
+	CHECK_EQ(ers32::get(h.cpu.r.msg, 7, 1), 1u);
+}
+
 static void test_tcc()
 {
 	std::printf("TCC\n");
@@ -786,6 +859,7 @@ int main()
 	test_new_groups();
 	test_try_escp();
 	test_mvb();
+	test_io();
 	test_tcc();
 	test_traps();
 	test_factorial();

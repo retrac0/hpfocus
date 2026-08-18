@@ -19,7 +19,7 @@ which runs correctly on the emulated CPU for n = 0 to 12 which means
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
 
 Disassembler, register model, addressing, DST walk and an execution core that
-covers **96.4% of the instructions in the real HP-UX kernel and BASIC boot
+covers **96.7% of the instructions in the real HP-UX kernel and BASIC boot
 disc**, weighted by frequency. Internal traps vector correctly through code 
 segment 1. Still to come: the
 string and decimal groups, external interrupts, then the machine around the
@@ -79,7 +79,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing, DST walk and execution core carry 392 unit
+register model, addressing, DST walk and execution core carry 411 unit
 assertions — including all ten worked examples from ERS Figure 2.1 and the
 recursive factorial from ERS section 7.
 

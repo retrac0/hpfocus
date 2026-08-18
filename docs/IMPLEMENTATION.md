@@ -236,7 +236,7 @@ where the real code is rather than where the opcode table looks empty.
 
 ```
 298,238 instructions decoded
-287,516 would execute  (96.4%)
+288,430 would execute  (96.7%)
 ```
 
 The three largest remaining entries — format 6 opcode 37 and format 4 opcodes
@@ -291,9 +291,32 @@ All three sources compile clean against real MAME headers (C++20).
 
 ### Phase 2 — machine
 
-MPB memory map and dedicated locations (HARDWARE.md §6), IOP with DMA, SCM, and
-HP-IB/CS80 mass storage. The missing loader ROM is replaced by a high-level
-implementation of the documented bootstrap protocol (HARDWARE.md §8.5).
+**2.1 — CPU side of the I/O path** ✅ **done**. `IOW`, `IOR` and `IOC` are
+implemented against an `io_interface` seam, the same pattern used for memory
+and external data segments. Per FOCUS I/O ERS §6, the instruction's 8-bit
+operand is the I/O operation code and the interface-address word on the stack
+supplies IC (bits 22–25), the IOP channel number (26–28) and PA (29–31). A
+write pops its data word, a read pushes the reply, a control sends nothing.
+
+With no IOP attached the instructions set Message register bit 7, "illegal
+I/O opcode", and raise a message trap — so a machine without one behaves
+predictably rather than silently doing nothing.
+
+**2.2 — IOP.** The device behind that seam: eight channels, DMA with its
+command set, the interrupt request and mask registers, peripheral-address to
+interrupt-level mapping, and the interval timer. This is the bulk of the
+80-sheet I/O ERS and the largest remaining piece.
+
+**2.3 — System Control Module** at select code 7: real-time clock, service
+panel, and a high-level loader implementing the documented bootstrap protocol
+(HARDWARE.md §8.5) in place of the missing ROM.
+
+**2.4 — Mass storage.** HP-IB and the 9895 floppy path, to mount the BASIC
+and diagnostic discs.
+
+**2.5 — Memory map.** MPB layout and the dedicated locations of
+HARDWARE.md §6 — the Device Reference Table, the interrupt priority head and
+tail pointers, and the per-CPU blocks.
 
 ### Phase 3 — 520 display and keyboard
 
