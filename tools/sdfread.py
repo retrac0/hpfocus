@@ -28,8 +28,17 @@ FT_DIR = 1          # di_ftype for a directory
 
 
 class SDF:
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes, blksz=None, skew=0, fa=None):
         self.d = data
+        if blksz is not None:
+            # Salvage mode: geometry supplied because block 0 is missing.
+            self.blksz, self.skew = blksz, skew
+            self.fa = fa if fa is not None else 0
+            self.name, self.corrupt = "(no superblock)", 0
+            self.boot = self.bootsz = self.version = 0
+            self.maxblk = len(data) // blksz
+            return
+        self.skew = 0
         fmt, corrupt = struct.unpack(">HH", data[0:4])
         if fmt != 0x0700:
             raise ValueError(f"not an SDF volume (s_format {fmt:#06x})")
@@ -40,7 +49,8 @@ class SDF:
 
     # -- raw access -------------------------------------------------
     def block(self, n: int, count: int = 1) -> bytes:
-        off = n * self.blksz
+        # An imager that started at block 1 leaves every block one short.
+        off = (n - self.skew) * self.blksz
         return self.d[off:off + count * self.blksz]
 
     def fa_record(self, ino: int) -> bytes:
@@ -109,6 +119,35 @@ class SDF:
 
     def root(self) -> dict:
         return self.inode(1)
+
+    def scan_inodes(self):
+        """Find i-nodes directly, for images whose superblock was not read."""
+        out = {}
+        d = self.d
+        for off in range(0, len(d) - FA_REC, FA_REC):
+            if d[off:off + 2] != b"\x00\x01":
+                continue
+            ftype = struct.unpack(">H", d[off + 2:off + 4])[0]
+            exnum = struct.unpack(">H", d[off + 38:off + 40])[0]
+            size = struct.unpack(">i", d[off + 76:off + 80])[0]
+            if ftype > 4 or not (1 <= exnum <= 4) or not (0 <= size < (1 << 26)):
+                continue
+            start, nblk = struct.unpack(">ii", d[off + 40:off + 48])
+            if not (0 < start < (1 << 22) and 0 < nblk < (1 << 14)):
+                continue
+            ino = {"ino": off // FA_REC, "at": off, "type": 1, "ftype": ftype,
+                   "count": 0, "blocks": nblk, "exnum": exnum, "size": size,
+                   "extents": [struct.unpack(">ii", d[off + 40 + 8 * i:
+                                                      off + 48 + 8 * i])
+                               for i in range(min(exnum, 4))],
+                   "exmap": struct.unpack(">i", d[off + 72:off + 76])[0],
+                   "parent": struct.unpack(">i", d[off + 80:off + 84])[0],
+                   "name": d[off + 84:off + 100].decode("ascii", "replace")
+                            .rstrip("\x00 "),
+                   "uid": 0, "gid": 0,
+                   "mode": struct.unpack(">H", d[off + 120:off + 122])[0]}
+            out[ino["ino"]] = ino
+        return out
 
     def walk(self, ino=None, path="/", depth=0, seen=None):
         """Yield (path, inode) for every reachable entry."""

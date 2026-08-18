@@ -368,18 +368,47 @@ offset `0x1c` is **`s_blksz`**, not a directory pointer. It is 1024 on boot
 discs and 256 on data discs, which is why treating it as an offset appeared
 to work.
 
-### The 7914 unit saves are not raw disc images
+### The 7914 unit saves: raw images, but missing block 0
 
-Applying the reader to them fails, and the reason is definite: **a
-byte-by-byte scan of both tapes finds no SDF superblock**. Relaxing every
-plausibility test — printable name, block alignment, sane geometry — yields
-only four candidates, all at unaligned offsets with impossible field values.
+They *are* raw sector images — an earlier reading here that called them a
+backup record format was wrong. The imaging logs settle it:
 
-So a "unit save" is a backup *format* — a sequence of records written by a
-save utility — not a sector-for-sector copy. That is consistent with what the
-images do contain: the boot descriptor and boot image first, then content
-including embedded cpio archives. Reading them needs the unitsave record
-format decoded, which is a separate problem from SDF.
+```
+bytes per block: 1024
+reading blocks 1..1...reading blocks 2..2... [through] 65406
+```
+
+Both tapes read blocks **1 through 65,406**, and 65,406 × 1024 = 66,975,744,
+which is the image size to the byte. So each tape is a straight sector dump
+of one volume — and **block 0, the superblock, was never read**. Not missed
+by the search: absent by construction, one block before the start of the
+image.
+
+The two tapes are not two halves of one disc. Both cover blocks 1–65,406 and
+share no data at all (0 of 16,352 sampled non-zero blocks match), so they are
+two separate volumes of the same system.
+
+Geometry was recovered by experiment instead, testing candidate block sizes
+and skews against whether directory contents decode as valid 24-byte entries:
+
+| block size | skew | directories decoding cleanly |
+|---|---|---|
+| 256 | 0 / 1 | 0 / 1 |
+| 512 | 0 / 1 | 0 / 1 |
+| **1024** | 0 | 3 |
+| **1024** | **1** | **159 of 237** |
+
+So `tape offset = (disc block − 1) × 1024`, agreeing with the log.
+
+With that, a direct scan finds **3,761 i-nodes including 287 directories** on
+tape 1 and similar on tape 2 — the filesystem is intact and readable in
+principle. What is still missing is the FA file's base record index, without
+which the i-node numbers in directory entries cannot be resolved to records.
+Solving for it by matching subdirectory names against the names i-nodes carry
+yields several candidates of similar weight, spaced a constant 125,920
+records apart — either several volumes each with their own FA file, or noise
+from common names. [`tools/sdfsalvage.py`](../tools/sdfsalvage.py) carries
+the working geometry and this open question.
 
 ### Reading it
 
