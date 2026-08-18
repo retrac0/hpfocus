@@ -302,10 +302,26 @@ With no IOP attached the instructions set Message register bit 7, "illegal
 I/O opcode", and raise a message trap — so a machine without one behaves
 predictably rather than silently doing nothing.
 
-**2.2 — IOP.** The device behind that seam: eight channels, DMA with its
-command set, the interrupt request and mask registers, peripheral-address to
-interrupt-level mapping, and the interval timer. This is the bulk of the
-80-sheet I/O ERS and the largest remaining piece.
+**2.2 — IOP** ◐ **core done**. [`src/iop/focusiop.h`](../src/iop/focusiop.h)
+implements the device behind that seam: eight CIO channels each with its own
+DMA register set, interrupt collection with mask and request registers, the
+interface poll, and the interval timer.
+
+The 46 MPB command opcodes of I/O ERS §5 are transcribed as an enum, in the
+octal the ERS uses. About 35 are implemented — the DMA, interrupt, timer and
+interface groups — and an unrecognised opcode is *refused* rather than
+silently accepted, so the CPU raises its message trap and gaps surface.
+
+Cards attach through an `iop_interface` with status, flag, service-request
+and byte-at-a-time DMA. The IOP reaches memory and the CPU's interrupt line
+through an `iop_core::host`, so like the CPU it unit tests standalone: 82
+assertions covering the register set, masked and unmasked interrupts, DMA in
+both directions, the poll word, timer reload, and the CPU driving it all the
+way through `IOW`/`IOR`/`IOC`.
+
+**Remaining:** attention requests, the command-execution-from-interrupt path,
+address lockout, the register save and restore commands (`RIRS`/`WIRR`), and
+DMA verify and match. None is needed to move bytes.
 
 **2.3 — System Control Module** at select code 7: real-time clock, service
 panel, and a high-level loader implementing the documented bootstrap protocol

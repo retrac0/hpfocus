@@ -52,6 +52,7 @@ software/
 src/
   cpu/focus/           MAME CPU device + disassembler, registers,
                        addressing, DST walk, execution core
+  iop/                 I/O processor: DMA, interrupts, interval timer
   mame/                the hp9020 / hp9040 machine driver
   test/                standalone builds + unit and differential tests
 mame/                  MAME upstream, shallow submodule
@@ -79,7 +80,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing, DST walk and execution core carry 411 unit
+register model, addressing, DST walk and execution core carry 493 unit
 assertions — including all ten worked examples from ERS Figure 2.1 and the
 recursive factorial from ERS section 7.
 

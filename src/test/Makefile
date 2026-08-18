@@ -6,7 +6,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter
 SRCDIR    = ../cpu/focus
 
-all: dasmtest statetest addrtest dsttest exectest
+all: dasmtest statetest addrtest dsttest exectest ioptest
 
 dasmtest: dasmtest.cpp $(SRCDIR)/focusdasm.cpp $(SRCDIR)/focusdasm.h \
           $(SRCDIR)/focusdasm_tables.ipp emu.h
@@ -26,6 +26,9 @@ exectest: exectest.cpp $(SRCDIR)/focusexec.h $(SRCDIR)/focusdst.h \
           $(SRCDIR)/focusaddr.h $(SRCDIR)/focusstate.h
 	$(CXX) $(CXXFLAGS) exectest.cpp -o $@
 
+ioptest: ioptest.cpp ../iop/focusiop.h $(SRCDIR)/focusexec.h
+	$(CXX) $(CXXFLAGS) ioptest.cpp -o $@
+
 # The opcode tables are generated; docs/opcodes.csv is the source of truth.
 $(SRCDIR)/focusdasm_tables.ipp: ../../docs/opcodes.csv ../../tools/gen_dasm_tables.py
 	python3 ../../tools/gen_dasm_tables.py
@@ -40,7 +43,9 @@ test: all
 	@echo
 	@./exectest
 	@echo
+	@./ioptest
+	@echo
 	@./run_difftest.sh
 
 clean:
-	rm -f dasmtest statetest addrtest dsttest exectest
+	rm -f dasmtest statetest addrtest dsttest exectest ioptest
