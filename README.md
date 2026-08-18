@@ -30,13 +30,25 @@ unit-save tapes, along with its entire userland — see
 as the coverage target, and it raises the stretch goal from "bring up a
 kernel" to **boot this system**.
 
-The most recent step closed the system group the kernel needs and the earlier
-corpora barely exercised: `LPP`/`LPPS` and `LIA`/`LIAS` (program and
-intermediate pointers), `PSLA` (the test-and-set semaphore), `CPAA`, `CRB` and
-`MUC` (segment use counts). Everything still named in the remaining gap is
-either the string group or an opcode Appendix B does not assign — the latter
-being data that a linear scan misreads as code, since a run of `0xff` decodes
-as format 6 opcode 37.
+Recent steps closed two groups. First the system group the kernel needs and
+the earlier corpora barely exercised: `LPP`/`LPPS` and `LIA`/`LIAS` (program
+and intermediate pointers), `PSLA` (the test-and-set semaphore), `CPAA`, `CRB`
+and `MUC` (segment use counts). Then the byte scan and compare group —
+`SCW`, `SCU`, `CMPB` and `TRAN` — which matters most in userland, where the
+kernel-weighted figure understates it.
+
+What is still named in the gap is four string-descriptor instructions
+(`SLD`, `SVAL`, `SCON`, `SAS`), `SRSI`, and the decimal group. Everything
+else left is an opcode Appendix B does not assign — data that a linear scan
+misreads as code, since a run of `0xff` decodes as format 6 opcode 37.
+
+**Where the boot actually stops.** `src/test/bootprobe` runs the recovered
+5.30 kernel for **136 instructions over 125 distinct addresses** from entry
+`0x504`, then faults in `FILB` — and that is an *addressing* fault, not an
+unimplemented opcode. The kernel is clearing a structure through a data
+segment pointer with no Data Segment Table behind it. So the boot frontier is
+now the machine around the CPU — DST setup, memory layout, the loader
+handoff — rather than the instruction set.
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository
@@ -79,6 +91,18 @@ tools/
   modmap.py            map named modules in a boot image
   extract_opcodes.py   scrape opcodes from the ERS text layer
   check_opcodes.py     diff that scrape against the Appendix B transcription
+```
+
+## SDF extractor
+
+under tools/sdf7914.py there is a tool to extract the files off the SDF file system
+under software/cct/ run:
+
+```
+$ cd software/cct/
+$ gunzip 7914_unitSave_hpux4.0.bin.gz 
+$ gunzip 7914_unitSave_hpux4.0_tape2.bin.gz
+$ python ../../tools/sdf
 ```
 
 ## Plan

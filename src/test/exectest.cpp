@@ -463,10 +463,10 @@ static void test_unimplemented_is_reported()
 	std::printf("unimplemented opcodes are reported\n");
 	harness h;
 
-	// Format 4 specials are not modelled yet; they must not be silently
-	// treated as no-ops.
+	// The decimal group and the remaining string instructions are not
+	// modelled yet; they must not be silently treated as no-ops.
 	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);   // DTB
-	CHECK(h.one(u16(052 << 6)) == exec_trap::unimplemented);       // SCW
+	CHECK(h.one(u16(025 << 6)) == exec_trap::unimplemented);       // SLD
 }
 
 
@@ -1084,6 +1084,171 @@ static void test_system_group()
 	}
 }
 
+
+// SCW, SCU, CMPB and TRAN -- the byte scan and compare group (ERS 103-106).
+static void test_string_group()
+{
+	std::printf("byte scan, compare and translate\n");
+
+	// Lay a string into the global data segment and point at it with a
+	// global data segment pointer, which evaluates to DB + offset.
+	auto gptr = [](u32 off) {
+		u32 p = ers32::set(0, 0, 2, 2);
+		return ers32::set(p, 2, 30, off);
+	};
+
+	// ---- SCW: scan while the byte equals the test character ----------
+	{
+		harness h;
+		const char *str = "aaabZ";
+		for (unsigned i = 0; i < 5; i++)
+			h.mem.write8(h.cpu.r.db + 0x40 + i, u8(str[i]));
+
+		// terminal 'Z' in (16:8), test 'a' in (24:8).
+		u32 ctrl = ers32::set(0, 16, 8, 'Z');
+		ctrl = ers32::set(ctrl, 24, 8, 'a');
+
+		h.cpu.push(gptr(0x40));       // source
+		h.cpu.push(ctrl);             // control word
+		h.cpu.push(5);                // limit count
+		CHECK(h.one(f2(052, 004)) == exec_trap::none);   // DS source, sdec 0
+
+		// Three 'a's matched, then 'b' stopped it.
+		CHECK_EQ(h.cpu.r.x, 3);
+		CHECK_EQ(h.cpu.stk(0), 2);                       // count left
+		const u32 out = h.cpu.stk(1);
+		CHECK_EQ(ers32::get(out, 0, 8), 'b');            // last char seen
+		CHECK_EQ(ers32::get(out, 8, 8), u32('b' ^ 'Z')); // XOR terminal
+	}
+
+	// ---- SCU: scan until either the test or terminal character -------
+	{
+		harness h;
+		const char *str = "xxxZy";
+		for (unsigned i = 0; i < 5; i++)
+			h.mem.write8(h.cpu.r.db + 0x40 + i, u8(str[i]));
+
+		u32 ctrl = ers32::set(0, 16, 8, 'Z');    // terminal
+		ctrl = ers32::set(ctrl, 24, 8, 'q');     // test, absent from the string
+
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(ctrl);
+		h.cpu.push(5);
+		CHECK(h.one(f2(053, 004)) == exec_trap::none);
+
+		// Stops on the terminal character at index 3.
+		CHECK_EQ(h.cpu.r.x, 3);
+		CHECK_EQ(h.cpu.stk(0), 2);
+		const u32 out = h.cpu.stk(1);
+		CHECK_EQ(ers32::get(out, 0, 8), 'Z');
+		CHECK_EQ(ers32::get(out, 8, 8), 0);      // Z XOR Z, so the caller
+	}                                            // knows it was the terminal
+
+	// ---- SCU running the count out -----------------------------------
+	{
+		harness h;
+		for (unsigned i = 0; i < 4; i++)
+			h.mem.write8(h.cpu.r.db + 0x40 + i, 'k');
+		u32 ctrl = ers32::set(0, 16, 8, 'Z');
+		ctrl = ers32::set(ctrl, 24, 8, 'q');
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(ctrl);
+		h.cpu.push(4);
+		CHECK(h.one(f2(053, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.x, 4);
+		CHECK_EQ(h.cpu.stk(0), 0);               // exhausted, nothing found
+	}
+
+	// ---- CMPB ---------------------------------------------------------
+	{
+		harness h;
+		for (unsigned i = 0; i < 4; i++)
+		{
+			h.mem.write8(h.cpu.r.db + 0x40 + i, u8("abcd"[i]));
+			h.mem.write8(h.cpu.r.db + 0x60 + i, u8("abcd"[i]));
+		}
+		h.cpu.push(gptr(0x40));      // source
+		h.cpu.push(gptr(0x60));      // target
+		h.cpu.push(4);
+		CHECK(h.one(f2(054, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.x, 4);
+		CHECK_EQ(h.cpu.stk(0), 0);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);      // equal all the way
+
+		// Source greater at the third byte.
+		h.mem.write8(h.cpu.r.db + 0x40 + 2, 'z');
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(gptr(0x60));
+		h.cpu.push(4);
+		CHECK(h.one(f2(054, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.x, 2);                  // two matched
+		CHECK_EQ(h.cpu.stk(0), 2);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCG);      // 'z' > 'c'
+
+		// And the other way round.
+		h.mem.write8(h.cpu.r.db + 0x40 + 2, 'a');
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(gptr(0x60));
+		h.cpu.push(4);
+		CHECK(h.one(f2(054, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCL);      // 'a' < 'c'
+
+		// A non-positive count compares equal and touches nothing.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(gptr(0x60));
+		h.cpu.push(0);
+		CHECK(h.one(f2(054, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+	}
+
+	// ---- TRAN ---------------------------------------------------------
+	{
+		harness h;
+		// A table that upper-cases the lower-case letters.
+		for (unsigned i = 0; i < 256; i++)
+			h.mem.write8(h.cpu.r.db + 0x100 + i,
+					u8((i >= 'a' && i <= 'z') ? i - 32 : i));
+		const char *str = "hp-ux";
+		for (unsigned i = 0; i < 5; i++)
+			h.mem.write8(h.cpu.r.db + 0x40 + i, u8(str[i]));
+
+		h.cpu.push(gptr(0x100));     // translation table
+		h.cpu.push(gptr(0x40));      // the string, translated in place
+		h.cpu.push(5);
+		CHECK(h.one(f2(056, 004)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.x, 5);
+		CHECK_EQ(h.cpu.stk(0), 0);
+		for (unsigned i = 0; i < 5; i++)
+			CHECK_EQ(h.mem.read8(h.cpu.r.db + 0x40 + i), u8("HP-UX"[i]));
+	}
+
+	// ---- SDEC pops the parameters, and bit 3 reverses direction -------
+	{
+		harness h;
+		for (unsigned i = 0; i < 4; i++)
+			h.mem.write8(h.cpu.r.db + 0x40 + i, 'm');
+		u32 ctrl = ers32::set(0, 24, 8, 'm');
+		const u32 s0 = h.cpu.r.s;
+		h.cpu.push(gptr(0x40));
+		h.cpu.push(ctrl);
+		h.cpu.push(4);
+		// sdec 3 pops all three parameter words.
+		CHECK(h.one(f2(052, 004 | 3)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.s, s0);
+
+		// Backward: start at the top of the run and walk down.
+		h.cpu.push(gptr(0x43));
+		h.cpu.push(ctrl);
+		h.cpu.push(4);
+		CHECK(h.one(f2(052, 004, true)) == exec_trap::none);
+		CHECK_EQ(s32(h.cpu.r.x), -4);
+		CHECK_EQ(h.cpu.stk(0), 0);
+	}
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1100,6 +1265,7 @@ int main()
 	test_tcc();
 	test_traps();
 	test_system_group();
+	test_string_group();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

@@ -1027,21 +1027,8 @@ private:
 			const u32 sptr = stk(2);
 
 			u32 sba;
-			if (src_is_ds)
-			{
-				const ea_result e = m_au.resolve_data_pointer(sptr, false, false);
-				m_addr_trap = e.t;
-				if (!e.ok()) return exec_trap::address_error;
-				sba = e.addr;
-			}
-			else
-			{
-				// A local program pointer is a byte offset from PB, bounds
-				// checked against PB and PL (ERS convention note 18).
-				sba = r.pb + sptr;
-				if (!m_au.in_code(sba))
-					return exec_trap::bounds_violation;
-			}
+			const exec_trap st = string_source(sptr, src_is_ds, sba);
+			if (st != exec_trap::none) return st;
 
 			const ea_result te = m_au.resolve_data_pointer(tptr, false, true);
 			m_addr_trap = te.t;
@@ -1061,6 +1048,83 @@ private:
 			r.s -= 4 * sdec;
 			return exec_trap::none;
 		}
+		case 052: return do_scan(operand, b3, false);             // SCW
+		case 053: return do_scan(operand, b3, true);              // SCU
+
+		case 054: {                                               // CMPB
+			// Compare Bytes (ERS sheet 105). Source in (S-2), target in
+			// (S-1), byte count on top. Stops on the first difference or
+			// when the count runs out; the count left behind says which,
+			// and the condition code reports the comparison.
+			const int d = b3 ? -1 : 1;
+			const unsigned sdec = operand & 3;
+			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+			const s32 count = s32(stk(0));
+			u32 sba;
+			const exec_trap st = string_source(stk(2), src_is_ds, sba);
+			if (st != exec_trap::none) return st;
+
+			const ea_result te = m_au.resolve_data_pointer(stk(1), false, false);
+			m_addr_trap = te.t;
+			if (!te.ok()) return exec_trap::address_error;
+			u32 tba = te.addr;
+
+			s32 x = 0;
+			u8 sb = 0, tb = 0;
+			while (count > d * x)
+			{
+				sb = m_mem.read8(sba);
+				tb = m_mem.read8(tba);
+				if (sb != tb)
+					break;
+				sba = u32(s32(sba) + d);
+				tba = u32(s32(tba) + d);
+				x += d;
+			}
+			r.x = u32(x);
+			set_stk(0, u32(count - d * x));
+			// Running the count out means the areas match, and so does a
+			// count that was never positive.
+			if (count <= 0 || count == d * x)
+				r.put(sf::CC, CCE);
+			else
+				r.put(sf::CC, (sb > tb) ? CCG : CCL);
+			r.s -= 4 * sdec;
+			return exec_trap::none;
+		}
+
+		case 056: {                                               // TRAN
+			// Translate (ERS sheet 106). Each byte of the string in (S-1)
+			// indexes the 256-byte table in (S-2), and the table entry
+			// replaces it in place.
+			const int d = b3 ? -1 : 1;
+			const unsigned sdec = operand & 3;
+			const bool tbl_is_ds = ((operand >> 2) & 1) != 0;
+
+			const s32 count = s32(stk(0));
+			u32 tblba;
+			const exec_trap st = string_source(stk(2), tbl_is_ds, tblba);
+			if (st != exec_trap::none) return st;
+
+			const ea_result te = m_au.resolve_data_pointer(stk(1), false, true);
+			m_addr_trap = te.t;
+			if (!te.ok()) return exec_trap::address_error;
+			u32 tba = te.addr;
+
+			s32 x = 0;
+			while (count > d * x)
+			{
+				m_mem.write8(tba, m_mem.read8(tblba + m_mem.read8(tba)));
+				tba = u32(s32(tba) + d);
+				x += d;
+			}
+			r.x = u32(x);
+			set_stk(0, u32(count - d * x));
+			r.s -= 4 * sdec;
+			return exec_trap::none;
+		}
+
 		case 031: {                                               // PMPB
 			// Pushes the Mask and Message registers and the CPU channel
 			// number, selected by CIR(29:3) -- the low three bits of the
@@ -1678,6 +1742,86 @@ private:
 	//----------------------------------------------------------------
 	//  procedure call and return (ERS sheets 92, 96)
 	//----------------------------------------------------------------
+
+	//----------------------------------------------------------------
+	//  the byte string group (ERS sheets 101-107)
+	//----------------------------------------------------------------
+
+	// Every instruction in this group takes its source through the same
+	// choice: CIR(29:1), operand bit 2, says whether the third stack word is
+	// a data segment pointer or a local program pointer. A local program
+	// pointer is a byte offset from PB bounds checked against PB and PL
+	// (ERS convention note 18), which is how a constant table compiled into
+	// the code segment gets addressed.
+	exec_trap string_source(u32 ptr, bool is_ds, u32 &out)
+	{
+		if (is_ds)
+		{
+			const ea_result e = m_au.resolve_data_pointer(ptr, false, false);
+			m_addr_trap = e.t;
+			if (!e.ok()) return exec_trap::address_error;
+			out = e.addr;
+			return exec_trap::none;
+		}
+		out = r.pb + ptr;
+		if (!m_au.in_code(out))
+			return exec_trap::bounds_violation;
+		return exec_trap::none;
+	}
+
+	// SCW and SCU (ERS sheets 103-104). Both walk a source area comparing
+	// each byte against characters packed into the second stack word:
+	// (16:8) is the terminal character and (24:8) the test character. Each
+	// step writes the character just seen into (0:8) and its XOR with the
+	// terminal character into (8:8), so the caller can tell which one
+	// stopped it. SCW continues while the byte equals the test character;
+	// SCU continues until it hits either character.
+	exec_trap do_scan(u8 operand, bool b3, bool until)
+	{
+		const int d = b3 ? -1 : 1;
+		const unsigned sdec = operand & 3;
+		const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+		const s32 count = s32(stk(0));
+		u32 ctrl = stk(1);
+		const u8 terminal = u8(ers32::get(ctrl, 16, 8));
+		const u8 test = u8(ers32::get(ctrl, 24, 8));
+
+		u32 sba;
+		const exec_trap st = string_source(stk(2), src_is_ds, sba);
+		if (st != exec_trap::none) return st;
+
+		s32 x = 0;
+		u8 ch = 0;
+		bool scanning = true;
+		while (scanning && count > d * x)
+		{
+			ch = m_mem.read8(sba);
+			ctrl = ers32::set(ctrl, 0, 8, ch);
+			ctrl = ers32::set(ctrl, 8, 8, u8(ch ^ terminal));
+			const bool go = until ? (ch != test && ch != terminal)
+								  : (ch == test);
+			if (!go)
+			{
+				scanning = false;
+				break;
+			}
+			sba = u32(s32(sba) + d);
+			x += d;
+		}
+
+		set_stk(1, ctrl);
+		r.x = u32(x);
+		set_stk(0, u32(count - d * x));
+		// "Indicators = CC on the last character scanned only if the
+		// original TOS > 0". The scan of that line is damaged in both
+		// instructions ("ccn"/"eCB"); read as CCA on that character, which
+		// is the only condition code form that fits a single byte.
+		if (count > 0)
+			cca(ch);
+		r.s -= 4 * sdec;
+		return exec_trap::none;
+	}
 
 	//----------------------------------------------------------------
 	//  program and intermediate pointers (ERS sheets 62, 122)
