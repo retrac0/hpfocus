@@ -136,6 +136,7 @@ void focus_device::device_start()
 void focus_device::device_reset()
 {
 	m_core.reset();
+	m_stopped = false;
 
 	// MASK bits 3-5 carry this CPU's MPB channel number (ERS sheet 13).
 	m_core.r.mask = focus::ers32::set(0, 3, 3, m_mpb_channel);
@@ -176,6 +177,12 @@ void focus_device::state_string_export(const device_state_entry &entry,
 
 void focus_device::execute_run()
 {
+	if (m_stopped)
+	{
+		m_icount = 0;
+		return;
+	}
+
 	do
 	{
 		debugger_instruction_hook(m_core.r.p);
@@ -183,12 +190,15 @@ void focus_device::execute_run()
 		const focus::exec_trap t = m_core.step();
 		if (t != focus::exec_trap::none)
 		{
-			// Nothing can be done about a fault the core could not vector;
-			// stop rather than spin, so the debugger shows where it died.
-			logerror("%s: execution stopped, trap %d at P=%08X\n",
-					tag(), int(t), m_core.r.p);
+			// A fault the core could not vector -- no handler segment, or an
+			// opcode this core does not model. Latch a stop so the machine
+			// stays put and the debugger shows where it died, rather than
+			// re-executing the same instruction every timeslice.
+			logerror("%s: stopped, trap %d at P=%08X (CIR=%08X)\n",
+					tag(), int(t), m_core.r.p, m_core.cir());
+			m_stopped = true;
 			m_icount = 0;
-			break;
+			return;
 		}
 
 		// The ERS gives no per-instruction timings beyond a handful of

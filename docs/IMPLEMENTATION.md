@@ -347,6 +347,38 @@ loader's *effect* still has to be synthesised. That depends on the
 `SYSTEM POWERUP` handoff contract, which is the next thing to reverse
 engineer.
 
+### Running the boot code
+
+The IOP and SCM are wired into the driver, so a `SYSTEM POWERUP` module can be
+loaded into the machine and stepped. Each run stops at the first thing the
+emulator cannot do, which names the next piece of work exactly — far better
+than reading the ERS cover to cover and guessing at priorities.
+
+```sh
+python3 -c "d=open('BT1.img','rb').read(); open('POWERUP.bin','wb').write(d[0x800:0x1860])"
+cd mame && ./focus hp9020 -debug -debugscript ../pwr.dbg -video none -sound none -str 5
+```
+
+What it has found so far:
+
+| Run | Stopped at | Cause |
+|---|---|---|
+| 1 | `PMPB 4` | not implemented; also exposed the device spinning instead of halting |
+| 2 | `LRAS Q+109` | **`LRA`/`LRAS` were wrong** — see below |
+| 3 | `FILB 3` | the move/scan/string group, not yet implemented |
+
+The `LRAS` bug is the kind only real code finds. It does **not** push an
+absolute address: in direct mode it computes a *relative, tagged* pointer —
+`E - PB` for P-relative, `base + offset - DB` tagged `10` for global,
+`base + offset - SB` tagged `11` for stack — and makes no memory reference at
+all, so there is nothing to bounds check (ERS sheet 58). The old version
+pushed a bounds-checked absolute address, which is wrong twice over. Every
+unit test still passed, because none of them had reason to look.
+
+The eleven instructions that now execute read as sensible initialisation:
+dispatch on a value, `PMPB` to fetch the CPU channel number, `ADDS #21` to
+allocate stack, then `LRAS`/`LDIS #84`/`FILB` to zero an 84-byte area.
+
 **Finding: the handoff can be determined empirically.** Disassembling both
 `SYSTEM POWERUP` modules shows them running the *same* I/O sequence at a
 constant offset — `RCS` to read the CPU revision, `WAIT`, `PSHR`, `IXIT`,

@@ -345,13 +345,7 @@ private:
 			return exec_trap::none;
 		}
 		case 3:     // LRAS -- load relative address, byte offset
-		{
-			u32 a;
-			if (!ea(base, raw, ind, idx, false, a))
-				return exec_trap::address_error;
-			push(a);
-			return exec_trap::none;
-		}
+			return do_lra(base, raw, ind, idx);
 		case 4:     // LDDS -- load double, word offset
 		{
 			u32 a;
@@ -909,6 +903,26 @@ private:
 			r.s -= 4 * sdec;
 			return exec_trap::none;
 		}
+		case 031: {                                               // PMPB
+			// Pushes the Mask and Message registers and the CPU channel
+			// number, selected by CIR(29:3) -- the low three bits of the
+			// operand (ERS sheet 114).
+			if (operand & 1) push(r.mask);
+			if (operand & 2) push(r.msg);
+			if (operand & 4)
+			{
+				// MASK bits 3-5 hold this CPU's MPB channel number, pushed
+				// right justified.
+				push(ers32::get(r.mask, 3, 3));
+			}
+			return exec_trap::none;
+		}
+		case 032: {                                               // SMPB
+			// The inverse: pops into the Message and Mask registers.
+			if (operand & 2) r.msg = pop();
+			if (operand & 1) r.mask = pop();
+			return exec_trap::none;
+		}
 		case 037: {                                               // TCC
 			// Pushes 1 if the condition code matches the mask, else 0
 			// (ERS sheet 123). The mask is CIR(29:3), the low three bits
@@ -1180,15 +1194,76 @@ private:
 			m_mem.write32(a, high); m_mem.write32(a + 4, low);
 			return exec_trap::none;
 		}
-		case 036: {                                               // LRA
-			u32 a;
-			if (!ea(base, off, ind, idx, false, a))
-				return exec_trap::address_error;
-			push(a);
-			return exec_trap::none;
-		}
+		case 036:                                                 // LRA
+			return do_lra(base, off, ind, idx);
 		}
 		return exec_trap::unimplemented;
+	}
+
+	// LRA / LRAS (ERS sheet 58). This does not push an absolute address: in
+	// direct mode it computes a *relative, tagged* pointer and makes no
+	// memory reference at all, so there is nothing to bounds check.
+	//
+	//   P-relative        -> E - PB, untagged
+	//   DB or DL relative -> base + offset - DB, tagged 10
+	//   stack relative    -> base + offset - SB, tagged 11
+	//
+	// Indexing is applied to the resulting pointer, not to the address.
+	// In indirect mode the word at base + offset is fetched and pushed as
+	// it stands.
+	exec_trap do_lra(base_reg base, u32 offset, bool ind, bool idx)
+	{
+		const u32 addr = base_addr(base, offset);
+		const bool p_rel = (base == BASE_P_PLUS || base == BASE_P_MINUS);
+
+		if (!ind)
+		{
+			if (p_rel)
+			{
+				push(addr - r.pb);
+				return exec_trap::none;
+			}
+			const bool global = (base == BASE_DB_PLUS || base == BASE_DL_MINUS);
+			u32 v = global ? (addr - r.db) : (addr - r.sb);
+			v = ers32::set(v, 0, 2, global ? 2 : 3);
+			if (idx)
+				v += r.x;
+			push(v);
+			return exec_trap::none;
+		}
+
+		if (p_rel)
+		{
+			u32 a;
+			if (!ea(base, offset, true, idx, false, a))
+				return exec_trap::address_error;
+			push(a - r.pb);
+			return exec_trap::none;
+		}
+
+		u32 v = m_mem.read32(addr);
+		if (idx)
+			v += r.x;
+		push(v);
+		return exec_trap::none;
+	}
+
+	// The direct base-relative address, without any bounds check -- LRA
+	// needs the arithmetic but makes no reference.
+	u32 base_addr(base_reg base, u32 offset) const
+	{
+		switch (base)
+		{
+		case BASE_P_PLUS:   return r.p + offset;
+		case BASE_P_MINUS:  return r.p - offset;
+		case BASE_DB_PLUS:  return r.db + offset;
+		case BASE_DL_MINUS: return r.dl - offset;
+		case BASE_Q_PLUS:   return r.q + offset;
+		case BASE_Q_MINUS:  return r.q - offset;
+		case BASE_SB_PLUS:  return r.sb + offset;
+		case BASE_S_MINUS:  return r.s - offset;
+		}
+		return 0;
 	}
 
 	//----------------------------------------------------------------

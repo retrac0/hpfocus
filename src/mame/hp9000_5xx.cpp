@@ -31,11 +31,13 @@
 
 #include "emu.h"
 #include "cpu/focus/focus.h"
+#include "iop/focusiop.h"
+#include "iop/focusscm.h"
 #include "screen.h"
 
 namespace {
 
-class hp9000_5xx_state : public driver_device
+class hp9000_5xx_state : public driver_device, public focus::iop_core::host
 {
 public:
 	hp9000_5xx_state(const machine_config &mconfig, device_type type,
@@ -43,6 +45,7 @@ public:
 		: driver_device(mconfig, type, tag)
 		, m_cpu(*this, "cpu")
 		, m_ram(*this, "ram")
+		, m_iop(*this, 1)
 	{
 	}
 
@@ -58,8 +61,25 @@ private:
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 
+	// focus::iop_core::host -- the IOP reaches memory and the CPU through
+	// these. The CPU device already implements focus::memory_interface.
+	virtual focus::memory_interface &iop_memory() override
+	{ return m_cpu->memory(); }
+	virtual void iop_interrupt(bool state) override
+	{
+		// Message register bit 16 upward are the I/O device interrupts
+		// (Instruction Set ERS sheet 13).
+		m_cpu->set_input_line(16, state ? ASSERT_LINE : CLEAR_LINE);
+	}
+
+	TIMER_CALLBACK_MEMBER(iop_tick);
+
 	required_device<focus_device> m_cpu;
 	required_shared_ptr<u32> m_ram;
+
+	focus::iop_core m_iop;
+	focus::scm_device m_scm;
+	emu_timer *m_iop_timer = nullptr;
 };
 
 
@@ -77,15 +97,36 @@ void hp9000_5xx_state::mem_map(address_map &map)
 
 void hp9000_5xx_state::machine_start()
 {
+	// The System Control Module answers select code 7, which is IOP
+	// channel 1, peripheral address 7.
+	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
+	m_cpu->set_io(&m_iop);
+
+	// The IOP polls its interfaces continuously and runs the interval
+	// timer; one emulated tick per millisecond is enough to get both
+	// moving. Real timings are in the I/O ERS section 7.
+	m_iop_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_tick), this);
+	m_iop_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
+{
+	m_iop.poll_and_service();
+	m_iop.timer_tick();
 }
 
 
 void hp9000_5xx_state::machine_reset()
 {
-	// Nothing supplies a boot image yet. The real machine finds its loader
-	// by scanning select codes downward from 7 for a device with bit 14 of
-	// R3 set, then DMAs 2 KB of loader ROM in from R4 (530/540 Service,
-	// sheet 2-31). That belongs with the IOP and the System Control Module.
+	m_iop.reset();
+	m_scm.reset();
+
+	// A loader ROM image would be installed here. None is dumped, so the
+	// SCM answers the select-code scan but has nothing to hand over; see
+	// docs/SOFTWARE.md.
+	const u8 *rom = memregion("loader") ? memregion("loader")->base() : nullptr;
+	m_scm.set_rom(rom, focus::scm_device::ROM_SIZE);
 }
 
 

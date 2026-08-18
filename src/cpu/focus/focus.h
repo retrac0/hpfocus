@@ -35,6 +35,14 @@ public:
 	// The MPB channel number this CPU answers to, held in MASK bits 3-5.
 	void set_mpb_channel(u8 channel) { m_mpb_channel = channel; }
 
+	// Attach an IOP. Without one the I/O instructions report an illegal
+	// opcode, which is what a machine with no IOP would do.
+	void set_io(focus::io_interface *io) { m_core.set_io(io); }
+
+	// The CPU's view of the address space, for devices that read or write
+	// main memory on their own account -- the IOP's DMA in particular.
+	focus::memory_interface &memory() { return *this; }
+
 protected:
 	// device_t
 	virtual void device_start() override ATTR_COLD;
@@ -78,6 +86,9 @@ private:
 
 	// Debugger-visible mirrors, refreshed from the core each step.
 	u32 m_dbg_flags;
+
+	// Set when the core takes a fault it cannot vector. Cleared by reset.
+	bool m_stopped = false;
 };
 
 DECLARE_DEVICE_TYPE(FOCUS, focus_device)

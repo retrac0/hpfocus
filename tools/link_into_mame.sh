@@ -15,17 +15,21 @@ ROOT=$(pwd)
 	exit 2
 }
 
-TARGET=mame/src/devices/cpu/focus
-if [ -L "$TARGET" ]; then
-	rm "$TARGET"
-elif [ -e "$TARGET" ]; then
-	echo "$TARGET exists and is not a symlink; refusing to replace it" >&2
-	exit 1
-fi
+link() {
+	local target=$1 source=$2
+	if [ -L "$target" ]; then
+		rm "$target"
+	elif [ -e "$target" ]; then
+		echo "$target exists and is not a symlink; refusing to replace it" >&2
+		exit 1
+	fi
+	ln -s "$ROOT/$source" "$target"
+	echo "linked $target -> $source"
+}
 
-ln -s "$ROOT/src/cpu/focus" "$TARGET"
-echo "linked $TARGET -> src/cpu/focus"
-ls -l "$TARGET"
+link mame/src/devices/cpu/focus  src/cpu/focus
+link mame/src/devices/iop        src/iop
+link mame/src/mame/hp/hp9000_5xx.cpp src/mame/hp9000_5xx.cpp
 
 cat <<'NOTE'
 
