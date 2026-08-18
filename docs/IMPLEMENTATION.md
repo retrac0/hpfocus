@@ -535,9 +535,50 @@ Note the pattern: this is the third instruction (after `LRA`/`LRAS` and `WTC`)
 whose real semantics only surfaced when actual code exercised it, and all
 three passed the unit tests throughout.
 
-Remaining: the run now ends in a long indexed scan of the global data segment
-(`LDB DB+2,X`) that walks off the end, so **what `DB` must contain on entry**
-is the last piece of the handoff still unknown.
+### Where it now stops
+
+The run ends in a checksum loop at offset `0xa1c`:
+
+```
+DECF Q-59            decrement the count by four
+BCCS.L <exit>        leave when it goes negative
+LDB DB+0,X / LDB DB+1,X / ADD / ADD
+LDB DB+2,X / LDB DB+3,X / ADD / ADD
+ADXI #4
+BCCS.ALW <top>
+```
+
+It sums bytes out of the global data segment four at a time and, on exit,
+compares the total against a word read from `DB+X`. So `DB` holds an image
+with a checksum appended, and the count at `Q-59` says how much to sum —
+both supplied by the loader.
+
+The descriptor word at disc offset `0x400`, `e9c28206`, was the obvious
+candidate for that checksum, but it is not: neither a byte sum, a 16- or
+32-bit word sum, nor an XOR over the image reproduces it, with or without the
+module header. It is a product identifier, as first supposed.
+
+### Honest status of the handoff
+
+| Element | Status |
+|---|---|
+| Entry point | **determined** — terminator + `0x1e` |
+| Stack top | **determined** — `−2` |
+| `MASK` channel number | **determined** — must be 1 |
+| Parameter block above `Q` | **located** at +64, +88, +92; contents unknown |
+| `DB` contents and size | **unknown** |
+
+The remaining two are of a different kind from the ones already solved. Those
+fell out of comparing two independent images or watching a fault. These need
+the actual values the loader computes, and the search space is large enough
+that guessing is unlikely to land.
+
+Two better routes than further guessing:
+
+1. **`BOOT_TO_FILE`** on `500UT3` (rev 1.00) — a BASIC utility whose entire
+   job is writing a boot image. Its code should describe the format directly,
+   including whatever the checksum is over.
+2. **A loader ROM dump**, which settles everything at once.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
