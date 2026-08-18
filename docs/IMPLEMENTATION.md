@@ -323,9 +323,29 @@ way through `IOW`/`IOR`/`IOC`.
 address lockout, the register save and restore commands (`RIRS`/`WIRR`), and
 DMA verify and match. None is needed to move bytes.
 
-**2.3 — System Control Module** at select code 7: real-time clock, service
-panel, and a high-level loader implementing the documented bootstrap protocol
-(HARDWARE.md §8.5) in place of the missing ROM.
+**2.3 — System Control Module** ◐ **registers and bootstrap done**.
+[`src/iop/focusscm.h`](../src/iop/focusscm.h) implements the SCM as a card on
+IOP channel 1, peripheral address 7 — a select code being an (IOP channel,
+peripheral address) pair, which puts select code 7 there.
+
+Registers per the service manual: `R1` arms the ROM read on `84` hex, `R2`
+reports power-fail, self-test and battery-fail status, `R3` bit 14 announces
+the loader, `R4` and `R6` read ROM data with the address counter decrementing
+from `FFFF`, `R10` carries service-processor traffic, and `R12` latches an
+address in complemented form. `find_loader()` performs the documented
+downward select-code scan.
+
+Note the bit numbering: the service manual counts these hardware registers
+conventionally with bit 0 least significant, the opposite of the Instruction
+Set ERS. Both conventions now live in the codebase, each documented where it
+applies.
+
+**Remaining:** the real-time clock and the 2 KB of battery-backed memory are
+stubbed, and the high-level loader itself is not written — the mechanism will
+serve a ROM image the moment one is dumped, but with none available the
+loader's *effect* still has to be synthesised. That depends on the
+`SYSTEM POWERUP` handoff contract, which is the next thing to reverse
+engineer.
 
 **2.4 — Mass storage.** HP-IB and the 9895 floppy path, to mount the BASIC
 and diagnostic discs.

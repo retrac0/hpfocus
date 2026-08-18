@@ -3,6 +3,7 @@
 // driving it through IOW / IOR / IOC.
 
 #include "../iop/focusiop.h"
+#include "../iop/focusscm.h"
 #include "../cpu/focus/focusexec.h"
 
 #include <cstdio>
@@ -347,6 +348,96 @@ static void test_cpu_to_iop()
 }
 
 
+static void test_scm()
+{
+	std::printf("System Control Module\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+
+	scm_device scm;
+	iop.attach(scm_device::SELECT_CODE, &scm);
+
+	// R3 bit 14 announces the loader, which is how the bootstrap finds it.
+	CHECK_EQ(scm.read_register(3) & (1u << 14), 1u << 14);
+	CHECK_EQ(find_loader(iop, 1), int(scm_device::SELECT_CODE));
+
+	// With nothing on that select code the scan comes up empty.
+	{
+		test_host h2;
+		iop_core bare(h2, 1);
+		bare.reset();
+		CHECK_EQ(find_loader(bare, 1), -1);
+	}
+
+	// Status bits: power fail is bit 1, self-test bit 3, battery fail bit 5.
+	CHECK_EQ(scm.read_register(2), 0);
+	scm.set_power_fail(true);
+	CHECK_EQ(scm.read_register(2) & (1u << 1), 1u << 1);
+	scm.set_battery_fail(true);
+	CHECK_EQ(scm.read_register(2) & (1u << 5), 1u << 5);
+	scm.set_power_fail(false);
+	scm.set_battery_fail(false);
+
+	// A loader image, deliberately not all the same byte so the descending
+	// address counter is visible.
+	u8 rom[scm_device::ROM_SIZE];
+	for (unsigned i = 0; i < scm_device::ROM_SIZE; i++)
+		rom[i] = u8(i);
+	scm.set_rom(rom, sizeof(rom));
+	CHECK(scm.rom_present());
+
+	// Before arming, the ROM does not read out.
+	CHECK(!scm.service_request());
+	CHECK_EQ(scm.read_register(4), 0xff);
+
+	// Writing 84 hex to R1 resets the counter to FFFF, enables DMA and sets
+	// the self-test bit.
+	scm.write_register(1, scm_device::ARM_ROM);
+	CHECK(scm.service_request());
+	CHECK_EQ(scm.read_register(2) & (1u << 3), 1u << 3);
+
+	// The counter starts at FFFF and decrements, so with an 8 KB ROM the
+	// first byte read is the last byte of the image.
+	CHECK_EQ(scm.read_register(4), rom[0x1fff]);
+	CHECK_EQ(scm.read_register(4), rom[0x1ffe]);
+	CHECK_EQ(scm.read_register(4), rom[0x1ffd]);
+
+	// The burst is 2048 bytes, after which DMA switches itself off.
+	while (scm.bytes_read() < scm_device::INITIAL_BURST)
+		scm.dma_read();
+	CHECK_EQ(scm.bytes_read(), scm_device::INITIAL_BURST);
+	CHECK(!scm.service_request());
+
+	// Arming again restarts the sequence.
+	scm.write_register(1, scm_device::ARM_ROM);
+	CHECK_EQ(scm.bytes_read(), 0u);
+	CHECK(scm.service_request());
+	CHECK_EQ(scm.read_register(4), rom[0x1fff]);
+
+	// A command other than 84 hex does not arm it.
+	scm.reset();
+	scm.set_rom(rom, sizeof(rom));
+	scm.write_register(1, 0x12);
+	CHECK(!scm.service_request());
+
+	// R12 latches its address in complemented form.
+	scm.write_register(12, 0x1234);
+	CHECK_EQ(scm.read_register(12), (~0x1234u) & 0xffff);
+
+	// R10 carries service-processor traffic both ways.
+	scm.write_register(10, 0xbeef);
+	CHECK_EQ(scm.read_register(10), 0xbeef);
+
+	// With no image the region reads as erased, which is how a machine with
+	// no loader dump behaves.
+	scm_device blank;
+	blank.set_rom(nullptr, 0);
+	CHECK(!blank.rom_present());
+	blank.write_register(1, scm_device::ARM_ROM);
+	CHECK_EQ(blank.read_register(4), 0xff);
+}
+
 int main()
 {
 	std::printf("FOCUS IOP tests\n\n");
@@ -355,6 +446,7 @@ int main()
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();
+	test_scm();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
 	std::printf(g_fail ? "FAIL\n" : "PASS\n");

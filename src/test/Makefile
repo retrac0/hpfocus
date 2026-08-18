@@ -26,7 +26,7 @@ exectest: exectest.cpp $(SRCDIR)/focusexec.h $(SRCDIR)/focusdst.h \
           $(SRCDIR)/focusaddr.h $(SRCDIR)/focusstate.h
 	$(CXX) $(CXXFLAGS) exectest.cpp -o $@
 
-ioptest: ioptest.cpp ../iop/focusiop.h $(SRCDIR)/focusexec.h
+ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
 	$(CXX) $(CXXFLAGS) ioptest.cpp -o $@
 
 # The opcode tables are generated; docs/opcodes.csv is the source of truth.
