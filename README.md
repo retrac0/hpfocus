@@ -19,7 +19,7 @@ which runs correctly on the emulated CPU for n = 0 to 12 which means
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
 
 Disassembler, register model, addressing, DST walk and an execution core that
-covers **96.9% of the instructions in the real HP-UX kernel and BASIC boot
+covers **97.1% of the instructions in the real HP-UX kernel and BASIC boot
 disc**, weighted by frequency. Internal traps vector correctly through code 
 segment 1. Still to come: the
 string and decimal groups, external interrupts, then the machine around the

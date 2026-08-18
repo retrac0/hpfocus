@@ -367,7 +367,7 @@ What it has found so far:
 | 2 | `LRAS Q+109` | **`LRA`/`LRAS` were wrong** — see below |
 | 3 | `FILB 3` | not implemented |
 | 4 | `FILB 3` | implemented, but the fill overran the stack — see below |
-| 5 | `MVB 7` | reached 17 instructions; needs an initialised `DB` segment |
+| 5 | `MVB 7` | reached 17 instructions — but see the caveat below |
 
 The `LRAS` bug is the kind only real code finds. It does **not** push an
 absolute address: in direct mode it computes a *relative, tagged* pointer —
@@ -393,9 +393,24 @@ instructions to 17.
 The seventeen that now execute read as sensible initialisation: dispatch on a
 value, `PMPB` to fetch the CPU channel number, `ADDS #21` to allocate stack,
 `LRAS`/`LDIS #84`/`FILB` to zero an 84-byte work area, then a 20-byte `MVB`
-from a global-segment address computed out of the code segment. That last one
-needs `DB` pointing at initialised data, which the loader would have set up —
-so the next question is what the global data segment should contain.
+from a global-segment address computed out of the code segment.
+
+> **Caveat: the entry point is still a guess, and probably a wrong one.**
+> Working out the `MVB` source pointer by hand gives `0x9ffe0002` — a global
+> data segment pointer with an offset of `0x1ffe0002`, over 512 MB into a
+> segment that can be at most 10 MB. The literal it is built from,
+> `0x1ffe0000` at `P-40`, looks like module header or relocation data rather
+> than a code literal.
+>
+> The most likely reading is that module offset `0x54`, chosen more or less
+> arbitrarily as the entry, is not the entry at all, and that the seventeen
+> instructions are a plausible-looking path arrived at by luck. The
+> `S ≥ Q + 97` constraint derived above is only as good as that entry
+> assumption and should be treated as provisional.
+>
+> Finding the real entry point is now the blocking question. The module
+> header is 32 bytes of unidentified words before the name field; one of them
+> may hold it, and two samples are available to compare.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 

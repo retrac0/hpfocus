@@ -706,6 +706,9 @@ private:
 			return exec_trap::none;
 		}
 
+		case 004: return r.test(sf::ES)                         // EOS
+				? take_trap(trap_cause::end_of_subroutine, 0)
+				: exec_trap::none;
 		case 011: r.put(sf::I, b3 ? 1 : 0);                     // INT
 			return exec_trap::none;
 
@@ -773,6 +776,75 @@ private:
 				return exec_trap::pointer_conversion;
 			r.s -= 4;
 			set_stk(0, ers32::set(ptr, 2, 30, offset));
+			return exec_trap::none;
+		}
+
+		case 015:                                               // PSDB
+			// Pseudo Interrupt Disable: bump the dispatcher disable count
+			// held at QI-4 (ERS sheet 119). Privileged.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			m_dispatch_disable++;
+			return exec_trap::none;
+		case 017:                                               // PSEB
+			if (!r.privileged()) return exec_trap::unimplemented;
+			if (m_dispatch_disable == 0)
+				return take_trap(trap_cause::inconsistent_registers, 0);
+			m_dispatch_disable--;
+			return exec_trap::none;
+
+		case 031: {                                             // RCS
+			// Read Control Store. Location 6 holds the CPU release date as
+			// eight hex digits YYYYMMDD (ERS Appendix G), which software
+			// uses to decide which silicon bugs to work around. This core
+			// reports CPU 4.0, the last revision the ERS describes.
+			const u32 loc = stk(0);
+			set_stk(0, (loc == 6) ? 0x19820319u : 0u);
+			return exec_trap::none;
+		}
+
+		case 042:                                               // ALM
+			m_address_lockout = b3;
+			return exec_trap::none;
+
+		case 043: {                                             // CCI
+			// Convert Condition Code to Integer: -1, 0 or 1 for CCL, CCE
+			// and CCG (ERS sheet 123).
+			const u32 cc = r.condition_code();
+			push(cc == CCE ? 0u : (cc == CCG ? 1u : u32(-1)));
+			return exec_trap::none;
+		}
+
+		case 044: return r.test(sf::EP)                         // EOP
+				? take_trap(trap_cause::end_of_procedure, 0)
+				: exec_trap::none;
+
+		case 057: {                                             // WTC
+			// Write to Channel: the second stack word holds the 29-bit MPB
+			// address, the top the data word (ERS sheet 125).
+			const u32 data = pop();
+			const u32 addr = pop();
+			mpb_write(addr, data, b3);
+			return exec_trap::none;
+		}
+
+		case 060: {                                             // SMSG
+			// Send Message to an MPB channel; the low 29 bits of the top of
+			// stack carry the channel address and the message itself.
+			const u32 msg = pop();
+			mpb_message(msg, b3);
+			return exec_trap::none;
+		}
+
+		case 062:                                               // RSC
+			// Read Slave Channel: push the two MPB slave registers.
+			push(r.sar);
+			push(r.sdr);
+			return exec_trap::none;
+
+		case 076: {                                             // WAIT
+			// A calibrated delay: decrement the top of stack to zero
+			// (ERS sheet 95). Modelled as taking effect immediately.
+			set_stk(0, 0);
 			return exec_trap::none;
 		}
 
@@ -921,6 +993,39 @@ private:
 			// The inverse: pops into the Message and Mask registers.
 			if (operand & 2) r.msg = pop();
 			if (operand & 1) r.mask = pop();
+			return exec_trap::none;
+		}
+		case 033: {                                               // SRM
+			// Set Rounding Mode from the operand's low two bits, or from
+			// the top of stack when bit 3 is set (ERS sheet 88).
+			if (b3) { r.put(sf::RM, stk(0) & 3); r.s -= 4; }
+			else      r.put(sf::RM, operand & 3);
+			return exec_trap::none;
+		}
+		case 034: {                                               // PSHR
+			// Push Registers (ERS sheet 67). Within the 6-bit operand, bit
+			// 5 selects S, 4 Q, 3 STATUS, 2 DST, 1 BRKPT and 0 FLAGS;
+			// instruction bit 3 additionally pushes the segment registers.
+			if (operand & 1)  push(r.s - r.sb - 1);
+			if (operand & 2)  push(r.q - r.sb);
+			if (operand & 4)  push(r.status);
+			if (operand & 8)  push(r.dst);
+			if (operand & 16) push(r.brkpt);
+			if (operand & 32) push(u32(r.flags));
+			if (b3)
+			{
+				push(r.p); push(r.pb); push(r.pl); push(r.db);
+			}
+			return exec_trap::none;
+		}
+		case 035: {                                               // SETR
+			// Set Registers, the inverse of PSHR and in reverse order.
+			if (operand & 32) { r.flags = u8(stk(0)); r.s -= 4; }
+			if (operand & 16) { r.brkpt = pop(); }
+			if (operand & 8)  { r.dst = pop(); }
+			if (operand & 4)  { r.status = pop(); }
+			if (operand & 2)  { r.q = pop() + r.sb; }
+			if (operand & 1)  { r.s = stk(0) + r.sb + 1; }
 			return exec_trap::none;
 		}
 		case 057: {                                               // FILB
@@ -1208,6 +1313,17 @@ private:
 			m_mem.write32(a, v); cca(v);
 			return exec_trap::none;
 		}
+		case 033: {                                               // SEML
+			// Semaphore Load: push the word at E and store -1 there, in one
+			// operation no other processor can interrupt (ERS sheet 122).
+			u32 a;
+			if (!ea(base, off, ind, idx, true, a))
+				return exec_trap::address_error;
+			push(m_mem.read32(a));
+			m_mem.write32(a, 0xffffffffu);
+			cca(stk(0));
+			return exec_trap::none;
+		}
 		case 034: {                                               // STB
 			u32 a;
 			if (!ea(base, off, ind, idx, true, a))
@@ -1293,6 +1409,24 @@ private:
 		case BASE_S_MINUS:  return r.s - offset;
 		}
 		return 0;
+	}
+
+	// Channel-to-channel MPB traffic. WTC and SMSG address a processor on
+	// the bus rather than an IOP command port; with only one CPU modelled
+	// the traffic is recorded in the slave registers so software can see it
+	// went somewhere, and MSG bit 12 is set as WTC is documented to do.
+	void mpb_write(u32 addr, u32 data, bool secondary)
+	{
+		r.sar = addr;
+		r.sdr = data;
+		if (!secondary)
+			r.msg |= ers32::mask(12, 1);
+	}
+
+	void mpb_message(u32 msg, bool broadcast)
+	{
+		r.sar = msg;
+		(void)broadcast;
 	}
 
 	//----------------------------------------------------------------
@@ -1462,6 +1596,8 @@ private:
 	bool m_branched = false;
 	bool m_halted = false;
 	bool m_traps_enabled = false;
+	bool m_address_lockout = true;    // the default mode (ERS sheet 126)
+	u32 m_dispatch_disable = 0;
 	trap m_addr_trap = trap::none;
 	trap_cause m_last_trap = trap_cause::reset;
 };
