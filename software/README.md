@@ -290,8 +290,9 @@ is a completely different picture from `97089C.hpi`, which stops dead at 23%.
 
 ### What is on them
 
-- **A complete bootable HP-UX 5.30 image**, 611,740 bytes at offset `0x400`
-  of tape 1, mapping to 46+ modules — `SYSTEM POWERUP`, `TRAP HANDLERS`,
+- **A complete bootable HP-UX 5.30 image**, 611,740 bytes, described by a
+  boot descriptor at offset `0` of tape 1 (not `0x400`, where a disc with an
+  SDF volume header would put it) and starting at sector 18, mapping to 46+ modules — `SYSTEM POWERUP`, `TRAP HANDLERS`,
   `HP-UX KERNEL`, `SDF`, `CORE SYSTEM` and the rest.
 - **The userland.** Around 7,500 Unix paths with a populated `/bin` —
   `awk`, `admin`, `asa`, `aterm` and hundreds more. This is exactly what
@@ -325,15 +326,58 @@ Counting structure markers across both tapes:
 | module signature `e307fffc` | 55 | 66 |
 | binary cpio (`070707`, big-endian) | 105 | 444 |
 | ASCII cpio (`"070707"`) | 128 | 38 |
-| SDF magic `07000000` | 1,911 | 2,413 |
+| SDF magic `07000000`, sector-aligned | 1 (spurious) | 0 |
 
 So beyond the boot image there are around 120 loaded modules and several
 hundred embedded cpio archives — the installed filesets.
+
+The SDF row is worth reading carefully. Counting `07000000` anywhere in the
+images gives 1,911 and 2,413, but those are unaligned coincidences in ordinary
+data. Counted only where a volume header could actually begin — on a 256-byte
+sector boundary — there is exactly one hit on tape 1, at block 33,130, and its
+block-size and FA fields are garbage. **Neither tape has an SDF superblock.**
+On tape 1 the reason is visible: the boot descriptor occupies offset 0, where
+the volume header would otherwise sit.
 
 One caution on the earlier "7,500 Unix paths" figure: many of those come from
 newline-separated **manifest files** listing installed paths, not from
 directory entries. The paths are real, but that count is not by itself proof
 that every file's contents survive.
+
+### One volume, spanning both tapes
+
+The recurring directory names — `src` on 13 i-nodes, `unfmt` on 6 spread right
+across tape 1, `fmt`, `bin` and `lib` in the same bands — look at first like
+several volumes. Solving for a single FA base sharpens that into seven
+candidates in an exact arithmetic sequence 62,960 records apart, which reads
+as eight volumes of 7,870 blocks.
+
+Both readings are wrong. There is one volume, it spans both tapes, and
+nothing has to be fitted at all — the piecewise-linear "FA base" that earlier
+work solved for does not exist.
+
+**The two tapes are consecutive spans of one disc**, not the same block range
+twice. The imaging log reports "blocks 1..65406" for each tape because those
+are *tape* block numbers, which restart on every reel; the disc blocks they
+carry do not:
+
+| | disc blocks | image offset |
+|---|---|---|
+| tape 1 | 1 – 65,406 | `(block − 1) × 1024` |
+| tape 2 | 65,409 – 130,814 | `(block − 3) × 1024` |
+
+Tape 2 resumes two blocks after tape 1 stops, so disc blocks 65,407 and 65,408
+were never imaged, along with block 0. The two skews are not a guess: they are
+forced by the FA file's own extent list (below). Getting tape 2's origin wrong
+by even one block makes its FA extents land on ordinary file data instead of
+on FA records, which is an unambiguous test.
+
+**i-node number is the FA record index, directly.** Root is i-node 1 and sits
+at FA record 1. There is no base offset anywhere in the format. The appearance
+of one was an artifact of not having the FA file's extent list; the regular
+62,960-record stride that earlier work fitted is the spacing of the FA file's
+own extents, and once those extents are read from the file itself the stride
+stops being something to solve for.
 
 ### SDF, decoded
 
@@ -379,36 +423,143 @@ reading blocks 1..1...reading blocks 2..2... [through] 65406
 ```
 
 Both tapes read blocks **1 through 65,406**, and 65,406 × 1024 = 66,975,744,
-which is the image size to the byte. So each tape is a straight sector dump
-of one volume — and **block 0, the superblock, was never read**. Not missed
-by the search: absent by construction, one block before the start of the
-image.
+which is the image size to the byte. So each tape is a straight sector dump —
+and **block 0, the superblock, was never read**. Not missed by the search:
+absent by construction, one block before the start of the image.
 
-The two tapes are not two halves of one disc. Both cover blocks 1–65,406 and
-share no data at all (0 of 16,352 sampled non-zero blocks match), so they are
-two separate volumes of the same system.
+Those counts are per-tape and both start at 1, which is what made the tapes
+look like the same block range imaged twice. They are not: tape 2's blocks are
+disc blocks 65,409–130,814, as the FA extent list proves.
 
-Geometry was recovered by experiment instead, testing candidate block sizes
-and skews against whether directory contents decode as valid 24-byte entries:
+Note that this and the boot descriptor at image offset 0 are consistent, not
+in tension: under `offset = (block − 1) × 1024`, image offset 0 *is* disc
+block 1. Block 0 is the missing superblock; block 1 is the boot area. A scan
+of every 256-byte sector of both tapes for the `07000000` volume-header magic
+returns one hit, at block 33,130, with a garbage block size and FA pointer —
+confirming there is no second superblock hiding anywhere either.
 
-| block size | skew | directories decoding cleanly |
+### Entering the volume without its superblock
+
+The superblock is missing, but nothing in it is actually needed, because the
+FA file describes itself and can be found on structure alone. fs(5) fixes what
+lives at the front of that file:
+
+```
+record 0   the i-node of the FA file itself
+record 1   the i-node of the root directory
+```
+
+That is a signature, not a magic number, and it is searchable: two adjacent
+128-byte records at the start of a block, the first describing a file with no
+partial last block (`di_size == di_blksz × 1024`, which is what a file made
+only of whole records must satisfy), the second a directory whose parent is
+itself — which is what `/` is. The pair occurs **once** in 133 MB, at image
+block 69,084:
+
+```
+record 0   di_blksz 2016   di_size 2,064,384 = 2016 × 1024   di_exmap 129
+           extents (69087,17) (5011,124) (13005,124) (20999,124)
+record 1   ftype 1 (directory)   di_parent 1   extent (1076,1)   408 bytes
+```
+
+Record 129 lies inside the i-node's own first extent, so those four extents
+bootstrap the lookup of the extent map holding the other thirteen —
+`(28993,124)` through `(124938,139)`. **389 blocks in the i-node plus 1,627 in
+the map is 2,016, exactly `di_blksz`.** The file closes on itself, so the
+extent list is proved rather than fitted.
+
+The same seventeen extents settle the geometry. Each must land on 128-byte
+records that type as SDF FA records, which ordinary file data does not; that
+is what pins 1024-byte blocks and the two per-tape skews. Sixteen of the
+seventeen come out 992/992 records typed. (The seventeenth is the file's first
+extent, most of which is the free-block bitmap rather than records.) Block size
+is independently confirmed by every i-node satisfying
+`(di_blksz − 1) × 1024 < di_size ≤ di_blksz × 1024`.
+
+### The full dump
+
+[`tools/sdf7914.py`](../tools/sdf7914.py) does all of the above with no
+constants baked in — it locates the FA file by signature and derives tape 2's
+origin by validation. Run it over both tapes in order:
+
+```
+python3 tools/sdf7914.py tape1.bin tape2.bin --extract out/
+```
+
+It recovers **6,943 names — 6,062 distinct files and 881 hard links — in 434
+directories, 62.9 MB**, every one under its real path. There is no `.unlinked/`
+salvage bucket and no mis-filing risk, because nothing is inferred: each name
+comes from the directory entry that holds it.
+
+The walk is provably complete. The FA file holds 6,497 i-node records and the
+walk from root reaches **6,496 of them**; the single exception is the FA file
+itself, which by construction appears in no directory. No file touches the
+two-block gap between the tapes. i-nodes claim 67,161 of 130,814 disc blocks —
+the remaining 49% is free space, which is why so much of the image is zeros.
+
+Hard links matter more here than they usually would: 421 i-nodes carry more
+than one name, so a reader that dedupes by i-node silently loses **881 names**,
+including `/bin/sh` (a link to `/bin/rsh`) and `/dev/console`. The tool emits
+every name and reproduces the links with `link(2)`.
+
+### The dates
+
+Timestamps come back too, which matters because they date the machine's life
+rather than just its files. inode(5) stores three, in two encodings:
+
+| field | width | encoding |
 |---|---|---|
-| 256 | 0 / 1 | 0 / 1 |
-| 512 | 0 / 1 | 0 / 1 |
-| **1024** | 0 | 3 |
-| **1024** | **1** | **159 of 237** |
+| `di_atime` | 4 | ordinary big-endian Unix `time_t` |
+| `di_ctime` | 8 | `time_ios` |
+| `di_mtime` | 8 | `time_ios` |
 
-So `tape offset = (disc block − 1) × 1024`, agreeing with the log.
+`time_ios` had to be worked out, and turns out to be two big-endian 32-bit
+words: **a Julian Day Number, then seconds since midnight**. Both halves are
+independently checkable and both check out across the whole volume — all
+12,994 populated fields have a seconds word inside `[0, 86400)`, which
+arbitrary data would satisfy about 0.002% of the time, and the smallest day
+number present is **2,440,588, which is exactly 1970-01-01**. Unset times sit
+on that epoch rather than on zero; 13 entries do, and they are exactly the
+ones you would expect — `/dev/console`, `/etc/utmp`, `/etc/wtmp`,
+`/usr/adm/sulog`.
 
-With that, a direct scan finds **3,761 i-nodes including 287 directories** on
-tape 1 and similar on tape 2 — the filesystem is intact and readable in
-principle. What is still missing is the FA file's base record index, without
-which the i-node numbers in directory entries cannot be resolved to records.
-Solving for it by matching subdirectory names against the names i-nodes carry
-yields several candidates of similar weight, spaced a constant 125,920
-records apart — either several volumes each with their own FA file, or noise
-from common names. [`tools/sdfsalvage.py`](../tools/sdfsalvage.py) carries
-the working geometry and this open question.
+All 6,496 objects get their dates back, and the result is a coherent history:
+
+```
+1983-1986   older source and manual trees carried forward
+1987-06-01  16:00:00 exactly, right across /bin -- the HP-UX 5.30 install
+1988-05-24  ctime on most of /bin -- when this disc was built
+1989-1991   per-file access times: the machine actually in use
+1991-08-20  17:56 on /usr/adm/pacct, the process accounting file
+```
+
+That last date is the most useful single fact the timestamps give up: process
+accounting is written continuously by a running system, so **1991-08-20 is
+when the machine these tapes came off was shut down** — four years after the
+software on it was installed.
+
+What comes out is unmistakably real: `/etc/passwd` with `root:,..:0:1:The
+Super User`, a `/.profile` stamped `@(#).profile 27.2 85/05/21`, 919 C source
+files that are 100% printable, AT&T-copyright source, troff manual input,
+FORTRAN, `ar` archives and NLS message catalogs — and a complete Series 500
+`/usr/include`, whose `a.out.h` documents the HPOFF object format and confirms
+the EDSP/GDSP/SSP pointer encodings that
+[`docs/HARDWARE.md`](../docs/HARDWARE.md) §3.1.1 derives from the ERS.
+
+`/new.kernel` extracts to a 565,522-byte boot image that `tools/modmap.py`
+reads as **54 modules opening with `SYSTEM POWERUP` at `0x20`** — an
+end-to-end check that the extents are chained correctly, since a single
+misplaced block would break the module chain.
+
+| | |
+|---|---|
+| `/bin` | 117 entries, 2.2 MB — `sh` `csh` `cc` `f77` `ed` `grep` `cpio` … |
+| `/usr` | 5,814 files, 53 MB — source, manuals, spool, `/usr/include` |
+| `/lib` | 87 files, 3.0 MB |
+| `/etc` | 189 files, 2.2 MB |
+| `/dev` | 544 device nodes |
+| `/graphics` | 112 files, 11 MB — the Sketch workstation software |
+| `/system` | 58 files, 2.9 MB — `97089C` and `HPUX` fileset trees |
 
 ### Reading it
 
@@ -416,18 +567,16 @@ the working geometry and this open question.
 Structured Directory Format — not LIF, and unrelated to any filesystem Linux
 has a driver for. There is no `mount -t` that will touch it.
 
-Three routes, in increasing order of work:
+Use [`tools/sdf7914.py`](../tools/sdf7914.py), which reads the filesystem
+itself and gives the whole tree under its real paths. Two narrower routes
+remain useful for cross-checking a single object:
 
 1. **The embedded cpio archives** extract directly. GNU cpio handles the
    ASCII ones; [`tools/cpiolist.py`](../tools/cpiolist.py) handles the
    big-endian binary ones GNU cpio cannot read. Tape block padding between
    members needs skipping.
-2. **The boot image** is already extractable — offset `0x400`, length from
-   the descriptor.
-3. **The SDF volumes** need a reader. `tools/sdfdir.py` already walks the
-   floppy layout (36-byte directory entries at the offset in the volume
-   header); the disc uses the same magic, so extending it to the on-disc
-   layout is the path to a full dump.
+2. **The boot image** is extractable straight from the descriptor at offset
+   `0` — though `/new.kernel` now also falls out of the filesystem walk.
 
 ### Consequences
 
@@ -447,7 +596,8 @@ is the boot image format magic, identical on the BASIC discs and here.
 | `../tools/lifdir.py` | list/extract the LIF directory of `.hpi` images |
 | `../tools/cpiolist.py` | list/extract big-endian old-binary cpio filesets |
 | `../tools/modmap.py` | map named modules in a boot image |
-| `../tools/sdfread.py` | read and extract an SDF filesystem |
+| `../tools/sdfread.py` | read and extract an SDF filesystem (floppy volumes) |
+| `../tools/sdf7914.py` | read and extract the 7914 unit-save volume |
 | `../tools/bootimage.py` | reassemble a boot image from its volumes |
 
 ```sh

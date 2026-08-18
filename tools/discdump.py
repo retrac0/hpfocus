@@ -150,19 +150,14 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-# WHAT SDF'S ON-DISC FORM IS NOT
+# SDF's on-disc form is decoded now -- see tools/sdf7914.py, which reads the
+# filesystem off the two 7914 tapes. What defeated the attempts recorded here
+# was not the record layout but two structural facts: the tapes are
+# consecutive spans of one volume rather than the same range twice, so they
+# join at different skews; and the FA file has to be found through the
+# self-describing pair at its front (record 0 its own i-node, record 1 a
+# self-parented root) rather than through a volume header. i-node number is
+# the FA record index directly -- there is no mapping constant to recover.
 #
-# Ruled out while looking for the directory structure:
-#
-#   * the floppy layout -- a 48-byte volume header with magic 07000000 and a
-#     printable part number, then 36-byte directory entries. No sector on
-#     either tape carries a header with a printable label.
-#   * a run of 36-byte directory entries anywhere on the disc. The longest
-#     such run, 302 entries, turned out to be process accounting records in
-#     /usr/adm/pacct -- 8-character command names padded to a fixed record,
-#     with sh, date, cc, ld, cpp and ccom repeating in the pattern of a
-#     compile session. A nice find, but not a directory.
-#
-# The boot image's own module list names SDF and HP-UX DIRECTORY modules, so
-# the filesystem code is present in the image and could be disassembled to
-# recover the format. That is the remaining route.
+# This tool remains useful for what it does without any of that: locating the
+# boot image and pulling out embedded cpio members.

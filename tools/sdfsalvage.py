@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Walk an SDF volume whose superblock was never imaged.
+"""Superseded by sdf7914.py -- kept only for the floppy-style volumes.
 
-The 7914 unit saves have no superblock, and provably so: their logs record
-reading blocks 1 through 65,406, and 65,406 x 1024 is exactly the image size.
-Block 0 -- the superblock -- was never read.
+This walked a single image whose superblock was missing, on the assumption
+that i-node number maps to record by one global base. Both that assumption
+and the correction once written here were wrong, and the real answer is
+simpler than either:
 
-The geometry was recovered instead by experiment. Testing candidate block
-sizes and skews against whether directory contents decode as valid 24-byte
-entries gives an unambiguous answer: 1024-byte blocks with
+  * the two tapes are not the same block range twice. Tape 1 carries disc
+    blocks 1..65,406, tape 2 carries 65,409..130,814, so they concatenate
+    with *different* skews -- (block-1)*1024 and (block-3)*1024 -- and disc
+    blocks 0, 65,407 and 65,408 were never imaged;
+  * there is no base to solve for, piecewise or otherwise. i-node number is
+    the FA record index directly. The FA file is found by the signature
+    fs(5) guarantees at its front (record 0 its own i-node, record 1 a
+    self-parented root), and its extent list is then read from the file
+    rather than fitted. The 62,960-record stride earlier fitted here is the
+    spacing of the FA file's own extents, not a mapping constant.
 
-    tape offset = (disc block - 1) * 1024
-
-which scores 159 of 237 directories against 3 for the nearest alternative,
-and agrees with the "bytes per block: 1024" the imaging log reports.
-
-What is still missing is the FA file's base record index, needed to turn the
-i-node numbers in directory entries into records. Solving for it by matching
-subdirectory names against the names i-nodes carry gives several candidates
-of similar weight, spaced a constant 125,920 records apart -- which suggests
-either several SDF volumes on the disc, each with its own FA file, or noise
-from common directory names. Unresolved.
+Use tools/sdf7914.py for those images.
 """
+
 import sys, struct
 sys.path.insert(0, '/home/joel/hpfocus/tools')
 from sdfread import SDF, FA_REC, DIRENT, FT_DIR
