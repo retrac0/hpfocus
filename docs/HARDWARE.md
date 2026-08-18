@@ -1069,6 +1069,30 @@ the individual disc — as does `0x14`.
 Offsets `0x24` and `0x28` are consecutive and vary per volume, which fits a
 last-used and first-free block pair.
 
+## 9.2 Boot descriptor *(observed)*
+
+A bootable disc is **not a filesystem**. Where a data disc puts an SDF file
+directory at offset `0x100` — 36-byte entries of an 18-byte name, a type
+halfword, a start offset, a length and a date — a boot disc puts a descriptor
+at `0x400` and then a raw slice of the boot image.
+
+| Offset | 500BT1 | 500BT2 | Meaning |
+|---|---|---|---|
+| `0x400` | `e9c28206` | `e9c28206` | product identifier, same across the set |
+| `0x404` | `0005b0c4` | `0005b0c4` | **total image size**, 372,932 bytes |
+| `0x408` | `2` | `2` | volumes in the set |
+| `0x40c` | `1` | `2` | this volume's number |
+| `0x410` | `0` | `41400` | byte offset of this volume's slice |
+| `0x414` | `8` | `3` | starting sector of the slice |
+| `0x418` | `5` | `8` | unidentified |
+| `0x430` | \multicolumn | | volume label, `... Vol 1 of 2` |
+
+So **BASIC 2.0 is a single 372,932-byte image split across two discs**:
+volume 1 supplies bytes `0`–`0x413ff` from sector 8, volume 2 the remainder
+from sector 3. [`tools/bootimage.py`](../tools/bootimage.py) reassembles it,
+and the result maps to **57 modules** — `SYSTEM POWERUP`, `TRAP HANDLERS`,
+`BASIC COMPILER`, `BASIC`, `SDF`, `CS80`, and the rest of the system.
+
 ## 10. Open questions
 
 1. **SCM loader ROM** — no dump located. The protocol is documented (§8.5) and

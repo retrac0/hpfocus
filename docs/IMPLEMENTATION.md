@@ -463,12 +463,25 @@ than reallocated per trial — the results cluster tightly:
 distinct addresses out of a 4192-byte module is only about 6% of it, so this
 is suggestive rather than settled.
 
-**A better line of attack may be the media.** The SDF volume header
-(HARDWARE.md §9.1) distinguishes bootable discs from data discs in two
-fields, which means the loader has a documented way to recognise a boot
-volume — and whatever it reads next is likely to say where the image goes and
-where to enter it. That is a smaller, better-posed question than searching a
-4 KB module for an entry point.
+**Following the media paid off.** The two fields that mark a boot disc lead
+to a descriptor at offset `0x400` giving the product identifier, the total
+image size, the volume count and number, and where each volume's slice sits
+within the image (HARDWARE.md §9.2).
+
+BASIC 2.0 turns out to be **one 372,932-byte image split across two discs**,
+which [`tools/bootimage.py`](../tools/bootimage.py) now reassembles into all
+**57 modules** of the system. Every experiment before this was running the
+first 4 KB in isolation and calling it the program.
+
+That corrects a wrong mental model, though it did not by itself move the
+entry point: the assembled image begins with the same `SYSTEM POWERUP`
+module, so the sweep produces the same 122 distinct addresses and the same
+address error at offset `0x24a`. What it does give is the right object to
+work on, and the rest of the system to follow references into.
+
+The descriptor still has one unidentified word at `0x418` — 5 on volume 1 and
+8 on volume 2 — and no field that looks like an entry point, which continues
+to suggest the loader uses a fixed rule.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
