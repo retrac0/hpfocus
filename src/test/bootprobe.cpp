@@ -73,8 +73,11 @@ struct result
 // The memory image is reused across trials -- allocating and zeroing several
 // megabytes per candidate dominated the sweep otherwise. Only the regions a
 // trial can dirty are reset.
+// When `tos` is supplied the loader's parameter is pushed before entry, and
+// `trail` collects the last addresses executed.
 result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
-		u32 pb, u32 entry, unsigned budget, std::vector<u8> &visits)
+		u32 pb, u32 entry, unsigned budget, std::vector<u8> &visits,
+		bool push_tos = false, u32 tos = 0, std::vector<u32> *trail = nullptr)
 {
 	std::fill(mem.m_d.begin() + 0x400000, mem.m_d.begin() + 0x520000, 0);
 	mem.load(base, img);
@@ -99,6 +102,12 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 	cpu.r.dl = 0x50ffff | 3;
 	cpu.r.dst = 0x600000;
 	cpu.r.put(sf::M, 1);
+	// MASK bits 3-5 carry the MPB channel number, which PMPB pushes. The
+	// boot code halts any CPU that is not channel 1, so a probe leaving
+	// this zero makes every path look like a dead end.
+	cpu.r.mask = ers32::set(0, 3, 3, 1);
+	if (push_tos)
+		cpu.push(tos);
 
 	std::fill(visits.begin(), visits.end(), 0);
 	result r;
@@ -117,6 +126,12 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 				break;
 		}
 		r.fault_pc = cpu.r.p;
+		if (trail)
+		{
+			trail->push_back(cpu.r.p);
+			if (trail->size() > 24)
+				trail->erase(trail->begin());
+		}
 		const exec_trap t = cpu.step();
 		if (t != exec_trap::none)
 		{
@@ -171,6 +186,27 @@ int main(int argc, char **argv)
 	std::fclose(f);
 
 	std::printf("module %s, %zu bytes, loaded at %#x\n\n", argv[1], img.size(), base);
+	// --run PB ENTRY TOS: one verbose trial instead of a sweep.
+	if (argc >= 7 && std::strcmp(argv[3], "--run") == 0)
+	{
+		const u32 pb = u32(strtoul(argv[4], nullptr, 0));
+		const u32 entry = u32(strtoul(argv[5], nullptr, 0));
+		const u32 tos = u32(strtoul(argv[6], nullptr, 0));
+		std::vector<u8> visits(img.size() / 2 + 2, 0);
+		std::vector<u32> trail;
+		flat_memory mem(0x600000);
+		const result r = run_from(mem, img, base, base + pb, base + entry,
+				200000, visits, true, tos, &trail);
+		std::printf("PB %#x  entry %#x  TOS %d\n", pb, entry, int(tos));
+		std::printf("  %u steps, %u distinct, stopped by %s at %08x cir=%08x\n",
+				r.steps, r.distinct, trap_name(r.t), r.fault_pc, r.cir);
+		std::printf("  last addresses:");
+		for (u32 a : trail)
+			std::printf(" %x", a - base);
+		std::printf("\n");
+		return 0;
+	}
+
 	std::printf("sweeping PB x entry over the first 1 KB...\n\n");
 	std::printf("%8s %8s %8s %8s  %-14s %s\n",
 			"PB", "entry", "steps", "distinct", "stopped by", "at");

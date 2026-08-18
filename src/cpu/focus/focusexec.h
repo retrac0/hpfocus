@@ -821,17 +821,21 @@ private:
 		case 057: {                                             // WTC
 			// Write to Channel: the second stack word holds the 29-bit MPB
 			// address, the top the data word (ERS sheet 125).
-			const u32 data = pop();
-			const u32 addr = pop();
-			mpb_write(addr, data, b3);
+			//
+			// Neither operand is popped. The ERS text does not say so
+			// outright, but the MPB initialisation loop in BASIC's
+			// SYSTEM POWERUP settles it: it keeps the address and data in
+			// A and B, swapping them with XCH to bump the address by 4
+			// each pass, which only works if WTC leaves the stack alone.
+			mpb_write(stk(1), stk(0), b3);
 			return exec_trap::none;
 		}
 
 		case 060: {                                             // SMSG
 			// Send Message to an MPB channel; the low 29 bits of the top of
-			// stack carry the channel address and the message itself.
-			const u32 msg = pop();
-			mpb_message(msg, b3);
+			// stack carry the channel address and the message itself. Like
+			// WTC, the operand is left on the stack.
+			mpb_message(stk(0), b3);
 			return exec_trap::none;
 		}
 
@@ -925,6 +929,31 @@ private:
 		case 007: { u32 v = u32(s32(stk(0)) >> operand); set_stk(0, v);
 			cca(v); return exec_trap::none; }                    // ASR
 		case 010: r.x <<= operand; return exec_trap::none;        // LSXL
+		case 050: {                                               // PMVA
+			// Privileged Move Bytes using Absolute Addresses (ERS sheet
+			// 101). As MVB, but the pointers are absolute addresses and no
+			// segment resolution or bounds checking applies.
+			if (!r.privileged())
+				return exec_trap::unimplemented;
+			const int d = b3 ? -1 : 1;
+			const unsigned sdec = operand & 3;
+			const s32 count = s32(stk(0));
+			u32 tba = stk(1);
+			u32 sba = stk(2);
+
+			s32 x = 0;
+			while (count > d * x)
+			{
+				m_mem.write8(tba, m_mem.read8(sba));
+				tba = u32(s32(tba) + d);
+				sba = u32(s32(sba) + d);
+				x += d;
+			}
+			r.x = u32(x);
+			set_stk(0, u32(count - d * x));
+			r.s -= 4 * sdec;
+			return exec_trap::none;
+		}
 		case 051: {                                               // MVB
 			// Move Bytes (ERS sheet 101). The stack holds a byte count on
 			// top, then a target pointer, then a source pointer. Bit 3 of

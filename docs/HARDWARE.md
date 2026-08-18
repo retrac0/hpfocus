@@ -1129,13 +1129,25 @@ RCS               read control store 6: the CPU revision date
 ```
 
 Two systems built years apart entering identically is what makes this
-conclusive rather than suggestive.
+conclusive rather than suggestive. Executing from there confirms it: `-2` on
+the stack takes a long, productive path, while every other value falls
+through to the alternate branch.
 
-It also settles part of the handoff. **The loader leaves a value on the
-stack**, which the module compares against **−2** and branches on — a start
-type or restart reason. `RCS` reading control store location 6 is the
-documented way to obtain the CPU release date (Appendix G), which software
-uses to decide which silicon bugs to avoid.
+It also settles two more parts of the handoff.
+
+**The loader leaves −2 on the stack.** The module compares against it and
+branches; running from the entry with other values takes the alternate path
+instead, so −2 is the cold-start code.
+
+**`MASK` bits 3–5 must say channel 1.** The alternate path does `PMPB 4` then
+`CMPI #1` and executes `STOP` if the CPU is not channel 1 — the mechanism by
+which secondary processors park themselves at power-up. A CPU whose channel
+number is left at zero halts immediately, which is worth knowing before
+diagnosing anything else.
+
+`RCS` reading control store location 6 is the documented way to obtain the CPU
+release date (Appendix G), which software uses to decide which silicon bugs to
+avoid.
 
 ## 10. Open questions
 

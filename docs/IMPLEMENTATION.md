@@ -490,10 +490,23 @@ that discredited it was caused by uninitialised machine state rather than a
 wrong entry — the module was reached correctly but handed a machine the
 loader had not finished setting up.
 
-Still open on the handoff: the module's first act is `CMPN #2`, so the loader
-leaves a **value on the stack** that is tested against −2. What the other
-values mean, and what `DB`, `DST` and the data segments must contain, are the
-remaining unknowns.
+Executing from the confirmed entry establishes two more pieces:
+
+- **the stack value is −2** — every other value takes the alternate branch;
+- **`MASK` must identify the CPU as channel 1**, or `PMPB 4` / `CMPI #1` /
+  `STOP` parks it as a secondary processor.
+
+It also caught a real bug. Around offset `0x186` the module initialises the
+MPB by writing `-1` to a run of channel addresses, keeping the address and
+data word in A and B and swapping them with `XCH` to bump the address by four
+each pass. That only works if **`WTC` leaves its operands on the stack**, and
+mine popped them — which turned the loop into an endless one. The ERS text
+never says either way; the code does. `SMSG` was corrected the same way.
+
+With that fixed and `PMVA` implemented, the module runs **89 distinct
+addresses** in a straight line before an indexed `STS DB+0,X` faults.
+
+Remaining: what `DB`, `DST` and the data segments must contain on entry.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
