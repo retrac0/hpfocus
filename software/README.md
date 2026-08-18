@@ -298,6 +298,62 @@ is a completely different picture from `97089C.hpi`, which stops dead at 23%.
   `SCOMMANDS` on the damaged 5.01 tape was supposed to contain.
 - Live user data: tape 2 opens with UUCP session logs.
 
+### The rest of the collection
+
+The same bitsavers directory holds four more Series 500 images, all now here.
+`labels.txt` one level up transcribes the physical tape labels, which is what
+identifies them — and it confirms the mislabel in the imager's own words:
+*"7914 unit save #1 4.0 / HP-UX Model 530/540/550 Release 05.30 (97089C)
+<< in blk 0 ???"*. They noticed too.
+
+| Image | Size | Label | Format |
+|---|---|---|---|
+| `97089-10038r5.05` | 3.1 MB | HP-UX customer update, 520/30/40/50, rev 5.05, 1986 | tape; contains the same `gettools` script as `97089C.hpi`, but padded with `0xff` rather than a clean LIF volume |
+| `97080-19234` | 16.7 MB | HP 9000 Series 500 **unsupported software / contrib**, Jul 1986 | **ASCII cpio**; GNU cpio reads it, but tape block padding interrupts the stream |
+| `dskbkup_bas2.0_500` | 11 MB | BASIC 2.0 **disc backup**, 8/19/84 | disc image, `D# BASIC LANGUAGE SYSTEM REV 2.00` |
+| `45524-10034r1.5b` | 1.7 MB | Microtrak for HP-UX, 45524U opt 022 rev 1.5b | cpio, opens `usr/bin/conv15` |
+
+The sibling directories `ccc_9144tapes` and `ccc_9trkTapes_20050826` are
+HP 1000 and HP 3000 material with nothing for the Series 500.
+
+### What is actually on the disc
+
+Counting structure markers across both tapes:
+
+| Marker | tape 1 | tape 2 |
+|---|---|---|
+| module signature `e307fffc` | 55 | 66 |
+| binary cpio (`070707`, big-endian) | 105 | 444 |
+| ASCII cpio (`"070707"`) | 128 | 38 |
+| SDF magic `07000000` | 1,911 | 2,413 |
+
+So beyond the boot image there are around 120 loaded modules and several
+hundred embedded cpio archives — the installed filesets.
+
+One caution on the earlier "7,500 Unix paths" figure: many of those come from
+newline-separated **manifest files** listing installed paths, not from
+directory entries. The paths are real, but that count is not by itself proof
+that every file's contents survive.
+
+### Reading it
+
+**Linux cannot mount this.** Series 500 HP-UX uses **SDF**, HP's own
+Structured Directory Format — not LIF, and unrelated to any filesystem Linux
+has a driver for. There is no `mount -t` that will touch it.
+
+Three routes, in increasing order of work:
+
+1. **The embedded cpio archives** extract directly. GNU cpio handles the
+   ASCII ones; [`tools/cpiolist.py`](../tools/cpiolist.py) handles the
+   big-endian binary ones GNU cpio cannot read. Tape block padding between
+   members needs skipping.
+2. **The boot image** is already extractable — offset `0x400`, length from
+   the descriptor.
+3. **The SDF volumes** need a reader. `tools/sdfdir.py` already walks the
+   floppy layout (36-byte directory entries at the offset in the volume
+   header); the disc uses the same magic, so extending it to the on-disc
+   layout is the path to a full dump.
+
 ### Consequences
 
 This supersedes `97089C.hpi` as the HP-UX target. It also supplied a **third
