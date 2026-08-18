@@ -88,7 +88,8 @@ struct run_host : public iop_core::host
 struct console_card : public iop_interface
 {
 	std::string out;
-	u32 id = 1;
+	u32 id = 4;
+	u32 fr0 = 0;               // pending input: 0 = none, else keycode
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
 	u32 status() override { return 0; }   // not busy
@@ -97,11 +98,19 @@ struct console_card : public iop_interface
 	{
 		switch (n)
 		{
+		case 0:  { const u32 v = fr0; fr0 = 0; return v; }
 		case 1:  return 0x80;   // ready to accept a character
 		case 3:  return id;
 		case 9:  return 0xff;   // complemented response code: zero
 		default: return 0;
 		}
+	}
+	bool input_ready() const { return fr0 != 0; }
+	void type(u8 c)
+	{
+		fr0 = c;
+		if (iop)
+			iop->raise(pa);
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
@@ -109,10 +118,43 @@ struct console_card : public iop_interface
 			return;
 		const char c = char(v & 0xff);
 		out.push_back(c);
-		std::fputc(c ? c : '.', stdout);
+		std::printf("[%u:%02x]%c", pa, v & 0xff,
+				(c >= 32 && c < 127) ? c : '.');
 		std::fflush(stdout);
 		if (iop)
 			iop->raise(pa);
+	}
+};
+
+// A probe card: answers an identity and logs everything the drivers do
+// to it, so an unknown controller's protocol can be read off a run.
+struct probe_card : public iop_interface
+{
+	u32 id = 0;
+	unsigned pa = 0;
+	bool log = false;
+	u32 fr[16] = {};
+	u32 status() override { return 0; }
+	u32 flag() override { return 1; }
+	u32 read_fr(unsigned n) override
+	{
+		// The powerup scan's presence test: FR3 must read zero after the
+		// WIF1/WIF8 reset, then it writes a bit pattern to FR0 and
+		// expects FR1 to read back nonzero. An interface that echoes
+		// satisfies it.
+		u32 v;
+		if (n == 3)      v = id;
+		else if (n == 1) v = fr[0];
+		else             v = fr[n & 15];
+		if (log)
+			std::printf("[probe%u R fr%u = %04x]\n", pa, n, v);
+		return v;
+	}
+	void write_fr(unsigned n, u32 v) override
+	{
+		fr[n & 15] = v & 0xffff;
+		if (log)
+			std::printf("[probe%u W fr%u = %04x]\n", pa, n, v & 0xffff);
 	}
 };
 
@@ -206,6 +248,11 @@ int main(int argc, char **argv)
 	u32 watch = 0xffffffff;        // print P when this word changes
 	u32 boot_ret = 0x5c84;         // (Q-2): where the final IXIT returns
 	bool io_trace = false;         // log every I/O the software attempts
+	const char *type_text = nullptr;  // keystrokes to feed the console
+	unsigned long long trace_after = ~0ull;  // start tracing at this step
+	unsigned probe_pa = 99;        // attach a probe card at this select code
+	u32 probe_id = 8;              // the identity it answers
+	bool probe_log = false;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -233,6 +280,17 @@ int main(int argc, char **argv)
 			boot_ret = u32(strtoul(argv[++i], nullptr, 0));
 		else if (!std::strcmp(argv[i], "--io"))
 			io_trace = true;
+		else if (!std::strcmp(argv[i], "--type") && i + 1 < argc)
+			type_text = argv[++i];
+		else if (!std::strcmp(argv[i], "--traceafter") && i + 1 < argc)
+			trace_after = strtoull(argv[++i], nullptr, 0);
+		else if (!std::strcmp(argv[i], "--probe") && i + 2 < argc)
+		{
+			probe_pa = unsigned(strtoul(argv[++i], nullptr, 0));
+			probe_id = u32(strtoul(argv[++i], nullptr, 0));
+		}
+		else if (!std::strcmp(argv[i], "--probelog"))
+			probe_log = true;
 		else
 			path = argv[i];
 	}
@@ -262,11 +320,20 @@ int main(int argc, char **argv)
 	iop.reset();
 	scm_device scm;
 	iop.attach(scm_device::SELECT_CODE, &scm);
+	probe_card probe;
 	console_card console, console6;
+	console.iop = &iop;
 	iop.attach(0, &console);       // select code 0: the error reporter's
 	console6.iop = &iop;
 	console6.pa = 6;
 	iop.attach(6, &console6);      // select code 6: the console driver's
+	if (probe_pa < 8)
+	{
+		probe.pa = probe_pa;
+		probe.id = probe_id;
+		probe.log = probe_log;
+		iop.attach(probe_pa, &probe);
+	}
 
 	cpu_core cpu(mem);
 	logging_io iolog(iop);
@@ -383,6 +450,7 @@ int main(int argc, char **argv)
 	unsigned long long steps = 0;
 	u32 fault_pc = 0;
 	bool nudged = false;
+	u32 prev_rq = 0;               // IOP request bits, for edge detection
 
 	for (; steps < budget; steps++)
 	{
@@ -420,9 +488,10 @@ int main(int argc, char **argv)
 		}
 		ring[ri] = { cpu.r.p, cpu.r.s, cpu.stk(0), cpu.stk(1) };
 		ri = (ri + 1) % ring.size();
-		if (trace)
-			std::printf("%08x cir=%08x S=%08x (S)=%08x\n",
-					cpu.r.p, mem.read32(cpu.r.p), cpu.r.s, cpu.stk(0));
+		if (trace || steps >= trace_after)
+			std::printf("%08x cir=%08x S=%08x (S)=%08x Q=%08x X=%08x\n",
+					cpu.r.p, mem.read32(cpu.r.p), cpu.r.s, cpu.stk(0),
+					cpu.r.q, cpu.r.x);
 		// Chain-walk top: one line per segment visited.
 		if (cpu.r.p == load + 0x2d4)
 			std::printf("walk: step %9llu  S=%08x  Q-88=%08x  hdr=%08x %08x\n",
@@ -457,18 +526,31 @@ int main(int argc, char **argv)
 			iop.timer_tick();
 			iop.poll_and_service();
 		}
-		if (host.int_line)
+		// Feed keystrokes: once the machine has idled (the dispatcher's
+		// STOP with nothing ready), type the next character into the
+		// console and let the attention wake it.
+		if (type_text && *type_text && cpu.halted()
+				&& !console6.input_ready())
+		{
+			console6.type(u8(*type_text++));
+			std::printf("[type '%c']\n", type_text[-1] >= 32
+					? type_text[-1] : '?');
+		}
+		// A STOPped CPU resumes when an interrupt request arrives.
+		if (cpu.halted() && iop.interrupt_request() != 0)
+			cpu.resume();
+		// The IOP's interrupt request reaches the CPU as Message
+		// register bits 16-31, one per device (ERS sheet 13). The OS
+		// polls MSG through PMPB and services the device itself; there
+		// is no DRT vectoring in this system, so the raise is all the
+		// hardware owes it. A raised bit also wakes a STOPped CPU.
 		{
 			const u32 rq = iop.interrupt_request();
+			const u32 fresh = rq & ~prev_rq;
+			prev_rq = rq;
 			for (unsigned pa = 0; pa < 8; pa++)
-				if (rq & (1u << pa))
-				{
-					const u32 device = 128u * iop.channel_number() + 16u * pa;
-					if (cpu.interrupt(device) && far_trace)
-						std::printf("int: step %9llu  device %u "
-								"-> P=%08x\n", steps, device, cpu.r.p);
-					break;
-				}
+				if (fresh & (1u << pa))
+					cpu.raise_message(16 + 8 * iop.channel_number() + pa);
 		}
 		const u32 prev_cir = mem.read32(fault_pc & ~1u);
 		const u32 watch_was = (watch != 0xffffffff) ? mem.read32(watch) : 0;

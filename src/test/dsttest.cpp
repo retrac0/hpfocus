@@ -161,16 +161,18 @@ static void test_unpaged()
 	CHECK(!f.walker.resolve(false, 5, 0x400, false, addr, t));
 	CHECK(t == trap::eds_bounds_violation);
 
-	// Reading sets R; writing also sets D.
+	// The referenced and dirty bits are left alone: SUNOS runs one table
+	// as both CST and DST, and the DST R bit is the CST layout's absence
+	// bit, so the walker must not write it (see focusdst.h).
 	dst_entry e;
 	e.w0 = f.entry_w0(5);
-	CHECK(e.referenced());
+	CHECK(!e.referenced());
 	CHECK(!e.dirty());
 
 	t = trap::none;
 	CHECK(f.walker.resolve(false, 5, 0x10, true, addr, t));
 	e.w0 = f.entry_w0(5);
-	CHECK(e.dirty());
+	CHECK(!e.dirty());
 }
 
 

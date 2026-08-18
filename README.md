@@ -91,9 +91,40 @@ stack-indirect instructions take their pointer *beneath* the value; a
 privileged `EXIT` to code segment 0 restores the pre-CST absolute
 environment; `TRY`'s frame bounds test against `SL`, not `S`; and the whole
 dispatcher machinery — `IXIT`'s eight cases, `DISP`, `LLSH`, `LINS`/`LDEL`,
-`XGDS`, `FLMO`, the external-interrupt entry — now runs the flowcharts on
-ERS sheets 140-142. The one loader-ROM unknown left is marked by a single
-documented nudge in the harness (see `bootrun.cpp`).
+`XGDS`, `FLMO`, `GTSP`, the external-interrupt entry — now runs the
+flowcharts on ERS sheets 140-142. The one loader-ROM unknown left is marked
+by a single documented nudge in the harness (see `bootrun.cpp`).
+
+**The one-table discovery.** SUNOS keeps a *single* segment table serving
+as both Code and Data Segment Table, and the two layouts disagree about
+what word 0's flag bits mean: the DST's *referenced* bit (29) is the CST's
+*absence* bit, and the CST's *reference* bit (31) is the DST's absence bit.
+A CPU that maintains either automatically therefore poisons the other view
+— the boot died marking the kernel segment absent moments after executing
+in it. Neither bit is maintained now, and that is not a shortcut: the
+powerup module initialises the flags clear and nothing in the OS ever
+clears them again, so the hardware evidently does not write them either.
+`LLSH` likewise compares only bits 1-31, because the heap's free-block
+sizes carry a flag in bit 0 and the first-fit search must still order them
+numerically.
+
+**Where it stands now.** Both systems run their launch chain, print the
+console self-test, discover their devices, and then park in the
+dispatcher's idle `STOP` with an empty ready list — no faults, no traps, a
+correctly idling machine waiting for work. The work never arrives because
+the powerup device scan registers nothing: it demands a card whose `RISF`
+answers and whose `FR3` identity reads zero, and it is satisfied by no
+console. The main task blocks in the kernel's unit-indexed device-request
+path with an empty device table. **The next thing this needs is a mass
+storage device** — the DDM lives in the `IOS and DDMs` segment and its
+protocol can be read out of a run with `bootrun --probe <pa> <id>
+--probelog`, which is what that switch exists for.
+
+HP-UX 5.30 is blocked differently and more sharply: it executes **format 4
+opcode 021 (549 times)**, an encoding the Dec-82 Appendix B leaves
+unassigned. The usage is highly stereotyped — `LDXI #4`, `LRAS Q+n,I,X`,
+then the opcode — so it consumes a tagged pointer, but nothing in hand
+names it. Identifying opcodes 020 and 021 is the prerequisite for 5.30.
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository

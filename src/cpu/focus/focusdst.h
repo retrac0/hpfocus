@@ -175,10 +175,14 @@ public:
 						return false;
 					}
 
-					e.set_referenced();
-					if (modify)
-						e.set_dirty();
-					m_mem.write32(entry_addr, e.w0);
+					// The referenced and dirty bits are NOT maintained.
+					// SUNOS keeps one table serving as both CST and DST,
+					// and the DST reference bit (word 0 bit 29) is the
+					// CST layout's absence bit: setting it on a data
+					// access to a code segment would make every later
+					// procedure call into it trap as absent. The powerup
+					// module initialises flags with bits 28-29 clear and
+					// nothing in the OS clears them again.
 
 					m_use_slot = entry_addr;
 					addr = e.location() + offset;

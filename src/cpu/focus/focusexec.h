@@ -140,6 +140,27 @@ public:
 		external_interrupt(device);
 		return true;
 	}
+
+	// A STOPped CPU resumes at the next instruction when an interrupt
+	// request or MPB message arrives, even with STATUS.I clear -- the
+	// dispatcher's idle loop is STOP followed by a branch back into the
+	// scheduler, relying on exactly this.
+	void resume() { m_halted = false; }
+
+	// Raise a Message register bit (ERS sheet 13): 13 is the interval
+	// timer, 15 the memory controller, 16-31 the I/O device interrupts,
+	// one bit per IOP channel pair. A bit that MASK does not disable
+	// wakes a STOPped CPU, and interrupts the running one when STATUS.I
+	// is set.
+	void raise_message(unsigned bit)
+	{
+		r.msg |= ers32::mask(bit, 1);
+		if ((r.msg & ~r.mask) != 0)
+			m_halted = false;
+	}
+
+	// The unmasked message bits, highest priority (lowest number) first.
+	u32 pending_messages() const { return r.msg & ~r.mask; }
 	trap_cause last_trap() const { return m_last_trap; }
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
@@ -870,18 +891,45 @@ private:
 
 		case 070: {                                             // CPTR
 			// Adds a byte offset to a data segment pointer, yielding a new
-			// pointer to the same segment (ERS sheet 124). The external
-			// data segment path, taken when bit 3 is set and the pointer's
-			// top bit is clear, is not modelled yet.
+			// pointer of the same type (ERS sheet 120). The delta lands in
+			// X. With bit 3 set and an external pointer, the pointer is
+			// fully evaluated: the delta folds into the 19-bit offset
+			// field, trapping when it no longer fits. Otherwise the delta
+			// simply adds to bits (2:30).
 			const u32 delta = stk(0);
 			const u32 ptr = stk(1);
+			r.x = delta;
 			if (b3 && ers32::get(ptr, 0, 1) == 0)
-				return exec_trap::unimplemented;
+			{
+				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(delta);
+				if (noff < 0 || noff >= (1 << 19))
+					return exec_trap::pointer_conversion;
+				r.s -= 4;
+				set_stk(0, ers32::set(ptr, 13, 19, u32(noff)));
+				return exec_trap::none;
+			}
 			const u32 offset = ers32::get(ptr, 2, 30) + delta;
 			if (ers32::get(offset, 0, 2) != 0)
 				return exec_trap::pointer_conversion;
 			r.s -= 4;
 			set_stk(0, ers32::set(ptr, 2, 30, offset));
+			return exec_trap::none;
+		}
+
+		case 012: {                                             // GTSP
+			// Get Task Segment Pointers (ERS sheet 122): pop a TCB
+			// address into the CTCBP dedicated word, load the DST
+			// register from TCB word 1, and push external data segment
+			// pointers (offset 0) for the task's stack and global
+			// segments from word 2, then this CPU's channel number.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 tcb = pop();
+			m_mem.write32(ded_base() + 4, tcb);
+			const u32 w2 = m_mem.read32(tcb + 8);
+			r.dst = m_mem.read32(tcb + 4);
+			push(ers32::set(0, 1, 12, ers32::get(w2, 4, 12)));
+			push(ers32::set(0, 1, 12, ers32::get(w2, 20, 12)));
+			push(ers32::set(0, 29, 3, ers32::get(r.mask, 3, 3)));
 			return exec_trap::none;
 		}
 
@@ -1064,7 +1112,17 @@ private:
 			return exec_trap::none;
 		}
 
-		case 077: m_halted = true; return exec_trap::halted;    // STOP
+		case 077:                                               // STOP
+			// Halt until an interrupt or message; execution resumes at
+			// the next instruction, so P moves past the STOP now. With
+			// bit 3 the TOS is loaded into MASK first -- the dispatcher's
+			// idle sequence computes the sleep-time interrupt mask on the
+			// stack and hands it to STOP,B to arm atomically.
+			if (b3)
+				r.mask = pop();
+			m_halted = true;
+			r.p = m_next;
+			return exec_trap::halted;
 		}
 		return exec_trap::unimplemented;
 	}
@@ -1357,13 +1415,20 @@ private:
 			const u32 off = stk(2);
 			u32 link = stk(0);
 			bool flag = true;
+			// The comparison is over the magnitude bits (1:31); bit 0 does
+			// not participate. The SUNOS heap depends on this: free-block
+			// size words carry a flag in bit 0, and the first-fit search
+			// (LLSH 1 over sizes) must still order them numerically --
+			// full-word unsigned would stop at the first flagged node,
+			// signed would never stop.
 			while (s32(r.x) > 0 && link != 0 && flag)
 			{
-				const u32 target = m_mem.read32(link + off);
+				const u32 target = m_mem.read32(link + off) & 0x7fffffffu;
+				const u32 t31 = test & 0x7fffffffu;
 				bool advance;
-				if (target > test)
+				if (target > t31)
 					advance = (operand & 4) != 0;
-				else if (target == test)
+				else if (target == t31)
 					advance = (operand & 2) != 0;
 				else
 					advance = (operand & 1) != 0;
@@ -2205,8 +2270,14 @@ private:
 		r.put(sf::CSN, seg);
 		if (ers32::get(w0, 30, 1))          // M: executes privileged
 			r.put(sf::M, 1);
-		// R, the reference bit, plus this CPU in the use count.
-		m_mem.write32(ea, ers32::set(m_mem.read32(ea), 31, 1, 1));
+		// This CPU joins the use count. The CST reference bit (word 0
+		// bit 31) is deliberately NOT set: SUNOS keeps one unified
+		// segment table, and bit 31 of word 0 is the DST layout's absent
+		// bit -- marking an executed segment "referenced" would make
+		// every later data access to it trap as absent. The powerup
+		// module initialises the flags with bit 31 clear and nothing in
+		// the OS ever clears it, so the hardware evidently does not
+		// write it either.
 		cst_use_count(seg, +1);
 
 		target = pb + ers32::get(slot, 2, 30);
