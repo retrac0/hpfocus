@@ -923,6 +923,35 @@ private:
 			if (operand & 1) r.mask = pop();
 			return exec_trap::none;
 		}
+		case 057: {                                               // FILB
+			// Fill Bytes (ERS sheet 105). The stack holds a byte count on
+			// top, a target data segment pointer beneath it, and the fill
+			// byte in the low byte of the third word.
+			const unsigned sdec = operand & 3;
+			const s32 count = s32(stk(0));
+
+			if (count > 0)
+			{
+				const u32 tptr = stk(1);
+				const u8 fill = u8(stk(2));
+				const ea_result e = m_au.resolve_data_pointer(tptr, false, true);
+				m_addr_trap = e.t;
+				if (!e.ok())
+					return exec_trap::address_error;
+
+				u32 tba = e.addr;
+				s32 x = 0;
+				while (count > x)
+				{
+					m_mem.write8(tba++, fill);
+					x++;
+				}
+				r.x = u32(x);
+				set_stk(0, u32(count - x));
+			}
+			r.s -= 4 * sdec;
+			return exec_trap::none;
+		}
 		case 037: {                                               // TCC
 			// Pushes 1 if the condition code matches the mask, else 0
 			// (ERS sheet 123). The mask is CIR(29:3), the low three bits

@@ -365,7 +365,9 @@ What it has found so far:
 |---|---|---|
 | 1 | `PMPB 4` | not implemented; also exposed the device spinning instead of halting |
 | 2 | `LRAS Q+109` | **`LRA`/`LRAS` were wrong** — see below |
-| 3 | `FILB 3` | the move/scan/string group, not yet implemented |
+| 3 | `FILB 3` | not implemented |
+| 4 | `FILB 3` | implemented, but the fill overran the stack — see below |
+| 5 | `MVB 7` | reached 17 instructions; needs an initialised `DB` segment |
 
 The `LRAS` bug is the kind only real code finds. It does **not** push an
 absolute address: in direct mode it computes a *relative, tagged* pointer —
@@ -375,9 +377,27 @@ all, so there is nothing to bounds check (ERS sheet 58). The old version
 pushed a bounds-checked absolute address, which is wrong twice over. Every
 unit test still passed, because none of them had reason to look.
 
-The eleven instructions that now execute read as sensible initialisation:
-dispatch on a value, `PMPB` to fetch the CPU channel number, `ADDS #21` to
-allocate stack, then `LRAS`/`LDIS #84`/`FILB` to zero an 84-byte area.
+**A first constraint on the entry state.** Run 4 got `FILB` working but the
+fill overran the stack, and the arithmetic pins down why. The module allocates
+21 words, then fills 84 bytes at `Q+109`; by then `S` has advanced 96 bytes
+from entry, so the fill needs
+
+    Q + 109 + 84  ≤  S_entry + 96      i.e.   S_entry ≥ Q + 97
+
+**At entry, `S` must sit at least 97 bytes — about 24 words — above `Q`.**
+That rules out the obvious guess that the OS is entered by an ordinary `PCL`,
+which leaves `Q` equal to `S`. The loader hands over with a substantial frame
+already allocated. Raising `S` accordingly took the module from 11
+instructions to 17.
+
+The seventeen that now execute read as sensible initialisation: dispatch on a
+value, `PMPB` to fetch the CPU channel number, `ADDS #21` to allocate stack,
+`LRAS`/`LDIS #84`/`FILB` to zero an 84-byte work area, then a 20-byte `MVB`
+from a global-segment address computed out of the code segment. That last one
+needs `DB` pointing at initialised data, which the loader would have set up —
+so the next question is what the global data segment should contain.
+
+The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
 **Finding: the handoff can be determined empirically.** Disassembling both
 `SYSTEM POWERUP` modules shows them running the *same* I/O sequence at a
