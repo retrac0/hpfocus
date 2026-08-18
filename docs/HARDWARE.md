@@ -1093,6 +1093,50 @@ from sector 3. [`tools/bootimage.py`](../tools/bootimage.py) reassembles it,
 and the result maps to **57 modules** — `SYSTEM POWERUP`, `TRAP HANDLERS`,
 `BASIC COMPILER`, `BASIC`, `SDF`, `CS80`, and the rest of the system.
 
+## 9.3 Module layout and the entry point *(determined)*
+
+Every module begins with a preamble of four parts:
+
+```
++0x00   32 bytes   header: checksum, index, length, signature e307fffc, flags
++0x20   16 bytes   name, space padded
++0x30   variable   SCCS version string, e.g. "@(#)05.01"
+        2 bytes    terminator 00c4
+        28 bytes   table: size, three pointers, a build date, two words
+                   -- 00000494 9f400000 80000000 00a00000 19810828 ...
+        then       code
+```
+
+The version string is the only variable-length part, which is why the two
+`SYSTEM POWERUP` modules sit 8 bytes out of step: BASIC's string is empty and
+HP-UX's is `@(#)05.01`. Measured from the `00c4` terminator, both images are
+byte-identical for a 395-byte run beginning at exactly **+0xa2**.
+
+**The entry point is terminator + 0x1e** — BASIC image `0x54`, HP-UX `os.req`
+`0x5c`. Both begin with the same nine instructions, differing only in branch
+targets by the 8-byte offset between them:
+
+```
+DUP
+CMPN  #2          compare the passed value against -2
+BCC.GL <alt>      take the other path unless it is -2
+PMPB  4           fetch this CPU's MPB channel number
+CMPI  #1          is this the boot CPU?
+BCCS.E <skip>
+LDS   P-16
+LDXI  #6
+RCS               read control store 6: the CPU revision date
+```
+
+Two systems built years apart entering identically is what makes this
+conclusive rather than suggestive.
+
+It also settles part of the handoff. **The loader leaves a value on the
+stack**, which the module compares against **−2** and branches on — a start
+type or restart reason. `RCS` reading control store location 6 is the
+documented way to obtain the CPU release date (Appendix G), which software
+uses to decide which silicon bugs to avoid.
+
 ## 10. Open questions
 
 1. **SCM loader ROM** — no dump located. The protocol is documented (§8.5) and

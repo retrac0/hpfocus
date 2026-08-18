@@ -479,9 +479,21 @@ module, so the sweep produces the same 122 distinct addresses and the same
 address error at offset `0x24a`. What it does give is the right object to
 work on, and the rest of the system to follow references into.
 
-The descriptor still has one unidentified word at `0x418` — 5 on volume 1 and
-8 on volume 2 — and no field that looks like an entry point, which continues
-to suggest the loader uses a fixed rule.
+The descriptor has no entry field because the loader does not need one: the
+entry follows from the module layout. **The entry point is now determined**
+— see HARDWARE.md §9.3. It is the first instruction after the preamble, at
+`00c4` terminator + `0x1e`, which is image offset `0x54` for BASIC and `0x5c`
+for HP-UX. Both systems begin with the same nine instructions.
+
+That also means the original guess of `0x54` was right, and the `MVB` failure
+that discredited it was caused by uninitialised machine state rather than a
+wrong entry — the module was reached correctly but handed a machine the
+loader had not finished setting up.
+
+Still open on the handoff: the module's first act is `CMPN #2`, so the loader
+leaves a **value on the stack** that is tested against −2. What the other
+values mean, and what `DB`, `DST` and the data segments must contain, are the
+remaining unknowns.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 
