@@ -70,10 +70,13 @@ struct result
 	unsigned distinct = 0;      // distinct addresses visited
 };
 
-result run_from(const std::vector<u8> &img, u32 base, u32 entry,
-		u32 s_above_q, unsigned budget)
+// The memory image is reused across trials -- allocating and zeroing several
+// megabytes per candidate dominated the sweep otherwise. Only the regions a
+// trial can dirty are reset.
+result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
+		u32 pb, u32 entry, unsigned budget, std::vector<u8> &visits)
 {
-	flat_memory mem(16u << 20);
+	std::fill(mem.m_d.begin() + 0x400000, mem.m_d.begin() + 0x520000, 0);
 	mem.load(base, img);
 
 	probe_host host(mem);
@@ -85,28 +88,34 @@ result run_from(const std::vector<u8> &img, u32 base, u32 entry,
 	cpu_core cpu(mem);
 	cpu.set_io(&iop);
 
-	// `entry` doubles as the PB offset: the hypothesis under test is that
-	// the loader sets PB past the module preamble and enters at PB+0.
-	cpu.r.pb = entry;
+	cpu.r.pb = pb;
 	cpu.r.pl = base + u32(img.size() & ~3u) - 4;
 	cpu.r.p  = entry;
 	cpu.r.sb = 0x400000;
 	cpu.r.sl = 0x47ffff | 3;
 	cpu.r.q  = 0x400203;   // room below Q for the frame the loader leaves
-	cpu.r.s  = cpu.r.q + s_above_q;
+	cpu.r.s  = cpu.r.q + 0x200;
 	cpu.r.db = 0x500000;
 	cpu.r.dl = 0x50ffff | 3;
 	cpu.r.dst = 0x600000;
 	cpu.r.put(sf::M, 1);
 
-	std::map<u32, unsigned> seen;
+	std::fill(visits.begin(), visits.end(), 0);
 	result r;
+	unsigned distinct = 0;
 	for (r.steps = 0; r.steps < budget; r.steps++)
 	{
-		seen[cpu.r.p]++;
-		// A tight self-loop means it is spinning, not progressing.
-		if (seen[cpu.r.p] > 200)
-			break;
+		const u32 idx = (cpu.r.p - base) / 2;
+		if (idx < visits.size())
+		{
+			if (visits[idx] == 0)
+				distinct++;
+			if (visits[idx] < 255)
+				visits[idx]++;
+			// A tight self-loop means it is spinning, not progressing.
+			if (visits[idx] > 100)
+				break;
+		}
 		r.fault_pc = cpu.r.p;
 		const exec_trap t = cpu.step();
 		if (t != exec_trap::none)
@@ -116,7 +125,7 @@ result run_from(const std::vector<u8> &img, u32 base, u32 entry,
 			break;
 		}
 	}
-	r.distinct = unsigned(seen.size());
+	r.distinct = distinct;
 	return r;
 }
 
@@ -162,30 +171,38 @@ int main(int argc, char **argv)
 	std::fclose(f);
 
 	std::printf("module %s, %zu bytes, loaded at %#x\n\n", argv[1], img.size(), base);
-	std::printf("%8s %8s %8s  %-14s %s\n",
-			"entry", "steps", "distinct", "stopped by", "at");
-	std::printf("%s\n", std::string(60, '-').c_str());
+	std::printf("sweeping PB x entry over the first 1 KB...\n\n");
+	std::printf("%8s %8s %8s %8s  %-14s %s\n",
+			"PB", "entry", "steps", "distinct", "stopped by", "at");
+	std::printf("%s\n", std::string(70, '-').c_str());
 
-	// Sweep every halfword in the first 1 KB, which is where a fixed entry
-	// would have to live, and report the ones that get anywhere.
-	// Rank by how many *distinct* addresses were reached, not by step count:
-	// a wrong entry usually finds a tight loop and racks up steps without
-	// going anywhere, while real code sweeps forward through the module.
-	std::vector<std::pair<unsigned, u32>> best;
-	for (u32 off = 0; off < 0x400 && off + 2 <= img.size(); off += 2)
+	std::vector<u8> visits(img.size() / 2 + 2, 0);
+	flat_memory mem(0x600000);
+	struct cand { unsigned distinct; u32 pb, entry; };
+	std::vector<cand> best;
+
+	for (u32 pboff = 0; pboff < 0x400; pboff += 4)
 	{
-		const result r = run_from(img, base, base + off, 0x200, 20000);
-		if (r.distinct >= 30)
-			best.push_back({r.distinct, off});
+		for (u32 eoff = pboff; eoff < pboff + 0x600 && eoff + 2 <= img.size();
+				eoff += 2)
+		{
+			const result r = run_from(mem, img, base, base + pboff,
+					base + eoff, 4000, visits);
+			if (r.distinct >= 60)
+				best.push_back({r.distinct, pboff, eoff});
+		}
 	}
 
-	std::sort(best.rbegin(), best.rend());
-	for (size_t i = 0; i < best.size() && i < 12; i++)
+	std::sort(best.begin(), best.end(), [](const cand &a, const cand &b)
+			{ return a.distinct > b.distinct; });
+
+	for (size_t i = 0; i < best.size() && i < 15; i++)
 	{
-		const u32 off = best[i].second;
-		const result r = run_from(img, base, base + off, 0x200, 20000);
-		std::printf("%8x %8u %8u  %-14s %08x cir=%08x\n",
-				off, r.steps, r.distinct, trap_name(r.t), r.fault_pc, r.cir);
+		const result r = run_from(mem, img, base, base + best[i].pb,
+				base + best[i].entry, 4000, visits);
+		std::printf("%8x %8x %8u %8u  %-14s %08x cir=%08x\n",
+				best[i].pb, best[i].entry, r.steps, r.distinct,
+				trap_name(r.t), r.fault_pc, r.cir);
 	}
 	if (best.empty())
 		std::printf("  no entry point ran for 40 instructions\n");

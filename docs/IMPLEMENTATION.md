@@ -448,10 +448,27 @@ tripped over:
 | `S` must sit well above `Q` | the `FILB` overrun |
 | code exists *below* the entry | a backward `BCCS` of 160 bytes left `PB..PL` |
 
-Best run so far: **284 instructions over 59 distinct addresses**, entering at
-`PB` with `PB` at module offset `0x2d0`. Still not the answer — the backward
-branch shows real code lies below that — but the search is now cheap and
-systematic rather than guesswork.
+Sweeping `PB` and the entry offset independently — about 100,000 trials in
+eight seconds, once the memory image was hoisted out of the inner loop rather
+than reallocated per trial — the results cluster tightly:
+
+```
+      PB    entry    steps  distinct  stopped by
+     1a0      2dc      121       122  address error at 0001024a
+     1a4      2dc      119       120  address error at 0001024a
+     1a8      2dc      180       118  address error at 0001024a
+```
+
+`PB ≈ 0x1a0` with entry `≈ 0x2dc` is the best candidate so far, but 122
+distinct addresses out of a 4192-byte module is only about 6% of it, so this
+is suggestive rather than settled.
+
+**A better line of attack may be the media.** The SDF volume header
+(HARDWARE.md §9.1) distinguishes bootable discs from data discs in two
+fields, which means the loader has a documented way to recognise a boot
+volume — and whatever it reads next is likely to say where the image goes and
+where to enter it. That is a smaller, better-posed question than searching a
+4 KB module for an entry point.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 

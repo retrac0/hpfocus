@@ -1042,6 +1042,33 @@ instruction**; the low 32 bits are 8 hex digits, `YYYYMMDD`.
 
 ---
 
+## 9.1 SDF volume header *(observed)*
+
+Every Series 500 disc opens with the same 48-byte record. Comparing five
+volumes — two BASIC boot discs, a BASIC utility disc, a diagnostic and a demo
+— separates the constant fields from the variable ones:
+
+| Offset | 500BT1 | 500BT2 | 500UT1 | 500MFTST | BASDEM1 | Reading |
+|---|---|---|---|---|---|---|
+| `0x00` | `07000000` | `07000000` | `07000000` | `07000000` | `07000000` | format magic |
+| `0x04` | `97050-11024R0200` | `97050-11025R0200` | `97050-11027R0200` | `09020-11011R0300` | `11141-10703R0100` | part number and revision |
+| `0x14` | `1e3ed0` | `1e3ed0` | `25525a` | `255293` | `254fc1` | per *product*, not per volume |
+| `0x18` | `a8c0` | `a8c0` | `7e92` | `13869` | `bd66` | size |
+| `0x1c` | **`400`** | **`400`** | `100` | `100` | `100` | — |
+| `0x20` | `1` | `1` | `1` | `1` | `1` | |
+| `0x24` | `106` | `69` | `0` | `0` | `0` | per volume |
+| `0x28` | `107` | `6a` | `202` | `202` | `202` | per volume, `= 0x24 + 1` |
+| `0x2c` | **`42285`** | **`42285`** | `0` | `0` | `0` | — |
+
+Two fields separate bootable media from data media exactly: offset `0x1c` is
+`0x400` on the two boot discs and `0x100` on the other three, and offset
+`0x2c` is `0x42285` on the boot discs and zero elsewhere. Both are identical
+across BASIC boot volumes 1 and 2, so they describe the product rather than
+the individual disc — as does `0x14`.
+
+Offsets `0x24` and `0x28` are consecutive and vary per volume, which fits a
+last-used and first-free block pair.
+
 ## 10. Open questions
 
 1. **SCM loader ROM** — no dump located. The protocol is documented (§8.5) and
