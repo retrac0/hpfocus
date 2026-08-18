@@ -120,11 +120,33 @@ storage device** — the DDM lives in the `IOS and DDMs` segment and its
 protocol can be read out of a run with `bootrun --probe <pa> <id>
 --probelog`, which is what that switch exists for.
 
-HP-UX 5.30 is blocked differently and more sharply: it executes **format 4
-opcode 021 (549 times)**, an encoding the Dec-82 Appendix B leaves
-unassigned. The usage is highly stereotyped — `LDXI #4`, `LRAS Q+n,I,X`,
-then the opcode — so it consumes a tagged pointer, but nothing in hand
-names it. Identifying opcodes 020 and 021 is the prerequisite for 5.30.
+**HP-UX 5.01 boots the same chain.** The kernel on the damaged tape is
+whole (`system/97080C/os.req`, all sixteen segments verify), and once it is
+terminated as a boot image it runs powerup, relocation, the TCB dispatch
+and the console self-test exactly as BASIC and the diagnostics do. The
+stored `os.req` is the *installable* file, not a boot image: the segment
+chain ends without the negative word the powerup module stops on, so the
+walk runs off the end and checksums garbage for ninety million
+instructions. Truncating at the chain end and appending `ffffffff` makes it
+bootable:
+
+```sh
+python3 tools/lifdir.py software/97089C.hpi --extract S97080C --out s.cpio
+python3 tools/cpiolist.py s.cpio --extract system/97080C/os.req --out os.req
+python3 -c "d=open('os.req','rb').read(); open('hpux501.bin','wb').write(d[:0x58c2c]+b'\xff\xff\xff\xff')"
+src/test/bootrun hpux501.bin --p64 0x1000000
+```
+
+**Both HP-UX versions then stop on the same thing**: format 4 opcodes
+**020 and 021**, which the Dec-82 Appendix B leaves unassigned. 5.01 uses
+them 1,192 times and 5.30 1,514 times; BASIC and the diagnostics never
+execute either. 5.01 reaches its first `021` after 1.26M instructions, in
+the `CORE SYSTEM` segment. The 530/540 service manual settles that they are
+real: it describes **"an instruction set consisting of 230 operation
+codes"** where Appendix B assigns 218 — about twelve later additions, of
+which these are two. Their semantics are the prerequisite for either HP-UX,
+and nothing in hand names them; the recovered userland has the C compiler's
+peephole optimiser but no assembler mnemonic table.
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository

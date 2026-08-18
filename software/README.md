@@ -138,6 +138,27 @@ the shell and every command. A kernel with no userland boots as far as trying
 to start `init`, then stops. This image supports **kernel bring-up and
 validation, not a usable HP-UX session.**
 
+### Making `os.req` bootable
+
+All sixteen segments verify, so the kernel itself is undamaged. But the
+stored file is what `osmgr` *installs*, not what the loader hands to the
+CPU: its segment chain simply ends, with no negative terminator word, so
+`SYSTEM POWERUP` walks straight past the last segment and checksums
+whatever follows in memory. The chain ends at `0x58c2c` (the file's last
+two bytes are padding), so a bootable image is the file truncated there
+with `ffffffff` appended:
+
+```sh
+python3 tools/lifdir.py software/97089C.hpi --extract S97080C --out s.cpio
+python3 tools/cpiolist.py s.cpio --extract system/97080C/os.req --out os.req
+python3 -c "d=open('os.req','rb').read(); open('hpux501.bin','wb').write(d[:0x58c2c]+b'\xff\xff\xff\xff')"
+src/test/bootrun hpux501.bin --p64 0x1000000
+```
+
+That boots the full launch chain and prints the console self-test, stopping
+where HP-UX 5.30 also stops — on format 4 opcodes 020/021, which the
+Dec-82 ERS does not assign.
+
 To close that gap: ask the museum whether the original tape can be re-read (the
 2013 file date suggests a single pass long ago), or find another copy of the
 97089C tape.
