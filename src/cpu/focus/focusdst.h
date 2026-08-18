@@ -103,9 +103,17 @@ public:
 
 	dst_walker(registers &r, memory_interface &mem) : m_r(r), m_mem(mem) { }
 
+	// Address of the word carrying the use count of whatever the last
+	// successful resolve() landed on -- the DST entry for an unpaged
+	// segment, the page table entry for a paged one. MUC is the only
+	// instruction that needs it, and it needs it for the same walk it has
+	// just done, so recording it here beats a second traversal.
+	u32 last_use_count_slot() const { return m_use_slot; }
+
 	bool resolve(bool system_dst, u32 segment, u32 offset, bool modify,
 			u32 &addr, trap &t) override
 	{
+		m_use_slot = 0;
 		const u32 table = system_dst ? SYSTEM_DST_BASE : m_r.dst;
 
 		// Entry zero's first word is 16 times the number of entries,
@@ -172,6 +180,7 @@ public:
 						e.set_dirty();
 					m_mem.write32(entry_addr, e.w0);
 
+					m_use_slot = entry_addr;
 					addr = e.location() + offset;
 					return true;
 				}
@@ -253,6 +262,8 @@ public:
 				pe.set_dirty();
 			m_mem.write32(pte_addr, pe.w0);
 
+			m_use_slot = pte_addr;
+
 			// LOCATION is page aligned, so OR and add are equivalent; the
 			// ERS writes it as OR.
 			addr = pe.location() | page_offset;
@@ -268,6 +279,7 @@ private:
 
 	registers &m_r;
 	memory_interface &m_mem;
+	u32 m_use_slot = 0;
 };
 
 } // namespace focus

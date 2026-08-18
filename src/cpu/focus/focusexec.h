@@ -693,10 +693,67 @@ private:
 			m_mem.write16(a + xx, u16(v));
 			return exec_trap::none;
 		}
+		case 063: {                                             // PSLA
+			// Test-and-set: read the word, leave -1 behind. The ERS marks
+			// the pair uninterruptable by other processors; this core is
+			// single-threaded, so issuing them back to back is enough.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 e = stk(0) + xx;
+			const u32 v = m_mem.read32(e);
+			m_mem.write32(e, 0xffffffffu);
+			set_stk(0, v); cca(v);
+			return exec_trap::none;
+		}
 		case 064: {                                             // PLDA
 			if (!r.privileged()) return exec_trap::unimplemented;
 			const u32 v = m_mem.read32(stk(0) + xx);
 			set_stk(0, v); cca(v);
+			return exec_trap::none;
+		}
+		case 066: {                                             // CPAA
+			// Replaces a data segment pointer with the absolute address it
+			// evaluates to, so privileged code can then use the P*A forms.
+			const ea_result e = m_au.resolve_data_pointer(stk(0), false, false);
+			if (!e.ok())
+			{
+				m_addr_trap = e.t;
+				return exec_trap::address_error;
+			}
+			set_stk(0, e.addr); cca(e.addr);
+			return exec_trap::none;
+		}
+		case 013: {                                             // MUC
+			// Adjusts the use count of the segment or page a pointer names,
+			// which is how the memory manager pins something it is about to
+			// touch. Bit 3 selects increment. The condition code reports the
+			// outcome rather than trapping: CCE if absent, CCL for any other
+			// evaluation error, CCG on success.
+			const ea_result e = m_au.resolve_data_pointer(stk(0), false, false);
+			if (!e.ok())
+			{
+				const bool absent = e.t == trap::absent_segment
+						|| e.t == trap::absent_page
+						|| e.t == trap::absent_page_table;
+				r.put(sf::CC, absent ? CCE : CCL);
+				return exec_trap::none;
+			}
+			// Only an external data segment pointer -- bit 0 clear -- goes
+			// through the DST and so has a use count at all. Stack and
+			// global pointers resolve without touching a table, and asking
+			// for a slot after one of those would read a stale answer.
+			const bool external = ers32::get(stk(0), 0, 1) == 0;
+			const u32 slot = external ? m_dst.last_use_count_slot() : 0;
+			if (slot != 0)
+			{
+				const u32 w = m_mem.read32(slot);
+				u32 n = ers32::get(w, 1, 12);
+				// The field is 12 bits; saturate rather than wrap, so a
+				// miscounted release cannot make a pinned page look free.
+				if (b3) { if (n != 0xfff) n++; }
+				else    { if (n != 0) n--; }
+				m_mem.write32(slot, ers32::set(w, 1, 12, n));
+			}
+			r.put(sf::CC, CCG);
 			return exec_trap::none;
 		}
 		case 065: {                                             // PSTA
@@ -1111,6 +1168,33 @@ private:
 		case 063: case 067:                                       // BNO
 			if (!r.test(sf::O)) rel(); else r.put(sf::O, 0);
 			return exec_trap::none;
+		case 073: case 077: {                                     // CRB
+			// Compare Range & Branch (ERS sheet 93). The value sits under
+			// two bounds: (S) is the upper, (S-1) the lower, (S-2) the
+			// value. The bounds are popped either way; in range gives CCE
+			// and falls through, out of range gives CCG and branches -- or
+			// takes a Check Trap when the branch field is zero, which is
+			// how a CASE with no default reports an unmatched selector.
+			//
+			// The bounds are treated as inclusive. The ERS pseudocode as
+			// scanned reads "If (S-1) < (S-2) < (S)", strict at both ends,
+			// but that would reject the endpoints of every CASE range and
+			// contradicts the sibling CHEK, whose own text calls its limits
+			// bounds. Read as inclusive; revisit if real code disagrees.
+			const s32 hi = s32(stk(0)), lo = s32(stk(1)), v = s32(stk(2));
+			r.s -= 8;
+			if (v >= lo && v <= hi)
+			{
+				r.put(sf::CC, CCE);
+				return exec_trap::none;
+			}
+			r.put(sf::CC, CCG);
+			if (operand == 0)
+				return take_trap(trap_cause::check_trap, m_cir);
+			rel();
+			return exec_trap::none;
+		}
+
 		case 070: case 074:                                       // BRZ
 			if (pop() == 0) rel();
 			return exec_trap::none;
@@ -1159,6 +1243,12 @@ private:
 			r.put(sf::CC, (a < s32(imm)) ? CCL : (a == s32(imm)) ? CCE : CCG);
 			return exec_trap::none;
 		}
+		// 16-bit forms of LPP and LIA. LPPS scales its 8-bit field by four
+		// because it names a whole STT entry; LIAS splits the field into
+		// CIR(24:2) level and CIR(26:6) offset, the offset always positive.
+		case 034: return do_lpp(4u * imm);                       // LPPS
+		case 025: return do_lia(imm >> 6, s32(imm & 0x3f));      // LIAS
+
 		case 004: { const u32 v = stk(0) + imm; set_stk(0, v); cca(v);
 			return exec_trap::none; }                            // ADDI
 		case 005: { const u32 v = stk(0) - imm; set_stk(0, v); cca(v);
@@ -1250,6 +1340,14 @@ private:
 			return exec_trap::none;
 		}
 		case 003: return do_call(off);                            // PCL
+		case 004: return do_lpp(off);                             // LPP
+		case 005: {                                               // LIA
+			// Level is CIR(8:4); the offset is CIR(13:19) with its sign in
+			// CIR(12:1), 0 for + and 1 for -.
+			const u32 level = (d >> 20) & 0xf;
+			const s32 sofs = ((d >> 19) & 1) ? -s32(off) : s32(off);
+			return do_lia(level, sofs);
+		}
 		case 006: push(off); cca(off); return exec_trap::none;    // LDI
 		case 007: { const u32 v = u32(-s32(off)); push(v); cca(v);
 			return exec_trap::none; }                             // LNI
@@ -1262,12 +1360,16 @@ private:
 		}
 		case 002: {                                               // CHEK
 			// Range check: traps if the top of stack lies outside the two
-			// immediate bounds (ERS sheet 128).
+			// immediate bounds (ERS sheet 128). Sheet 46 names the cause:
+			// "Check Trap. This trap is generated by the CHEK and CRB
+			// instructions. The Current Instruction register is passed as a
+			// parameter." That is STT entry 2, not the bounds violation at
+			// entry 1 that this used to raise.
 			const s32 v = s32(stk(0));
 			const s32 lo = s32(u32((d >> 12) & 0x3ff));
 			const s32 hi = s32(u32(d & 0xfff));
 			if (v < lo || v > hi)
-				return exec_trap::bounds_violation;
+				return take_trap(trap_cause::check_trap, m_cir);
 			return exec_trap::none;
 		}
 		case 013: {                                               // ST
@@ -1576,6 +1678,70 @@ private:
 	//----------------------------------------------------------------
 	//  procedure call and return (ERS sheets 92, 96)
 	//----------------------------------------------------------------
+
+	//----------------------------------------------------------------
+	//  program and intermediate pointers (ERS sheets 62, 122)
+	//----------------------------------------------------------------
+
+	// LPP/LPPS. Pushes the Segment Transfer Table entry at PL-Offset. If that
+	// entry is a *local* program pointer -- bit 0 clear -- it is rewritten as
+	// an external one naming (this code segment, this STT offset), which is
+	// the form a caller in another segment can use.
+	exec_trap do_lpp(u32 offset)
+	{
+		// The word at PL carries the STT length in its low 19 bits.
+		const u32 limit = ers32::get(m_mem.read32(r.pl), 13, 19);
+		if (offset > limit)
+			return take_trap(trap_cause::stt_violation, 0);
+
+		u32 v = m_mem.read32(r.pl - offset);
+		if (ers32::get(v, 0, 1) == 0)
+		{
+			v = ers32::set(0, 0, 1, 1);
+			v = ers32::set(v, 1, 19, offset);
+			v = ers32::set(v, 20, 12, r.get(sf::CSN));
+		}
+		push(v);
+		return exec_trap::none;
+	}
+
+	// LIA/LIAS. Builds a pointer to a lexically enclosing stack frame by
+	// walking `level` links of the static chain, then adds a byte offset.
+	// Each frame stores its parent's pointer one word below the frame base,
+	// so a step is "evaluate this pointer, then load the word 4 bytes below
+	// the address it yields".
+	exec_trap do_lia(u32 level, s32 offset)
+	{
+		bool via_external = false;
+
+		// Start from Q as a stack segment pointer: tag 11, offset Q-SB.
+		u32 ptr = ers32::set(0, 0, 2, 3);
+		ptr = ers32::set(ptr, 2, 30, r.q - r.sb);
+
+		for (u32 d = level; d > 0; d--)
+		{
+			if (ers32::get(ptr, 0, 1) == 0)
+				via_external = true;
+			const ea_result e = m_au.resolve_data_pointer(ptr, false, false);
+			if (!e.ok())
+			{
+				m_addr_trap = e.t;
+				return exec_trap::address_error;
+			}
+			ptr = m_mem.read32(e.addr - 4);
+		}
+
+		ptr += u32(offset);
+
+		// A chain that passed through an external frame yields a pointer
+		// into a segment this one cannot name locally; converting it needs
+		// the external data segment path, which is not modelled yet.
+		if (via_external)
+			return exec_trap::unimplemented;
+
+		push(ptr);
+		return exec_trap::none;
+	}
 
 	// PCL/PCLS. `offset` is a byte offset back from PL naming the Segment
 	// Transfer Table entry; zero means the pointer is on the stack.

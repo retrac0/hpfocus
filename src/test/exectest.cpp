@@ -66,6 +66,14 @@ static u16 f3(u8 op3, bool b3 = false)
 {
 	return u16((b3 ? 0x1000 : 0) | op3);
 }
+static u16 f2(u8 op2, u8 operand, bool b3 = false)
+{
+	return u16((b3 ? 0x1000 : 0) | (op2 << 6) | operand);
+}
+static u16 f4(u8 op3, bool b3 = false)
+{
+	return u16((b3 ? 0x1000 : 0) | (1 << 6) | op3);
+}
 static u16 f5(u8 op2, u8 operand)
 {
 	return u16(0x2000 | (op2 << 8) | operand);
@@ -847,6 +855,235 @@ static void test_tcc()
 	CHECK_EQ(h.cpu.stk(0), 1);
 }
 
+
+// LPP/LPPS, LIA/LIAS, PSLA, CPAA, CRB and MUC -- the system group the HP-UX
+// 5.30 kernel needs. Frequencies quoted are static counts over that kernel.
+static void test_system_group()
+{
+	std::printf("program pointers, semaphores and range checks\n");
+
+	// ---- LPP / LPPS (ERS sheet 62) -----------------------------------
+	{
+		harness h;
+		// The word at PL carries the STT length in its low 19 bits.
+		h.mem.write32(h.cpu.r.pl, 64);
+
+		// An entry whose bit 0 is set is already an external program
+		// pointer and is pushed unchanged.
+		h.mem.write32(h.cpu.r.pl - 8, 0x80000000u | 0x1234);
+		CHECK(h.one(u32_insn(004, 0, 8)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), int32_t(0x80000000u | 0x1234));
+
+		// A local pointer -- bit 0 clear -- is converted to an external one
+		// naming this code segment and this STT offset.
+		h.cpu.r.put(sf::CSN, 5);
+		h.mem.write32(h.cpu.r.pl - 12, 0x000000ff);
+		CHECK(h.one(u32_insn(004, 0, 12)) == exec_trap::none);
+		const u32 v = h.cpu.stk(0);
+		CHECK_EQ(ers32::get(v, 0, 1), 1);        // now external
+		CHECK_EQ(ers32::get(v, 1, 19), 12);      // the STT offset
+		CHECK_EQ(ers32::get(v, 20, 12), 5);      // the code segment
+
+		// Past the end of the STT is a violation, not a wild read.
+		CHECK(h.one(u32_insn(004, 0, 65)) == exec_trap::trapped);
+		CHECK(h.cpu.last_trap() == trap_cause::stt_violation);
+
+		// LPPS scales its 8-bit field by four, so operand 2 is offset 8.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		CHECK(h.one(f5(034, 2)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), int32_t(0x80000000u | 0x1234));
+	}
+
+	// ---- LIA / LIAS (ERS sheet 122) ----------------------------------
+	{
+		harness h;
+		h.cpu.r.q = h.cpu.r.sb + 0x40 + 3;
+		h.cpu.r.s = h.cpu.r.sb + 0x200 + 3;    // room for the chain walk
+
+		// Level 0 names the current frame: a stack pointer to Q, plus the
+		// byte offset.
+		CHECK(h.one(u32_insn(005, 0, 16)) == exec_trap::none);
+		u32 p = h.cpu.stk(0);
+		CHECK_EQ(ers32::get(p, 0, 2), 3);                       // stack tag
+		CHECK_EQ(ers32::get(p, 2, 30), (h.cpu.r.q - h.cpu.r.sb) + 16);
+
+		// The sign of a 32-bit LIA offset is CIR(12:1), which is the low
+		// bit of the BASE field.
+		h.cpu.r.s = h.cpu.r.sb + 0x200 + 3;
+		CHECK(h.one(u32_insn(005, 1, 4)) == exec_trap::none);
+		p = h.cpu.stk(0);
+		CHECK_EQ(ers32::get(p, 2, 30), (h.cpu.r.q - h.cpu.r.sb) - 4);
+
+		// Level 1 follows one static link: evaluate the frame pointer, then
+		// take the word four bytes below the address it yields. The level
+		// field is CIR(8:4), bits 20-23, which u32_insn cannot reach.
+		h.cpu.r.s = h.cpu.r.sb + 0x200 + 3;
+		u32 parent = ers32::set(0, 0, 2, 3);
+		parent = ers32::set(parent, 2, 30, 0x20);
+		h.mem.write32(h.cpu.r.q - 4, parent);
+		CHECK(h.one(u32_insn(005, 0, 8) | (1u << 20)) == exec_trap::none);
+		CHECK_EQ(ers32::get(h.cpu.stk(0), 2, 30), 0x20 + 8);
+
+		// LIAS packs level into CIR(24:2) and offset into CIR(26:6).
+		h.cpu.r.s = h.cpu.r.sb + 0x200 + 3;
+		CHECK(h.one(f5(025, (0 << 6) | 12)) == exec_trap::none);
+		CHECK_EQ(ers32::get(h.cpu.stk(0), 2, 30),
+				(h.cpu.r.q - h.cpu.r.sb) + 12);
+	}
+
+	// ---- PSLA (ERS sheet 118) ----------------------------------------
+	{
+		harness h;
+		h.mem.write32(0x9000, 0x5555);
+		h.cpu.push(0x9000);
+		// Unprivileged it is not available at all.
+		CHECK(h.one(f4(063)) == exec_trap::unimplemented);
+
+		h.cpu.r.put(sf::M, 1);
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(0x9000);
+		CHECK(h.one(f4(063)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), 0x5555);              // old value returned
+		CHECK_EQ(h.mem.read32(0x9000), -1);          // and the lock taken
+
+		// A second attempt sees the lock held, which is the whole point.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(0x9000);
+		CHECK(h.one(f4(063)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), -1);
+
+		// Bit 3 indexes by X.
+		h.mem.write32(0x9010, 0x77);
+		h.cpu.r.x = 0x10;
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(0x9000);
+		CHECK(h.one(f4(063, true)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), 0x77);
+		CHECK_EQ(h.mem.read32(0x9010), -1);
+	}
+
+	// ---- CPAA (ERS sheet 118) ----------------------------------------
+	{
+		harness h;
+		h.cpu.r.s = h.cpu.r.sb + 0x100 + 3;    // the target must be in bounds
+		// A stack segment pointer evaluates to SB + its offset.
+		u32 ptr = ers32::set(0, 0, 2, 3);
+		ptr = ers32::set(ptr, 2, 30, 0x24);
+		h.cpu.push(ptr);
+		CHECK(h.one(f4(066)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), int32_t(h.cpu.r.sb + 0x24));
+
+		// A global one evaluates against DB.
+		h.cpu.r.s = h.cpu.r.sb + 0x100 + 3;
+		u32 g = ers32::set(0, 0, 2, 2);
+		g = ers32::set(g, 2, 30, 0x30);
+		h.cpu.push(g);
+		CHECK(h.one(f4(066)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), int32_t(h.cpu.r.db + 0x30));
+	}
+
+	// ---- CRB (ERS sheet 93) ------------------------------------------
+	{
+		harness h;
+		// value, lower bound, upper bound -- the value ends up on top.
+		h.cpu.push(5); h.cpu.push(1); h.cpu.push(10);
+		CHECK(h.one(f2(073, 4)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.stk(0), 5);                    // bounds popped
+		CHECK_EQ(h.cpu.r.p, 0x1002);                  // no branch
+
+		// The endpoints are inside the range.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(10); h.cpu.push(1); h.cpu.push(10);
+		CHECK(h.one(f2(073, 4)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+
+		// Out of range with a branch field: CCG and a forward branch of
+		// `operand` halfwords from P.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(99); h.cpu.push(1); h.cpu.push(10);
+		CHECK(h.one(f2(073, 4)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCG);
+		CHECK_EQ(h.cpu.stk(0), 99);
+		CHECK_EQ(h.cpu.r.p, 0x1000 + 2 * 4);
+
+		// Opcode 77 is the backward form.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(99); h.cpu.push(1); h.cpu.push(10);
+		CHECK(h.one(f2(077, 4)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.p, 0x1000 - 2 * 4);
+
+		// A zero branch field means Check Trap, STT entry 2, with CIR as
+		// the parameter (ERS sheet 46).
+		h.mem.write32(0, 0x2000);                 // system CST
+		h.mem.write32(0x2000 + 16 + 4, 0x0fff);   // entry 1 length-1
+		h.mem.write32(0x2000 + 16 + 8, 0x1000);   // entry 1 location
+		h.mem.write32(0x1ffc - 4 * 002, 0x40);    // its STT entry
+		h.cpu.enable_traps(true);
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(99); h.cpu.push(1); h.cpu.push(10);
+		CHECK(h.one(f2(073, 0)) == exec_trap::none);
+		CHECK(h.cpu.last_trap() == trap_cause::check_trap);
+		CHECK_EQ(unsigned(trap_cause::check_trap), 002u);
+
+		// CHEK raises the same cause, not a bounds violation.
+		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(500);
+		CHECK(h.one(u32_insn(002, 0, 0) | (10u << 12) | 20u) == exec_trap::none);
+		CHECK(h.cpu.last_trap() == trap_cause::check_trap);
+	}
+
+	// ---- MUC (ERS sheet 127) -----------------------------------------
+	{
+		harness h;
+		// A minimal user DST: entry 0 holds 16 * entry count, entry 1 is an
+		// unpaged, present, writable segment.
+		h.cpu.r.dst = 0x20000;
+		h.mem.write32(0x20000, 16 * 4);
+		const u32 e1 = 0x20000 + 16;
+		u32 w0 = 0;
+		w0 = ers32::set(w0, 1, 12, 7);     // use count
+		w0 = ers32::set(w0, 27, 1, 1);     // writable
+		h.mem.write32(e1, w0);
+		h.mem.write32(e1 + 4, 0xff);       // length - 1
+		h.mem.write32(e1 + 8, 0x30000);    // location
+
+		// An external data segment pointer: bit 0 clear, bit 1 set to pick
+		// the user DST, segment number in (2:11), offset in (13:19).
+		u32 ptr = ers32::set(0, 1, 1, 1);
+		ptr = ers32::set(ptr, 2, 11, 1);
+
+		h.cpu.push(ptr);
+		CHECK(h.one(f4(013, true)) == exec_trap::none);      // increment
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCG);
+		CHECK_EQ(ers32::get(h.mem.read32(e1), 1, 12), 8);
+
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(ptr);
+		CHECK(h.one(f4(013)) == exec_trap::none);            // decrement
+		CHECK_EQ(ers32::get(h.mem.read32(e1), 1, 12), 7);
+
+		// An absent segment reports CCE rather than trapping, so the memory
+		// manager can decide what to do about it.
+		h.mem.write32(e1, ers32::set(w0, 31, 1, 1));
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(ptr);
+		CHECK(h.one(f4(013, true)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+
+		// Any other evaluation failure reports CCL. Segment 3 is past the
+		// end of this table.
+		h.mem.write32(e1, w0);
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		u32 far_ptr = ers32::set(0, 1, 1, 1);
+		far_ptr = ers32::set(far_ptr, 2, 11, 9);   // past the end of the table
+		h.cpu.push(far_ptr);
+		CHECK(h.one(f4(013, true)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCL);
+	}
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -862,6 +1099,7 @@ int main()
 	test_io();
 	test_tcc();
 	test_traps();
+	test_system_group();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

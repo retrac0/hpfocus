@@ -19,11 +19,24 @@ which runs correctly on the emulated CPU for n = 0 to 12 which means
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
 
 Disassembler, register model, addressing, DST walk and an execution core that
-covers **97.1% of the instructions in the real HP-UX kernel and BASIC boot
-disc**, weighted by frequency. Internal traps vector correctly through code 
-segment 1. Still to come: the
-string and decimal groups, external interrupts, then the machine around the
-CPU.
+covers **98.3% of the instructions in the real HP-UX 5.30 kernel**, weighted
+by frequency. Internal traps vector correctly through code segment 1. Still to
+come: the string and decimal groups, external interrupts, then the machine
+around the CPU.
+
+That kernel is now a *complete, undamaged* 5.30 image recovered from the 7914
+unit-save tapes, along with its entire userland — see
+[software/README.md](software/README.md). It replaces the truncated 5.01 tape
+as the coverage target, and it raises the stretch goal from "bring up a
+kernel" to **boot this system**.
+
+The most recent step closed the system group the kernel needs and the earlier
+corpora barely exercised: `LPP`/`LPPS` and `LIA`/`LIAS` (program and
+intermediate pointers), `PSLA` (the test-and-set semaphore), `CPAA`, `CRB` and
+`MUC` (segment use counts). Everything still named in the remaining gap is
+either the string group or an opcode Appendix B does not assign — the latter
+being data that a linear scan misreads as code, since a run of `0xff` decodes
+as format 6 opcode 37.
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository
