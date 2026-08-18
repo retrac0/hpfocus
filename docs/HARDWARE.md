@@ -1078,7 +1078,7 @@ at `0x400` and then a raw slice of the boot image.
 
 | Offset | 500BT1 | 500BT2 | Meaning |
 |---|---|---|---|
-| `0x400` | `e9c28206` | `e9c28206` | product identifier, same across the set |
+| `0x400` | `e9c28206` | `e9c28206` | **boot image format magic** — the same value appears on the HP-UX 5.30 disc, so it identifies the format, not the product |
 | `0x404` | `0005b0c4` | `0005b0c4` | **total image size**, 372,932 bytes |
 | `0x408` | `2` | `2` | volumes in the set |
 | `0x40c` | `1` | `2` | this volume's number |
@@ -1128,8 +1128,9 @@ LDXI  #6
 RCS               read control store 6: the CPU revision date
 ```
 
-Two systems built years apart entering identically is what makes this
-conclusive rather than suggestive. Executing from there confirms it: `-2` on
+**Three** systems entering identically is what makes this conclusive: BASIC
+2.0, HP-UX 5.01 and HP-UX 5.30 all begin with the same nine instructions at
+terminator + `0x1e` — `0x54`, `0x5c` and `0x5c` respectively. Executing from there confirms it: `-2` on
 the stack takes a long, productive path, while every other value falls
 through to the alternate branch.
 

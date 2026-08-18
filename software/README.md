@@ -253,6 +253,61 @@ dependencies than a Unix kernel — and unlike the tape they are undamaged.
 
 ---
 
+---
+
+## `cct/` — HP 7914 disc unit save, HP-UX 5.30
+
+Two gzipped tape images from the Crisis Computer Tapes collection,
+<https://www.bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/>.
+Each expands to 66,975,744 bytes; together they are a backup of a 132 MB
+HP 7914 disc.
+
+**These are not an install tape.** A "unit save" is a raw dump of a disc unit,
+so what they hold is a *complete installed system* — which for our purposes is
+considerably better.
+
+**The filename understates them.** They are labelled `hpux4.0`, but the boot
+image says:
+
+```
+HP-UX Model 530/540/550 Release 05.30 (97089C)
+```
+
+Release **5.30** is the last version HP shipped for the Series 500.
+
+### Condition: intact
+
+| | tape 1 | tape 2 |
+|---|---|---|
+| blocks | 261,624 | 261,624 |
+| zero blocks | 15.1% | 13.1% |
+| longest zero run | 4,092 | 2,708 |
+| last non-zero block | 261,623 (the last) | 261,623 (the last) |
+
+Both carry data to the final block with no trailing zero region, so neither is
+truncated. The scattered zero blocks are ordinary filesystem free space. This
+is a completely different picture from `97089C.hpi`, which stops dead at 23%.
+
+### What is on them
+
+- **A complete bootable HP-UX 5.30 image**, 611,740 bytes at offset `0x400`
+  of tape 1, mapping to 46+ modules — `SYSTEM POWERUP`, `TRAP HANDLERS`,
+  `HP-UX KERNEL`, `SDF`, `CORE SYSTEM` and the rest.
+- **The userland.** Around 7,500 Unix paths with a populated `/bin` —
+  `awk`, `admin`, `asa`, `aterm` and hundreds more. This is exactly what
+  `SCOMMANDS` on the damaged 5.01 tape was supposed to contain.
+- Live user data: tape 2 opens with UUCP session logs.
+
+### Consequences
+
+This supersedes `97089C.hpi` as the HP-UX target. It also supplied a **third
+independent `SYSTEM POWERUP` sample**, which confirms the entry point rule
+exactly — BASIC 2.0, HP-UX 5.01 and HP-UX 5.30 all begin with the same nine
+instructions at terminator + `0x1e`.
+
+And it corrected a misreading: `e9c28206` is **not** a product identifier. It
+is the boot image format magic, identical on the BASIC discs and here.
+
 ## Tools
 
 | Tool | Purpose |
@@ -261,6 +316,8 @@ dependencies than a Unix kernel — and unlike the tape they are undamaged.
 | `../tools/lifdir.py` | list/extract the LIF directory of `.hpi` images |
 | `../tools/cpiolist.py` | list/extract big-endian old-binary cpio filesets |
 | `../tools/modmap.py` | map named modules in a boot image |
+| `../tools/sdfdir.py` | list/extract files from an SDF volume |
+| `../tools/bootimage.py` | reassemble a boot image from its volumes |
 
 ```sh
 python3 tools/td0.py      software/basic/500BT1.TD0 --raw /tmp/BT1.img
