@@ -80,7 +80,7 @@ architecture widened to 32 bits. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATIO
 opcode map against the real HP-UX kernel and BASIC boot disc. The MAME
 disassembler in [src/cpu/focus/](src/cpu/focus/) is differentially tested
 against it over **550,030 instructions with byte-identical output**, and the
-register model, addressing, DST walk and execution core carry 517 unit
+register model, addressing, DST walk and execution core carry 522 unit
 assertions — including all ten worked examples from ERS Figure 2.1 and the
 recursive factorial from ERS section 7.
 

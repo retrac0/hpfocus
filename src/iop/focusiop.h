@@ -54,6 +54,8 @@ enum iop_cmd : u8
 	CMD_WIMG  = 033,   // W  write interrupt message
 	CMD_RIRQ  = 034,   // R  read interrupt request
 	CMD_SIL   = 035,   // W  set interrupt level
+	CMD_EINT  = 036,   // C  enable interrupt
+	CMD_DINT  = 037,   // C  disable interrupt
 
 	// Interval timer
 	CMD_WTMS  = 040,   // W  write timer start
@@ -63,11 +65,15 @@ enum iop_cmd : u8
 
 	// Interfaces
 	CMD_IFPL  = 047,   // R  interface poll
+	//
+	// Real boot code also issues opcodes 000, 011, 050, 053 and 065, which
+	// the command list in section 5 does not name -- see the note in
+	// docs/HARDWARE.md. They are refused for now rather than guessed at.
 	CMD_WDPA  = 054,   // W  write DMA peripheral address
 	CMD_RDPA  = 055,   // R  read DMA peripheral address
 	CMD_RDB   = 056,   // R  read data buffer
 	CMD_RIRV  = 057,   // R  read revision
-	CMD_WMCN  = 060,   // W  write MPB channel number
+	CMD_RIOB  = 060,   // C  reset I/O bus
 	CMD_CALM  = 063,   // C  clear address lockout mode
 	CMD_SALM  = 064,   // C  set address lockout mode
 	CMD_DCE   = 073,   // C  disable IOP command execution
@@ -144,6 +150,7 @@ public:
 		m_led = false;
 		m_lockout = false;
 		m_enabled = true;
+		m_int_enable = true;
 		update_interrupt();
 	}
 
@@ -181,7 +188,6 @@ public:
 		case CMD_WTMS: m_timer_start = data; m_timer_count = data; return true;
 		case CMD_WTMC: m_timer_count = data; return true;
 		case CMD_WAMK: m_attn_mask = data; return true;
-		case CMD_WMCN: m_channel = u8(data & 7); return true;
 		default:       return false;
 		}
 	}
@@ -234,6 +240,16 @@ public:
 		case CMD_LON:  m_led = true; return true;
 		case CMD_LOFF: m_led = false; return true;
 		case CMD_CAAK: m_attn_ack = false; return true;
+		case CMD_EINT: m_int_enable = true;  update_interrupt(); return true;
+		case CMD_DINT: m_int_enable = false; update_interrupt(); return true;
+		case CMD_RIOB:
+			// Reset I/O Bus: drop every channel's DMA and clear pending
+			// requests, as a power-up sequence expects.
+			for (auto &c : m_chan) { c.dma_active = false; }
+			m_dma_mask = 0;
+			m_int_request = 0;
+			update_interrupt();
+			return true;
 		default:       return false;
 		}
 	}
@@ -331,7 +347,8 @@ private:
 
 	void update_interrupt()
 	{
-		m_host.iop_interrupt((m_int_request & ~m_int_mask) != 0);
+		m_host.iop_interrupt(m_int_enable
+				&& (m_int_request & ~m_int_mask) != 0);
 	}
 
 	host &m_host;
@@ -349,6 +366,7 @@ private:
 	bool m_led = false;
 	bool m_lockout = false;
 	bool m_enabled = true;
+	bool m_int_enable = true;
 };
 
 } // namespace focus

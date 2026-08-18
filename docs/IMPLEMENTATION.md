@@ -347,6 +347,18 @@ loader's *effect* still has to be synthesised. That depends on the
 `SYSTEM POWERUP` handoff contract, which is the next thing to reverse
 engineer.
 
+**Finding: the handoff can be determined empirically.** Disassembling both
+`SYSTEM POWERUP` modules shows them running the *same* I/O sequence at a
+constant offset — `RCS` to read the CPU revision, `WAIT`, `PSHR`, `IXIT`,
+then a block of IOC/IOW device initialisation. BASIC 2.0 and HP-UX 5.01 do
+the same thing in the same order.
+
+That reframes the loader problem. Rather than deduce the handoff contract by
+reading, the module can be *run*: load it, set plausible register state, and
+single-step in MAME's debugger. Where it faults says what it expected. The
+CPU, IOP and SCM now exist precisely to make that possible, and the two
+independent samples cross-check each other.
+
 **2.4 — Mass storage.** HP-IB and the 9895 floppy path, to mount the BASIC
 and diagnostic discs.
 

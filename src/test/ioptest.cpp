@@ -134,16 +134,26 @@ static void test_registers()
 	CHECK(iop.io_control(tgt(CMD_LOFF, 3, 0)));
 	CHECK(!iop.led());
 
-	// Writing the channel number moves the IOP.
-	CHECK(iop.io_write(tgt(CMD_WMCN, 3, 0), 6));
-	CHECK_EQ(iop.channel_number(), 6);
-	CHECK(!iop.io_control(tgt(CMD_LON, 3, 0)));
-	CHECK(iop.io_control(tgt(CMD_LON, 6, 0)));
-
 	// An unknown opcode is refused rather than silently accepted.
-	CHECK(!iop.io_write(tgt(0177, 6, 0), 0));
-	CHECK(!iop.io_read(tgt(0177, 6, 0), v));
-	CHECK(!iop.io_control(tgt(0177, 6, 0)));
+	CHECK(!iop.io_write(tgt(0177, 3, 0), 0));
+	CHECK(!iop.io_read(tgt(0177, 3, 0), v));
+	CHECK(!iop.io_control(tgt(0177, 3, 0)));
+
+	// Reset I/O Bus clears DMA and pending interrupts, which is what a
+	// power-up sequence issues first.
+	iop.raise(1);
+	CHECK(iop.io_control(tgt(CMD_EDMA, 3, 1)));
+	CHECK(iop.io_control(tgt(CMD_RIOB, 3, 0)));
+	CHECK_EQ(iop.dma_mask(), 0u);
+	CHECK_EQ(iop.interrupt_request(), 0u);
+
+	// Enable and disable interrupt gate the line without losing requests.
+	CHECK(iop.io_write(tgt(CMD_WIMK, 3, 0), 0));
+	CHECK(iop.io_control(tgt(CMD_DINT, 3, 0)));
+	iop.raise(4);
+	CHECK(!h.irq);
+	CHECK(iop.io_control(tgt(CMD_EINT, 3, 0)));
+	CHECK(h.irq);
 }
 
 

@@ -673,7 +673,49 @@ peripherals are built in *(520 Service, sheet 2-29)*:
 Additional IOPs take 8–15 and 16–23 as on the 540, and reach the outside world
 through a 97098A I/O Expander.
 
-### 8.2 IOP functional areas *(IO ERS, table of contents)*
+### 8.2 MPB command set *(IO ERS §5, sheets 29–42)*
+
+Forty-eight commands, each opcode indexing one of 128 words of IOP control
+store that form a jump table to the command routines. The ERS quotes them in
+octal. `(R)`, `(W)` and `(C)` mark reads, writes and controls.
+
+```
+003 WDS  W  write DMA status          057 RIRV R  read revision
+004 WDC  W  write DMA count           060 RIOB C  reset I/O bus
+005 WDA  W  write DMA start address   063 CALM C  clear address lockout
+006 WDTF W  write DMA termination     064 SALM C  set address lockout
+010 RDCS R  read DMA count/status     070 ICEI C  init cmd exec from interrupt
+013 RDMK R  read DMA mask             073 DCE  C  disable IOP cmd execution
+014 CDMK C  clear DMA mask            075 LON  C  turn LED on
+015 EDMA C  enable DMA                076 LOFF C  turn LED off
+016 DDMA C  disable DMA              0103 RIST R  read interface status
+023 SD   C  start DMA                0104 RIFG R  read interface flag
+025 WIMK W  write interrupt mask     0105 RDTF R  read DMA termination field
+026 RIMK R  read interrupt mask      0106 WAMK W  write attention poll mask
+030 CIRQ C  clear interrupt request  0107 CAAK C  clear attention acknowledge
+033 WIMG W  write interrupt message  0110 RIRS R  read IOP registers, suspend
+034 RIRQ R  read interrupt request   0113 WIRR W  write IOP registers, resume
+035 SIL  W  set interrupt level      0114 WRIF W  write RIF result to memory
+036 EINT C  enable interrupt         0115 WCSM W  write count/status to memory
+037 DINT C  disable interrupt        0116 RDEB R  read device end/burst request
+040 WTMS W  write timer start        0117 WDB  W  write DMA data buffer
+043 WTMC W  write timer count        0120 WDCA W  write DMA current address
+044 RTM  R  read timer count         0123 RIMG R  read interrupt message
+045 ETMI C  enable timer interrupt   0172 WIF  W  write interface
+047 IFPL R  interface poll
+054 WDPA W  write DMA peripheral address
+055 RDPA R  read DMA peripheral address
+056 RDB  R  read data buffer
+```
+
+> **Commands the list does not name.** Disassembling the `SYSTEM POWERUP`
+> modules of both BASIC 2.0 and HP-UX 5.01 shows real boot code issuing
+> opcodes **000, 011, 050, 053 and 065**, none of which appears in the §5
+> list. Either the OCR dropped them or the list is incomplete. The IOP refuses
+> them rather than guessing, so they will surface as message traps the moment
+> a boot attempt reaches that far.
+
+### 8.3 IOP functional areas *(IO ERS, table of contents)*
 
 System communication; interface polling; direct I/O; DMA (single and multiple
 transfers per poll response, plus DMA Verify and DMA Match options); interrupt
@@ -694,7 +736,7 @@ the ERS advises against using in new designs — always go through **FR8 or FR10
 *(IO ERS, sheet 5)*. Each interface also owns a four-word Device Reference Table
 entry; see §6 for the layout and addressing.
 
-### 8.3 System Control Module *(530/540 Service, sheet 2-27)*
+### 8.4 System Control Module *(530/540 Service, sheet 2-27)*
 
 The SCM is on select code 7 and provides:
 
@@ -715,7 +757,7 @@ Fail Warning sets bit 1 of `R2` and responds to an I/O poll on SC7; as little
 as **1 ms** may elapse before shutdown, and the bit self-clears if power is
 restored.
 
-### 8.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
+### 8.6 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 
 The 8 KB loader ROM lives on the SCM, addressed through the same locations as
 the RTC and NVM. **The mechanism is fully documented**, even though no dump of
@@ -777,7 +819,7 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 > Those are recoverable by disassembling the HP-UX boot image once the CPU core
 > exists — see [SOFTWARE.md](SOFTWARE.md#the-loader-rom-question).
 
-### 8.4 Peripherals
+### 8.5 Peripherals
 
 | Card | Function |
 |---|---|
