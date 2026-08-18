@@ -253,6 +253,7 @@ int main(int argc, char **argv)
 	unsigned probe_pa = 99;        // attach a probe card at this select code
 	u32 probe_id = 8;              // the identity it answers
 	bool probe_log = false;
+	u32 cpu_date = 0x19820319;     // what RCS location 6 reports
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -291,6 +292,8 @@ int main(int argc, char **argv)
 		}
 		else if (!std::strcmp(argv[i], "--probelog"))
 			probe_log = true;
+		else if (!std::strcmp(argv[i], "--cpudate") && i + 1 < argc)
+			cpu_date = u32(strtoul(argv[++i], nullptr, 16));
 		else
 			path = argv[i];
 	}
@@ -336,6 +339,7 @@ int main(int argc, char **argv)
 	}
 
 	cpu_core cpu(mem);
+	cpu.set_control_store_date(cpu_date);
 	logging_io iolog(iop);
 	iolog.log = io_trace;
 	cpu.set_io(&iolog);

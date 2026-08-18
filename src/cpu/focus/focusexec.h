@@ -141,6 +141,11 @@ public:
 		return true;
 	}
 
+	// The control store release date RCS location 6 reports, as eight
+	// hex digits YYYYMMDD. Software keys revision-dependent behaviour
+	// off it, so it is worth being able to pose as another CPU.
+	void set_control_store_date(u32 d) { m_control_store_date = d; }
+
 	// A STOPped CPU resumes at the next instruction when an interrupt
 	// request or MPB message arrives, even with STATUS.I clear -- the
 	// dispatcher's idle loop is STOP followed by a branch back into the
@@ -980,10 +985,12 @@ private:
 		case 031: {                                             // RCS
 			// Read Control Store. Location 6 holds the CPU release date as
 			// eight hex digits YYYYMMDD (ERS Appendix G), which software
-			// uses to decide which silicon bugs to work around. This core
-			// reports CPU 4.0, the last revision the ERS describes.
+			// uses to decide which silicon bugs to work around -- and
+			// which revision-dependent paths to take: SYSTEM POWERUP
+			// compares it against 19810828 nine instructions in. The
+			// default is CPU 4.0, the last revision the ERS describes.
 			const u32 loc = stk(0);
-			set_stk(0, (loc == 6) ? 0x19820319u : 0u);
+			set_stk(0, (loc == 6) ? m_control_store_date : 0u);
 			return exec_trap::none;
 		}
 
@@ -2721,6 +2728,7 @@ private:
 	bool m_halted = false;
 	bool m_traps_enabled = false;
 	bool m_address_lockout = true;    // the default mode (ERS sheet 126)
+	u32 m_control_store_date = 0x19820319;   // CPU 4.0
 	bool m_disp_flag = false;         // the microcode dispatcher flag
 	bool m_ics_flag = false;          // executing on the interrupt stack
 	trap m_addr_trap = trap::none;
