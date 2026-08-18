@@ -506,7 +506,38 @@ never says either way; the code does. `SMSG` was corrected the same way.
 With that fixed and `PMVA` implemented, the module runs **89 distinct
 addresses** in a straight line before an indexed `STS DB+0,X` faults.
 
-Remaining: what `DB`, `DST` and the data segments must contain on entry.
+### The loader's parameter block
+
+Following the faults further establishes that **the loader leaves a parameter
+block in the stack above `Q`**. The module copies words from `Q+64`, `Q+88`
+and `Q+92` down to `Q-144`, `Q-120` and `Q-136` before using them, and the
+value at `Q+64` is combined with `LNI #2060` — a *negative* immediate — so it
+must be at least 2060 or the resulting index runs below `DB`. Seeding it took
+the run from 89 to 103 distinct addresses.
+
+That also explains the earlier `S ≥ Q + 97` observation: the space above `Q`
+is not slack, it is where the loader puts its parameters.
+
+### A second wrong instruction
+
+`SXIT` had been implemented as a synonym for `EXIT`. It is nothing of the
+sort. `EXIT` unwinds a four-word stack marker; `SXIT` pops a single
+PB-relative return address and drops `N` further words, because subroutines
+are called with an `LRA`/`BR` pair that stacks only that address (ERS sheet
+93). The wrong version was unwinding a marker that had never been pushed and
+transferring control to `PB+0`.
+
+Correcting it took the run from **2,164 steps to 839,816**, and from 166 to
+183 distinct addresses — the module now executes its full initialisation and
+spends most of that time in a search loop.
+
+Note the pattern: this is the third instruction (after `LRA`/`LRAS` and `WTC`)
+whose real semantics only surfaced when actual code exercised it, and all
+three passed the unit tests throughout.
+
+Remaining: the run now ends in a long indexed scan of the global data segment
+(`LDB DB+2,X`) that walks off the end, so **what `DB` must contain on entry**
+is the last piece of the handoff still unknown.
 
 The driving script is [`tools/powerup.dbg`](../tools/powerup.dbg).
 

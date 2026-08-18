@@ -26,6 +26,9 @@ using namespace focus;
 
 namespace {
 
+// Seed value for the loader's parameter block; overridden by --run's 7th arg.
+focus::u32 param_q64 = 0;
+
 class flat_memory : public memory_interface
 {
 public:
@@ -106,6 +109,13 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 	// boot code halts any CPU that is not channel 1, so a probe leaving
 	// this zero makes every path look like a dead end.
 	cpu.r.mask = ers32::set(0, 3, 3, 1);
+	// The module reads a parameter block the loader leaves in the stack
+	// above Q -- offsets +64, +88 and +92 are copied down to Q-144, Q-120
+	// and Q-136 before use. Seed them so the code has something to work
+	// with; the values are a hypothesis under test, not documented.
+	mem.write32(cpu.r.q + 64 - 3, param_q64);
+	mem.write32(cpu.r.q + 88 - 3, param_q64);
+	mem.write32(cpu.r.q + 92 - 3, param_q64);
 	if (push_tos)
 		cpu.push(tos);
 
@@ -122,7 +132,7 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 			if (visits[idx] < 255)
 				visits[idx]++;
 			// A tight self-loop means it is spinning, not progressing.
-			if (visits[idx] > 100)
+			if (visits[idx] > 20000)
 				break;
 		}
 		r.fault_pc = cpu.r.p;
@@ -192,11 +202,13 @@ int main(int argc, char **argv)
 		const u32 pb = u32(strtoul(argv[4], nullptr, 0));
 		const u32 entry = u32(strtoul(argv[5], nullptr, 0));
 		const u32 tos = u32(strtoul(argv[6], nullptr, 0));
+		if (argc >= 8)
+			param_q64 = u32(strtoul(argv[7], nullptr, 0));
 		std::vector<u8> visits(img.size() / 2 + 2, 0);
 		std::vector<u32> trail;
 		flat_memory mem(0x600000);
 		const result r = run_from(mem, img, base, base + pb, base + entry,
-				200000, visits, true, tos, &trail);
+				20000000, visits, true, tos, &trail);
 		std::printf("PB %#x  entry %#x  TOS %d\n", pb, entry, int(tos));
 		std::printf("  %u steps, %u distinct, stopped by %s at %08x cir=%08x\n",
 				r.steps, r.distinct, trap_name(r.t), r.fault_pc, r.cir);

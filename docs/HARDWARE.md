@@ -1145,6 +1145,11 @@ which secondary processors park themselves at power-up. A CPU whose channel
 number is left at zero halts immediately, which is worth knowing before
 diagnosing anything else.
 
+**The loader leaves a parameter block above `Q`.** The module reads `Q+64`,
+`Q+88` and `Q+92`, and the value at `Q+64` must be at least 2060 — it is
+combined with `LNI #2060`, a negative immediate, to form an index into the
+global data segment.
+
 `RCS` reading control store location 6 is the documented way to obtain the CPU
 release date (Appendix G), which software uses to decide which silicon bugs to
 avoid.

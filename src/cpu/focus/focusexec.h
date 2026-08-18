@@ -1180,7 +1180,19 @@ private:
 		case 021: return do_io(io_kind::control, imm);           // IOC
 		case 022: return do_call(4u * imm);                      // PCLS
 		case 023: return do_exit(imm);                           // EXIT
-		case 024: return do_exit(imm);                           // SXIT
+		case 024: {                                              // SXIT
+			// Subroutine Exit (ERS sheet 93). Nothing like EXIT: there is
+			// no stack marker. Subroutines are called with an LRA/BR pair
+			// which stacks only a PB-relative return address, so the exit
+			// pops that and drops `imm` further words of parameters.
+			const u32 ret = pop();
+			r.s -= 4u * imm;
+			const u32 target = r.pb + ret;
+			if (!m_au.in_code(target))
+				return exec_trap::code_bounds;
+			branch_to(target);
+			return exec_trap::none;
+		}
 		case 026: r.x += imm; return exec_trap::none;            // ADXI
 		case 027: r.x -= imm; return exec_trap::none;            // SBXI
 		case 032: r.s += 4u * imm; return exec_trap::none;       // ADDS
