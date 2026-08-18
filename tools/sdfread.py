@@ -18,6 +18,8 @@ map records, which this follows.
     sdfread.py <image> [--path /DIR] [--extract OUTDIR] [--long]
 """
 import argparse
+import datetime
+import os
 import struct
 from pathlib import Path
 
@@ -25,6 +27,31 @@ FA_REC = 128
 DIRENT = 24
 
 FT_DIR = 1          # di_ftype for a directory
+
+# inode(5) times come in two encodings: di_atime is an ordinary big-endian
+# Unix time_t, while di_ctime and di_mtime are time_ios -- two big-endian
+# 32-bit words holding a Julian Day Number and seconds since midnight.
+# 541 of the 551 time_ios fields on the floppies are well formed under that
+# reading, and the dates they give are the right ones (the 9020 test discs
+# stamp 1984, matching their Rev 3.00 labels).
+JDN_EPOCH = 2440588  # Julian Day Number of 1970-01-01
+
+
+def ios_time(rec, off):
+    """time_ios -> Unix timestamp, or None if unset or malformed."""
+    if len(rec) < off + 8:
+        return None
+    jdn, secs = struct.unpack(">ii", rec[off:off + 8])
+    if not (2400000 < jdn < 2460000) or not 0 <= secs < 86400:
+        return None
+    return (jdn - JDN_EPOCH) * 86400 + secs
+
+
+def unix_time(rec, off):
+    """time_t -> Unix timestamp, or None if unset."""
+    if len(rec) < off + 4:
+        return None
+    return struct.unpack(">I", rec[off:off + 4])[0] or None
 
 
 class SDF:
@@ -74,6 +101,9 @@ class SDF:
             "extents": extents[:max(0, min(exnum, 4))], "exmap": exmap,
             "parent": parent,
             "name": e[84:100].decode("ascii", "replace").rstrip("\x00 "),
+            "ctime": ios_time(e, 8),
+            "atime": unix_time(e, 100),
+            "mtime": ios_time(e, 104),
             "uid": struct.unpack(">H", e[116:118])[0],
             "gid": struct.unpack(">H", e[118:120])[0],
             "mode": struct.unpack(">H", e[120:122])[0],
@@ -144,31 +174,59 @@ class SDF:
                    "parent": struct.unpack(">i", d[off + 80:off + 84])[0],
                    "name": d[off + 84:off + 100].decode("ascii", "replace")
                             .rstrip("\x00 "),
+                   "ctime": ios_time(d[off:off + FA_REC], 8),
+                   "atime": unix_time(d[off:off + FA_REC], 100),
+                   "mtime": ios_time(d[off:off + FA_REC], 104),
                    "uid": 0, "gid": 0,
                    "mode": struct.unpack(">H", d[off + 120:off + 122])[0]}
             out[ino["ino"]] = ino
         return out
 
-    def walk(self, ino=None, path="/", depth=0, seen=None):
-        """Yield (path, inode) for every reachable entry."""
-        if seen is None:
-            seen = set()
+    def walk(self, ino=None, path="/", depth=0, stack=()):
+        """Yield (path, inode) for every name in the tree.
+
+        The recursion guard is the ancestor stack, not a set of everything
+        visited. A global set looks equivalent but silently mis-files:
+        BASDEM7 carries a stale i-node (63) that duplicates /DEMO's name,
+        parent and extents and is reached as /DEMO/DIR/9845c_data/land, so
+        a depth-first walk claims MAIN_MENU and eight other programs under
+        that alias and then skips them when it reaches the real /DEMO. The
+        ancestor stack breaks the loop without deciding which name wins, so
+        every name is reported and nothing lands in the wrong directory.
+        """
         if ino is None:
             ino = self.root()
         if ino is None or depth > 24:
             return
         yield path, ino
-        if ino["ftype"] != FT_DIR:
+        if ino["ftype"] != FT_DIR or ino["ino"] in stack:
             return
         for name, child in self.readdir(ino):
-            if child in seen:
-                continue
-            seen.add(child)
             ci = self.inode(child)
             if ci is None or ci["type"] != 1:
                 continue
             sub = path.rstrip("/") + "/" + name
-            yield from self.walk(ci, sub, depth + 1, seen)
+            yield from self.walk(ci, sub, depth + 1, stack + (ino["ino"],))
+
+
+def stamp(t):
+    """A timestamp for listings. UTC: the volume records no zone."""
+    if t is None:
+        return " " * 16
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc) \
+                   .strftime("%Y-%m-%d %H:%M")
+
+
+def set_times(dest, ino):
+    """Restore mtime and atime onto an extracted file or directory."""
+    mt, at = ino["mtime"], ino["atime"]
+    if mt is None and at is None:
+        return
+    try:
+        os.utime(dest, (at if at is not None else mt,
+                        mt if mt is not None else at))
+    except (OSError, OverflowError, ValueError):
+        pass
 
 
 def main() -> int:
@@ -188,25 +246,47 @@ def main() -> int:
     print(f"version  {fs.version:#x}   corrupt={fs.corrupt}\n")
 
     files = dirs = total = 0
+    distinct, written, dir_times = set(), {}, []
     for path, ino in fs.walk():
         isdir = ino["ftype"] == FT_DIR
         dirs += isdir
         files += not isdir
-        total += 0 if isdir else max(ino["size"], 0)
+        if not isdir and ino["ino"] not in distinct:
+            distinct.add(ino["ino"])
+            total += max(ino["size"], 0)
+        when = stamp(ino["mtime"])
         if args.long:
             print(f"  {'d' if isdir else '-'} {ino['mode']:06o} "
-                  f"{ino['size']:>9,} ino{ino['ino']:<5} {path}")
+                  f"{ino['size']:>9,} ino{ino['ino']:<5} {when}  {path}")
         else:
-            print(f"  {'d' if isdir else '-'} {ino['size']:>9,}  {path}")
-        if args.extract and not isdir:
-            dest = args.extract / path.lstrip("/")
+            print(f"  {'d' if isdir else '-'} {ino['size']:>9,} {when}  {path}")
+        if not args.extract:
+            continue
+        dest = args.extract / path.lstrip("/")
+        try:
+            if isdir:
+                dest.mkdir(parents=True, exist_ok=True)
+                dir_times.append((dest, ino))
+                continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
+            first = written.get(ino["ino"])
+            if first is None:
                 dest.write_bytes(fs.read_file(ino))
-            except OSError:
-                pass
+                written[ino["ino"]] = dest
+                set_times(dest, ino)
+            else:
+                if dest.exists():
+                    dest.unlink()
+                os.link(first, dest)
+        except (OSError, ValueError):
+            pass
+    for dest, ino in reversed(dir_times):
+        set_times(dest, ino)
 
-    print(f"\n{files} files, {dirs} directories, {total:,} bytes")
+    print(f"\n{files} names ({len(distinct)} distinct files), "
+          f"{dirs} directories, {total:,} bytes")
+    if files - len(distinct):
+        print(f"{files - len(distinct)} of those names are aliases of another")
     if args.extract:
         print(f"extracted to {args.extract}")
     return 0

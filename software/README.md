@@ -397,11 +397,29 @@ files        up to four extents in the i-node, more chained through
 ```
 
 [`tools/sdfread.py`](../tools/sdfread.py) implements this and recovers
-**206 files from the eight floppy volumes** that carry a filesystem,
-including nested directories on the demo discs. Spot-checked against
-content: `DEGAUSS` extracts to a BASIC program opening
+**206 files under 215 names, from the 15 floppy volumes** that carry a
+filesystem, including nested directories on the demo discs. Spot-checked
+against content: `DEGAUSS` extracts to a BASIC program opening
 `PROGRAM MAIN !RE-SAVE "DEGAUSS.S " ! TUE 1 AUG 1982 REV1.0` with HP's
-copyright notice.
+copyright notice. Dates come back too, on the same `time_ios` reading the
+7914 volume needed — 1982 across the demo suite, 1984 across the 9020 tests,
+both matching their labels.
+
+The other five discs — `500BT1`, `500BT2` and the three `500ENV` volumes —
+are *pure boot volumes*, not failures to read: their superblocks give
+`boot = 1 + 262` against `maxblk 263`, so the boot area is the whole volume
+and the root directory is legitimately empty.
+
+Validating this reader against all 20 discs turned up one real defect, since
+fixed. `BASDEM7` carries a **stale i-node (63) that duplicates `/DEMO`'s
+name, parent and extents** and is reachable as
+`/DEMO/DIR/9845c_data/land`. A walk guarded by a global visited set descends
+that alias first and claims `MAIN_MENU` and eight other demo programs under
+it, then skips them on reaching the real `/DEMO` — so nine files came out
+under a path that is not theirs, and `/DEMO` looked half empty. Guarding on
+the ancestor stack instead breaks the loop without picking a winner: every
+name is reported, `/DEMO` is whole again, and the alias is reproduced as a
+hard link rather than a second copy.
 
 The diagnostics disc reads as eleven named tests — `TEST`, `(6)STATUS`,
 `(12)DISPLAY`, `(7)KEYBOARD`, `(10)FLOPPY`, `(15)WINCHESTER` and the rest —
