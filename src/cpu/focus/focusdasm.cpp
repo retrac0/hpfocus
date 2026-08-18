@@ -130,7 +130,9 @@ offs_t focus_disassembler::disassemble(std::ostream &stream, offs_t pc,
 			format_mem(stream, base, off, ind, idx);
 			break;
 		case OK_IMM:
-			util::stream_format(stream, "#%d", off);
+			// LDI/LNI immediates are CIR(8:24) -- the full 24 bits after
+			// the opcode (ERS sheet 62), not the 19-bit offset field.
+			util::stream_format(stream, "#%d", d & 0xffffff);
 			break;
 		case OK_STT4:
 			util::stream_format(stream, "STT[%d]", off / 4);

@@ -239,6 +239,8 @@ written for.
 ## What is still missing
 
 1. **SCM loader ROM** — see above. Soft blocker, late in the schedule.
-2. **Memory Controller ERS.** Referenced by the Instruction Set ERS but not on
-   bitsavers.
+2. **Memory Controller ERS.** Referenced by both ERSes but not on bitsavers.
+   Narrow in practice: the software-visible MPB semantics are covered by the
+   I/O ERS and the Instruction Set ERS (HARDWARE.md §10.2); what is lost is
+   bus-protocol detail and the MC's own channel-0 command set.
 3. **A clean HP-UX 5.0 image.**

@@ -128,6 +128,18 @@ public:
 	// is what unit tests want and what a cold machine has to do anyway.
 	void enable_traps(bool on) { m_traps_enabled = on; }
 	bool traps_enabled() const { return m_traps_enabled; }
+
+	// Deliver an external interrupt between instructions. Honoured only
+	// when STATUS.I permits; returns true when taken. A STOPped CPU
+	// wakes to service it.
+	bool interrupt(u32 device)
+	{
+		if (!r.test(sf::I))
+			return false;
+		m_halted = false;
+		external_interrupt(device);
+		return true;
+	}
 	trap_cause last_trap() const { return m_last_trap; }
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
@@ -431,8 +443,12 @@ private:
 			return exec_trap::none;
 		}
 		case 017: {                                            // CMP
+			// S := if CIR(19:1)=1 then S-2 else S-1 (ERS sheet 61): both
+			// operands are deleted only with the b bit; plain CMP keeps
+			// the second word -- the powerup module's device loops rely
+			// on the running index surviving the compare.
 			const s32 b = s32(stk(1)), a = s32(stk(0));
-			r.s -= 8;
+			r.s -= b3 ? 8 : 4;
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
@@ -487,9 +503,18 @@ private:
 			push(v); cca(v);
 			return exec_trap::none;
 		}
-		case 025: cca(stk(0)); return exec_trap::none;         // TEST
-		case 026: cca(stk(0)); return exec_trap::none;         // TSTD
+		// The test group deletes its operand only with the b bit
+		// (ERS sheets 33-34.5).
+		case 025: cca(stk(0)); if (b3) pop();
+			return exec_trap::none;                            // TEST
+		case 026: {                                            // TSTD
+			const s64 v = (s64(u64(stk(1)) << 32) | stk(0));
+			r.put(sf::CC, (v < 0) ? CCL : (v == 0) ? CCE : CCG);
+			if (b3) { pop(); pop(); }
+			return exec_trap::none;
+		}
 		case 027: r.put(sf::CC, (stk(0) & 0xff) ? CCG : CCE);
+			if (b3) pop();
 			return exec_trap::none;                            // TSTB
 		case 032: {                                            // XCH
 			const u32 a = stk(0), b = stk(1);
@@ -513,11 +538,13 @@ private:
 			set_stk(0, r.x); r.x = a;
 			return exec_trap::none;
 		}
-		case 036: r.x += stk(0); return exec_trap::none;       // ADAX
+		case 036: r.x += stk(0); if (b3) pop(); cca(r.x);
+			return exec_trap::none;                            // ADAX
 		case 037: { const u32 v = stk(0) + r.x; set_stk(0, v); cca(v);
 			return exec_trap::none; }                          // ADXA
 		case 040: pop(); return exec_trap::none;               // DEL
-		case 043: r.x = pop(); return exec_trap::none;         // STAX
+		case 043: r.x = stk(0); if (b3) pop(); cca(r.x);
+			return exec_trap::none;                            // STAX
 		case 044: push(r.x); cca(r.x); return exec_trap::none; // LDXA
 		case 045: push(stk(0)); return exec_trap::none;        // DUP
 		case 046: { const u32 a = stk(0), b = stk(1); push(b); push(a);
@@ -528,8 +555,10 @@ private:
 			return exec_trap::none;
 		}
 		case 003: set_fp_cc(to_double((u64(stk(1)) << 32) | stk(0)));
+			if (b3) { pop(); pop(); }
 			return exec_trap::none;                            // FTST
 		case 004: set_fp_cc(to_float(stk(0)));
+			if (b3) pop();
 			return exec_trap::none;                            // FTSS
 		case 041: { const double d = pop_double();             // FIXD
 			const u32 v = u32(s32(d)); push(v); cca(v);
@@ -582,8 +611,9 @@ private:
 			return exec_trap::none;
 		}
 		case 057: {                                            // LCMP
+			// Same operand-delete rule as CMP: both only with the b bit.
 			const u32 a = stk(0), b = stk(1);
-			r.s -= 8;
+			r.s -= b3 ? 8 : 4;
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
@@ -763,6 +793,21 @@ private:
 			return exec_trap::none;
 		}
 
+		case 037: {                                             // BRSI
+			// Branch Stack Indirect (ERS sheet 108.1): a faster BR S-0,I
+			// that also pops the indirect pointer. The pointer follows
+			// the STT convention: bit 0 clear is a local program pointer,
+			// a byte offset from PB with the uncallable bit ignored.
+			const u32 ptr = pop();
+			if (ptr & 0x80000000u)
+				return exec_trap::unimplemented;    // external: needs CST
+			const u32 target = r.pb + (ptr & 0x3fffffffu);
+			if (!m_au.in_code(target))
+				return exec_trap::code_bounds;
+			branch_to(target);
+			return exec_trap::none;
+		}
+
 		case 004: return r.test(sf::ES)                         // EOS
 				? take_trap(trap_cause::end_of_subroutine, 0)
 				: exec_trap::none;
@@ -785,8 +830,12 @@ private:
 				set_sb_word(2, r.s - r.sb);
 				return exec_trap::none;
 			}
+			// The frame must lie between the marker and the stack limit.
+			// The upper bound is SL, not S: the trap plumbing deletes a
+			// frame after popping operands from above it, leaving S a few
+			// words below the frame's top.
 			const u32 temp = r.sb + sb_word(2);
-			if (!(r.q + 16 < temp && temp < r.s))
+			if (!(r.q + 16 <= temp && temp <= r.sl))
 				return exec_trap::bounds_violation;
 			set_sb_word(2, word_below(temp, 3));
 			r.s = temp - 16;
@@ -812,7 +861,7 @@ private:
 
 			set_sb_word(4, 0xffffffffu);
 			const u32 temp = r.sb + sb_word(2);
-			if (!(r.sb + 48 < temp && temp < r.s))
+			if (!(r.sb + 48 < temp && temp <= r.sl))
 				return exec_trap::bounds_violation;
 			set_sb_word(2, word_below(temp, 3));
 			r.q = temp;
@@ -836,18 +885,49 @@ private:
 			return exec_trap::none;
 		}
 
-		case 015:                                               // PSDB
+		case 014: {                                             // XGDS
+			// Exchange Global Data Segment (ERS sheet 68): the TOS holds
+			// an external data segment pointer naming the new global
+			// segment (offset ignored). DB and DL come from its DST
+			// entry, and the pointer's table-select and segment fields
+			// (1:12) are swapped with the TCB's global-segment field, so
+			// the modified pointer on the stack can switch back later.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 ptr = stk(0);
+			const u32 seg = ers32::get(ptr, 2, 11);
+			const u32 table = ers32::get(ptr, 1, 1)
+					? r.dst : dst_walker::SYSTEM_DST_BASE;
+			const u32 ea = table + 16 * seg;
+			r.db = m_mem.read32(ea + 8);
+			r.dl = r.db + m_mem.read32(ea + 4);
+			const u32 ctcbp = m_mem.read32(ded_base() + 4);
+			const u32 w = m_mem.read32(ctcbp + 8);
+			const u32 old = ers32::get(w, 20, 12);
+			m_mem.write32(ctcbp + 8,
+					ers32::set(w, 20, 12, ers32::get(ptr, 1, 12)));
+			set_stk(0, ers32::set(ptr, 1, 12, old));
+			return exec_trap::none;
+		}
+
+		case 015: {                                             // PSDB
 			// Pseudo Interrupt Disable: bump the dispatcher disable count
-			// held at QI-4 (ERS sheet 119). Privileged.
+			// held at (QI-4) (ERS sheet 119). Privileged.
 			if (!r.privileged()) return exec_trap::unimplemented;
-			m_dispatch_disable++;
+			const u32 a = m_mem.read32(ded_base() + 8) - 3 - 16;
+			m_mem.write32(a, m_mem.read32(a) + 1);
 			return exec_trap::none;
-		case 017:                                               // PSEB
+		}
+		case 016: return do_disp();                             // DISP
+		case 017: {                                             // PSEB
 			if (!r.privileged()) return exec_trap::unimplemented;
-			if (m_dispatch_disable == 0)
+			const u32 a = m_mem.read32(ded_base() + 8) - 3 - 16;
+			const u32 n = m_mem.read32(a);
+			if (n == 0)
 				return take_trap(trap_cause::inconsistent_registers, 0);
-			m_dispatch_disable--;
+			m_mem.write32(a, n - 1);
 			return exec_trap::none;
+		}
+		case 074: return do_ixit();                             // IXIT
 
 		case 031: {                                             // RCS
 			// Read Control Store. Location 6 holds the CPU release date as
@@ -902,6 +982,81 @@ private:
 			push(r.sdr);
 			return exec_trap::none;
 
+		case 055: {                                             // FLMO
+			// Find Leftmost One (ERS sheet 128): the ERS bit number of
+			// the highest set bit in the TOS, 32 when it is zero. The
+			// result replaces the TOS, or is pushed when b is set.
+			const u32 v = stk(0);
+			u32 i = 32;
+			if (v != 0)
+			{
+				i = 0;
+				while (ers32::get(v, i, 1) == 0)
+					i++;
+			}
+			if (b3)
+				push(i);
+			else
+				set_stk(0, i);
+			return exec_trap::none;
+		}
+
+		case 072: {                                             // LINS
+			// List Insert (ERS sheet 116): doubly-linked-list insert over
+			// absolute addresses. (S) is the forward-link word of an
+			// existing entry, (S-1) the new entry's, (S-2) the byte
+			// offset from a forward to its backward link word. Zero is
+			// nil; inserting into an empty list makes the entry circular
+			// and rewrites the TOS to name it. Nothing is popped: the
+			// powerup module chains 2060-byte blocks with an
+			// XCH / LINS / XCH pattern that reuses all three operands.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 new_fwd = stk(1);
+			const u32 off = stk(2);
+			if (new_fwd == 0)
+				return exec_trap::none;
+			bool was_empty = false;
+			if (stk(0) == 0)
+			{
+				set_stk(0, new_fwd);
+				was_empty = true;
+			}
+			const u32 exist = stk(0);
+			m_mem.write32(new_fwd, exist);
+			const u32 bkw = m_mem.read32(exist + off);
+			m_mem.write32(exist + off, new_fwd + off);
+			if (!was_empty)
+			{
+				if (bkw != 0)
+					m_mem.write32(bkw - off, new_fwd);
+				m_mem.write32(new_fwd + off, bkw);
+			}
+			return exec_trap::none;
+		}
+
+		case 073: {                                             // LDEL
+			// List Delete (ERS sheet 117): remove the entry whose forward
+			// link word (S) addresses; (S-1) is the forward-to-backward
+			// offset. CCE when the list is left empty -- the entry linked
+			// only to itself -- else CCG.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 entry = stk(0);
+			const u32 off = stk(1);
+			if (entry != 0)
+			{
+				const u32 fwd = m_mem.read32(entry);
+				const u32 bkw = m_mem.read32(entry + off);
+				if (bkw != 0)
+					m_mem.write32(bkw - off, fwd);
+				if (fwd != 0)
+					m_mem.write32(fwd + off, bkw);
+				r.put(sf::CC, fwd == entry ? CCE : CCG);
+			}
+			else
+				r.put(sf::CC, CCE);
+			return exec_trap::none;
+		}
+
 		case 076: {                                             // WAIT
 			// A calibrated delay: decrement the top of stack to zero
 			// (ERS sheet 95). Modelled as taking effect immediately.
@@ -914,13 +1069,14 @@ private:
 		return exec_trap::unimplemented;
 	}
 
-	// The stack-indirect family: the top of stack holds a data segment
-	// pointer, which is evaluated and then either loaded from or stored to
-	// (ERS sheets 58-59, 63-64). `width` selects byte, halfword, word or
-	// doubleword.
+	// The stack-indirect family (ERS sheets 58-59, 63-64). `width` selects
+	// byte, halfword, word or doubleword. A load takes its data segment
+	// pointer from the top of stack and replaces it with the value. A
+	// store's pointer sits *beneath* the value -- SSI/SBSI/SHSI read it
+	// from (S-1) and SDSI from (S-2) -- and everything is popped.
 	exec_trap stack_indirect(bool indexed, unsigned width, bool store)
 	{
-		const u32 ptr = pop();
+		const u32 ptr = store ? stk(width == 8 ? 2 : 1) : stk(0);
 		const ea_result e = m_au.resolve_data_pointer(ptr, indexed, store);
 		m_addr_trap = e.t;
 		if (!e.ok())
@@ -928,6 +1084,7 @@ private:
 
 		if (!store)
 		{
+			pop();
 			switch (width)
 			{
 			case 1: push(m_mem.read8(e.addr)); break;
@@ -948,6 +1105,7 @@ private:
 		case 8: { const u32 low = pop(), high = pop();
 			m_mem.write32(e.addr, high); m_mem.write32(e.addr + 4, low); } break;
 		}
+		pop();                              // the pointer
 		return exec_trap::none;
 	}
 
@@ -1140,9 +1298,18 @@ private:
 			return exec_trap::none;
 		}
 		case 032: {                                               // SMPB
-			// The inverse: pops into the Message and Mask registers.
-			if (operand & 2) r.msg = pop();
-			if (operand & 1) r.mask = pop();
+			// Based on CIR(29:3), in this order (ERS sheet 141):
+			//   4  MASK(3:3) := (S)(29:3) -- assign this CPU's channel;
+			//      the powerup module renumbers processors with this
+			//   2  clear MSG bits wherever the TOS has a 1
+			//   1  set MASK *except* the channel field
+			if (operand & 4) r.mask = ers32::set(r.mask, 3, 3, pop() & 7);
+			if (operand & 2) r.msg &= ~pop();
+			if (operand & 1)
+			{
+				const u32 v = pop();
+				r.mask = ers32::set(v, 3, 3, ers32::get(r.mask, 3, 3));
+			}
 			return exec_trap::none;
 		}
 		case 033: {                                               // SRM
@@ -1178,6 +1345,41 @@ private:
 			if (operand & 1)  { r.s = stk(0) + r.sb + 1; }
 			return exec_trap::none;
 		}
+		case 036: {                                               // LLSH
+			// Linked List Search (ERS sheet 114): walk absolute link
+			// words from the TOS while the word at link + (S-2) stands
+			// in the CIR(29:3)-selected relation to the test word (S-1),
+			// decrementing X per step. CCL when the count ran out, CCE
+			// when the comparison stopped it, CCG on a nil link. The
+			// dispatcher walks its ready queues with this.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			const u32 test = stk(1);
+			const u32 off = stk(2);
+			u32 link = stk(0);
+			bool flag = true;
+			while (s32(r.x) > 0 && link != 0 && flag)
+			{
+				const u32 target = m_mem.read32(link + off);
+				bool advance;
+				if (target > test)
+					advance = (operand & 4) != 0;
+				else if (target == test)
+					advance = (operand & 2) != 0;
+				else
+					advance = (operand & 1) != 0;
+				if (advance)
+				{
+					link = m_mem.read32(link);
+					r.x--;
+				}
+				else
+					flag = false;
+			}
+			set_stk(0, link);
+			r.put(sf::CC, s32(r.x) <= 0 ? CCL : (link == 0 ? CCG : CCE));
+			return exec_trap::none;
+		}
+
 		case 057: {                                               // FILB
 			// Fill Bytes (ERS sheet 105). The stack holds a byte count on
 			// top, a target data segment pointer beneath it, and the fill
@@ -1324,8 +1526,12 @@ private:
 			const u32 v = u32(s32(stk(0)) / s32(u32(imm)));
 			set_stk(0, v); cca(v); return exec_trap::none;
 		}
-		case 012: r.x = imm; return exec_trap::none;             // LDXI
-		case 013: r.x = u32(-s32(u32(imm))); return exec_trap::none; // LDXN
+		// The X-immediate group sets CCA on the new X (ERS sheets
+		// 28-30, 76-77); the powerup module's DMA reset loop exits on
+		// the condition code SBXI leaves, not on a compare.
+		case 012: r.x = imm; cca(r.x); return exec_trap::none;   // LDXI
+		case 013: r.x = u32(-s32(u32(imm))); cca(r.x);
+			return exec_trap::none;                              // LDXN
 		case 014: push(imm); cca(imm); return exec_trap::none;   // LDIS
 		case 015: { const u32 v = u32(-s32(u32(imm))); push(v); cca(v);
 			return exec_trap::none; }                            // LNIS
@@ -1347,8 +1553,8 @@ private:
 			branch_to(target);
 			return exec_trap::none;
 		}
-		case 026: r.x += imm; return exec_trap::none;            // ADXI
-		case 027: r.x -= imm; return exec_trap::none;            // SBXI
+		case 026: r.x += imm; cca(r.x); return exec_trap::none;  // ADXI
+		case 027: r.x -= imm; cca(r.x); return exec_trap::none;  // SBXI
 		case 032: r.s += 4u * imm; return exec_trap::none;       // ADDS
 		case 033: r.s -= 4u * imm; return exec_trap::none;       // SUBS
 		case 035: { const u32 v = stk(0) | imm; set_stk(0, v); cca(v);
@@ -1412,8 +1618,13 @@ private:
 			const s32 sofs = ((d >> 19) & 1) ? -s32(off) : s32(off);
 			return do_lia(level, sofs);
 		}
-		case 006: push(off); cca(off); return exec_trap::none;    // LDI
-		case 007: { const u32 v = u32(-s32(off)); push(v); cca(v);
+		// The immediate for LDI and LNI is CIR(8:24) -- the whole 24 bits
+		// after the opcode, not the 19-bit offset field (ERS sheet 62).
+		// The kernel's ceiling divisions encode 0x80000 this way, which
+		// the narrower field would truncate to zero.
+		case 006: { const u32 v = d & 0xffffff; push(v); cca(v);
+			return exec_trap::none; }                             // LDI
+		case 007: { const u32 v = u32(-s32(d & 0xffffff)); push(v); cca(v);
 			return exec_trap::none; }                             // LNI
 		case 010: {                                               // LD
 			u32 a;
@@ -1475,10 +1686,13 @@ private:
 			return exec_trap::none;
 		}
 		case 022: {                                               // LDH
+			// "Right justified, sign extended, and pushed" (ERS sheet 4).
+			// The powerup module's MPB inventory marks valid halfwords
+			// with the sign bit, so zero extension hides every device.
 			u32 a;
 			if (!ea(base, off, ind, idx, false, a))
 				return exec_trap::address_error;
-			const u32 v = m_mem.read16(a);
+			const u32 v = u32(s32(s16(m_mem.read16(a))));
 			push(v); cca(v);
 			return exec_trap::none;
 		}
@@ -1494,6 +1708,7 @@ private:
 			if (!ea(base, off, ind, idx, false, a))
 				return exec_trap::address_error;
 			r.x = m_mem.read32(a);
+			cca(r.x);
 			return exec_trap::none;
 		}
 		case 030: {                                               // BR
@@ -1513,10 +1728,13 @@ private:
 			return exec_trap::none;
 		}
 		case 027: case 032: {                                     // INCF/DECF
+			// Increment/Decrement Memory by Four (ERS sheets 81.2-81.3).
+			// The F is four, not one: the powerup module counts a byte
+			// checksum down with DECF while stepping X by 4.
 			u32 a;
 			if (!ea(base, off, ind, idx, true, a))
 				return exec_trap::address_error;
-			const u32 v = m_mem.read32(a) + ((op2 == 027) ? 1u : u32(-1));
+			const u32 v = m_mem.read32(a) + ((op2 == 027) ? 4u : u32(-4));
 			m_mem.write32(a, v); cca(v);
 			return exec_trap::none;
 		}
@@ -1715,6 +1933,7 @@ private:
 
 		const u32 ret = m_next - r.pb;
 		const u32 old_q = r.q;
+		const u32 old_pb = r.pb;
 
 		r.s += 16;
 		set_stk(3, r.x);
@@ -1730,14 +1949,34 @@ private:
 		// word of the segment starts three bytes lower.
 		r.pl = location + len_m1 - 3;
 
-		// Only the mode bit and the code segment number survive.
-		const u32 keep = ers32::mask(14, 1) | ers32::mask(20, 12);
-		r.status &= keep;
+		// Only the mode bit survives, and the code segment number becomes
+		// 1 -- the handler segment the machine now executes in. (The old
+		// status, old CSN included, is in the marker; EXIT needs the
+		// running CSN to say 1 or the return would never switch back.)
+		r.status &= ers32::mask(14, 1);
+		r.put(sf::CSN, 1);
+
+		if (m_trap_log_len < 16)
+		{
+			m_trap_log[m_trap_log_len][0] = u32(cause);
+			m_trap_log[m_trap_log_len][1] = ret;
+			m_trap_log[m_trap_log_len][2] = parameter;
+			m_trap_log[m_trap_log_len][3] = old_pb;
+			m_trap_log_len++;
+		}
 
 		const u32 stt = m_mem.read32(r.pl - 4 * u32(cause));
 		branch_to(r.pb + stt);
 		return exec_trap::none;
 	}
+
+public:
+	// The last sixteen traps taken: octal cause, PB-relative return
+	// address, parameter, and the PB it happened under. A debugging aid
+	// for the boot harnesses.
+	u32 m_trap_log[16][4] = {};
+	unsigned m_trap_log_len = 0;
+private:
 
 	//----------------------------------------------------------------
 	//  procedure call and return (ERS sheets 92, 96)
@@ -1887,12 +2126,97 @@ private:
 		return exec_trap::none;
 	}
 
+	// The absolute address of the CST entry for a code segment number.
+	// The CST is three sub-tables of 4-word entries whose bases live in
+	// dedicated memory: system segments 0-1023 at absolute location 0,
+	// sharable segments 1024-3071 at location 4, and user segments
+	// 3072-4095 in word 1 of the executing CPU's dedicated block at
+	// 16 * channel (ERS sheets 25-27, Appendix D).
+	bool cst_entry_addr(u32 seg, u32 &addr)
+	{
+		u32 base, index = seg;
+		if (seg < 1024)
+			base = m_mem.read32(0);
+		else if (seg < 3072)
+		{
+			base = m_mem.read32(4);
+			index -= 1024;
+		}
+		else
+		{
+			base = m_mem.read32(16 * ers32::get(r.mask, 3, 3));
+			index -= 3072;
+		}
+		if (base == 0)
+			return false;
+		// Word 0 of entry zero holds sixteen times the entry count.
+		if (index != 0 && 16 * index > m_mem.read32(base))
+			return false;
+		addr = base + 16 * index;
+		return true;
+	}
+
+	// Adjust a code segment's use count -- CST entry word 0 bits 1-12,
+	// counting the CPUs currently executing in the segment. Segment 0 and
+	// the sub-table bases have no entry -- their slot 0 is the table
+	// header -- so counting them would corrupt the table length.
+	void cst_use_count(u32 seg, int delta)
+	{
+		u32 ea;
+		if (seg == 0 || seg == 1024 || seg == 3072)
+			return;
+		if (!cst_entry_addr(seg, ea))
+			return;
+		const u32 w0 = m_mem.read32(ea);
+		const u32 n = ers32::get(w0, 1, 12);
+		m_mem.write32(ea, ers32::set(w0, 1, 12, u32(int(n) + delta) & 0xfff));
+	}
+
+	// Resolve an external program pointer -- bits 1-19 hold four times the
+	// STT entry number, bits 20-31 the code segment number (ERS sheet 28)
+	// -- switching PB, PL, CSN and the mode bit to the named segment. On
+	// success `target` is the absolute entry address.
+	exec_trap enter_segment(u32 ptr, u32 &target)
+	{
+		const u32 stt_off = ers32::get(ptr, 1, 19);
+		const u32 seg = ers32::get(ptr, 20, 12);
+
+		u32 ea;
+		if (!cst_entry_addr(seg, ea))
+			return take_trap(trap_cause::cst_violation, seg);
+
+		const u32 w0 = m_mem.read32(ea);
+		if (ers32::get(w0, 29, 1))          // A: segment absent
+			return take_trap(trap_cause::cst_violation, seg);
+
+		const u32 pb = m_mem.read32(ea + 8);
+		const u32 pl = pb + m_mem.read32(ea + 4);   // length-1, low bits 11
+
+		// The STT entry in the called segment must be a local pointer.
+		const u32 slot = m_mem.read32(pl - stt_off);
+		if (ers32::get(slot, 0, 1))
+			return take_trap(trap_cause::external_program_pointer, slot);
+		if (ers32::get(slot, 1, 1) && !r.privileged())
+			return take_trap(trap_cause::uncallable_procedure, slot);
+
+		cst_use_count(r.get(sf::CSN), -1);
+		r.pb = pb;
+		r.pl = pl;
+		r.put(sf::CSN, seg);
+		if (ers32::get(w0, 30, 1))          // M: executes privileged
+			r.put(sf::M, 1);
+		// R, the reference bit, plus this CPU in the use count.
+		m_mem.write32(ea, ers32::set(m_mem.read32(ea), 31, 1, 1));
+		cst_use_count(seg, +1);
+
+		target = pb + ers32::get(slot, 2, 30);
+		return exec_trap::none;
+	}
+
 	// PCL/PCLS. `offset` is a byte offset back from PL naming the Segment
-	// Transfer Table entry; zero means the pointer is on the stack.
-	//
-	// Only local program pointers are handled: the pointer is a byte offset
-	// from PB (ERS convention note 18). External pointers additionally need
-	// the Code Segment Table walk and the U-bit privilege check.
+	// Transfer Table entry; zero means the pointer is on the stack. A
+	// local pointer is a byte offset from PB (ERS convention note 18); an
+	// external one walks the Code Segment Table.
 	exec_trap do_call(u32 offset)
 	{
 		u32 ptr;
@@ -1911,7 +2235,15 @@ private:
 		set_stk(0, r.s - old_q);            // delta Q
 		r.q = r.s;
 
-		const u32 target = r.pb + ptr;
+		u32 target;
+		if (ers32::get(ptr, 0, 1))
+		{
+			const exec_trap t = enter_segment(ptr, target);
+			if (t != exec_trap::none)
+				return t;
+		}
+		else
+			target = r.pb + ers32::get(ptr, 2, 30);
 		if (!m_au.in_code(target))
 			return exec_trap::code_bounds;
 		branch_to(target);
@@ -1921,19 +2253,389 @@ private:
 	// EXIT/SXIT. `n` counts words of parameters to drop beyond the marker.
 	exec_trap do_exit(u8 n)
 	{
+		// The flowchart's own guards (sheet 140): an unwound Q outside
+		// SB..Q is trap 1, and a new S below it trap 25. The boot relies
+		// on the first: SYSTEM POWERUP's final IXIT unwinds a frame whose
+		// delta-Q word is the loader's MPB inventory, and the resulting
+		// fault -- with the dispatcher flag freshly set -- is what routes
+		// control into the trap system and from there to the dispatcher.
+		{
+			const u32 d = m_mem.read32(r.q - 3);
+			const u32 qnew = r.q - d;
+			if (qnew < r.sb || qnew > r.q)
+				return take_trap(trap_cause::bounds_violation, r.q);
+			if (r.q - 16 - 4u * n < qnew)
+				return take_trap(trap_cause::stack_underflow, r.q);
+		}
 		r.s = r.q;
 		const u32 delta = stk(0);
 		r.q = r.q - delta;
+		const u32 old_seg = r.get(sf::CSN);
 		r.status = stk(1);
 		const u32 ret = stk(2);
 		r.x = stk(3);
 		r.s -= 16 + 4u * n;
+
+		// "Set PB and PL from Code Segment Number in STATUS" (sheet 121).
+		// When the marker's CSN matches the current segment the registers
+		// are already right, and no CST need exist -- which is what lets
+		// single-segment programs run before any tables are built.
+		const u32 seg = r.get(sf::CSN);
+		if (seg != old_seg)
+		{
+			if (seg == 0 || seg == 1024 || seg == 3072)
+			{
+				// Segments 1024 and 3072 are sub-table headers and always
+				// trap 17; segment 0 traps only in unprivileged mode
+				// (sheet 47). A privileged EXIT to segment 0 returns to
+				// the pre-CST absolute environment the machine boots in:
+				// SYSTEM POWERUP runs with PB = 0 and CSN = 0 while it
+				// builds the tables, and calls into freshly-relocated
+				// segments expecting this return path to restore it.
+				if (seg != 0 || !r.privileged())
+					return take_trap(trap_cause::external_program_pointer, seg);
+				r.pb = 0;
+				r.pl = 0xfffffffc;
+				cst_use_count(old_seg, -1);
+			}
+			else
+			{
+				u32 ea;
+				if (!cst_entry_addr(seg, ea))
+					return take_trap(trap_cause::cst_violation, seg);
+				r.pb = m_mem.read32(ea + 8);
+				r.pl = r.pb + m_mem.read32(ea + 4);
+				cst_use_count(old_seg, -1);
+				cst_use_count(seg, +1);
+			}
+		}
 
 		const u32 target = r.pb + ret;
 		if (!m_au.in_code(target))
 			return exec_trap::code_bounds;
 		branch_to(target);
 		return exec_trap::none;
+	}
+
+	//----------------------------------------------------------------
+	//  the dispatcher: DISP and IXIT (ERS sheets 97-98, flowcharts on
+	//  sheets 140-141)
+	//----------------------------------------------------------------
+
+	// Words of the stack relative to Q, in the ERS's (Q+k) notation: the
+	// word (Q) ends at byte Q, so (Q+k) ends at Q + 4k.
+	u32 qword(int k) const { return m_mem.read32(r.q - 3 + 4 * k); }
+	void set_qword(int k, u32 v) { m_mem.write32(r.q - 3 + 4 * k, v); }
+
+	// This CPU's dedicated four-word block at 16 * channel (Appendix D):
+	// user CST pointer, current TCB pointer, QI, SLI.
+	u32 ded_base() const { return 16 * ers32::get(r.mask, 3, 3); }
+
+	// "Set DB and DL from the Data Segment Pointer" (ERS sheet 41): an
+	// external pointer takes location and length from the DST, offset
+	// ignored. For a global or stack pointer the offset is the absolute
+	// address for DB, with DL the maximum for global pointers and
+	// DB + 1024 words for stack pointers.
+	exec_trap set_dbdl_from_pointer(u32 ptr)
+	{
+		const u32 tag = ers32::get(ptr, 0, 2);
+		if (tag == 2)
+		{
+			r.db = ers32::get(ptr, 2, 30);
+			r.dl = 0xffffffff;
+			return exec_trap::none;
+		}
+		if (tag == 3)
+		{
+			r.db = ers32::get(ptr, 2, 30);
+			r.dl = r.db + 4095;
+			return exec_trap::none;
+		}
+		const u32 seg = ers32::get(ptr, 2, 11);
+		if (seg == 0)
+		{
+			m_addr_trap = trap::eds_pointer_violation;
+			return exec_trap::address_error;
+		}
+		const u32 table = ers32::get(ptr, 1, 1)
+				? r.dst : dst_walker::SYSTEM_DST_BASE;
+		const u32 ea = table + 16 * seg;
+		r.db = m_mem.read32(ea + 8);
+		r.dl = r.db + m_mem.read32(ea + 4);
+		return exec_trap::none;
+	}
+
+	// A data segment table entry's location and length-1, for the TCB's
+	// stack and global segment numbers. Numbers below 2048 live in the
+	// system table at its architectural base; the rest in the user table
+	// the DST register points at.
+	void dst_loc_len(u32 seg, u32 &loc, u32 &len_m1)
+	{
+		const u32 table = (seg < 2048)
+				? dst_walker::SYSTEM_DST_BASE : r.dst;
+		const u32 ea = table + 16 * (seg & 2047);
+		len_m1 = m_mem.read32(ea + 4);
+		loc = m_mem.read32(ea + 8);
+	}
+
+	// The TCB path of IXIT (cases 1-3): restore the task named by the
+	// current Task Control Block -- DB, DL, the user CST pointer and the
+	// DST register from the TCB, then SB, SL, S and Q from the head of
+	// its stack segment -- and EXIT through the marker at the stack top.
+	//
+	// The stack segment starts with its segment-base-relative SB in word
+	// 0 and the SB-relative SL in word 1; the SB-relative S is at (SB-1),
+	// and the marker S points at supplies Q (sheet 40).
+	exec_trap tcb_dispatch()
+	{
+		const u32 ded = ded_base();
+		const u32 ctcbp = m_mem.read32(ded + 4);
+		const u32 entw = m_mem.read32(ctcbp + 8);
+		m_mem.write32(ded, m_mem.read32(ctcbp));
+		r.dst = m_mem.read32(ctcbp + 4);
+
+		u32 loc, len;
+		dst_loc_len(ers32::get(entw, 20, 12), loc, len);
+		r.db = loc;
+		r.dl = loc + len;
+
+		dst_loc_len(ers32::get(entw, 4, 12), loc, len);
+		const u32 sb = loc + m_mem.read32(loc);
+		const u32 sl = sb + m_mem.read32(loc + 4);
+		const u32 s = sb + m_mem.read32(sb - 4);
+		if (sb < loc || sl > loc + len || s < sb || s > sl)
+			return take_trap(trap_cause::inconsistent_registers, 0);
+		r.sb = sb;
+		r.sl = sl;
+		r.s = s;
+		r.q = s;
+		m_ics_flag = false;
+		return do_exit(0);
+	}
+
+	// Unwind the dispatcher-entry frame at Q on the ICS: (Q-1) status,
+	// (Q-2) PB-relative P, (Q-3) X, with the global data segment pointer
+	// at (Q+1). Shared by DISP and IXIT cases 7 and 8.
+	exec_trap launch_ics_frame()
+	{
+		set_qword(0, 0);
+		const exec_trap t = set_dbdl_from_pointer(qword(1));
+		if (t != exec_trap::none)
+			return t;
+		m_mem.write32(r.sb, qword(1));
+
+		const u32 sta = qword(-1);
+		const u32 csn = ers32::get(sta, 20, 12);
+		if (csn != r.get(sf::CSN))
+		{
+			if (csn == 0)
+			{
+				r.pb = 0;
+				r.pl = 0xfffffffc;
+			}
+			else
+			{
+				u32 ea;
+				if (!cst_entry_addr(csn, ea))
+					return take_trap(trap_cause::cst_violation, csn);
+				r.pb = m_mem.read32(ea + 8);
+				r.pl = r.pb + m_mem.read32(ea + 4);
+			}
+		}
+		r.status = sta;
+		r.x = qword(-3);
+		const u32 target = r.pb + qword(-2);
+		if (!m_au.in_code(target))
+			return take_trap(trap_cause::instruction_sequencing, target);
+		r.s = r.q + 12;                     // S := Q + 3 words
+		branch_to(target);
+		return exec_trap::none;
+	}
+
+	// The external interrupt entry (ERS sheet 142, "INTERRUPT HANDLER").
+	// `device` is the interrupting device's number, which is also its
+	// Device Reference Table address. Push a marker on the current
+	// stack; on first entry save S at (SB-1) and switch to the ICS from
+	// QI and SLI; nested, flag the marker if the dispatcher was
+	// interrupted and save the running global pointer at (Q+1). Then
+	// save the mask at (Q+2) and the device at (Q+3), load DB/DL and
+	// PB/PL/P from the DRT entry's data and program pointers, and run
+	// the service routine privileged in its segment.
+	exec_trap external_interrupt(u32 device)
+	{
+		const u32 ret = r.p - r.pb;
+		const u32 old_q = r.q;
+		r.s += 16;
+		set_stk(3, r.x);
+		set_stk(2, ret);
+		set_stk(1, r.status);
+		set_stk(0, r.s - old_q);
+		r.q = r.s;
+
+		if (!m_ics_flag)
+		{
+			m_mem.write32(r.sb - 4, r.s - r.sb);
+			const u32 ded = ded_base();
+			r.q = m_mem.read32(ded + 8);
+			r.sl = m_mem.read32(ded + 12);
+			r.sb = (r.q & ~3u) - 256;
+			m_ics_flag = true;
+		}
+		else
+		{
+			if (m_disp_flag)
+			{
+				m_disp_flag = false;
+				set_qword(0, qword(0) | 0x80000000u);
+			}
+			set_qword(1, m_mem.read32(r.sb));
+		}
+
+		set_qword(2, r.mask);
+		r.s = r.q + 12;                     // S := Q + 3
+		set_qword(3, device);
+
+		// The DRT entry: word 1 is the service routine's program
+		// pointer, word 2 its data segment pointer (ERS section 5.1.3).
+		const u32 pgm = m_mem.read32(device);
+		const u32 dsp = m_mem.read32(device + 4);
+		exec_trap t = set_dbdl_from_pointer(dsp);
+		if (t != exec_trap::none)
+			return t;
+		m_mem.write32(r.sb, dsp);
+
+		const u32 seg = ers32::get(pgm, 20, 12);
+		if (ers32::get(pgm, 0, 1) && seg != 0)
+		{
+			u32 ea;
+			if (!cst_entry_addr(seg, ea))
+				return take_trap(trap_cause::cst_violation, seg);
+			r.pb = m_mem.read32(ea + 8);
+			r.pl = r.pb + m_mem.read32(ea + 4);
+			const u32 slot = m_mem.read32(r.pl - ers32::get(pgm, 1, 19));
+			r.status = ers32::mask(14, 1);   // privileged, all else clear
+			r.put(sf::CSN, seg);
+			branch_to(r.pb + ers32::get(slot, 2, 30));
+		}
+		else
+		{
+			// A local pointer runs absolute, the pre-CST convention.
+			r.pb = 0;
+			r.pl = 0xfffffffc;
+			r.status = ers32::mask(14, 1);
+			branch_to(ers32::get(pgm, 2, 30));
+		}
+		return exec_trap::none;
+	}
+
+	// DISP (sheet 97): enter the dispatcher, or defer it by flagging (QI)
+	// when already on the ICS or pseudo-disabled. Entering pushes a
+	// marker, saves S at (SB-1) of the interrupted stack, hops onto the
+	// ICS from QI and SLI, and unwinds the dispatcher frame there.
+	exec_trap do_disp()
+	{
+		if (!r.privileged())
+			return take_trap(trap_cause::privileged_mode, 0);
+		const u32 ded = ded_base();
+		const u32 qi = m_mem.read32(ded + 8);
+
+		if (m_ics_flag || m_mem.read32(qi - 3 - 16) != 0)
+		{
+			m_mem.write32(qi - 3, m_mem.read32(qi - 3) | 0x80000000u);
+			r.put(sf::CC, CCL);
+			return exec_trap::none;
+		}
+
+		const u32 ret = m_next - r.pb;
+		const u32 old_q = r.q;
+		r.s += 16;
+		set_stk(3, r.x);
+		set_stk(2, ret);
+		set_stk(1, r.status);
+		set_stk(0, r.s - old_q);
+		m_mem.write32(r.sb - 4, r.s - r.sb);
+
+		r.q = qi;
+		r.sl = m_mem.read32(ded + 12);
+		r.sb = (qi & ~3u) - 256;            // QI - 64 words
+		m_ics_flag = true;
+		return launch_ics_frame();
+	}
+
+	// IXIT (sheets 96-98, flowchart sheet 141): exit from trap handlers,
+	// interrupt service and the dispatcher. The eight situations of
+	// section 6.2.4 reduce to four paths.
+	exec_trap do_ixit()
+	{
+		if (!r.privileged())
+			return take_trap(trap_cause::privileged_mode, 0);
+
+		// Case 1: the dispatcher exiting to the process it picked.
+		if (m_disp_flag)
+		{
+			m_disp_flag = false;
+			return tcb_dispatch();
+		}
+
+		// Interrupt service routines run in code segment 1; on the way
+		// out the previous interrupt mask is restored from (Q+2). A
+		// pending external interrupt would be dispatched here.
+		if (r.get(sf::CSN) == 1)
+			r.mask = ers32::set(qword(2), 3, 3, ers32::get(r.mask, 3, 3));
+
+		if (ers32::get(qword(0), 0, 1))
+		{
+			// The marker below was flagged by the microcode interrupt
+			// handler: the dispatcher (or a deferred dispatch) is under
+			// this frame.
+			m_disp_flag = true;
+			const u32 qi = m_mem.read32(ded_base() + 8);
+			if (ers32::get(m_mem.read32(qi - 3), 0, 1))
+			{
+				// A DISP was deferred. With dispatching enabled, restart
+				// the dispatcher from its frame at QI (cases 7, 8). The
+				// flowchart leaves SB and SL alone because IXIT assumes
+				// it is already executing on the ICS; setting them to
+				// the ICS geometry is what that assumption means, and it
+				// also covers the boot-time entry that arrives here from
+				// the powerup module's stack.
+				if (m_mem.read32(qi - 3 - 16) == 0)
+				{
+					r.q = qi;
+					r.sb = (qi & ~3u) - 256;
+					r.sl = m_mem.read32(ded_base() + 12);
+					m_ics_flag = true;
+					return launch_ics_frame();
+				}
+				// Pseudo-disabled: fall through as cases 3 and 6.
+			}
+			else
+			{
+				// Case 5: return to the interrupted dispatcher below.
+				set_qword(0, qword(0) & 0x7fffffffu);
+				const exec_trap t = set_dbdl_from_pointer(qword(1));
+				if (t != exec_trap::none)
+					return t;
+				m_mem.write32(r.sb, qword(1));
+				return do_exit(0);
+			}
+		}
+
+		if ((qword(0) & 0x7fffffffu) == 0)
+		{
+			// Cases 2 and 3: the last frame on the ICS; return to the
+			// interrupted process through its TCB.
+			m_disp_flag = false;
+			return tcb_dispatch();
+		}
+
+		// Cases 4 and 6: return to an interrupted service routine.
+		set_qword(0, qword(0) & 0x7fffffffu);
+		const exec_trap t = set_dbdl_from_pointer(qword(1));
+		if (t != exec_trap::none)
+			return t;
+		m_mem.write32(r.sb, qword(1));
+		return do_exit(0);
 	}
 
 	memory_interface &m_mem;
@@ -1948,7 +2650,8 @@ private:
 	bool m_halted = false;
 	bool m_traps_enabled = false;
 	bool m_address_lockout = true;    // the default mode (ERS sheet 126)
-	u32 m_dispatch_disable = 0;
+	bool m_disp_flag = false;         // the microcode dispatcher flag
+	bool m_ics_flag = false;          // executing on the interrupt stack
 	trap m_addr_trap = trap::none;
 	trap_cause m_last_trap = trap_cause::reset;
 };

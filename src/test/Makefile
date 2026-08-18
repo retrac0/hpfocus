@@ -6,7 +6,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter
 SRCDIR    = ../cpu/focus
 
-all: dasmtest statetest addrtest dsttest exectest ioptest bootprobe
+all: dasmtest statetest addrtest dsttest exectest ioptest bootprobe bootrun
 
 dasmtest: dasmtest.cpp $(SRCDIR)/focusdasm.cpp $(SRCDIR)/focusdasm.h \
           $(SRCDIR)/focusdasm_tables.ipp emu.h
@@ -32,6 +32,10 @@ ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
 # Not a test: an experiment harness for locating a boot module's entry point.
 bootprobe: bootprobe.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
 	$(CXX) $(CXXFLAGS) bootprobe.cpp -o $@
+
+# Not a test: runs a boot image through the reverse-engineered loader handoff.
+bootrun: bootrun.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
+	$(CXX) $(CXXFLAGS) bootrun.cpp -o $@
 
 # The opcode tables are generated; docs/opcodes.csv is the source of truth.
 $(SRCDIR)/focusdasm_tables.ipp: ../../docs/opcodes.csv ../../tools/gen_dasm_tables.py

@@ -458,6 +458,87 @@ static void test_load_store()
 	CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
 }
 
+static void test_memory_arithmetic()
+{
+	std::printf("memory increment and decrement\n");
+	harness h;
+
+	// INCM/DECM step by one; INCF/DECF step by *four* (ERS sheets 81.1-81.3
+	// name them "Increment/Decrement Memory by Four"). The powerup module's
+	// checksum loop counts a byte total down with DECF while advancing X by
+	// four, which is what caught DECF stepping by one.
+	h.mem.write32(h.cpu.r.db + 16, 100);
+	CHECK(h.one(u32_insn(024, 2, 16)) == exec_trap::none);     // INCM
+	CHECK_EQ(h.mem.read32(h.cpu.r.db + 16), 101);
+	CHECK(h.one(u32_insn(023, 2, 16)) == exec_trap::none);     // DECM
+	CHECK_EQ(h.mem.read32(h.cpu.r.db + 16), 100);
+	CHECK(h.one(u32_insn(027, 2, 16)) == exec_trap::none);     // INCF
+	CHECK_EQ(h.mem.read32(h.cpu.r.db + 16), 104);
+	CHECK(h.one(u32_insn(032, 2, 16)) == exec_trap::none);     // DECF
+	CHECK_EQ(h.mem.read32(h.cpu.r.db + 16), 100);
+
+	// DECF sets the condition code on the result: counting 4 down to 0 is
+	// CCE, one more takes it negative to CCL -- the checksum loop's exit.
+	h.mem.write32(h.cpu.r.db + 20, 4);
+	CHECK(h.one(u32_insn(032, 2, 20)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+	CHECK(h.one(u32_insn(032, 2, 20)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+}
+
+static void test_modal_pops()
+{
+	std::printf("operand deletion follows the b bit\n");
+
+	// STAX, ADAX, CMP, LCMP and the test group delete their operands only
+	// when CIR(19:1) is set (ERS sheets 33-34.5, 61, 74). The powerup
+	// module interleaves both forms tightly: its chain walk keeps a value
+	// below a plain CMP, and STAX,B's pop pairs against LDXA in the
+	// checksum subroutine's prologue.
+	harness h;
+	const u32 s0 = h.cpu.r.s;
+
+	h.cpu.push(7);
+	CHECK(h.one(f3(043)) == exec_trap::none);          // STAX keeps TOS
+	CHECK_EQ(h.cpu.r.x, 7);
+	CHECK_EQ(h.cpu.r.s, s0 + 4);
+	CHECK(h.one(f3(043, true)) == exec_trap::none);    // STAX,B pops
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	h.cpu.r.x = 3;
+	h.cpu.push(5);
+	CHECK(h.one(f3(036)) == exec_trap::none);          // ADAX keeps TOS
+	CHECK_EQ(h.cpu.r.x, 8);
+	CHECK_EQ(h.cpu.r.s, s0 + 4);
+	CHECK(h.one(f3(036, true)) == exec_trap::none);    // ADAX,B pops
+	CHECK_EQ(h.cpu.r.x, 13);
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	h.cpu.push(9); h.cpu.push(4);
+	CHECK(h.one(f3(017)) == exec_trap::none);          // CMP drops TOS only
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	CHECK_EQ(h.cpu.r.s, s0 + 4);
+	CHECK_EQ(h.cpu.stk(0), 9);
+	h.cpu.push(12);
+	CHECK(h.one(f3(017, true)) == exec_trap::none);    // CMP,B drops both
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	h.cpu.push(1); h.cpu.push(2);
+	CHECK(h.one(f3(057)) == exec_trap::none);          // LCMP drops TOS only
+	CHECK_EQ(h.cpu.r.s, s0 + 4);
+	h.cpu.push(0);
+	CHECK(h.one(f3(057, true)) == exec_trap::none);    // LCMP,B drops both
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	h.cpu.push(u32(-5));
+	CHECK(h.one(f3(025)) == exec_trap::none);          // TEST keeps TOS
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	CHECK_EQ(h.cpu.r.s, s0 + 4);
+	CHECK(h.one(f3(025, true)) == exec_trap::none);    // TEST,B pops
+	CHECK_EQ(h.cpu.r.s, s0);
+}
+
 static void test_unimplemented_is_reported()
 {
 	std::printf("unimplemented opcodes are reported\n");
@@ -603,7 +684,10 @@ static void test_try_escp()
 
 	const u32 s0 = h.cpu.r.s;
 	const u32 q0 = h.cpu.r.q;
-	h.cpu.r.status = 0x1234;
+	// A recognisable sentinel whose CSN field (bits 20-31) is zero: EXIT
+	// re-derives PB and PL through the CST when the restored code segment
+	// number differs from the current one, and no CST exists here.
+	h.cpu.r.status = 0x66500000;
 
 	// TRY with bit 3 set takes a PB-relative recovery address from the top
 	// of stack and builds a four-word frame.
@@ -612,7 +696,7 @@ static void test_try_escp()
 	CHECK_EQ(h.cpu.r.s, s0 + 16);                       // one word plus three
 	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), h.cpu.r.s - h.cpu.r.sb);
 	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 0), 16);   // delta Q
-	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 1), 0x1234); // saved STATUS
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 1), 0x66500000); // saved STATUS
 	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 2), 0x40); // recovery address
 	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.s, 3), 0);    // previous chain head
 
@@ -639,7 +723,7 @@ static void test_try_escp()
 	const exec_trap t = h.one(u16((1 << 6) | 041));
 	CHECK(t == exec_trap::none);
 	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 12), 0xdead);    // stashed at (SB+3)
-	CHECK_EQ(h.cpu.r.status, 0x1234);                   // restored
+	CHECK_EQ(h.cpu.r.status, 0x66500000);               // restored
 	CHECK_EQ(h.cpu.r.p, h.cpu.r.pb + 0x40);             // recovery address
 	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), 0);          // chain head popped
 	CHECK_EQ(h.cpu.r.q, q0);                            // delta Q unwound
@@ -708,9 +792,12 @@ static void test_traps()
 	CHECK_EQ(h.cpu.r.q, q0 + 16);
 	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.q, 0), 16);     // delta Q
 
-	// Only the mode bit and the code segment number survive in STATUS.
+	// Only the mode bit survives in STATUS; the code segment number
+	// becomes 1, the handler segment now executing -- the old CSN is in
+	// the marker, and EXIT compares the marker against the running CSN
+	// to decide whether to switch segments back.
 	CHECK(h.cpu.r.test(sf::M));
-	CHECK_EQ(h.cpu.r.get(sf::CSN), 5);
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 1);
 	CHECK(!h.cpu.r.test(sf::C));
 
 	// A bounds violation vectors through its own STT entry.
@@ -988,7 +1075,7 @@ static void test_system_group()
 		// value, lower bound, upper bound -- the value ends up on top.
 		h.cpu.push(5); h.cpu.push(1); h.cpu.push(10);
 		CHECK(h.one(f2(073, 4)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.r.condition_code(), CCE);
 		CHECK_EQ(h.cpu.stk(0), 5);                    // bounds popped
 		CHECK_EQ(h.cpu.r.p, 0x1002);                  // no branch
 
@@ -996,7 +1083,7 @@ static void test_system_group()
 		h.cpu.r.s = h.cpu.r.sb + 3;
 		h.cpu.push(10); h.cpu.push(1); h.cpu.push(10);
 		CHECK(h.one(f2(073, 4)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.r.condition_code(), CCE);
 
 		// Out of range with a branch field: CCG and a forward branch of
 		// `operand` halfwords from P.
@@ -1070,7 +1157,7 @@ static void test_system_group()
 		h.cpu.r.s = h.cpu.r.sb + 3;
 		h.cpu.push(ptr);
 		CHECK(h.one(f4(013, true)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.r.condition_code(), CCE);
 
 		// Any other evaluation failure reports CCL. Segment 3 is past the
 		// end of this table.
@@ -1080,7 +1167,7 @@ static void test_system_group()
 		far_ptr = ers32::set(far_ptr, 2, 11, 9);   // past the end of the table
 		h.cpu.push(far_ptr);
 		CHECK(h.one(f4(013, true)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCL);
+		CHECK_EQ(h.cpu.r.condition_code(), CCL);
 	}
 }
 
@@ -1173,7 +1260,7 @@ static void test_string_group()
 		CHECK(h.one(f2(054, 004)) == exec_trap::none);
 		CHECK_EQ(h.cpu.r.x, 4);
 		CHECK_EQ(h.cpu.stk(0), 0);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);      // equal all the way
+		CHECK_EQ(h.cpu.r.condition_code(), CCE);      // equal all the way
 
 		// Source greater at the third byte.
 		h.mem.write8(h.cpu.r.db + 0x40 + 2, 'z');
@@ -1193,7 +1280,7 @@ static void test_string_group()
 		h.cpu.push(gptr(0x60));
 		h.cpu.push(4);
 		CHECK(h.one(f2(054, 004)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCL);      // 'a' < 'c'
+		CHECK_EQ(h.cpu.r.condition_code(), CCL);      // 'a' < 'c'
 
 		// A non-positive count compares equal and touches nothing.
 		h.cpu.r.s = h.cpu.r.sb + 3;
@@ -1201,7 +1288,7 @@ static void test_string_group()
 		h.cpu.push(gptr(0x60));
 		h.cpu.push(0);
 		CHECK(h.one(f2(054, 004)) == exec_trap::none);
-		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.r.condition_code(), CCE);
 	}
 
 	// ---- TRAN ---------------------------------------------------------
@@ -1256,6 +1343,8 @@ int main()
 	test_stack_ops();
 	test_branches();
 	test_load_store();
+	test_memory_arithmetic();
+	test_modal_pops();
 	test_unimplemented_is_reported();
 	test_floating_point();
 	test_new_groups();

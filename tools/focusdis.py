@@ -142,7 +142,9 @@ def decode(data: bytes, p: int, base_addr: int = 0):
         if kind in ("MEM_BYTE", "MEM_WORD"):
             arg = _mem(base, off, i, x)
         elif kind == "IMM":
-            arg = f"#{off}"
+            # LDI/LNI immediates are CIR(8:24) -- the full 24 bits after
+            # the opcode (ERS sheet 62), not the 19-bit offset field.
+            arg = f"#{d & 0xFFFFFF}"
         elif kind == "STT4":
             arg = f"STT[{off // 4}]"
         elif kind == "LEVEL":

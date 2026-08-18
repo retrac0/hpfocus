@@ -65,15 +65,22 @@ enum iop_cmd : u8
 
 	// Interfaces
 	CMD_IFPL  = 047,   // R  interface poll
+	CMD_RISF  = 011,   // R  read interface status and flag (sheet 34):
+	                   //    STATUS in bit 30, FLAG in bit 31, rest zero
 	//
-	// Real boot code also issues opcodes 000, 011, 050, 053 and 065, which
-	// the command list in section 5 does not name -- see the note in
-	// docs/HARDWARE.md. They are refused for now rather than guessed at.
+	// The HP-UX 5.30 powerup module's device scan also issues opcodes
+	// 002, 012, 031, 0102 and 0132, none of which the Dec-82 ERS names --
+	// the shipped IOP evidently postdates it. They are accepted as
+	// no-ops (reads return zero), which the scan reads as "no device
+	// present" and moves on. Real boot code additionally issues 000 and
+	// 065, still refused until their effect is understood.
 	CMD_WDPA  = 054,   // W  write DMA peripheral address
 	CMD_RDPA  = 055,   // R  read DMA peripheral address
 	CMD_RDB   = 056,   // R  read data buffer
 	CMD_RIRV  = 057,   // R  read revision
-	CMD_RIOB  = 060,   // C  reset I/O bus
+	CMD_RIOB  = 050,   // C  reset I/O bus
+	CMD_RIOP  = 053,   // C  reset the IOP itself
+	CMD_WMCN  = 060,   // W  write MPB channel number
 	CMD_CALM  = 063,   // C  clear address lockout mode
 	CMD_SALM  = 064,   // C  set address lockout mode
 	CMD_DCE   = 073,   // C  disable IOP command execution
@@ -113,6 +120,11 @@ public:
 	// Direct CPU access to the card.
 	virtual void write_data(u32) { }
 	virtual u32 read_data() { return 0; }
+
+	// Direct I/O: the interface's sixteen FR registers, reached with the
+	// RIF n / WIF n commands (I/O ERS sheet 33: opcodes 8n+1 and 8n+2).
+	virtual u32 read_fr(unsigned) { return 0; }
+	virtual void write_fr(unsigned, u32) { }
 };
 
 //**************************************************************************
@@ -188,7 +200,22 @@ public:
 		case CMD_WTMS: m_timer_start = data; m_timer_count = data; return true;
 		case CMD_WTMC: m_timer_count = data; return true;
 		case CMD_WAMK: m_attn_mask = data; return true;
-		default:       return false;
+		case CMD_WMCN:
+			// Bits 3-5 of the data word become the IOP's MPB identification;
+			// the ERS requires every other bit to be zero (sheet 35).
+			m_channel = u8(ers32::get(data, 3, 3));
+			return true;
+		default:
+			// WIF n, Write Interface FRn (I/O ERS sheet 33): opcode
+			// 8n+2 puts the low 16 data bits on the addressed card's
+			// register n. An empty slot swallows the write.
+			if ((t.opcode & 7) == 2 && t.opcode <= 0172)
+			{
+				if (c.iface)
+					c.iface->write_fr(t.opcode >> 3, data & 0xffff);
+				return true;
+			}
+			return false;
 		}
 	}
 
@@ -216,7 +243,22 @@ public:
 		case CMD_RIST: data = c.iface ? c.iface->status() : 0; return true;
 		case CMD_RIFG: data = c.iface ? c.iface->flag() : 0; return true;
 		case CMD_IFPL: data = poll(); return true;
-		default:       return false;
+		case CMD_RISF:
+			// STATUS in bit 30, FLAG in bit 31, all else zero (sheet 34).
+			data = c.iface
+					? (((c.iface->status() & 1) << 1) | (c.iface->flag() & 1))
+					: 0;
+			return true;
+		default:
+			// RIF n, Read Interface FRn (sheet 33): opcode 8n+1 reads
+			// the addressed card's register n into the low 16 bits. An
+			// empty slot reads as an idle bus. RISF keeps 011.
+			if ((t.opcode & 7) == 1 && t.opcode <= 0171 && t.opcode != CMD_RISF)
+			{
+				data = c.iface ? (c.iface->read_fr(t.opcode >> 3) & 0xffff) : 0;
+				return true;
+			}
+			return false;
 		}
 	}
 
@@ -248,6 +290,21 @@ public:
 			for (auto &c : m_chan) { c.dma_active = false; }
 			m_dma_mask = 0;
 			m_int_request = 0;
+			update_interrupt();
+			return true;
+		case CMD_RIOP:
+			// Reset IOP (I/O ERS sheet 35). Forces the initial state and
+			// resumes immediately: interrupt request disabled, timer
+			// disabled, DMA mask cleared, Interrupt Request and Interrupt
+			// Mask cleared. "All other registers remain unchanged", so the
+			// channel DMA registers and the MPB channel number survive --
+			// which is what separates this from reset().
+			m_int_enable = false;
+			m_timer_enabled = false;
+			m_dma_mask = 0;
+			for (auto &c : m_chan) { c.dma_active = false; }
+			m_int_request = 0;
+			m_int_mask = 0;
 			update_interrupt();
 			return true;
 		default:       return false;

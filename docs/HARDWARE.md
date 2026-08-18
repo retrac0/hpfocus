@@ -1160,12 +1160,23 @@ avoid.
 1. **SCM loader ROM** — no dump located. The protocol is documented (§8.5) and
    both acquired systems supply the `SYSTEM POWERUP` entry point, so this is a
    soft blocker.
-2. **Memory Controller ERS** — referenced repeatedly by the Instruction Set ERS
-   (for `SAR`/`SDR` and MPB semantics) and still not located. Partly mitigated:
-   *HP Journal* August 1983 carries a detailed article on the chip set with a
-   block diagram of the memory controller, its ECC and memory-healing
-   behaviour, and its role as an MPB processor hardwired to channel 0. See
-   [hpjournal/](hpjournal/).
+2. **Memory Controller ERS** — referenced by both ERSes and still not located,
+   but the gap is narrower than the references suggest. The software-visible
+   MPB semantics are documented in the material in hand: I/O ERS §2.1 covers
+   the slave address/data registers and what each carries, channel assignment,
+   the message-bit map, the read-and-set-to-minus-one semaphore operation and
+   the sixteen DRT interrupt lists at octal 2000–2171, and its §5 gives all 46
+   MPB commands; the Instruction Set ERS §159–160 gives full instruction-level
+   semantics for `RFC`/`WTC`/`RSC`/`SMSG`, including the MSG-bit handshakes.
+   What both defer to the MC ERS is bus-protocol detail an ISA-level emulator
+   never sees, plus the MC's own slave-register command set as the MPB node on
+   channel 0 (memory sizing, ECC error logging, memory healing) — visible only
+   if software probes channel 0 directly. For that residue, *HP Journal*
+   August 1983 carries a detailed article on the chip set with a block diagram
+   of the memory controller, its ECC and memory-healing behaviour, and its
+   role as an MPB processor hardwired to channel 0 (see
+   [hpjournal/](hpjournal/)), and the probing code itself is the fallback —
+   the route that already recovered `WTC`'s leave-operands-on-stack behaviour.
 3. **Stack marker layout** — ERS §2.3.5, sheet 23; not yet transcribed.
 4. **Disc interface** — the internal 9.9 MB drive's controller and protocol are
    not yet pinned down.

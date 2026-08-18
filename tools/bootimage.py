@@ -10,10 +10,19 @@ descriptor says how the slices fit together:
     0x408  number of volumes in the set
     0x40c  this volume's number, counting from 1
     0x410  byte offset of this volume's slice within the image
-    0x414  starting sector of the slice on this disc
+    0x414  unknown (8 on first volumes, 3/4 on continuations)
+    0x418  unknown (5 on first volumes, 8/15 on continuations)
 
-So BASIC 2.0 is a single 372,932-byte image split across two discs: volume 1
-supplies bytes 0..0x413ff from sector 8, volume 2 the remainder from sector 3.
+Every volume's slice starts at sector 8 (byte 0x800). The field at 0x414 was
+originally read as the slice's starting sector -- it matches on first volumes
+by coincidence, but continuation volumes carry 3 or 4 there and their slices
+still start at 0x800. The per-segment checksum chain proves it: assembled
+with each slice from 0x800, every segment of both the BASIC 2.0 and the
+diagnostics environment images verifies end to end; assembled from the 0x414
+field, the chain breaks at the first volume boundary.
+
+So BASIC 2.0 is a single 372,932-byte image split across two discs, and the
+diagnostics environment a 680,668-byte image across three.
 
     python3 tools/bootimage.py out.bin disc1.img disc2.img ...
 """
@@ -56,7 +65,7 @@ def main() -> int:
     image = bytearray(first["total"])
     got = 0
     for data, d in sorted(zip(vols, descs), key=lambda p: p[1]["offset"]):
-        start = d["sector"] * SECTOR
+        start = 8 * SECTOR
         # A slice runs to the start of the next one, or to the end.
         nxt = [x["offset"] for x in descs if x["offset"] > d["offset"]]
         end_in_image = min(nxt) if nxt else first["total"]
@@ -66,13 +75,45 @@ def main() -> int:
         got += len(chunk)
         print(f"  volume {d['volume']}: image {d['offset']:#08x}"
               f"..{d['offset'] + len(chunk):#08x}"
-              f"  from sector {d['sector']} ({len(chunk):,} bytes)")
+              f"  ({len(chunk):,} bytes)")
 
     out.write_bytes(bytes(image))
     print(f"\nwrote {out} -- {got:,} of {first['total']:,} bytes supplied")
     if got < first["total"]:
         print("WARNING: image incomplete, a volume is missing")
-    return 0
+        return 1
+    return verify(bytes(image))
+
+
+def verify(d: bytes) -> int:
+    """Walk the segment chain and check every per-segment byte-sum checksum.
+
+    Segment 0 leads with an extra word (1ffc0000); its 7-word header is at
+    +0x4 and its checksum word sits at +len. Later segments' headers follow
+    the previous checksum word directly, with the checksum at hdr + len + 8.
+    Each checksum covers every byte after the previous checksum word.
+    """
+    prev = 0
+    hdr = 4
+    seg = 0
+    while True:
+        ln = struct.unpack(">I", d[hdr + 4:hdr + 8])[0]
+        name = d[hdr + 28:hdr + 44].decode("ascii", "replace").rstrip()
+        ckpos = ln if seg == 0 else hdr + ln + 8
+        if ckpos + 4 > len(d):
+            print(f"  seg {seg} ({name}) checksum beyond the image -- BAD")
+            return 1
+        ck = struct.unpack(">I", d[ckpos:ckpos + 4])[0]
+        if sum(d[prev:ckpos]) & 0xffffffff != ck:
+            print(f"  seg {seg:2d} {name:<16} checksum BAD at {ckpos:#x}")
+            return 1
+        prev = ckpos + 4
+        hdr = ckpos + 4
+        seg += 1
+        if hdr + 4 > len(d) or struct.unpack(">i", d[hdr:hdr + 4])[0] < 0 \
+                or d[hdr:hdr + 2] == b"\x00\x00":
+            print(f"all {seg} segments verify; chain ends at {hdr:#x}")
+            return 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,565 @@
+// license:BSD-3-Clause
+// Run a boot image through the loader handoff the SYSTEM POWERUP module
+// actually expects, as reverse-engineered from the module itself (see
+// docs/IMPLEMENTATION.md).
+//
+// The contract, derived by reading the module end to end:
+//
+//   * DB maps physical memory from absolute 0. The module builds the
+//     dedicated tables there: location 0 (System CST pointer, set to 1152 =
+//     octal 2200), the CST/DST at 1152, the DRT, the per-CPU blocks.
+//   * The word at Q+52 is the byte offset in DB where the loader placed the
+//     boot image -- the module zero-fills [0, that offset) first, then walks
+//     the segment chain there, verifying each segment's byte-sum checksum
+//     and terminating on a negative word (the image ends with ffffffff).
+//   * A halfword table starting at the halfword ending at Q-3 inventories
+//     the MPB: bit 0 (ERS numbering) set marks a valid entry, bits 1-3 are
+//     the channel, the low byte is the type -- 4 = CPU, 2 = IOP, 1 = other.
+//     A zero halfword terminates. The module assigns each type-2 entry its
+//     channel with WMCN, resets it with RIOP/RIOB, and scans its devices.
+//   * Q+64 holds 2060 + G for a region the module indexes at DB[G];
+//     Q+65..Q+84 is a 20-byte record copied to DB+172 (boot device record);
+//     Q+88 and Q+92 are saved for later boot stages.
+//   * The stack top holds -2 for a cold start; MASK bits 3-5 must identify
+//     the executing CPU's channel (1).
+//
+//   bootrun <image.bin> [--p64 N] [--steps N] [--load ADDR] [--trace]
+
+#include "../cpu/focus/focusexec.h"
+#include "../iop/focusiop.h"
+#include "../iop/focusscm.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+using namespace focus;
+
+namespace {
+
+class flat_memory : public memory_interface
+{
+public:
+	explicit flat_memory(u32 size) : m_d(size, 0) { }
+
+	u32 read32(u32 a) override
+	{
+		a &= ~3u;
+		return (a + 3 < m_d.size())
+				? (u32(m_d[a]) << 24) | (u32(m_d[a+1]) << 16)
+				  | (u32(m_d[a+2]) << 8) | m_d[a+3] : 0;
+	}
+	void write32(u32 a, u32 v) override
+	{
+		a &= ~3u;
+		if (a + 3 >= m_d.size()) return;
+		m_d[a] = u8(v >> 24); m_d[a+1] = u8(v >> 16);
+		m_d[a+2] = u8(v >> 8); m_d[a+3] = u8(v);
+	}
+	void write16(u32 a, u16 v)
+	{
+		if (a + 1 >= m_d.size()) return;
+		m_d[a] = u8(v >> 8); m_d[a+1] = u8(v);
+	}
+	void load(u32 at, const std::vector<u8> &img)
+	{
+		for (size_t i = 0; i < img.size() && at + i < m_d.size(); i++)
+			m_d[at + i] = img[i];
+	}
+	std::vector<u8> m_d;
+};
+
+struct run_host : public iop_core::host
+{
+	flat_memory &mem;
+	bool int_line = false;
+	explicit run_host(flat_memory &m) : mem(m) { }
+	memory_interface &iop_memory() override { return mem; }
+	void iop_interrupt(bool state) override { int_line = state; }
+};
+
+// The console. The error reporter writes characters to FR12 at select
+// code 0; the console driver does the same at select code 6, then polls
+// STATUS/FLAG and FR9 for completion. Always ready, never busy, and each
+// completed character raises the card's interrupt so the driver's wait
+// queues drain.
+struct console_card : public iop_interface
+{
+	std::string out;
+	u32 id = 1;
+	iop_core *iop = nullptr;
+	unsigned pa = 0;
+	u32 status() override { return 0; }   // not busy
+	u32 flag() override { return 1; }     // done
+	u32 read_fr(unsigned n) override
+	{
+		switch (n)
+		{
+		case 1:  return 0x80;   // ready to accept a character
+		case 3:  return id;
+		case 9:  return 0xff;   // complemented response code: zero
+		default: return 0;
+		}
+	}
+	void write_fr(unsigned n, u32 v) override
+	{
+		if (n != 12)
+			return;
+		const char c = char(v & 0xff);
+		out.push_back(c);
+		std::fputc(c ? c : '.', stdout);
+		std::fflush(stdout);
+		if (iop)
+			iop->raise(pa);
+	}
+};
+
+// Wraps the IOP to log the I/O the software attempts, refused or not.
+struct logging_io : public io_interface
+{
+	io_interface &inner;
+	bool log = false;
+	unsigned logged = 0;
+	explicit logging_io(io_interface &i) : inner(i) { }
+	void note(const char *kind, const target &t, u32 data, bool ok)
+	{
+		if (!log || logged >= 40000) return;
+		logged++;
+		std::printf("io: %-7s op=%02x ch=%u pa=%u ic=%u data=%08x %s\n",
+				kind, t.opcode, t.channel, t.pa, t.ic, data,
+				ok ? "" : "REFUSED");
+	}
+	bool io_write(const target &t, u32 data) override
+	{
+		const bool ok = inner.io_write(t, data);
+		note("write", t, data, ok);
+		return ok;
+	}
+	bool io_read(const target &t, u32 &data) override
+	{
+		const bool ok = inner.io_read(t, data);
+		note("read", t, data, ok);
+		return ok;
+	}
+	bool io_control(const target &t) override
+	{
+		const bool ok = inner.io_control(t);
+		note("control", t, 0, ok);
+		return ok;
+	}
+};
+
+const char *trap_name(exec_trap t)
+{
+	switch (t)
+	{
+	case exec_trap::none:               return "step budget exhausted";
+	case exec_trap::unimplemented:      return "unimplemented";
+	case exec_trap::bounds_violation:   return "bounds";
+	case exec_trap::code_bounds:        return "code bounds";
+	case exec_trap::divide_by_zero:     return "div0";
+	case exec_trap::address_error:      return "address";
+	case exec_trap::stack_overflow:     return "stack";
+	case exec_trap::pointer_conversion: return "ptr conv";
+	case exec_trap::trapped:            return "trapped";
+	case exec_trap::halted:             return "halted";
+	}
+	return "?";
+}
+
+const char *addr_trap_name(focus::trap t)
+{
+	switch (t)
+	{
+	case focus::trap::none:                     return "-";
+	case focus::trap::bounds_violation:         return "outside PB..PL / SB..S / DB..DL";
+	case focus::trap::eds_pointer_violation:    return "external segment number zero";
+	case focus::trap::dst_violation:            return "segment beyond the DST";
+	case focus::trap::eds_bounds_violation:     return "offset outside the segment";
+	case focus::trap::data_seg_write_violation: return "store to a read-only segment";
+	case focus::trap::priv_mode_data_violation: return "unprivileged access to an M segment";
+	case focus::trap::absent_segment:           return "absent segment";
+	case focus::trap::absent_page_table:        return "absent page table";
+	case focus::trap::absent_page:              return "absent page";
+	case focus::trap::page_table_violation:     return "page beyond the page table";
+	case focus::trap::unexpected_eds_type:      return "unexpected segment type";
+	}
+	return "?";
+}
+
+} // anonymous namespace
+
+
+int main(int argc, char **argv)
+{
+	const char *path = nullptr;
+	u32 p64 = 2060 + 8000;         // Q+64: 2060 + G, G unknown; a knob
+	u32 load = 0x100000;           // where the "loader" places the image
+	unsigned long long budget = 50000000;
+	bool trace = false;
+	s32 catch_off = -1;            // dump history when P reaches this offset
+	const char *dump_path = nullptr;
+	u32 dump_lo = 0, dump_hi = 0;  // memory range to dump afterwards
+	bool far_trace = false;        // log far control transfers
+	u32 watch = 0xffffffff;        // print P when this word changes
+	u32 boot_ret = 0x5c84;         // (Q-2): where the final IXIT returns
+	bool io_trace = false;         // log every I/O the software attempts
+
+	for (int i = 1; i < argc; i++)
+	{
+		if (!std::strcmp(argv[i], "--p64") && i + 1 < argc)
+			p64 = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--steps") && i + 1 < argc)
+			budget = strtoull(argv[++i], nullptr, 0);
+		else if (!std::strcmp(argv[i], "--load") && i + 1 < argc)
+			load = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--trace"))
+			trace = true;
+		else if (!std::strcmp(argv[i], "--catch") && i + 1 < argc)
+			catch_off = s32(strtoul(argv[++i], nullptr, 0));  // absolute
+		else if (!std::strcmp(argv[i], "--dump") && i + 3 < argc)
+		{
+			dump_path = argv[++i];
+			dump_lo = u32(strtoul(argv[++i], nullptr, 0));
+			dump_hi = u32(strtoul(argv[++i], nullptr, 0));
+		}
+		else if (!std::strcmp(argv[i], "--far"))
+			far_trace = true;
+		else if (!std::strcmp(argv[i], "--watch") && i + 1 < argc)
+			watch = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--ret") && i + 1 < argc)
+			boot_ret = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--io"))
+			io_trace = true;
+		else
+			path = argv[i];
+	}
+	if (!path)
+	{
+		std::fprintf(stderr, "usage: bootrun <image.bin> [--p64 N] "
+				"[--steps N] [--load ADDR] [--trace]\n");
+		return 2;
+	}
+
+	std::FILE *f = std::fopen(path, "rb");
+	if (!f) { std::perror(path); return 2; }
+	std::vector<u8> img;
+	{
+		u8 buf[65536];
+		size_t n;
+		while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+			img.insert(img.end(), buf, buf + n);
+	}
+	std::fclose(f);
+
+	flat_memory mem(0x1000000);    // 16 MB of physical memory
+	mem.load(load, img);
+
+	run_host host(mem);
+	iop_core iop(host, 2);         // the IOP announced in the inventory
+	iop.reset();
+	scm_device scm;
+	iop.attach(scm_device::SELECT_CODE, &scm);
+	console_card console, console6;
+	iop.attach(0, &console);       // select code 0: the error reporter's
+	console6.iop = &iop;
+	console6.pa = 6;
+	iop.attach(6, &console6);      // select code 6: the console driver's
+
+	cpu_core cpu(mem);
+	logging_io iolog(iop);
+	iolog.log = io_trace;
+	cpu.set_io(&iolog);
+
+	// Code: the powerup module executes in place within the loaded image,
+	// with PB = 0. That is not a guess: the module copies its relocation
+	// routine to the absolute address in its header word (0xc4) and
+	// branches there with BRSI through that same word as a "local"
+	// pointer, and LRAS P+8 continuations only return correctly through
+	// SXIT's PB+offset if PB-relative means absolute. PL is the module's
+	// own limit -- its checksum word, at the length in header word +8 --
+	// which with PB = 0 also keeps the low-memory copy executable.
+	//
+	// Both are read out of the image: the length from header word +8, and
+	// the entry as terminator + 0x1e, the terminator being the 00c4 low
+	// halfword of the first 000000c4 word after the module name (its
+	// position varies with the SCCS string: +0x36 for BASIC and the
+	// diagnostics, +0x3e for HP-UX).
+	auto beword = [&img](u32 off) {
+		return (u32(img[off]) << 24) | (u32(img[off+1]) << 16)
+				| (u32(img[off+2]) << 8) | img[off+3];
+	};
+	u32 entry_off = 0;
+	for (u32 off = 0x30; off + 4 <= 0x80; off += 4)
+		if (beword(off) == 0xc4) { entry_off = off + 0x20; break; }
+	if (!entry_off)
+	{
+		std::fprintf(stderr, "no 000000c4 terminator in the header\n");
+		return 2;
+	}
+	cpu.r.pb = 0;
+	cpu.r.pl = load + beword(8) + 3;
+	cpu.r.p  = load + entry_off;
+
+	// The stack lives in high memory, clear of the region the module
+	// zero-fills ([0, load)) and of the image itself. SB sits well below
+	// Q because the final IXIT unwinds a marker whose delta-Q is the low
+	// 31 bits of the inventory word at (Q) -- see the frame layout below.
+	cpu.r.sb = 0xe00000;
+	cpu.r.sl = 0xf7ffff | 3;
+	cpu.r.q  = 0xf00203;
+	cpu.r.s  = cpu.r.q + 0x200;
+
+	// The global data segment is physical memory, from 0.
+	cpu.r.db = 0;
+	cpu.r.dl = 0xffffff | 3;
+	cpu.r.dst = 1152;             // octal 2200, where the module builds it
+	cpu.r.put(sf::M, 1);
+	cpu.r.mask = ers32::set(0, 3, 3, 1);   // this CPU is MPB channel 1
+
+	const u32 q = cpu.r.q;
+
+	// --- the loader's parameter block -----------------------------------
+	// Word operands address their last byte, so the word "Q+n" occupies
+	// [q+n-3, q+n]. Byte operands address their first byte.
+
+	// MPB inventory: the module reads halfword k at q-3+2k (LDH Q-3,X with
+	// X stepping by 2). Bit 0 = valid, bits 1-3 = channel, low byte = type
+	// (4 = CPU, 2 = IOP); a halfword that is not a known type is skipped,
+	// and a zero halfword terminates.
+	//
+	// These same words are the IXIT frame of ERS sheet 97: the module's
+	// last instruction assumes a stack marker at (Q)..(Q-3), a global
+	// data segment pointer at (Q+1), the previous interrupt mask at (Q+2)
+	// and a device number at (Q+3). The two roles coexist exactly one
+	// way, and it pins the layout:
+	//
+	//   (Q)   = [CPU entry, IOP entry] -- bit 0 doubles as the marker's
+	//           dispatcher flag, and the low 31 bits as its delta-Q, so
+	//           the CPU entry's channel field must be zero to keep
+	//           Q - delta above SB
+	//   (Q+1) = 8000 0000 -- a global pointer with offset zero ("DB is
+	//           current"); its top halfword is skipped by the inventory
+	//           scan (type 0) and its zero low halfword terminates it
+	//
+	// The marker below Q returns into the dispatcher -- the trap-handler
+	// segment's STT entry 7, at trap-base + 0x34 -- with a privileged
+	// CSN 0 status, which is where the powerup module's own launch frame
+	// at (QI) also points. --ret overrides the target.
+	mem.write16(q - 3 + 0, 0x9004);   // CPU, channel 1
+	mem.write16(q - 3 + 2, 0xa002);   // IOP, channel 2
+	mem.write16(q - 3 + 4, 0x8000);   // (Q+1) hi: global DS pointer...
+	mem.write16(q - 3 + 6, 0x0000);   // ...and the inventory terminator
+	mem.write32(q - 3 - 4, 0x00020000);  // (Q-1): privileged, CSN 0
+	mem.write32(q - 3 - 8, boot_ret);    // (Q-2): the dispatcher
+	mem.write32(q - 3 - 12, 0);          // (Q-3): X
+	mem.write32(q + 2 * 4 - 3, 0);       // (Q+2): previous mask
+	mem.write32(q + 3 * 4 - 3, 0);       // (Q+3): device number
+
+	mem.write32(q + 52 - 3, load);    // where the image was loaded
+	mem.write32(q + 64 - 3, p64);     // 2060 + G
+	for (u32 i = 0; i < 20; i++)      // 20-byte boot device record
+		mem.m_d[q + 65 + i] = 0;
+	mem.write32(q + 88 - 3, 0);
+	mem.write32(q + 92 - 3, 0);
+
+	cpu.push(u32(-2));                // cold start
+
+	std::printf("image %s, %zu bytes at %#x; entry %#x, Q %#x, S %#x\n\n",
+			path, img.size(), load, cpu.r.p, cpu.r.q, cpu.r.s);
+
+	// --------------------------------------------------------------------
+	std::vector<u32> trail(32, 0);
+	size_t tri = 0;
+	// Ring of recent (pc, S, TOS) for --catch.
+	struct hist { u32 pc, s, tos, tos1; };
+	std::vector<hist> ring(96);
+	size_t ri = 0;
+	std::vector<u8> visits(img.size() / 2 + 2, 0);
+	unsigned distinct = 0;
+	exec_trap t = exec_trap::none;
+	unsigned long long steps = 0;
+	u32 fault_pc = 0;
+	bool nudged = false;
+
+	for (; steps < budget; steps++)
+	{
+		// Traps vector through CST entry 1 once the module has built the
+		// tables and pointed dedicated location 0 at them.
+		if (!cpu.traps_enabled() && mem.read32(0) != 0)
+			cpu.enable_traps(true);
+		const u32 idx = (cpu.r.p - load) / 2;
+		if (idx < visits.size() && visits[idx] < 255)
+		{
+			if (visits[idx] == 0)
+				distinct++;
+			visits[idx]++;
+		}
+		fault_pc = cpu.r.p;
+		trail[tri++ & 31] = cpu.r.p;
+		if (catch_off >= 0 && cpu.r.p == u32(catch_off))
+		{
+			std::printf("caught address %#x at step %llu; history:\n",
+					catch_off, steps);
+			std::printf("PB=%08x PL=%08x Q=%08x S=%08x SB=%08x SL=%08x "
+					"X=%08x STATUS=%08x\n", cpu.r.pb, cpu.r.pl, cpu.r.q,
+					cpu.r.s, cpu.r.sb, cpu.r.sl, cpu.r.x, cpu.r.status);
+			std::printf("SB words 0..6: ");
+			for (int k = 0; k <= 6; k++)
+				std::printf("%08x ", mem.read32(cpu.r.sb + 4 * k));
+			std::printf("\n");
+			for (size_t i = 0; i < ring.size(); i++)
+			{
+				const hist &h = ring[(ri + i) % ring.size()];
+				std::printf("  %6x  S=%08x (S)=%08x (S-1)=%08x\n",
+						h.pc - load, h.s, h.tos, h.tos1);
+			}
+			return 0;
+		}
+		ring[ri] = { cpu.r.p, cpu.r.s, cpu.stk(0), cpu.stk(1) };
+		ri = (ri + 1) % ring.size();
+		if (trace)
+			std::printf("%08x cir=%08x S=%08x (S)=%08x\n",
+					cpu.r.p, mem.read32(cpu.r.p), cpu.r.s, cpu.stk(0));
+		// Chain-walk top: one line per segment visited.
+		if (cpu.r.p == load + 0x2d4)
+			std::printf("walk: step %9llu  S=%08x  Q-88=%08x  hdr=%08x %08x\n",
+					steps, cpu.r.s,
+					mem.read32(cpu.r.q - 88 - 3),
+					mem.read32(mem.read32(cpu.r.q - 88 - 3)),
+					mem.read32(mem.read32(cpu.r.q - 88 - 3) + 4));
+		// SYSTEM POWERUP's final IXIT launches the first task: with (Q)
+		// zero it takes the TCB path -- IXIT case 2 -- and exits through
+		// the marker the module built at the top of the task's stack
+		// segment, landing at trap-segment offset 0x24 as code segment 1.
+		// The word at (Q) is the loader's, and the module consumed it as
+		// the MPB inventory long before this point; whatever the real
+		// loader does to reconcile the two roles is still unknown, so
+		// the harness clears the word when the module reaches its IXIT
+		// with the handoff stack still current.
+		if (!nudged && cpu.r.q == q
+				&& (mem.read32(cpu.r.p & ~3u)
+						>> ((cpu.r.p & 2) ? 0 : 16) & 0xffff) == 0x007c)
+		{
+			mem.write32(q - 3, 0);
+			std::printf("nudge: (Q) cleared for the final IXIT's "
+					"TCB dispatch\n");
+			nudged = true;
+		}
+		// The machine's heartbeat: tick the interval timer and run a DMA
+		// poll round every few instructions, and deliver the IOP's
+		// interrupt line to the CPU between instructions. The device
+		// number is the DRT address, 128*channel + 16*PA.
+		if ((steps & 15) == 0)
+		{
+			iop.timer_tick();
+			iop.poll_and_service();
+		}
+		if (host.int_line)
+		{
+			const u32 rq = iop.interrupt_request();
+			for (unsigned pa = 0; pa < 8; pa++)
+				if (rq & (1u << pa))
+				{
+					const u32 device = 128u * iop.channel_number() + 16u * pa;
+					if (cpu.interrupt(device) && far_trace)
+						std::printf("int: step %9llu  device %u "
+								"-> P=%08x\n", steps, device, cpu.r.p);
+					break;
+				}
+		}
+		const u32 prev_cir = mem.read32(fault_pc & ~1u);
+		const u32 watch_was = (watch != 0xffffffff) ? mem.read32(watch) : 0;
+		t = cpu.step();
+		if (watch != 0xffffffff && mem.read32(watch) != watch_was)
+			std::printf("watch: step %9llu  P=%08x  [%#x] %08x -> %08x\n",
+					steps, fault_pc, watch, watch_was, mem.read32(watch));
+		if (far_trace)
+		{
+			const s32 d = s32(cpu.r.p) - s32(fault_pc);
+			if (d < -0x400 || d > 0x400)
+				std::printf("far: %9llu  %08x -> %08x  cir=%08x "
+						"PB=%08x Q=%08x S=%08x STATUS=%08x\n",
+						steps, fault_pc, cpu.r.p,
+						(fault_pc & 2) ? prev_cir << 16 : prev_cir,
+						cpu.r.pb, cpu.r.q, cpu.r.s, cpu.r.status);
+		}
+		// A halted CPU is idling for an interrupt; only a halt with
+		// interrupts disabled can never wake.
+		if (t == exec_trap::halted && cpu.r.test(sf::I))
+			continue;
+		if (t != exec_trap::none)
+			break;
+	}
+
+	std::printf("%llu steps, %u distinct module addresses\n", steps, distinct);
+	std::printf("stopped by %s at %08x (module offset %#x) cir=%08x\n",
+			trap_name(t), fault_pc, fault_pc - load, cpu.cir());
+	if (t != exec_trap::none)
+	{
+		std::printf("history before the stop:\n");
+		for (size_t i = 0; i < ring.size(); i++)
+		{
+			const hist &h = ring[(ri + i) % ring.size()];
+			std::printf("  %6x  S=%08x (S)=%08x (S-1)=%08x\n",
+					h.pc - load, h.s, h.tos, h.tos1);
+		}
+	}
+	if (t == exec_trap::address_error)
+		std::printf("addressing trap: %s\n", addr_trap_name(cpu.last_addr_trap()));
+	std::printf("stack: S=%08x (S)=%08x (S-1)=%08x (S-2)=%08x\n",
+			cpu.r.s, cpu.stk(0), cpu.stk(1), cpu.stk(2));
+	std::printf("trail:");
+	for (size_t i = 0; i < 32; i++)
+		std::printf(" %x", trail[(tri + i) & 31] - load);
+	std::printf("\n\n");
+
+	// State the module should have built, for judging progress.
+	std::printf("DB[0]   (CST ptr)   = %u\n", mem.read32(0));
+	std::printf("DB[4]   (shar CST)  = %u\n", mem.read32(4));
+	std::printf("DB[128] (alloc ptr) = %u\n", mem.read32(128));
+	std::printf("DB[136]             = %08x\n", mem.read32(136));
+	std::printf("DB[140] (reloc tgt) = %u\n", mem.read32(140));
+	std::printf("DB[160]             = %08x\n", mem.read32(160));
+	std::printf("DB[164] (min addr)  = %u\n", mem.read32(164));
+	std::printf("DB[168]             = %08x\n", mem.read32(168));
+	std::printf("DB[968] (G)         = %u\n", mem.read32(968));
+	std::printf("CST[17] at 1424     = %08x %08x %08x %08x\n",
+			mem.read32(1424), mem.read32(1428), mem.read32(1432), mem.read32(1436));
+	std::printf("Q-104 (cpu count)   = %u\n", mem.read32(q - 104));
+	std::printf("Q-108 (iop count)   = %u\n", mem.read32(q - 108));
+	std::printf("cpu chan bytes Q-156..: ");
+	for (int i = 0; i < 8; i++) std::printf("%02x ", mem.m_d[q - 156 + i]);
+	std::printf("\niop chans Q-180+4k: %08x %08x %08x\n",
+			mem.read32(q - 180 + 4), mem.read32(q - 180 + 8), mem.read32(q - 180 + 12));
+	std::printf("mailboxes Q-44+4k   : %08x %08x %08x\n",
+			mem.read32(q - 44 + 4), mem.read32(q - 44 + 8), mem.read32(q - 44 + 12));
+	std::printf("iop channel now     = %u\n", iop.channel_number());
+	for (u32 seg : {0u, 1u, 2u, 4u, 6u, 17u, 49u})
+		std::printf("CST[%2u] = %08x %08x %08x %08x\n", seg,
+				mem.read32(1152 + 16*seg), mem.read32(1152 + 16*seg + 4),
+				mem.read32(1152 + 16*seg + 8), mem.read32(1152 + 16*seg + 12));
+	std::printf("PB=%08x PL=%08x P=%08x Q=%08x SB=%08x DB=%08x "
+			"STATUS=%08x\n", cpu.r.pb, cpu.r.pl, cpu.r.p, cpu.r.q,
+			cpu.r.sb, cpu.r.db, cpu.r.status);
+	for (unsigned i = 0; i < cpu.m_trap_log_len; i++)
+		std::printf("trap %-2u: cause %02o at ret %08x param %08x PB %08x\n",
+				i, cpu.m_trap_log[i][0], cpu.m_trap_log[i][1],
+				cpu.m_trap_log[i][2], cpu.m_trap_log[i][3]);
+
+	if (dump_path)
+	{
+		std::FILE *df = std::fopen(dump_path, "wb");
+		if (df)
+		{
+			for (u32 a = dump_lo; a < dump_hi && a < mem.m_d.size(); a++)
+				std::fputc(mem.m_d[a], df);
+			std::fclose(df);
+			std::printf("dumped [%#x,%#x) to %s\n", dump_lo, dump_hi, dump_path);
+		}
+	}
+
+	return 0;
+}

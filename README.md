@@ -17,6 +17,32 @@ The goal is to run HP-UX and BASIC.
 There's a sample factorial program in section 7 of the Instruction Set ERS
 which runs correctly on the emulated CPU for n = 0 to 12 which means
 procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
+From the listing on ERS sheet 129 (addresses in octal, as printed):
+
+```
+calling sequence:
+  10000  ZERO           Allocate Space for Result
+  10002  LDS DB+10      Load Actual Parameter
+  10004  PCLS 2         Call Factorial Procedure
+  10006  STS DB+12      Store Result
+  10010  ...            Rest of Program
+
+factorial procedure:
+  20000  LDS Q-4        Load Passed Parameter
+  20002  CMPI 0         Test it for Zero (Pop Stack)
+  20004  BCCS GL P+3    If not Zero, Branch to 20012
+  20006  LDIS 1         If Zero, Return 1
+  20010  BCCS GEL P+10  Branch to 20030
+  20012  ZERO           Allocate Space for Intermediate Result
+  20014  LDS Q-4        Load Passed Parameter
+  20016  SUBI 1         Decrement Parameter
+  20020  PCLS 2         Recursive Call
+  20022  LDS Q-4        Load Passed Parameter
+  20024  MPY            Multiply by Previous TOS
+  20026  DELB           Delete Upper Half of Product
+  20030  STS Q-5        Store Intermediate Product
+  20032  EXIT 1         Exit this Recursion
+```
 
 Disassembler, register model, addressing, DST walk and an execution core that
 covers **98.3% of the instructions in the real HP-UX 5.30 kernel**, weighted
@@ -42,13 +68,32 @@ What is still named in the gap is four string-descriptor instructions
 else left is an opcode Appendix B does not assign — data that a linear scan
 misreads as code, since a run of `0xff` decodes as format 6 opcode 37.
 
-**Where the boot actually stops.** `src/test/bootprobe` runs the recovered
-5.30 kernel for **136 instructions over 125 distinct addresses** from entry
-`0x504`, then faults in `FILB` — and that is an *addressing* fault, not an
-unimplemented opcode. The kernel is clearing a structure through a data
-segment pointer with no Data Segment Table behind it. So the boot frontier is
-now the machine around the CPU — DST setup, memory layout, the loader
-handoff — rather than the instruction set.
+**Where the boot actually stops.** `src/test/bootrun` now carries the 9020
+diagnostics environment and BASIC 2.0 through their **entire launch chain**:
+`SYSTEM POWERUP` verifies and relocates every segment, builds the segment
+table, DRT, per-CPU block, Interrupt Control Stack, scheduler lists and the
+first task's TCB and stack segment; its final `IXIT` dispatches through the
+TCB; the first task enters the trap-handler segment as code segment 1, calls
+the SUNOS kernel through the CST, scans and configures the devices, and
+**prints the console self-test pattern** — the printable-ASCII ramp — through
+the emulated IOP to a console card at select code 6. Both systems then sit in
+the same I/O completion wait, which is the current frontier: the console and
+mass-storage cards need real device semantics behind their FR registers. The
+HP-UX 5.30 kernel gets seven million instructions down the same path before
+hitting an opcode the 1982 ERS does not assign — the 1985 kernel uses
+post-ERS instructions.
+
+Getting there took a day of digging out what only real code reveals: `LDI`
+and `LNI` immediates are 24 bits wide, not the 19-bit offset field (both
+disassemblers and the core agreed on the same wrong reading, which is why
+550,030 differentially-tested instructions never caught it); the store-side
+stack-indirect instructions take their pointer *beneath* the value; a
+privileged `EXIT` to code segment 0 restores the pre-CST absolute
+environment; `TRY`'s frame bounds test against `SL`, not `S`; and the whole
+dispatcher machinery — `IXIT`'s eight cases, `DISP`, `LLSH`, `LINS`/`LDEL`,
+`XGDS`, `FLMO`, the external-interrupt entry — now runs the flowcharts on
+ERS sheets 140-142. The one loader-ROM unknown left is marked by a single
+documented nudge in the harness (see `bootrun.cpp`).
 
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository
@@ -59,11 +104,14 @@ includes copies of:
  * an HP-UX 5.01 system tape (preliminary analysis suggests this tape image is
    truncated) and most of the length is lost but there does seem to be a complete
    kernel!
+ * An HP-UX 5.3 disk image from a 9714 maybe? wrote a tool to dump the filesystem
+   appears to contain a live image from early 1991 of HP-UX 5.3 for FOCUS
 
 ## Layout
 
 ```
 docs/
+  FOCUS.md             modern CPU architecture description + full opcode spec
   HARDWARE.md          consolidated 520/540 hardware spec  <- start here
   SOFTWARE.md          target media, HP-UX versions, boot ordering
   opcodes.csv          full FOCUS opcode map, from ERS Appendix B
@@ -102,7 +150,7 @@ under software/cct/ run:
 $ cd software/cct/
 $ gunzip 7914_unitSave_hpux4.0.bin.gz 
 $ gunzip 7914_unitSave_hpux4.0_tape2.bin.gz
-$ python ../../tools/sdf
+$ python ../../tools/sdf7914.py 7914_unitSave_hpux4.0.bin 7914_unitSave_hpux4.0_tape2.bin --extract out 
 ```
 
 ## Plan
@@ -145,6 +193,12 @@ from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
 
 Both have usable OCR text layers, extracted into [docs/notes/](docs/notes/).
 
+Because that OCR is poor, the CPU is now specified afresh in
+**[docs/FOCUS.md](docs/FOCUS.md)** — a modern architecture description and
+complete opcode reference reconstructed from the Appendix B chart, the
+tested emulator, and the legible parts of the prose, with every contested
+reading adjudicated and listed.
+
 ## The opcode map
 
 [docs/opcodes.csv](docs/opcodes.csv) is a hand transcription of **Appendix B**,
@@ -178,8 +232,12 @@ python3 tools/check_opcodes.py
 2. **The HP-UX tape is 77% lost.** The kernel survived; the entire userland
    (`SCOMMANDS`) did not. Full HP-UX needs a better image. BASIC and the
    diagnostics are undamaged, so this is **not on the critical path**.
-3. **Memory Controller ERS is missing** from bitsavers. The Instruction Set ERS
-   defers MPB slave-register semantics to it.
+3. **Memory Controller ERS is missing** from bitsavers. Less of a hole than
+   the references to it imply: the software-visible MPB semantics — slave
+   registers, message bits, semaphores, the interrupt lists, all 46 MPB
+   commands — are in the I/O ERS and the Instruction Set ERS. What the MC ERS
+   withholds is bus-protocol detail and the memory controller's own channel-0
+   command set (HARDWARE.md §10.2).
 
 ## Boot order
 

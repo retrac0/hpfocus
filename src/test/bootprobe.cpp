@@ -29,6 +29,12 @@ namespace {
 // Seed value for the loader's parameter block; overridden by --run's 7th arg.
 focus::u32 param_q64 = 0;
 
+// The IOP's MPB channel number. The CPU's own channel is 1 (see MASK below),
+// and two MPB devices cannot share one, so the IOP's is a separate unknown --
+// WMCN exists precisely to assign it, which implies a power-up default the
+// ERS does not state. FOCUS_IOP_CHANNEL sweeps it.
+unsigned iop_channel = 1;
+
 class flat_memory : public memory_interface
 {
 public:
@@ -71,6 +77,8 @@ struct result
 	u32 fault_pc = 0;
 	u32 cir = 0;
 	unsigned distinct = 0;      // distinct addresses visited
+	focus::trap at = focus::trap::none;   // which addressing trap, if any
+	u32 tos = 0, tos1 = 0, tos2 = 0;      // the stack the faulting op saw
 };
 
 // The memory image is reused across trials -- allocating and zeroing several
@@ -86,7 +94,7 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 	mem.load(base, img);
 
 	probe_host host(mem);
-	iop_core iop(host, 1);
+	iop_core iop(host, u8(iop_channel));
 	iop.reset();
 	scm_device scm;
 	iop.attach(scm_device::SELECT_CODE, &scm);
@@ -102,7 +110,10 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 	cpu.r.q  = 0x400203;   // room below Q for the frame the loader leaves
 	cpu.r.s  = cpu.r.q + 0x200;
 	cpu.r.db = 0x500000;
-	cpu.r.dl = 0x50ffff | 3;
+	// The kernel addresses global offsets past 0x11900 within its first
+	// hundred instructions, so a 64 KB global segment is too small to be a
+	// fair test of an entry point. Give it the rest of modelled memory.
+	cpu.r.dl = 0x5fffff | 3;
 	cpu.r.dst = 0x600000;
 	cpu.r.put(sf::M, 1);
 	// MASK bits 3-5 carry the MPB channel number, which PMPB pushes. The
@@ -142,11 +153,13 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 			if (trail->size() > 24)
 				trail->erase(trail->begin());
 		}
+		r.tos = cpu.stk(0); r.tos1 = cpu.stk(1); r.tos2 = cpu.stk(2);
 		const exec_trap t = cpu.step();
 		if (t != exec_trap::none)
 		{
 			r.t = t;
 			r.cir = cpu.cir();
+			r.at = cpu.last_addr_trap();
 			break;
 		}
 	}
@@ -172,11 +185,36 @@ const char *trap_name(exec_trap t)
 	return "?";
 }
 
+// "address" on its own does not say what the code was reaching for. The
+// specific addressing trap does, and it is the difference between a wrong
+// entry point and a missing piece of the machine.
+const char *addr_trap_name(focus::trap t)
+{
+	switch (t)
+	{
+	case focus::trap::none:                     return "-";
+	case focus::trap::bounds_violation:         return "outside PB..PL / SB..S / DB..DL";
+	case focus::trap::eds_pointer_violation:    return "external segment number zero";
+	case focus::trap::dst_violation:            return "segment beyond the DST";
+	case focus::trap::eds_bounds_violation:     return "offset outside the segment";
+	case focus::trap::data_seg_write_violation: return "store to a read-only segment";
+	case focus::trap::priv_mode_data_violation: return "unprivileged access to an M segment";
+	case focus::trap::absent_segment:           return "absent segment";
+	case focus::trap::absent_page_table:        return "absent page table";
+	case focus::trap::absent_page:              return "absent page";
+	case focus::trap::page_table_violation:     return "page beyond the page table";
+	case focus::trap::unexpected_eds_type:      return "unexpected segment type";
+	}
+	return "?";
+}
+
 } // anonymous namespace
 
 
 int main(int argc, char **argv)
 {
+	if (const char *e = std::getenv("FOCUS_IOP_CHANNEL"))
+		iop_channel = unsigned(std::strtoul(e, nullptr, 0)) & 7;
 	if (argc < 2)
 	{
 		std::fprintf(stderr, "usage: bootprobe <module.bin> [load_address]\n");
@@ -212,6 +250,10 @@ int main(int argc, char **argv)
 		std::printf("PB %#x  entry %#x  TOS %d\n", pb, entry, int(tos));
 		std::printf("  %u steps, %u distinct, stopped by %s at %08x cir=%08x\n",
 				r.steps, r.distinct, trap_name(r.t), r.fault_pc, r.cir);
+		if (r.t == exec_trap::address_error)
+			std::printf("  addressing trap: %s\n", addr_trap_name(r.at));
+		std::printf("  stack at the fault: (S)=%08x (S-1)=%08x (S-2)=%08x\n",
+				r.tos, r.tos1, r.tos2);
 		std::printf("  last addresses:");
 		for (u32 a : trail)
 			std::printf(" %x", a - base);
