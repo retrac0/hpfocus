@@ -335,6 +335,52 @@ newline-separated **manifest files** listing installed paths, not from
 directory entries. The paths are real, but that count is not by itself proof
 that every file's contents survive.
 
+### SDF, decoded
+
+The Series 500 fs(5) and inode(5) manual pages document the format:
+<https://www.typewritten.org/Manual/HP/HP-UX/5.00/man5/fs.html>.
+
+```
+block 0      superblock: s_format 0x0700, 16-byte volume name,
+             s_blksz, s_boot/s_bootsz, s_fa, s_maxblk
+s_fa         File Attributes file, 128-byte records
+               record 0   i-node of the FA file itself
+               record 1   i-node of the root directory
+               record 2+  free map, then i-nodes and extent maps
+directories  24-byte entries: 16-byte name, 4 reserved, 4-byte i-node
+files        up to four extents in the i-node, more chained through
+             extent map records (e_type 2)
+```
+
+[`tools/sdfread.py`](../tools/sdfread.py) implements this and recovers
+**206 files from the eight floppy volumes** that carry a filesystem,
+including nested directories on the demo discs. Spot-checked against
+content: `DEGAUSS` extracts to a BASIC program opening
+`PROGRAM MAIN !RE-SAVE "DEGAUSS.S " ! TUE 1 AUG 1982 REV1.0` with HP's
+copyright notice.
+
+The diagnostics disc reads as eleven named tests — `TEST`, `(6)STATUS`,
+`(12)DISPLAY`, `(7)KEYBOARD`, `(10)FLOPPY`, `(15)WINCHESTER` and the rest —
+which is the conformance suite the CPU work has been aiming at.
+
+This also corrected an earlier misreading of the volume header: the field at
+offset `0x1c` is **`s_blksz`**, not a directory pointer. It is 1024 on boot
+discs and 256 on data discs, which is why treating it as an offset appeared
+to work.
+
+### The 7914 unit saves are not raw disc images
+
+Applying the reader to them fails, and the reason is definite: **a
+byte-by-byte scan of both tapes finds no SDF superblock**. Relaxing every
+plausibility test — printable name, block alignment, sane geometry — yields
+only four candidates, all at unaligned offsets with impossible field values.
+
+So a "unit save" is a backup *format* — a sequence of records written by a
+save utility — not a sector-for-sector copy. That is consistent with what the
+images do contain: the boot descriptor and boot image first, then content
+including embedded cpio archives. Reading them needs the unitsave record
+format decoded, which is a separate problem from SDF.
+
 ### Reading it
 
 **Linux cannot mount this.** Series 500 HP-UX uses **SDF**, HP's own
@@ -372,7 +418,7 @@ is the boot image format magic, identical on the BASIC discs and here.
 | `../tools/lifdir.py` | list/extract the LIF directory of `.hpi` images |
 | `../tools/cpiolist.py` | list/extract big-endian old-binary cpio filesets |
 | `../tools/modmap.py` | map named modules in a boot image |
-| `../tools/sdfdir.py` | list/extract files from an SDF volume |
+| `../tools/sdfread.py` | read and extract an SDF filesystem |
 | `../tools/bootimage.py` | reassemble a boot image from its volumes |
 
 ```sh
