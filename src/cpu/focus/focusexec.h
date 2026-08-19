@@ -3534,6 +3534,11 @@ private:
 
 	u32 m_cir = 0;
 public:
+	// Memory access on the core's own bus, for host-side boot plumbing
+	// (the loader handoff and its nudge).
+	u32 read_mem32(u32 a) { return m_mem.read32(a); }
+	void write_mem32(u32 a, u32 v) { m_mem.write32(a, v); }
+
 	// Observation hook for UP/DOWN's slow paths: called on a blocking
 	// DOWN (first argument true; then semaphore, CTCBP, P) and on a
 	// waking UP (false; semaphore, woken TCB, P). For harness

@@ -43,6 +43,18 @@ public:
 	// main memory on their own account -- the IOP's DMA in particular.
 	focus::memory_interface &memory() { return *this; }
 
+	// Direct access to the execution core, for the machine to deliver
+	// messages (raise_message), read state, and perform the boot handoff
+	// a real loader ROM would.
+	focus::cpu_core &core() { return m_core; }
+
+	// An optional callback run before every instruction, with the core as
+	// argument. The Series 500 driver uses it for the powerup module's
+	// final-IXIT nudge, which is instruction-precise; it costs nothing
+	// when unset.
+	void set_pre_step(std::function<void(focus::cpu_core &)> f)
+	{ m_pre_step = std::move(f); }
+
 protected:
 	// device_t
 	virtual void device_start() override ATTR_COLD;
@@ -89,6 +101,9 @@ private:
 
 	// Set when the core takes a fault it cannot vector. Cleared by reset.
 	bool m_stopped = false;
+
+	std::function<void(focus::cpu_core &)> m_pre_step;
+	bool m_halt_logged = false;
 };
 
 DECLARE_DEVICE_TYPE(FOCUS, focus_device)

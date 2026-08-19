@@ -34,7 +34,7 @@ bootprobe: bootprobe.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec
 	$(CXX) $(CXXFLAGS) bootprobe.cpp -o $@
 
 # Not a test: runs a boot image through the reverse-engineered loader handoff.
-bootrun: bootrun.cpp ../iop/focusiop.h ../iop/focusscm.h $(SRCDIR)/focusexec.h
+bootrun: bootrun.cpp ../iop/focusiop.h ../iop/focusscm.h ../iop/focuscards.h $(SRCDIR)/focusexec.h
 	$(CXX) $(CXXFLAGS) bootrun.cpp -o $@
 
 # The opcode tables are generated; docs/opcodes.csv is the source of truth.

@@ -185,9 +185,40 @@ void focus_device::execute_run()
 
 	do
 	{
+		// A STOPped machine idles awaiting a message; raise_message
+		// un-halts the core when an unmasked bit arrives. Burn the
+		// timeslice rather than latching -- the dispatcher's idle loop
+		// is STOP and a wake, not a fault.
+		if (m_core.halted())
+		{
+			if (!m_halt_logged)
+			{
+				logerror("%s: STOP at P=%08X, MASK=%08X MSG=%08X\n",
+						tag(), m_core.r.p, m_core.r.mask, m_core.r.msg);
+				m_halt_logged = true;
+			}
+			m_icount = 0;
+			return;
+		}
+		m_halt_logged = false;
+
+		if (m_pre_step)
+			m_pre_step(m_core);
+
 		debugger_instruction_hook(m_core.r.p);
 
+		// The microcode interrupt handler runs between instructions:
+		// with STATUS.I set and an unmasked I/O message pending, pull
+		// the first waiting device from its level's list and vector
+		// through its DRT entry (ERS section 5.1.3).
+		m_core.service_interrupts();
+
 		const focus::exec_trap t = m_core.step();
+		if (t == focus::exec_trap::halted)
+		{
+			m_icount = 0;
+			return;
+		}
 		if (t != focus::exec_trap::none)
 		{
 			// A fault the core could not vector -- no handler segment, or an

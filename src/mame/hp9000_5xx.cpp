@@ -33,6 +33,8 @@
 #include "cpu/focus/focus.h"
 #include "iop/focusiop.h"
 #include "iop/focusscm.h"
+#include "iop/focuscards.h"
+#include "imagedev/snapquik.h"
 #include "screen.h"
 
 namespace {
@@ -45,7 +47,7 @@ public:
 		: driver_device(mconfig, type, tag)
 		, m_cpu(*this, "cpu")
 		, m_ram(*this, "ram")
-		, m_iop(*this, 1)
+		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
 
@@ -74,19 +76,27 @@ private:
 
 	TIMER_CALLBACK_MEMBER(iop_tick);
 
+	QUICKLOAD_LOAD_MEMBER(quickload_cb);
+
 	required_device<focus_device> m_cpu;
 	required_shared_ptr<u32> m_ram;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
+	focus::console_card m_console0;   // select code 0: display/reporter
+	focus::console_card m_console6;   // select code 6: console
 	emu_timer *m_iop_timer = nullptr;
+	u32 m_prev_rq = 0;
+	bool m_nudged = false;
+	u32 m_handoff_q = 0;
 };
 
 
-// The FOCUS address space is 29 bits of byte address. A 520 shipped with far
-// less than that populated; 2 MB is a reasonable starting configuration and
-// well within the 10 MB ceiling.
-static constexpr u32 RAM_SIZE = 2 * 1024 * 1024;
+// The FOCUS address space is 29 bits of byte address. 16 MB matches the
+// boot handoff this driver performs: the powerup module sizes memory from
+// the top-of-memory word at Q+64, and the loader's stack lives just below
+// the top (SB 0xe00000, Q 0xf00203).
+static constexpr u32 RAM_SIZE = 16 * 1024 * 1024;
 
 void hp9000_5xx_state::mem_map(address_map &map)
 {
@@ -98,9 +108,40 @@ void hp9000_5xx_state::mem_map(address_map &map)
 void hp9000_5xx_state::machine_start()
 {
 	// The System Control Module answers select code 7, which is IOP
-	// channel 1, peripheral address 7.
+	// channel 1, peripheral address 7. The consoles: select code 0 is
+	// where the panic reporter writes, select code 6 the console the
+	// drivers open. ID 9 lets the powerup scan register the console;
+	// select code 0 answers 4 and stays out of the device bitmap.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
+	m_console0.id = 4;
+	m_iop.attach(0, &m_console0);
+	m_console6.id = 9;
+	m_console6.iop = &m_iop;
+	m_console6.pa = 6;
+	m_iop.attach(6, &m_console6);
 	m_cpu->set_io(&m_iop);
+
+	// The powerup module's final IXIT unwinds a frame whose delta-Q word
+	// is the loader's MPB inventory; the word must be cleared when the
+	// module reaches that IXIT with the handoff stack still current --
+	// what the real loader does to reconcile the two roles is unknown.
+	// Same nudge as the bootrun harness, instruction-precise.
+	m_cpu->set_pre_step([this](focus::cpu_core &core) {
+		// Traps vector through CST entry 1 once the powerup module has
+		// built the tables and pointed dedicated location 0 at them.
+		if (!core.traps_enabled() && core.read_mem32(0) != 0)
+			core.enable_traps(true);
+		if (m_nudged || core.r.q != m_handoff_q || m_handoff_q == 0)
+			return;
+		const u32 w = core.read_mem32(core.r.p & ~3u);
+		const u16 insn = (core.r.p & 2) ? u16(w) : u16(w >> 16);
+		if (insn == 0x007c)
+		{
+			core.write_mem32(m_handoff_q - 3, 0);
+			m_nudged = true;
+			logerror("nudge: (Q) cleared for the final IXIT\n");
+		}
+	});
 
 	// The IOP polls its interfaces continuously and runs the interval
 	// timer; one emulated tick per millisecond is enough to get both
@@ -114,19 +155,115 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
 	m_iop.poll_and_service();
 	m_iop.timer_tick();
+
+	// A fresh interrupt request raises the message bit for its level
+	// (16 + level; the microcode handler maps it back and pulls the
+	// device from the level's list). The attention poll reaches the CPU
+	// as message 14 (I/O ERS section 2.1).
+	const u32 rq = m_iop.interrupt_request();
+	const u32 fresh = rq & ~m_prev_rq;
+	m_prev_rq = rq;
+	for (unsigned pa = 0; pa < 8; pa++)
+		if (fresh & (1u << pa))
+			m_cpu->core().raise_message(16 + m_iop.interrupt_level(pa));
+	if (m_iop.take_attention_event())
+		m_cpu->core().raise_message(14);
 }
 
 
 void hp9000_5xx_state::machine_reset()
 {
+	// iop_core::reset() rebuilds every channel_state, which drops the
+	// interface attachments; hook everything back up afterwards.
 	m_iop.reset();
 	m_scm.reset();
+	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
+	m_iop.attach(0, &m_console0);
+	m_iop.attach(6, &m_console6);
+	m_prev_rq = 0;
 
 	// A loader ROM image would be installed here. None is dumped, so the
 	// SCM answers the select-code scan but has nothing to hand over; see
 	// docs/SOFTWARE.md.
 	const u8 *rom = memregion("loader") ? memregion("loader")->base() : nullptr;
 	m_scm.set_rom(rom, focus::scm_device::ROM_SIZE);
+}
+
+
+// Boot a Series 500 image the way the (undumped) SCM loader ROM hands
+// one over -- the contract bootrun reverse-engineered from SYSTEM
+// POWERUP itself. The image loads high, the powerup module executes in
+// place with PB = 0, and the loader's parameter block sits at Q: the
+// MPB inventory doubling as the final IXIT's frame, the load address at
+// Q+52, the top-of-memory word at Q+64.
+QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
+{
+	constexpr u32 LOAD = 0x100000;
+	const u64 size = image.length();
+	if (size < 0x100 || LOAD + size > RAM_SIZE)
+		return std::make_pair(image_error::INVALIDLENGTH,
+				"image empty or larger than RAM allows");
+
+	std::vector<u8> img(size);
+	image.fread(img.data(), size);
+
+	auto &core = m_cpu->core();
+	focus::memory_interface &mem = m_cpu->memory();
+	for (u64 i = 0; i < size; i++)
+		mem.write8(LOAD + u32(i), img[i]);
+
+	auto beword = [&img](u32 off) {
+		return (u32(img[off]) << 24) | (u32(img[off + 1]) << 16)
+				| (u32(img[off + 2]) << 8) | img[off + 3];
+	};
+	u32 entry_off = 0;
+	for (u32 off = 0x30; off + 4 <= 0x80; off += 4)
+		if (beword(off) == 0xc4) { entry_off = off + 0x20; break; }
+	if (!entry_off)
+		return std::make_pair(image_error::INVALIDIMAGE,
+				"no 000000c4 terminator in the module header");
+
+	core.r.pb = 0;
+	core.r.pl = LOAD + beword(8) + 3;
+	core.r.p  = LOAD + entry_off;
+
+	core.r.sb = 0xe00000;
+	core.r.sl = 0xf7ffff | 3;
+	core.r.q  = 0xf00203;
+	core.r.s  = core.r.q + 0x200;
+	core.r.db = 0;
+	core.r.dl = 0xffffff | 3;
+	core.r.dst = 1152;
+	core.r.put(focus::sf::M, 1);
+	core.r.mask = focus::ers32::set(0, 3, 3, 1);
+
+	const u32 q = core.r.q;
+	m_handoff_q = q;
+	m_nudged = false;
+
+	// The loader's parameter block; see bootrun.cpp for the full
+	// derivation of every word.
+	mem.write16(q - 3 + 0, 0x9004);   // MPB inventory: CPU, channel 1
+	mem.write16(q - 3 + 2, 0xa002);   // IOP, channel 2
+	mem.write16(q - 3 + 4, 0x8000);   // (Q+1) high / global DS pointer
+	mem.write16(q - 3 + 6, 0x0000);   // inventory terminator
+	mem.write32(q - 3 - 4, 0x00020000);   // (Q-1): privileged, CSN 0
+	mem.write32(q - 3 - 8, 0x5c84);       // (Q-2): the dispatcher
+	mem.write32(q - 3 - 12, 0);           // (Q-3): X
+	mem.write32(q + 2 * 4 - 3, 0);        // (Q+2): previous mask
+	mem.write32(q + 3 * 4 - 3, 0);        // (Q+3): device number
+	mem.write32(q + 52 - 3, LOAD);        // where the image was loaded
+	mem.write32(q + 64 - 3, RAM_SIZE);    // top of memory
+	for (u32 i = 0; i < 20; i++)          // boot device record
+		mem.write8(q + 65 + i, 0);
+	mem.write32(q + 88 - 3, 0);
+	mem.write32(q + 92 - 3, 0);
+	core.push(u32(-2));                   // cold start
+
+	core.enable_traps(false);
+	logerror("boot image %s: %u bytes at %#x, entry %#x\n",
+			image.filename(), u32(size), LOAD, core.r.p);
+	return std::make_pair(std::error_condition(), std::string());
 }
 
 
@@ -150,6 +287,9 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	screen_device &screen(SCREEN(config, "screen"));
 	screen.set_raw(18_MHz_XTAL, 720, 0, 560, 500, 0, 455);
 	screen.set_screen_update(FUNC(hp9000_5xx_state::screen_update));
+
+	QUICKLOAD(config, "quickload", "bin").set_load_callback(
+			FUNC(hp9000_5xx_state::quickload_cb));
 }
 
 
@@ -160,6 +300,9 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 	FOCUS(config, m_cpu, 18_MHz_XTAL);
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
+
+	QUICKLOAD(config, "quickload", "bin").set_load_callback(
+			FUNC(hp9000_5xx_state::quickload_cb));
 }
 
 
