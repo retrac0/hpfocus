@@ -89,6 +89,30 @@ struct console_card : public iop_interface
 	// burst (trap seg 0x484f8: it spins on FR12=0x0a / ~FR9 while bit 7
 	// is set), so it must stay 0 here.
 	u8 rtc[16] = {};
+	// The clock must actually run: the boot synchronises its software
+	// clock to the next second boundary by polling the seconds location
+	// between 100 ms sleeps (trap seg 0x476ec..0x47798), and a frozen
+	// RTC parks the boot there forever. The host calls this once per
+	// emulated second.
+	// Values count in binary (the boot's clock-sync completed with a
+	// binary-counting seconds field; a BCD experiment stalled it).
+	void rtc_second_tick()
+	{
+		auto bump = [this](unsigned loc, u8 wrap) -> bool {
+			rtc[loc] = u8(rtc[loc] + 1);
+			if (rtc[loc] < wrap)
+				return false;
+			rtc[loc] = 0;
+			return true;
+		};
+		if (!bump(0, 60)) return;         // second
+		if (!bump(2, 60)) return;         // minute
+		if (!bump(4, 24)) return;         // hour
+		rtc[6] = u8((rtc[6] + 1) % 7);    // day of week
+		if (!bump(7, 31)) return;         // day of month (approximate)
+		if (!bump(8, 12)) return;         // month
+		bump(9, 100);                     // year
+	}
 	u8 nvm[2048] = {};
 	u32 keycode = 0;           // holding register behind R10
 	u32 read_fr(unsigned n) override
@@ -121,6 +145,17 @@ struct console_card : public iop_interface
 		return v;
 	}
 	bool input_ready() const { return fr0 != 0; }
+	// DMA: the display's frame data arrives this way (the 520 manual:
+	// the DIM frame buffer is written "in DMA or direct I/O modes", and
+	// the boot starts PA 0 DMA with SDC). The card is always ready.
+	bool service_request() override { return true; }
+	void dma_write(u8 c) override
+	{
+		if (on_char)
+			on_char(c);
+		std::printf("%c", (c >= 32 && c < 127) ? c : '.');
+		std::fflush(stdout);
+	}
 	// A pending keycode does not raise attention yet. The OS registers a
 	// bit-14 handler (sysglobal DB+1700[14] -> trap seg STT[344]) and
 	// writes an all-eligible attention mask, but its message router
@@ -176,12 +211,11 @@ struct console_card : public iop_interface
 		
 		switch (n)
 		{
-		case 9:            // RTC data write to the latched location.
-			// The driver also sends complemented command PARAMETERS
-			// through FR9 (trap seg 0x47fe2) that are not RTC data;
-			// storing those and echoing them back on later reads wedges
-			// the powerup command exchanges. Until the two writers can
-			// be told apart, RTC locations are read-only here.
+		case 9:            // RTC data write to the latched location,
+			// complemented like the reads (the OS's clock-set sweep at
+			// trap seg ~0x480fc writes every location through here).
+			rtc[latch12 & 15] = u8(~v);
+			latch12 = (latch12 & ~15u) | ((latch12 + 1) & 15);
 			return;
 		case 12:           // RTC location / complemented NVM address
 			latch12 = v & 0xffff;

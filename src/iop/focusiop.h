@@ -61,6 +61,9 @@ enum iop_cmd : u8
 	CMD_DINT  = 037,   // C  disable interrupt
 
 	// Interval timer
+	CMD_SDEC  = 017,   // C  start DMA, enable interrupt, clear IRQ
+	CMD_SDC   = 020,   // C  start DMA, clear IRQ
+	CMD_SRC   = 024,   // C  start RAMD, clear IRQ
 	CMD_WTMS  = 040,   // W  write timer start
 	CMD_WTMC  = 043,   // W  write timer count
 	CMD_RTM   = 044,   // R  read timer count
@@ -235,6 +238,8 @@ public:
 					c.iface->write_fr(t.opcode >> 3, data & 0xffff);
 				return true;
 			}
+			if (std::getenv("FOCUS_IOPLOG"))
+				std::printf("[iop REFUSED W op=%03o pa=%u d=%08x]\n", t.opcode, t.pa, data);
 			return false;
 		}
 	}
@@ -299,6 +304,21 @@ public:
 		switch (t.opcode)
 		{
 		case CMD_SD:   c.dma_active = true; return true;
+		// The start-DMA variants (I/O ERS sheets 30-31): SDC also clears
+		// the PA's interrupt request bit, SDEC additionally enables its
+		// interrupt, SRC is the RAMD flavour of SDC.
+		case CMD_SDC:
+		case CMD_SRC:
+			c.dma_active = true;
+			m_int_request &= ~(1u << t.pa);
+			update_interrupt();
+			return true;
+		case CMD_SDEC:
+			c.dma_active = true;
+			c.int_enabled = true;
+			m_int_request &= ~(1u << t.pa);
+			update_interrupt();
+			return true;
 		case CMD_EDMA: m_dma_mask |= (1u << t.pa); return true;
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
 		case CMD_CDMK: m_dma_mask = 0; return true;
@@ -343,7 +363,10 @@ public:
 			m_int_mask = 0;
 			update_interrupt();
 			return true;
-		default:       return false;
+		default:
+			if (std::getenv("FOCUS_IOPLOG"))
+				std::printf("[iop REFUSED C op=%03o pa=%u]\n", t.opcode, t.pa);
+			return false;
 		}
 	}
 
@@ -385,24 +408,34 @@ public:
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
 		{
 			channel_state &c = m_chan[pa];
-			if (!c.dma_active || !c.iface || !c.iface->service_request())
+			if (!c.dma_active || !c.iface)
 				continue;
 			if (!(m_dma_mask & (1u << pa)))
 				continue;
 
 			// Direction lives in the DMA status word; bit 0 set means the
-			// transfer runs from memory out to the card.
+			// transfer runs from memory out to the card. The real IOP
+			// streams a byte per bus cycle; the whole remaining block per
+			// poll keeps a memory-to-display write from taking a
+			// millisecond of emulated time per character.
 			memory_interface &mem = m_host.iop_memory();
-			if (ers32::get(c.dma_status, 0, 1))
-				c.iface->dma_write(mem.read8(c.dma_current));
-			else
-				mem.write8(c.dma_current, c.iface->dma_read());
-
-			c.dma_current++;
-			if (c.dma_count && --c.dma_count == 0)
+			// Burst only counted transfers; an uncounted transfer (count
+			// zero) moves one byte per poll as the hardware's cadence
+			// approximation, so it cannot spin the poll forever.
+			u32 burst = c.dma_count ? c.dma_count : 1;
+			while (burst-- && c.dma_active && c.iface->service_request())
 			{
-				c.dma_active = false;
-				raise(pa);
+				if (ers32::get(c.dma_status, 0, 1))
+					c.iface->dma_write(mem.read8(c.dma_current));
+				else
+					mem.write8(c.dma_current, c.iface->dma_read());
+
+				c.dma_current++;
+				if (c.dma_count && --c.dma_count == 0)
+				{
+					c.dma_active = false;
+					raise(pa);
+				}
 			}
 		}
 	}

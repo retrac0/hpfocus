@@ -677,11 +677,25 @@ private:
 			return exec_trap::none;
 		}
 		case 023: {                                            // DIV
-			const s32 a = s32(pop()), b = s32(pop());
-			if (a == 0)
+			// Divide (ERS sheet 59): the DOUBLEWORD integer in (S-2,S-1)
+			// divided by the singleword in (S); the doubleword quotient
+			// replaces the dividend and the remainder replaces the
+			// divisor -- the stack shape does not change. A singles-only
+			// version collapsed the stack a word per division and walked
+			// BASIC's decimal formatter off its digit buffer. Bit 3
+			// forces the remainder positive, as in DIVS.
+			const s32 divisor = s32(stk(0));
+			if (divisor == 0)
 				return exec_trap::divide_by_zero;
-			push(u32(b / a));
-			cca(stk(0));
+			const s64 dividend = (s64(u64(stk(2)) << 32)) | u64(stk(1));
+			s64 quot = dividend / divisor;
+			s32 rem = s32(dividend % divisor);
+			if (b3 && rem < 0)
+				rem = -rem;
+			set_stk(2, u32(u64(quot) >> 32));
+			set_stk(1, u32(u64(quot)));
+			set_stk(0, u32(rem));
+			cca(u32(u64(quot)));
 			return exec_trap::none;
 		}
 		case 024: {                                            // NEG
@@ -1085,8 +1099,13 @@ private:
 			// which is how the memory manager pins something it is about to
 			// touch. Bit 3 selects increment. The condition code reports the
 			// outcome rather than trapping: CCE if absent, CCL for any other
-			// evaluation error, CCG on success.
-			const ea_result e = m_au.resolve_data_pointer(stk(0), false, false);
+			// evaluation error, CCG on success. The pointer is POPPED on
+			// every path (ERS sheet 127: "S := S-1 ... The pointer is
+			// popped from the stack") -- leaving it shifted the V wake's
+			// stack one word and made it unlock the semaphore's own
+			// pointer minus eight instead of readying the waiter's TCB.
+			const u32 ptr = pop();
+			const ea_result e = m_au.resolve_data_pointer(ptr, false, false);
 			if (!e.ok())
 			{
 				const bool absent = e.t == trap::absent_segment
@@ -1099,7 +1118,7 @@ private:
 			// through the DST and so has a use count at all. Stack and
 			// global pointers resolve without touching a table, and asking
 			// for a slot after one of those would read a stale answer.
-			const bool external = ers32::get(stk(0), 0, 1) == 0;
+			const bool external = ers32::get(ptr, 0, 1) == 0;
 			const u32 slot = external ? m_dst.last_use_count_slot() : 0;
 			if (slot != 0)
 			{
@@ -1994,9 +2013,13 @@ private:
 			return exec_trap::none;
 		}
 		case 034: {                                               // PSHR
-			// Push Registers (ERS sheet 67). Within the 6-bit operand, bit
-			// 5 selects S, 4 Q, 3 STATUS, 2 DST, 1 BRKPT and 0 FLAGS;
-			// instruction bit 3 additionally pushes the segment registers.
+			// Push Registers (ERS sheet 38/67). Within the 6-bit operand,
+			// bit 5 selects S, 4 Q, 3 STATUS, 2 DST, 1 BRKPT and 0 FLAGS;
+			// instruction bit 3 additionally pushes ALL SEVEN program and
+			// data extent registers, "P, PB, PL, DB, DL, SB, SL ... in
+			// the sequence shown". Pushing only four of them shifted the
+			// kernel's stack-extent probe (seg1 STT[51]) three words and
+			// sent the boot into the error-18 reporter.
 			if (operand & 1)  push(r.s - r.sb - 1);
 			if (operand & 2)  push(r.q - r.sb);
 			if (operand & 4)  push(r.status);
@@ -2005,7 +2028,8 @@ private:
 			if (operand & 32) push(u32(r.flags));
 			if (b3)
 			{
-				push(r.p); push(r.pb); push(r.pl); push(r.db);
+				push(r.p); push(r.pb); push(r.pl);
+				push(r.db); push(r.dl); push(r.sb); push(r.sl);
 			}
 			return exec_trap::none;
 		}
@@ -2915,9 +2939,14 @@ private:
 
 	// LIA/LIAS. Builds a pointer to a lexically enclosing stack frame by
 	// walking `level` links of the static chain, then adds a byte offset.
-	// Each frame stores its parent's pointer one word below the frame base,
-	// so a step is "evaluate this pointer, then load the word 4 bytes below
-	// the address it yields".
+	// "The word preceding each stack marker is interpreted as an access
+	// link" (ERS sheet 157): the caller pushes its scope's pointer as a
+	// hidden last argument, so it sits one word BELOW the four-word
+	// marker -- word (Q-4), sixteen bytes under the marker-top address a
+	// stack segment pointer evaluates to. Reading four bytes under it
+	// instead landed on the marker's own STATUS word and yielded garbage
+	// scope pointers (EDS segment zero, cause 030) the moment BASIC's
+	// block-structured code took a level-1 LIA.
 	exec_trap do_lia(u32 level, s32 offset)
 	{
 		bool via_external = false;
@@ -2936,7 +2965,7 @@ private:
 				m_addr_trap = e.t;
 				return exec_trap::address_error;
 			}
-			ptr = m_mem.read32(e.addr - 4);
+			ptr = m_mem.read32(e.addr - 16);
 		}
 
 		ptr += u32(offset);

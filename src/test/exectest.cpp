@@ -336,13 +336,20 @@ static void test_arithmetic()
 	CHECK(h.one(f3(001)) == exec_trap::none);       // DELB drops the high half
 	CHECK_EQ(h.cpu.stk(0), 0);
 
+	// DIV takes a DOUBLEWORD dividend in (S-2,S-1) and a singleword
+	// divisor in (S); the doubleword quotient replaces the dividend and
+	// the remainder replaces the divisor (ERS sheet 59) -- the stack
+	// shape is unchanged.
 	h.cpu.pop();
-	h.cpu.push(100); h.cpu.push(7);
+	h.cpu.push(0); h.cpu.push(100); h.cpu.push(7);
 	CHECK(h.one(f3(023)) == exec_trap::none);       // DIV
-	CHECK_EQ(h.cpu.stk(0), 14);
+	CHECK_EQ(h.cpu.stk(0), 2);                      // remainder
+	CHECK_EQ(h.cpu.stk(1), 14);                     // quotient low
+	CHECK_EQ(h.cpu.stk(2), 0);                      // quotient high
 
-	h.cpu.push(0);
+	h.cpu.pop(); h.cpu.push(0);
 	CHECK(h.one(f3(023)) == exec_trap::divide_by_zero);
+	h.cpu.pop(); h.cpu.pop();
 
 	h.cpu.pop(); h.cpu.pop();
 	h.cpu.push(0xf0f0); h.cpu.push(0x0ff0);
@@ -1023,13 +1030,15 @@ static void test_system_group()
 		p = h.cpu.stk(0);
 		CHECK_EQ(ers32::get(p, 2, 30), (h.cpu.r.q - h.cpu.r.sb) - 4);
 
-		// Level 1 follows one static link: evaluate the frame pointer, then
-		// take the word four bytes below the address it yields. The level
-		// field is CIR(8:4), bits 20-23, which u32_insn cannot reach.
+		// Level 1 follows one static link: evaluate the frame pointer,
+		// then take "the word preceding the stack marker" (ERS sheet
+		// 157) -- one word below the four-word marker, sixteen bytes
+		// under the marker-top address. The level field is CIR(8:4),
+		// bits 20-23, which u32_insn cannot reach.
 		h.cpu.r.s = h.cpu.r.sb + 0x200 + 3;
 		u32 parent = ers32::set(0, 0, 2, 3);
 		parent = ers32::set(parent, 2, 30, 0x20);
-		h.mem.write32(h.cpu.r.q - 4, parent);
+		h.mem.write32(h.cpu.r.q - 16, parent);
 		CHECK(h.one(u32_insn(005, 0, 8) | (1u << 20)) == exec_trap::none);
 		CHECK_EQ(ers32::get(h.cpu.stk(0), 2, 30), 0x20 + 8);
 

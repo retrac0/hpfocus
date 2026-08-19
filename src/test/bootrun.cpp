@@ -518,6 +518,10 @@ int main(int argc, char **argv)
 			if (iop.take_timer_event())
 				cpu.raise_message(13);
 		}
+		// Diagnostic RTC heartbeat while bootrun is phased out: the boot
+		// synchronises to a seconds edge before launching BASIC.
+		if (steps % 2000000 == 0)
+			console6.rtc_second_tick();
 		// Feed keystrokes: once the machine has idled (the dispatcher's
 		// STOP with nothing ready), type the next character into the
 		// console and let the attention wake it.

@@ -77,6 +77,7 @@ private:
 	}
 
 	TIMER_CALLBACK_MEMBER(iop_tick);
+	TIMER_CALLBACK_MEMBER(rtc_tick);
 
 	QUICKLOAD_LOAD_MEMBER(quickload_cb);
 
@@ -90,6 +91,7 @@ private:
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::probe_card m_probe1;       // hp9040: a serial-slot probe
 	emu_timer *m_iop_timer = nullptr;
+	emu_timer *m_rtc_timer = nullptr;
 	u32 m_prev_rq = 0;
 	bool m_nudged = false;
 	u32 m_handoff_q = 0;
@@ -171,6 +173,8 @@ void hp9000_5xx_state::machine_start()
 	// moving. Real timings are in the I/O ERS section 7.
 	m_iop_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_tick), this);
 	m_iop_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
+	m_rtc_timer = timer_alloc(FUNC(hp9000_5xx_state::rtc_tick), this);
+	m_rtc_timer->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
 }
 
 
@@ -195,6 +199,12 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 			m_cpu->core().raise_message(16 + m_iop.interrupt_level(pa));
 	if (m_iop.take_attention_event())
 		m_cpu->core().raise_message(14);
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::rtc_tick)
+{
+	m_console6.rtc_second_tick();
 }
 
 
