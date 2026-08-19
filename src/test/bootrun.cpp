@@ -110,6 +110,7 @@ struct console_card : public iop_interface
 	// failed loopback" and "FR9 failed loop back". The visible powerup
 	// "character ramp" is that test, not display output.
 	u32 latch12 = 0;
+	u32 resp9 = 0;         // response digit for FR9 reads (--resp9)
 	u32 read_fr(unsigned n) override
 	{
 		switch (n)
@@ -124,7 +125,7 @@ struct console_card : public iop_interface
 		// through FR12 tolerates this value; a true latch echo would
 		// satisfy it too, but then reads as digit errors during command
 		// exchanges, which loop forever on their first command.
-		case 9:  return 0xff;
+		case 9:  return (~resp9) & 0xff;
 		default: return 0;
 		}
 	}
@@ -329,6 +330,7 @@ int main(int argc, char **argv)
 	// card model does not implement the completion queues the driver
 	// then expects (absolute 6096; see the I/O protocol notes).
 	u32 console_id = 4;
+	u32 console_resp9 = 0;   // the response digit FR9 answers with
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -371,6 +373,8 @@ int main(int argc, char **argv)
 			cpu_date = u32(strtoul(argv[++i], nullptr, 16));
 		else if (!std::strcmp(argv[i], "--consoleid") && i + 1 < argc)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
+			console_resp9 = u32(strtoul(argv[++i], nullptr, 0));
 		else
 			path = argv[i];
 	}
@@ -407,6 +411,7 @@ int main(int argc, char **argv)
 	// interface, so it keeps the identity the scan does not know and
 	// stays out of the device bitmap whatever the console is set to.
 	console6.id = console_id;
+	console6.resp9 = console_resp9;
 	iop.attach(0, &console);       // select code 0: the error reporter's
 	console6.iop = &iop;
 	console6.pa = 6;
