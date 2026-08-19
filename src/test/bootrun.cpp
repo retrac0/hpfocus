@@ -174,15 +174,8 @@ struct console_card : public iop_interface
 			return;
 		}
 		if (n == 9)
-		{
-			// A command parameter. The exchange is command out through
-			// FR12/FR9, then an interrupt when the console has acted on
-			// it -- without the raise the driver's task blocks forever
-			// on the last command of its open sequence.
-			if (iop)
-				iop->raise(pa);
-			return;
-		}
+			return;             // command parameter; acted on silently
+		
 		if (n != 12)
 			return;
 		latch12 = v & 0xff;

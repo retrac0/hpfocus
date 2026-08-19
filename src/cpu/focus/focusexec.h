@@ -192,10 +192,22 @@ public:
 		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u;
 		if (sysmsg != 0)
 		{
-			r.msg &= ~sysmsg;
-			m_halted = false;
-			message_trap(sysmsg);
-			return true;
+			// PSDB holds this trap off: "Pseudo Interrupt Disable" is
+			// what its name says, and the dispatcher and the doorbell
+			// enqueue paths bracket themselves in PSDB/PSEB precisely so
+			// a pending doorbell bit cannot trap them mid-update. The
+			// count lives at (QI - 4); this OS installs no handler at
+			// STT[054] at all, so any delivery inside those brackets
+			// vectors through garbage and panics -- the gate is not an
+			// optimisation but the machine's advertised behaviour.
+			const u32 qi = m_mem.read32(ded_base() + 8);
+			if (qi != 0 && m_mem.read32(qi - 3 - 16) == 0)
+			{
+				r.msg &= ~sysmsg;
+				m_halted = false;
+				message_trap(sysmsg);
+				return true;
+			}
 		}
 
 		const u32 pend = r.msg & ~r.mask;
