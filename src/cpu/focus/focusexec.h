@@ -404,7 +404,7 @@ private:
 	// formats are the same as the ratified standard's binary32 and binary64
 	// (ERS Appendix F), so the host's own types can carry the values. Only
 	// the four rounding modes and the inexact flag differ in their handling,
-	// and neither is modelled yet -- see the note in HARDWARE.md 7.1.
+	// and neither is modelled yet -- see the note in FOCUS.md 10.8.
 	//
 	// A double occupies two stack words, high word below low, matching the
 	// order LDD pushes them in.
@@ -2018,20 +2018,23 @@ private:
 			const u32 off = stk(2);
 			u32 link = stk(0);
 			bool flag = true;
-			// The comparison is over the magnitude bits (1:31); bit 0 does
-			// not participate. The SUNOS heap depends on this: free-block
-			// size words carry a flag in bit 0, and the first-fit search
-			// (LLSH 1 over sizes) must still order them numerically --
-			// full-word unsigned would stop at the first flagged node,
-			// signed would never stop.
+			// The comparison is SIGNED over the full word. The SUNOS heap
+			// depends on this: block headers carry the allocated flag in
+			// bit 0 (the free routine at kernel+0x45af4 guards a free with
+			// LSR 31 / CMPI #1 and clears exactly that bit), so allocated
+			// blocks read negative and the first-fit walk (LLSH 1, advance
+			// while header < size) skips them, stopping only at a FREE
+			// block large enough. Masking bit 0 out instead made the walk
+			// split live allocations -- the boot's two TCBs landed on the
+			// same 244 bytes and the unit-1 server task was destroyed.
 			while (s32(r.x) > 0 && link != 0 && flag)
 			{
-				const u32 target = m_mem.read32(link + off) & 0x7fffffffu;
-				const u32 t31 = test & 0x7fffffffu;
+				const s32 target = s32(m_mem.read32(link + off));
+				const s32 t = s32(test);
 				bool advance;
-				if (target > t31)
+				if (target > t)
 					advance = (operand & 4) != 0;
-				else if (target == t31)
+				else if (target == t)
 					advance = (operand & 2) != 0;
 				else
 					advance = (operand & 1) != 0;
