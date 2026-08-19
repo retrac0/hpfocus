@@ -110,7 +110,12 @@ struct console_card : public iop_interface
 	// failed loopback" and "FR9 failed loop back". The visible powerup
 	// "character ramp" is that test, not display output.
 	u32 latch12 = 0;
-	u32 resp9 = 0;         // response digit for FR9 reads (--resp9)
+	// Response digits for FR9 reads (--resp9): each read consumes the
+	// next digit of the string; the last repeats. The driver reads a
+	// response as two decimal digits, d1*10+d2, and routes on the value
+	// (trap seg 0x480ce), so a mixed value needs a sequence.
+	std::string resp9 = "0";
+	size_t resp9_i = 0;
 	u32 read_fr(unsigned n) override
 	{
 		switch (n)
@@ -120,12 +125,16 @@ struct console_card : public iop_interface
 		case 3:  return was_reset ? 0 : id;
 		// FR9 is the command-response register of the SCM-style console
 		// protocol (trap segment ~0x48060): the driver reads it, takes
-		// ~FR9 & 15, and expects a decimal digit -- 0 for success.
-		// 0xff is therefore "response code 0". The powerup loopback ramp
-		// through FR12 tolerates this value; a true latch echo would
-		// satisfy it too, but then reads as digit errors during command
-		// exchanges, which loop forever on their first command.
-		case 9:  return (~resp9) & 0xff;
+		// ~FR9 & 15 as one decimal digit of a two-digit response value.
+		// 0xff is digit 0. The powerup loopback ramp through FR12
+		// tolerates any value; an echo instead loops the command
+		// exchanges forever on their first command.
+		case 9: {
+			const u32 d = u32(resp9[resp9_i] - '0');
+			if (resp9_i + 1 < resp9.size())
+				resp9_i++;
+			return (~d) & 0xff;
+		}
 		default: return 0;
 		}
 	}
@@ -330,7 +339,7 @@ int main(int argc, char **argv)
 	// card model does not implement the completion queues the driver
 	// then expects (absolute 6096; see the I/O protocol notes).
 	u32 console_id = 4;
-	u32 console_resp9 = 0;   // the response digit FR9 answers with
+	const char *console_resp9 = "0";   // FR9 response digit sequence
 	// --poke STEP ADDR VAL: write a word mid-run, for probing what a
 	// missing producer would have delivered (e.g. faking a semaphore V).
 	unsigned long long poke_step = 0;
@@ -381,7 +390,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--consoleid") && i + 1 < argc)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
 		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
-			console_resp9 = u32(strtoul(argv[++i], nullptr, 0));
+			console_resp9 = argv[++i];
 		else if (!std::strcmp(argv[i], "--tick") && i + 1 < argc)
 			tick_period = strtoull(argv[++i], nullptr, 0);
 		else if (!std::strcmp(argv[i], "--poke") && i + 3 < argc)
