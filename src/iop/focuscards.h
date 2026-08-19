@@ -121,13 +121,14 @@ struct console_card : public iop_interface
 		return v;
 	}
 	bool input_ready() const { return fr0 != 0; }
-	// A pending keycode does NOT raise an attention request: message 14
-	// delivered for it lands in the OS's message router, which reports
-	// an unexpected trap 054 and soft-halts. The real board raises the
-	// service-request latch for the IOP's poll ("the IOP responds by
-	// reading R10"); how the keycode then reaches the OS is still to be
-	// pinned down (the OS never enables SC6 interrupts and never reads
-	// TF0 during boot).
+	// A pending keycode does not raise attention yet. The OS registers a
+	// bit-14 handler (sysglobal DB+1700[14] -> trap seg STT[344]) and
+	// writes an all-eligible attention mask, but its message router
+	// validates the interrupted context (MUC over CTCBP's globals,
+	// CS1 ~0x6df2..0x6e2c) and reports system error 054 when a routed
+	// message lands on the idle anchor -- which is where every keystroke
+	// lands until the partition/UI world exists to post keyboard reads.
+	// Wire this to `fr0 != 0 && !ard` once a task owns the keyboard.
 	bool attention() override { return false; }
 	bool ard = false;      // attention request disable, set by the IOP's poll
 	void type(u8 c)

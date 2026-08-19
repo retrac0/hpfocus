@@ -24,6 +24,9 @@
 
 #include "../cpu/focus/focusaddr.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace focus {
 
 //**************************************************************************
@@ -212,7 +215,11 @@ public:
 		// (7.1/7.2). The OS writes (n-1)<<8 for an n-count interval.
 		case CMD_WTMS: m_timer_start = data >> 8; m_timer_count = data >> 8; return true;
 		case CMD_WTMC: m_timer_count = data >> 8; return true;
-		case CMD_WAMK: m_attn_mask = data; return true;
+		case CMD_WAMK:
+			m_attn_mask = data;
+			if (std::getenv("FOCUS_IOPLOG"))
+				std::printf("[iop WAMK=%08x ch=%u pa=%u]\n", data, t.channel, t.pa);
+			return true;
 		case CMD_WMCN:
 			// Bits 3-5 of the data word become the IOP's MPB identification;
 			// the ERS requires every other bit to be zero (sheet 35).
