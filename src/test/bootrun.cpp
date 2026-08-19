@@ -187,8 +187,9 @@ int main(int argc, char **argv)
 	// repeating instruction-sequencing trap out of an SXIT, because the
 	// card model does not implement the completion queues the driver
 	// then expects (absolute 6096; see the I/O protocol notes).
-	u32 console_id = 4;
-	const char *console_resp9 = "0";   // FR9 response digit sequence
+	u32 console_id = 4;   // 9 in MAME; bootrun still lacks the IOP-side
+	                      // plumbing the registered console then needs
+	bool kbd_log = false;
 	bool sem_log = false;
 	// --poke STEP ADDR VAL: write a word mid-run, for probing what a
 	// missing producer would have delivered (e.g. faking a semaphore V).
@@ -239,10 +240,12 @@ int main(int argc, char **argv)
 			cpu_date = u32(strtoul(argv[++i], nullptr, 16));
 		else if (!std::strcmp(argv[i], "--consoleid") && i + 1 < argc)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--kbdlog"))
+			kbd_log = true;
 		else if (!std::strcmp(argv[i], "--semlog"))
 			sem_log = true;
 		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
-			console_resp9 = argv[++i];
+			++i;                       // retired: FR9 is the RTC now
 		else if (!std::strcmp(argv[i], "--tick") && i + 1 < argc)
 			tick_period = strtoull(argv[++i], nullptr, 0);
 		else if (!std::strcmp(argv[i], "--poke") && i + 3 < argc)
@@ -286,8 +289,9 @@ int main(int argc, char **argv)
 	// Select code 0 is where the error reporter writes rather than a CIO
 	// interface, so it keeps the identity the scan does not know and
 	// stays out of the device bitmap whatever the console is set to.
+	console.id = 4;
 	console6.id = console_id;
-	console6.resp9 = console_resp9;
+	console6.log_fr = kbd_log;
 	iop.attach(0, &console);       // select code 0: the error reporter's
 	console6.iop = &iop;
 	console6.pa = 6;
@@ -511,6 +515,8 @@ int main(int argc, char **argv)
 		{
 			iop.timer_tick();
 			iop.poll_and_service();
+			if (iop.take_timer_event())
+				cpu.raise_message(13);
 		}
 		// Feed keystrokes: once the machine has idled (the dispatcher's
 		// STOP with nothing ready), type the next character into the

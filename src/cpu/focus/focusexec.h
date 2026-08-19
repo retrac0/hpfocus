@@ -189,7 +189,12 @@ public:
 		// bits in the 16 most significant bits of MSG with STATUS.I set
 		// are cleared, and the handler runs on the ICS with a parameter
 		// carrying the bits at Q+3 (section 5.2.2, cause 54).
-		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u;
+		// Bit 10, the OS's own doorbell (SMSG,B to self), is poll-only:
+		// the dispatcher consumes it lock-step at its STOP wake, and its
+		// message-trap router reports an un-routable doorbell as system
+		// error 054 and soft-halts. It wakes a STOPped CPU (raise_message
+		// does that) but is never delivered as a trap.
+		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u & ~ers32::mask(10, 1);
 		if (sysmsg != 0)
 		{
 			// PSDB holds this trap off: "Pseudo Interrupt Disable" is
@@ -1473,6 +1478,14 @@ private:
 			// stack and hands it to STOP,B to arm atomically.
 			if (b3)
 				r.mask = pop();
+			// The wake path resumes with interrupts off: the dispatcher
+			// consumes its doorbell bit by polling (SEML/PMPB) right
+			// after the STOP, and re-enables with INT,B each loop pass.
+			// Waking with I still set delivered the doorbell as a
+			// message trap in the one-instruction window before the
+			// dispatcher's PSDB, which the OS routes to system error 44
+			// and a soft halt.
+			r.put(sf::I, 0);
 			m_halted = true;
 			r.p = m_next;
 			return exec_trap::halted;
@@ -3336,6 +3349,14 @@ private:
 		set_qword(2, r.mask);
 		r.s = r.q + 12;                     // S := Q + 3
 		set_qword(3, bits);
+		// Message delivery masks further messages until the handler's
+		// IXIT restores the mask from (Q+2) -- the CS1 handler is not
+		// reentrant (a second message mid-handler routed its parameter
+		// to the unexpected-message reporter and panicked), matching
+		// the external-interrupt entry's "mask current and lower".
+		// Bits 3-5 stay put: they are the live interrupt-level field
+		// the IXIT restore deliberately carries over.
+		r.mask |= 0xffff0000u & ~ers32::mask(3, 3);
 
 		// CST entry 1 carries the handler segment; its STT entry 054 the
 		// routine, exactly as the in-stack traps use it.

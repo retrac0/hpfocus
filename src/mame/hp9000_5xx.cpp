@@ -35,6 +35,8 @@
 #include "iop/focusscm.h"
 #include "iop/focuscards.h"
 #include "imagedev/snapquik.h"
+#include "machine/terminal.h"
+#include "sound/beep.h"  // terminal.cpp needs it linked; the scanner follows driver includes
 #include "screen.h"
 
 namespace {
@@ -47,6 +49,7 @@ public:
 		: driver_device(mconfig, type, tag)
 		, m_cpu(*this, "cpu")
 		, m_ram(*this, "ram")
+		, m_terminal(*this, "terminal")
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -60,8 +63,7 @@ protected:
 
 private:
 	void mem_map(address_map &map) ATTR_COLD;
-	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
-			const rectangle &cliprect);
+	void kbd_put(u8 data);
 
 	// focus::iop_core::host -- the IOP reaches memory and the CPU through
 	// these. The CPU device already implements focus::memory_interface.
@@ -80,11 +82,13 @@ private:
 
 	required_device<focus_device> m_cpu;
 	required_shared_ptr<u32> m_ram;
+	optional_device<generic_terminal_device> m_terminal;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
 	focus::console_card m_console0;   // select code 0: display/reporter
-	focus::console_card m_console6;   // select code 6: console
+	focus::console_card m_console6;   // select code 6: keyboard board
+	focus::probe_card m_probe1;       // hp9040: a serial-slot probe
 	emu_timer *m_iop_timer = nullptr;
 	u32 m_prev_rq = 0;
 	bool m_nudged = false;
@@ -114,11 +118,30 @@ void hp9000_5xx_state::machine_start()
 	// select code 0 answers 4 and stays out of the device bitmap.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	m_console0.id = 4;
+	if (const char *e = getenv("FOCUS_SC0ID"))
+		m_console0.id = strtoul(e, nullptr, 0);
+	m_console0.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
 	m_iop.attach(0, &m_console0);
-	m_console6.id = 9;
+	m_console6.id = 2;   // keyboard ID register: data bus bit 1
+	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	m_iop.attach(6, &m_console6);
+	// The 520's alphanumeric console: characters the OS writes to the
+	// select code 0 display flow into the generic terminal, whose
+	// keyboard feeds the keyboard board's keycode register back.
+	if (m_terminal)
+		m_console0.on_char = [this](u8 c) { m_terminal->write(c); };
+	// hp9040 carries a probe in a spare slot to map what HP-UX's SERIAL
+	// driver expects from a 98626/98644 card; FOCUS_SC1ID picks the
+	// identity it answers.
+	if (const char *e = getenv("FOCUS_SC1ID"))
+	{
+		m_probe1.id = strtoul(e, nullptr, 0);
+		m_probe1.pa = 1;
+		m_probe1.log = getenv("FOCUS_SC1LOG") != nullptr;
+		m_iop.attach(1, &m_probe1);
+	}
 	m_cpu->set_io(&m_iop);
 
 	// The powerup module's final IXIT unwinds a frame whose delta-Q word
@@ -154,7 +177,11 @@ void hp9000_5xx_state::machine_start()
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
 	m_iop.poll_and_service();
-	m_iop.timer_tick();
+	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
+	// about 35 of them.
+	m_iop.timer_tick(35);
+	if (m_iop.take_timer_event())
+		m_cpu->core().raise_message(13);
 
 	// A fresh interrupt request raises the message bit for its level
 	// (16 + level; the microcode handler maps it back and pulls the
@@ -267,11 +294,15 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 }
 
 
-u32 hp9000_5xx_state::screen_update(screen_device &screen,
-		bitmap_rgb32 &bitmap, const rectangle &cliprect)
+// A keystroke from the terminal becomes a keycode in the keyboard
+// board's holding register (R10), with the service-request latch set --
+// the attention poll then tells the CPU on message 14. The real board
+// sends 7-bit keycodes from the keyswitch matrix, not ASCII; until the
+// OS's KEYBOARD LANGUAG tables are mapped, ASCII goes through untouched
+// so the translation can be read off the OS's own handling.
+void hp9000_5xx_state::kbd_put(u8 data)
 {
-	bitmap.fill(rgb_t::black(), cliprect);
-	return 0;
+	m_console6.type(data);
 }
 
 
@@ -282,11 +313,12 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
 
-	// The 9020B's 12 inch monochrome display is 560 x 455. The 9020A is
-	// 512 x 390 colour and the 9020C 560 x 455 colour; none is driven yet.
-	screen_device &screen(SCREEN(config, "screen"));
-	screen.set_raw(18_MHz_XTAL, 720, 0, 560, 500, 0, 455);
-	screen.set_screen_update(FUNC(hp9000_5xx_state::screen_update));
+	// The 520's 98760A alpha display is 26 rows by 80 columns of 7x9
+	// characters. Until its frame-buffer protocol is decoded, the
+	// character stream renders on a generic terminal with a built-in
+	// font, and the terminal's keyboard plays the keyswitch matrix.
+	GENERIC_TERMINAL(config, m_terminal, 0);
+	m_terminal->set_keyboard_callback(FUNC(hp9000_5xx_state::kbd_put));
 
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));

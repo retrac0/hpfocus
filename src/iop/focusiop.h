@@ -206,8 +206,12 @@ public:
 		case CMD_WIMK: m_int_mask = data; update_interrupt(); return true;
 		case CMD_WIMG: m_int_message = data; return true;
 		case CMD_SIL:  c.int_level = u8(data & 0xf); return true;
-		case CMD_WTMS: m_timer_start = data; m_timer_count = data; return true;
-		case CMD_WTMC: m_timer_count = data; return true;
+		// Timer Start/Count live in the word's bits 0:24 -- the ERS loads
+		// "bits 0-23 of Timer Start" on underflow and ignores bits 24-31,
+		// and the interval is (TimerStart(0:24)+1)*512 clock periods
+		// (7.1/7.2). The OS writes (n-1)<<8 for an n-count interval.
+		case CMD_WTMS: m_timer_start = data >> 8; m_timer_count = data >> 8; return true;
+		case CMD_WTMC: m_timer_count = data >> 8; return true;
 		case CMD_WAMK: m_attn_mask = data; return true;
 		case CMD_WMCN:
 			// Bits 3-5 of the data word become the IOP's MPB identification;
@@ -244,7 +248,7 @@ public:
 		case CMD_RIMK: data = m_int_mask; return true;
 		case CMD_RIRQ: data = m_int_request; return true;
 		case CMD_RIMG: data = m_int_message; return true;
-		case CMD_RTM:  data = m_timer_count; return true;
+		case CMD_RTM:  data = m_timer_count << 8; return true;
 		case CMD_RDPA: data = c.dma_pa; return true;
 		case CMD_RDB:  data = c.data_buffer; return true;
 		case CMD_RDTF:
@@ -294,10 +298,9 @@ public:
 		case CMD_CIRQ: m_int_request &= ~(1u << t.pa); update_interrupt(); return true;
 		case CMD_CAAK: m_attn_log &= ~(1u << t.pa); return true;
 		case CMD_ETMI:
-			// Enabling the timer interrupt also arms its device slot --
-			// ETMI is the timer's own EINT.
+			// Clears Timer Disable (I/O ERS sheet 33); underflows then
+			// send message 13.
 			m_timer_enabled = true;
-			m_chan[TIMER_PA].int_enabled = true;
 			return true;
 		case CMD_CALM: m_lockout = false; return true;
 		case CMD_SALM: m_lockout = true; return true;
@@ -397,21 +400,31 @@ public:
 		}
 	}
 
-	// Advance the interval timer by one tick.
-	void timer_tick()
+	// Advance the interval timer by `units` counts (one count is
+	// (1)*512 clock periods = 28.4 us on real hardware; hosts pass
+	// however many of those their tick represents).
+	void timer_tick(u32 units = 1)
 	{
 		if (m_timer_count == 0)
 			return;
-		if (--m_timer_count == 0)
+		if (m_timer_count <= units)
 		{
-			// Timer interrupt is Message register bit 13 on the CPU side
-			// (Instruction Set ERS sheet 13); here it is an ordinary IOP
-			// interrupt request.
+			// Underflow "is the setting of the Timer Interrupt Request
+			// message bit 13 and sending a message to the CPU" (I/O ERS
+			// 7.1) -- a plain CPU message, not a device interrupt
+			// through the DRT lists. The host forwards the event as
+			// raise_message(13).
 			m_timer_count = m_timer_start;
 			if (m_timer_enabled)
-				raise(TIMER_PA);
+				m_timer_event = true;
 		}
+		else
+			m_timer_count -= units;
 	}
+
+	// True once per timer underflow; the host forwards it to the CPU
+	// as message 13.
+	bool take_timer_event() { const bool e = m_timer_event; m_timer_event = false; return e; }
 
 	// Let a card raise an interrupt of its own.
 	void raise(unsigned pa)
@@ -535,6 +548,7 @@ private:
 	u32 m_timer_start = 0;
 	u32 m_timer_count = 0;
 	bool m_timer_enabled = false;
+	bool m_timer_event = false;
 	bool m_led = false;
 	bool m_lockout = false;
 	bool m_enabled = true;

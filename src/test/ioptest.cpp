@@ -294,19 +294,24 @@ static void test_poll_and_timer()
 	CHECK(iop.io_read(tgt(CMD_RIFG, 1, 1), v));
 	CHECK_EQ(v, 0x1234);
 
-	// The timer reloads from its start value and interrupts only when
-	// enabled.
-	CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 3));
+	// The timer reloads from its start value; an underflow becomes a
+	// pending message-13 event only once enabled (I/O ERS 7.1: underflow
+	// sets "message bit 13", a CPU message, not a device interrupt).
+	// Timer registers carry the count in bits 0:24 (value << 8).
+	CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 3 << 8));
 	for (int i = 0; i < 3; i++)
 		iop.timer_tick();
-	CHECK(!h.irq);                       // not enabled yet
+	CHECK(!iop.take_timer_event());      // not enabled yet
+	CHECK(!h.irq);                       // and never a device interrupt
 	CHECK(iop.io_read(tgt(CMD_RTM, 1, 0), v));
-	CHECK_EQ(v, 3);                      // reloaded
+	CHECK_EQ(v, 3u << 8);                // reloaded
 
 	CHECK(iop.io_control(tgt(CMD_ETMI, 1, 0)));
 	for (int i = 0; i < 3; i++)
 		iop.timer_tick();
-	CHECK(h.irq);
+	CHECK(iop.take_timer_event());
+	CHECK(!iop.take_timer_event());      // one event per underflow
+	CHECK(!h.irq);
 }
 
 
