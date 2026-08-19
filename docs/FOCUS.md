@@ -7,7 +7,10 @@ whose text layer is badly damaged, with a single document reconstructed from
 three cross-checked sources:
 
 1. **The Appendix B opcode chart** (sheet 137), legible at 400 dpi and hand
-   transcribed into [opcodes.csv](opcodes.csv). Authoritative for encodings.
+   transcribed into [opcodes.csv](opcodes.csv). Authoritative for encodings,
+   and since confirmed opcode-for-opcode by the instruction tables inside
+   HP's own recovered toolchain (`/usr/lib/pascomp` and `/bin/as` —
+   Appendix B).
 2. **The emulator in [src/cpu/focus/](../src/cpu/focus/)** — an execution
    core carrying 522 unit assertions, all ten worked examples of ERS
    Figure 2.1, and a disassembler differentially tested over 550,030 real
@@ -67,7 +70,7 @@ mode carried over largely intact.
 | Process | NMOS-III, 1.5 µm *[secondary]* |
 | Microcode | ~9,000 words × 38 bits of control store *[secondary]* |
 | Registers | 18 architectural registers, all special-purpose |
-| Instructions | 16- and 32-bit encodings; 254 of 256 opcode points assigned |
+| Instructions | 16- and 32-bit encodings; 207 mnemonics over 212 of 254 opcode points (four known only from HP's assembler, §10.19) |
 | Floating point | IEEE 754 **Draft 5.11**, binary32/binary64, in microcode |
 | Multiprocessing | up to 3 CPUs on the Memory Processor Bus under OS control |
 
@@ -622,6 +625,9 @@ bits), sign in `(12:1)`, byte offset in `(13:19)`. **`LIAS`** (fmt 5 op
 Transcribed from Appendix B (sheet 137); `—` marks unassigned encodings.
 Two adjudicated mnemonic readings differ from a raw glyph reading of the
 chart — see Appendix B of this document for the evidence (`BRSI`, `RFC`).
+Four opcodes the chart leaves blank — marked ‡ — are named by the
+instruction table inside the shipped assembler, `/bin/as`; see Appendix B
+and §10.19.
 
 ### Format 1 (OP1, octal)
 
@@ -684,26 +690,27 @@ and 55 are unassigned.)
 
 | Op | Mn | | Op | Mn | | Op | Mn | | Op | Mn |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 0 | `DTB` | | 25 | `SSI` | | 47 | `PLBA` | | 64 | `PLDA` |
-| 1 | `BTD` | | 26 | `SBSI` | | 50 | `PSBA` | | 65 | `PSTA` |
-| 2 | `LBIT` | | 27 | `SDSI` | | 51 | `PLHA` | | 66 | `CPAA` |
-| 3 | `SBIT` | | 30 | `SHSI` | | 52 | `PSHA` | | 67 | `CPEP` |
-| 4 | `EOS` | | 31 | `RCS` | | 53 | `POT` | | 70 | `CPTR` |
-| 5 | `LSI` | | 37 | `BRSI` | | 54 | `CNTO` | | 71 | `VPTR` |
-| 6 | `LBSI` | | 40 | `TRY` | | 55 | `FLMO` | | 72 | `LINS` |
-| 7 | `LDSI` | | 41 | `ESCP` | | 56 | `RFC` | | 73 | `LDEL` |
-| 10 | `LHSI` | | 42 | `ALM` | | 57 | `WTC` | | 74 | `IXIT` |
-| 11 | `INT` | | 43 | `CCI` | | 60 | `SMSG` | | 76 | `WAIT` |
-| 12 | `GTSP` | | 44 | `EOP` | | 62 | `RSC` | | 77 | `STOP` |
-| 13 | `MUC` | | | | | 63 | `PSLA` | | | |
-| 14 | `XGDS` | | | | | | | | | |
-| 15 | `PSDB` | | | | | | | | | |
+| 0 | `DTB` | | 20 | `UP` ‡ | | 47 | `PLBA` | | 64 | `PLDA` |
+| 1 | `BTD` | | 21 | `DOWN` ‡ | | 50 | `PSBA` | | 65 | `PSTA` |
+| 2 | `LBIT` | | 24 | `CTCB` ‡ | | 51 | `PLHA` | | 66 | `CPAA` |
+| 3 | `SBIT` | | 25 | `SSI` | | 52 | `PSHA` | | 67 | `CPEP` |
+| 4 | `EOS` | | 26 | `SBSI` | | 53 | `POT` | | 70 | `CPTR` |
+| 5 | `LSI` | | 27 | `SDSI` | | 54 | `CNTO` | | 71 | `VPTR` |
+| 6 | `LBSI` | | 30 | `SHSI` | | 55 | `FLMO` | | 72 | `LINS` |
+| 7 | `LDSI` | | 31 | `RCS` | | 56 | `RFC` | | 73 | `LDEL` |
+| 10 | `LHSI` | | 37 | `BRSI` | | 57 | `WTC` | | 74 | `IXIT` |
+| 11 | `INT` | | 40 | `TRY` | | 60 | `SMSG` | | 76 | `WAIT` |
+| 12 | `GTSP` | | 41 | `ESCP` | | 62 | `RSC` | | 77 | `STOP` |
+| 13 | `MUC` | | 42 | `ALM` | | 63 | `PSLA` | | | |
+| 14 | `XGDS` | | 43 | `CCI` | | | | | | |
+| 15 | `PSDB` | | 44 | `EOP` | | | | | | |
 | 16 | `DISP` | | | | | | | | | |
 | 17 | `PSEB` | | | | | | | | | |
 
-(Ops 32–36 are struck through in the chart — explicitly unused. Op 75 is
-unassigned but fails to raise the Unimplemented Instruction trap on CPU 4.0
-and earlier.)
+(‡ marks opcodes blank in the chart, named by `/bin/as` — §10.19. Ops
+22–23, 45–46 and 61 are unassigned; 32–36 are struck through in the chart —
+explicitly unused. Op 75 is unassigned but fails to raise the Unimplemented
+Instruction trap on CPU 4.0 and earlier.)
 
 ### Format 5 (OP2, octal; 8-bit operand)
 
@@ -744,9 +751,11 @@ and earlier.)
 | 14 | `LDB` | byte offset, I X base | | 35 | `STD` | byte offset, I X base |
 | 15 | `CMPM` | byte offset, I X base | | 36 | `LRA` | byte offset, I X base |
 | 20 | `LDD` | byte offset, I X base | | 37 | — | fails to trap on ≤ 4.0 |
+| 21 | `GMPY` ‡ | see §10.19 | | | | |
 | 22 | `LDH` | byte offset, I X base | | | | |
 
-(Ops 11, 12, 16, 17, 21 unassigned.)
+(Ops 11, 12, 16 and 17 are unassigned. ‡ `GMPY` is blank in the chart; the
+name is from `/bin/as` — §10.19.)
 
 ---
 
