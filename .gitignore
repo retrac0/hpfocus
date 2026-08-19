@@ -1,5 +1,12 @@
-# Build artifacts
+# Build artifacts -- everything src/test/Makefile builds
+src/test/addrtest
+src/test/bootprobe
+src/test/bootrun
 src/test/dasmtest
+src/test/dsttest
+src/test/exectest
+src/test/ioptest
+src/test/statetest
 *.o
 
 # Python
