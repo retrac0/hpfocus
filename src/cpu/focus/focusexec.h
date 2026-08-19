@@ -633,6 +633,24 @@ private:
 			set_stk(0, u32(rem));
 			return exec_trap::none;
 		}
+		case 034: {                                            // ISC
+			// Integer Size Check (ERS sheet 87). Sets Overflow when the
+			// halfword format cannot hold the full word integer on top --
+			// that is, when the top seventeen bits are neither all zero
+			// nor all one, which is the sign-extension test. The operand
+			// is left alone; the compiled form is FIXD,B / ISC / STH.
+			//
+			// The pseudocode shows only the branch that sets Overflow,
+			// never one that clears it. Read literally that would make the
+			// flag sticky and the check useless without an explicit clear,
+			// and the indicator line names Overflow the way ADD's does --
+			// which this core assigns. So it is assigned here too.
+			const u32 v = stk(0);
+			const u32 top = v >> 15;
+			r.put(sf::O, (top != 0 && top != 0x1ffff) ? 1 : 0);
+			cca(v);
+			return exec_trap::none;
+		}
 		case 035: {                                            // XAX
 			const u32 a = stk(0);
 			set_stk(0, r.x); r.x = a;

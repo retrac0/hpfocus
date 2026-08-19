@@ -1803,6 +1803,55 @@ static void test_decimal()
 	CHECK(h.cpu.last_trap() == trap_cause::illegal_decimal);
 }
 
+// ISC (ERS sheet 87). The diagnostics compile it as FIXD,B / ISC / STH:
+// check that a full word integer survives the trip into a halfword, then
+// store it as one.
+static void test_isc()
+{
+	std::printf("integer size check (ISC)\n");
+	harness h;
+
+	auto isc = [&](s32 v) {
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(u32(v));
+		CHECK(h.one(f3(034)) == exec_trap::none);
+	};
+
+	// Values a halfword holds: the operand stays on the stack.
+	isc(0);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
+	isc(32767);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	isc(-32768);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	isc(-1);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+
+	// One step beyond in either direction does not.
+	isc(32768);
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+	CHECK_EQ(h.cpu.stk(0), 32768);             // still there for the STH
+	isc(-32769);
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+
+	isc(s32(0x7fffffff));
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+	isc(s32(0x80000000u));
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+
+	// And the flag is assigned, not accumulated: a value that fits clears
+	// what a previous one set.
+	isc(1);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1828,6 +1877,7 @@ int main()
 	test_string_concatenate();
 	test_cpep();
 	test_decimal();
+	test_isc();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
