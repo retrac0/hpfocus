@@ -168,6 +168,34 @@ That also matches how the kernels use them. Decoding code segments properly,
 as rare as the privileged absolute-access instructions `PLDA`/`PSTA`. They
 are kernel-only, privileged, and compiler-generated.
 
+**What the use sites say about their shape.** Over all 1,165 `UP`/`DOWN`
+sites in the 5.01 kernel:
+
+- **The operand is a pointer.** Without the `B` bit they are preceded by
+  `LRAS` (267/155), `LRA` (189/114) or `CPTR,B` (53/18) — all of which
+  leave one tagged pointer on the stack and nothing else. With `B` they are
+  preceded by `ADDI` (141/90) or `ADD` (29), the tail of a
+  `LDS Q+n; ADDI #k` sequence: a pointer loaded from a local, advanced to a
+  field. Both forms arrive with a pointer on top.
+- **They do not report anything the kernel tests.** 76–86% of sites have no
+  conditional branch within five instructions, so these are not
+  test-and-branch primitives whose result is inspected — the wait is taken
+  in microcode, which is what a real P/V pair on this machine would have to
+  do, and it implies an interaction with the dispatcher.
+- **The `B` bit is not resolved.** It correlates almost perfectly with how
+  the pointer was produced (`LRA`/`LRAS` → no `B`, `ADDI` → `B`) rather
+  than with anything in the surrounding code, which is what makes the
+  obvious reading — the usual "delete the operand" bit — less than certain.
+
+Every `DOWN` sits inside an interrupt-state bracket (`INT,B` … `INT`), as a
+kernel semaphore acquisition would.
+
+So the remaining unknown is not what these instructions are for; it is the
+layout of the semaphore they point at and what the microcode does to the
+running task when the wait blocks. **They are deliberately still
+unimplemented**: a guessed P/V that quietly schedules wrong is worse than
+one that stops.
+
 Digital archaeology results: very little survives for this machine!  There's
 a few disk images preserved by hpmuseum.net but that's it.  This repository
 includes copies of: 

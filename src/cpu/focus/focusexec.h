@@ -333,6 +333,51 @@ private:
 	static float to_float(u32 b) { float f; std::memcpy(&f, &b, 4); return f; }
 	static u32 from_float(float f) { u32 b; std::memcpy(&b, &f, 4); return b; }
 
+	//----------------------------------------------------------------
+	//  packed decimal
+	//----------------------------------------------------------------
+	//
+	// A decimal word is eight BCD digits, most significant first. A digit
+	// above nine is an illegal operand rather than something to normalise.
+
+	static bool bcd_valid(u32 v)
+	{
+		for (unsigned i = 0; i < 8; i++)
+			if (((v >> (4 * i)) & 0xf) > 9) return false;
+		return true;
+	}
+
+	static u32 bcd_add(u32 a, u32 b, unsigned cin, unsigned &cout)
+	{
+		u32 out = 0;
+		unsigned c = cin;
+		for (unsigned i = 0; i < 8; i++)
+		{
+			unsigned d = ((a >> (4 * i)) & 0xf) + ((b >> (4 * i)) & 0xf) + c;
+			c = (d > 9) ? 1 : 0;
+			if (c) d -= 10;
+			out |= d << (4 * i);
+		}
+		cout = c;
+		return out;
+	}
+
+	static u32 bcd_sub(u32 a, u32 b, unsigned bin, unsigned &bout)
+	{
+		u32 out = 0;
+		unsigned brw = bin;
+		for (unsigned i = 0; i < 8; i++)
+		{
+			int d = int((a >> (4 * i)) & 0xf)
+					- int((b >> (4 * i)) & 0xf) - int(brw);
+			brw = (d < 0) ? 1u : 0u;
+			if (brw) d += 10;
+			out |= u32(d) << (4 * i);
+		}
+		bout = brw;
+		return out;
+	}
+
 	double pop_double()
 	{
 		const u32 low = pop(), high = pop();
@@ -452,6 +497,35 @@ private:
 			return exec_trap::none;
 		}
 		case 002: pop(); pop(); return exec_trap::none;        // DDEL
+		case 011:                                              // DLAD
+		case 012: {                                            // DLSB
+			// Decimal Logical Add and Subtract (ERS sheet 84). The top two
+			// words are eight packed BCD digits each. Bit 3 chains a carry
+			// in, which is how multiprecision decimal arithmetic is built,
+			// and the same bit is why a zero result then leaves the
+			// condition code alone: a zero limb must not erase the
+			// "nonzero" that a previous limb reported.
+			const u32 a = stk(0), b = stk(1);
+			if (!bcd_valid(a) || !bcd_valid(b))
+				return take_trap(trap_cause::illegal_decimal, m_cir);
+
+			const bool sub = op3 == 012;
+			// The ERS carries a borrow inverted -- DLSB subtracts
+			// "1-Carry" -- so here Carry set means no borrow, and the
+			// result is written back the same way.
+			const unsigned cin = !b3 ? 0u
+					: (sub ? 1u - r.get(sf::C) : r.get(sf::C));
+			unsigned cout = 0;
+			const u32 v = sub ? bcd_sub(b, a, cin, cout)
+			                  : bcd_add(b, a, cin, cout);
+
+			r.s -= 4;
+			set_stk(0, v);
+			r.put(sf::C, sub ? 1u - cout : cout);
+			if (v != 0)   r.put(sf::CC, CCG);
+			else if (!b3) r.put(sf::CC, CCE);
+			return exec_trap::none;
+		}
 		case 005: {                                            // PSHN
 			// Pushes X copies of either zero or the current top of stack
 			// (ERS sheet 67).

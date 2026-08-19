@@ -1718,6 +1718,91 @@ static void test_cpep()
 	CHECK_EQ(ers32::get(h.cpu.stk(0), 13, 19), 0x34);
 }
 
+// DLAD and DLSB (ERS sheet 84): eight packed BCD digits per word, with the
+// carry chained through bit 3 so wider decimal numbers can be built up.
+static void test_decimal()
+{
+	std::printf("packed decimal add and subtract\n");
+	harness h;
+
+	auto pair = [&](u32 lo, u32 hi) {          // (S-1) = lo, (S) = hi
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(lo); h.cpu.push(hi);
+	};
+
+	// Straight decimal addition, no carry anywhere.
+	pair(0x12345678, 0x11111111);
+	CHECK(h.one(f3(011)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x23456789u));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	CHECK_EQ(h.cpu.r.get(sf::C), 0);
+
+	// Every digit carries, and the word rolls over to zero.
+	pair(0x99999999, 0x00000001);
+	CHECK(h.one(f3(011)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.get(sf::C), 1);           // carry out of the top digit
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);   // zero, and bit 3 was clear
+
+	// A single digit carrying into the next.
+	pair(0x00000005, 0x00000005);
+	CHECK(h.one(f3(011)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x00000010u));
+
+	// With bit 3 the carry comes in, which is the second limb of a wider
+	// addition. A zero result then leaves the condition code alone rather
+	// than erasing what a previous limb reported.
+	h.cpu.r.put(sf::C, 1);
+	h.cpu.r.put(sf::CC, CCG);
+	pair(0x00000001, 0x00000001);
+	CHECK(h.one(f3(011, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x00000003u));
+
+	h.cpu.r.put(sf::C, 0);
+	h.cpu.r.put(sf::CC, CCG);
+	pair(0, 0);
+	CHECK(h.one(f3(011, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);   // untouched
+
+	// Subtraction. The ERS carries a borrow inverted, so no borrow leaves
+	// Carry set.
+	pair(0x23456789, 0x11111111);
+	CHECK(h.one(f3(012)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x12345678u));
+	CHECK_EQ(h.cpu.r.get(sf::C), 1);           // no borrow
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	// Borrowing all the way out of the top.
+	pair(0x00000000, 0x00000001);
+	CHECK(h.one(f3(012)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x99999999u));
+	CHECK_EQ(h.cpu.r.get(sf::C), 0);           // borrow
+
+	// Digit-by-digit borrow within the word.
+	pair(0x00000100, 0x00000001);
+	CHECK(h.one(f3(012)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x00000099u));
+
+	// Chained subtraction takes 1-Carry as its borrow in.
+	h.cpu.r.put(sf::C, 0);                     // a borrow is pending
+	pair(0x00000005, 0x00000002);
+	CHECK(h.one(f3(012, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x00000002u));
+	h.cpu.r.put(sf::C, 1);                     // none pending
+	pair(0x00000005, 0x00000002);
+	CHECK(h.one(f3(012, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x00000003u));
+
+	// A digit above nine is an illegal operand, not something to fix up.
+	pair(0x1234567a, 0x00000001);
+	CHECK(h.one(f3(011)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::illegal_decimal);
+	pair(0x00000001, 0x0000000f);
+	CHECK(h.one(f3(012)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::illegal_decimal);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1742,6 +1827,7 @@ int main()
 	test_string_assign();
 	test_string_concatenate();
 	test_cpep();
+	test_decimal();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
