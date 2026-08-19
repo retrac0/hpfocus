@@ -984,6 +984,7 @@ private:
 				const u32 sw = ctcbp - 16;
 				m_mem.write32(sw,
 						(m_mem.read32(sw) & 0xffff0000u) | 2);
+				if (sem_hook) sem_hook(true, a, ctcbp, r.p);
 				return do_disp();
 			}
 			else
@@ -1008,6 +1009,7 @@ private:
 								(m_mem.read32(sw) & 0xffff0000u) | 1);
 						r.msg |= 0x00200000u;
 						m_halted = false;
+						if (sem_hook) sem_hook(false, a, l - 0x10, r.p);
 					}
 				}
 				if (b3) pop();
@@ -3531,6 +3533,13 @@ private:
 	io_interface *m_io;
 
 	u32 m_cir = 0;
+public:
+	// Observation hook for UP/DOWN's slow paths: called on a blocking
+	// DOWN (first argument true; then semaphore, CTCBP, P) and on a
+	// waking UP (false; semaphore, woken TCB, P). For harness
+	// instrumentation; never affects execution.
+	void (*sem_hook)(bool, u32, u32, u32) = nullptr;
+private:
 	u32 m_next = 0;
 	bool m_branched = false;
 	bool m_halted = false;

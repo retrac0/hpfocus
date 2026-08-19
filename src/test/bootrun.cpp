@@ -333,6 +333,7 @@ int main(int argc, char **argv)
 	// then expects (absolute 6096; see the I/O protocol notes).
 	u32 console_id = 4;
 	const char *console_resp9 = "0";   // FR9 response digit sequence
+	bool sem_log = false;
 	// --poke STEP ADDR VAL: write a word mid-run, for probing what a
 	// missing producer would have delivered (e.g. faking a semaphore V).
 	unsigned long long poke_step = 0;
@@ -382,6 +383,8 @@ int main(int argc, char **argv)
 			cpu_date = u32(strtoul(argv[++i], nullptr, 16));
 		else if (!std::strcmp(argv[i], "--consoleid") && i + 1 < argc)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--semlog"))
+			sem_log = true;
 		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
 			console_resp9 = argv[++i];
 		else if (!std::strcmp(argv[i], "--tick") && i + 1 < argc)
@@ -446,6 +449,12 @@ int main(int argc, char **argv)
 	logging_io iolog(iop);
 	iolog.log = io_trace;
 	cpu.set_io(&iolog);
+	if (sem_log)
+		cpu.sem_hook = [](bool block, u32 sem, u32 who, u32 p) {
+			std::printf(block ? "[DOWN blocks: sem=%08x ctcbp=%08x p=%08x]\n"
+			                  : "[UP wakes:   sem=%08x tcb=%08x p=%08x]\n",
+					sem, who, p);
+		};
 
 	// Code: the powerup module executes in place within the loaded image,
 	// with PB = 0. That is not a guess: the module copies its relocation
