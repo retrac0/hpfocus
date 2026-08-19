@@ -331,6 +331,10 @@ int main(int argc, char **argv)
 	// then expects (absolute 6096; see the I/O protocol notes).
 	u32 console_id = 4;
 	u32 console_resp9 = 0;   // the response digit FR9 answers with
+	// --poke STEP ADDR VAL: write a word mid-run, for probing what a
+	// missing producer would have delivered (e.g. faking a semaphore V).
+	unsigned long long poke_step = 0;
+	u32 poke_addr = 0, poke_val = 0;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -375,6 +379,12 @@ int main(int argc, char **argv)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
 		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
 			console_resp9 = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--poke") && i + 3 < argc)
+		{
+			poke_step = strtoull(argv[++i], nullptr, 0);
+			poke_addr = u32(strtoul(argv[++i], nullptr, 0));
+			poke_val = u32(strtoul(argv[++i], nullptr, 0));
+		}
 		else
 			path = argv[i];
 	}
@@ -606,6 +616,13 @@ int main(int argc, char **argv)
 			std::printf("nudge: (Q) cleared for the final IXIT's "
 					"TCB dispatch\n");
 			nudged = true;
+		}
+		if (poke_step && steps == poke_step)
+		{
+			std::printf("poke: [%08x] %08x -> %08x at step %llu\n",
+					poke_addr, mem.read32(poke_addr), poke_val, poke_step);
+			mem.write32(poke_addr, poke_val);
+			cpu.resume();
 		}
 		// The microcode interrupt handler runs between instructions:
 		// when STATUS.I permits and an unmasked I/O message bit is up,
