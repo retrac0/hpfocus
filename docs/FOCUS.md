@@ -1462,6 +1462,33 @@ way `S−SB` is stored at `(SB−1)` when SB ≠ 0. Privileged. *CC unaffected.*
 
 **`NOP`** — No Operation — `F3:0`. *CC unaffected.*
 
+### 10.19 Recovered instructions (not in the ERS)
+
+Four opcodes appear nowhere in the ERS — chart or prose — and not in the
+Pascal compiler's table, but are named by the instruction table inside the
+shipped HP-UX assembler, `/bin/as` (Appendix B). The HP-UX kernels execute
+`UP` and `DOWN` heavily (746 and 419 sites in the 5.01 kernel — more often
+than `SSI`); user binaries, BASIC and the diagnostics never do. They are
+kernel-only systems instructions, emitted by HP's internal MODCAL
+compiler. The encodings below are certain; the semantics are this
+document's largest open question — the emulator's disassembler prints the
+names, and its core raises Unimplemented Instruction on execution.
+
+**`UP` / `DOWN`** — `F4:20` / `F4:21`
+By name, the classic semaphore signal/wait pair — the blocking
+counterpart to the `SEML`/`PSLA` atomic exchange (§10.15). The assembler
+gives them the operand class of `PSHN` and `SRM`, so `b` is meaningful.
+Presumed privileged. Semantics undetermined.
+
+**`CTCB`** — `F4:24`
+No operand. The name matches the "Current TCB Pointer" dedicated word
+that `GTSP` maintains (§10.4, §7.4) — presumably reads or updates it.
+Semantics undetermined.
+
+**`GMPY`** — `F6:21`
+The assembler's operand syntax differs from the ordinary
+memory-reference group's. Semantics undetermined.
+
 ---
 
 ## Appendix A — Alphabetical index
@@ -1471,116 +1498,111 @@ separately.
 
 | Mn | F:op | Name | | Mn | F:op | Name |
 |---|---|---|---|---|---|---|
-| `ADAX` | 3:36 | Add A to X | | `LDXN` | 5:13 | Load X Negative Immediate |
-| `ADD` | 3:20 | Add | | `LHSI` | 4:10 | Load Halfword Stack Indirect |
-| `ADDI` | 5:4 | Add Immediate | | `LIA` | 6:5 | Load Intermediate Address |
-| `ADDS` | 5:32 | Add to S | | `LIAS` | 5:25 | Load Intermediate Address (16-bit) |
-| `ADXA` | 3:37 | Add X to A | | `LINS` | 4:72 | List Insert |
-| `ADXI` | 5:26 | Add Immediate to X | | `LLSH` | 2:36 | Linked List Search |
-| `ALM` | 4:42 | Address Lockout Mode | | `LMPY` | 3:62 | Logical Multiply |
-| `AND` | 3:67 | Logical AND | | `LNI` | 6:7 | Load Negative Immediate |
-| `ANDI` | 5:37 | AND Immediate | | `LNIS` | 5:15 | Load Negative Immediate (16-bit) |
-| `ASL` | 2:6 | Arithmetic Shift Left | | `LPP` | 6:4 | Load Program Pointer |
-| `ASR` | 2:7 | Arithmetic Shift Right | | `LPPS` | 5:34 | Load Program Pointer (16-bit) |
-| `BCC` | 6:31 | Branch on Condition Code | | `LRA` | 6:36 | Load Relative Address |
-| `BCCS` | 1:6 | Branch on Condition Code (16-bit) | | `LRAS` | 1:3 | Load Relative Address (16-bit) |
-| `BCY` | 2:60,64 | Branch on Carry | | `LSI` | 4:5 | Load Stack Indirect |
-| `BIR` | 2:40,44 | Branch on Inexact Result | | `LSL` | 2:2 | Logical Shift Left |
-| `BNC` | 2:61,65 | Branch on No Carry | | `LSR` | 2:3 | Logical Shift Right |
-| `BNO` | 2:63,67 | Branch on No Overflow | | `LSUB` | 3:61 | Logical Subtract |
-| `BOV` | 2:62,66 | Branch on Overflow | | `LSXL` | 2:10 | Logical Shift X Left |
-| `BR` | 6:30 | Branch | | `MPY` | 3:22 | Multiply |
-| `BRE` | 2:71,75 | Branch on TOS Even | | `MPYI` | 5:6 | Multiply Immediate |
-| `BRO` | 2:72,76 | Branch on TOS Odd | | `MUC` | 4:13 | Modify Use Count |
-| `BRSI` | 4:37 | Branch Stack Indirect | | `MVB` | 2:51 | Move Bytes |
-| `BRZ` | 2:70,74 | Branch on TOS Zero | | `NEG` | 3:24 | Negate |
-| `BTD` | 4:1 | Binary to Decimal | | `NOP` | 3:0 | No Operation |
-| `BUN` | 2:41,45 | Branch on Unused Condition Code | | `NOT` | 3:64 | Logical Complement |
-| `CAB` | 3:56 | Rotate ABC | | `OR` | 3:65 | Logical OR |
-| `CCI` | 4:43 | Convert Condition Code to Integer | | `ORI` | 5:35 | OR Immediate |
-| `CDSF` | 3:30 | Convert Double to Single Floating | | `PCL` | 6:3 | Procedure Call |
-| `CHEK` | 6:2 | Check | | `PCLS` | 5:22 | Procedure Call (16-bit) |
-| `CMP` | 3:17 | Compare | | `PLBA` | 4:47 | Priv Load Byte, Absolute |
-| `CMPB` | 2:54 | Compare Bytes | | `PLDA` | 4:64 | Priv Load, Absolute |
-| `CMPI` | 5:3 | Compare Immediate | | `PLHA` | 4:51 | Priv Load Halfword, Absolute |
-| `CMPM` | 6:15 | Compare Memory | | `PMPB` | 2:31 | Push MPB Registers |
-| `CMPN` | 5:2 | Compare Negative Immediate | | `PMVA` | 2:50 | Priv Move Bytes, Absolute |
-| `CNTO` | 4:54 | Count Ones | | `POT` | 4:53 | Power of Ten |
-| `CPAA` | 4:66 | Convert Pointer to Absolute Address | | `PSBA` | 4:50 | Priv Store Byte, Absolute |
-| `CPEP` | 4:67 | Convert Pointer to EDS Pointer | | `PSDB` | 4:15 | Pseudo Interrupt Disable |
-| `CPTR` | 4:70 | Convert Pointer | | `PSEB` | 4:17 | Pseudo Interrupt Enable |
-| `CRB` | 2:73,77 | Compare Range and Branch | | `PSHA` | 4:52 | Priv Store Halfword, Absolute |
-| `CSDF` | 3:31 | Convert Single to Double Floating | | `PSHN` | 3:5 | Push N Words |
-| `CSL` | 2:4 | Circular Shift Left | | `PSHR` | 2:34 | Push Registers |
-| `CSR` | 2:5 | Circular Shift Right | | `PSLA` | 4:63 | Priv Semaphore Load, Absolute |
-| `DDEL` | 3:2 | Double Delete | | `PSTA` | 4:65 | Priv Store, Absolute |
-| `DDUP` | 3:46 | Double Duplicate | | `RCS` | 4:31 | Read Control Store |
-| `DECF` | 6:32 | Decrement Memory by Four | | `RFC` | 4:56 | Read From Channel |
-| `DECM` | 6:23 | Decrement Memory | | `RSC` | 4:62 | Read Slave Channel |
-| `DEL` | 3:40 | Delete A | | `SAS` | 2:30 | String Assign |
-| `DELB` | 3:1 | Delete B | | `SBIT` | 4:3 | Store Bit |
-| `DISP` | 4:16 | Dispatch | | `SBSI` | 4:26 | Store Byte Stack Indirect |
-| `DIV` | 3:23 | Divide (doubleword dividend) | | `SBXI` | 5:27 | Subtract Immediate from X |
-| `DIVI` | 5:7 | Divide Immediate | | `SCON` | 2:27 | String Concatenate |
-| `DIVS` | 3:33 | Divide, Single-Word Dividend | | `SCU` | 2:53 | Scan Until |
-| `DLAD` | 3:11 | Decimal Logical Add | | `SCW` | 2:52 | Scan While |
-| `DLSB` | 3:12 | Decimal Logical Subtract | | `SDSI` | 4:27 | Store Double Stack Indirect |
-| `DPF` | 6:1 | Deposit Field | | `SEML` | 6:33 | Semaphore Load |
-| `DTB` | 4:0 | Decimal to Binary | | `SETR` | 2:35 | Set Registers |
-| `DUP` | 3:45 | Duplicate A | | `SHSI` | 4:30 | Store Halfword Stack Indirect |
-| `DXCH` | 3:16 | Double Exchange | | `SLD` | 2:25 | String Load |
-| `DZRO` | 3:7 | Double Push Zero | | `SMPB` | 2:32 | Set MPB Registers |
-| `EOP` | 4:44 | End of Procedure | | `SMSG` | 4:60 | Send Message |
-| `EOS` | 4:4 | End of Subroutine | | `SOL` | 5:0 | Start of Line |
-| `ESCP` | 4:41 | Escape | | `SOLC` | 5:31 | Start of Line Check |
-| `EXF` | 6:0 | Extract Field | | `SOP` | 5:1 | Start of Procedure |
-| `EXIT` | 5:23 | Procedure Exit | | `SOS` | 5:16 | Start of Subroutine |
-| `FADD` | 3:51 | Floating Add | | `SRM` | 2:33 | Set Rounding Mode |
-| `FADS` | 3:72 | Floating Add Single | | `SSI` | 4:25 | Store Stack Indirect |
-| `FCMP` | 3:50 | Floating Compare | | `ST` | 6:13 | Store |
-| `FCPS` | 3:77 | Floating Compare Single | | `STAX` | 3:43 | Store A in X |
-| `FDIV` | 3:54 | Floating Divide | | `STB` | 6:34 | Store Byte |
-| `FDVS` | 3:75 | Floating Divide Single | | `STD` | 6:35 | Store Double |
-| `FILB` | 2:57 | Fill Bytes | | `STH` | 6:25 | Store Halfword |
-| `FIXD` | 3:41 | Fix Double | | `STOP` | 4:77 | Stop |
-| `FIXS` | 3:71 | Fix Single | | `STS` | 1:5 | Store (16-bit) |
-| `FLMO` | 4:55 | Find Leftmost One | | `SUB` | 3:21 | Subtract |
-| `FLTD` | 3:42 | Float Double | | `SUBI` | 5:5 | Subtract Immediate |
-| `FLTS` | 3:70 | Float Single | | `SUBS` | 5:33 | Subtract from S |
-| `FMPS` | 3:74 | Floating Multiply Single | | `SVAL` | 2:26 | String Validate |
-| `FMPY` | 3:53 | Floating Multiply | | `SXIT` | 5:24 | Subroutine Exit |
-| `FNEG` | 3:55 | Floating Negate | | `TCC` | 2:37 | Test Condition Code |
-| `FNGS` | 3:76 | Floating Negate Single | | `TEST` | 3:25 | Test TOS |
-| `FSBS` | 3:73 | Floating Subtract Single | | `TRAN` | 2:56 | Translate |
-| `FSUB` | 3:52 | Floating Subtract | | `TRY` | 4:40 | Try |
-| `FTSS` | 3:4 | Floating Test Single | | `TSTB` | 3:27 | Test Byte |
-| `FTST` | 3:3 | Floating Test | | `TSTD` | 3:26 | Test Double |
-| `GTSP` | 4:12 | Get Task Segment Pointers | | `VPTR` | 4:71 | Validate Pointer |
-| `INCF` | 6:27 | Increment Memory by Four | | `WAIT` | 4:76 | Wait |
-| `INCM` | 6:24 | Increment Memory | | `WTC` | 4:57 | Write To Channel |
-| `INT` | 4:11 | Interrupts | | `XAX` | 3:35 | Exchange X and A |
-| `IOC` | 5:21 | I/O Control | | `XCH` | 3:32 | Exchange A and B |
-| `IOR` | 5:20 | I/O Read | | `XGDS` | 4:14 | Exchange Global Data Segment |
-| `IOW` | 5:17 | I/O Write | | `XOR` | 3:66 | Exclusive OR |
-| `ISC` | 3:34 | Integer Size Check | | `XORI` | 5:36 | Exclusive OR Immediate |
-| `IXIT` | 4:74 | Interrupt Exit | | `ZERO` | 3:6 | Push Zero |
-| `LADD` | 3:60 | Logical Add | | | | |
-| `LBIT` | 4:2 | Load Bit | | | | |
-| `LBSI` | 4:6 | Load Byte Stack Indirect | | | | |
-| `LCMP` | 3:57 | Logical Compare | | | | |
-| `LD` | 6:10 | Load | | | | |
-| `LDB` | 6:14 | Load Byte | | | | |
-| `LDD` | 6:20 | Load Double | | | | |
+| `ADAX` | 3:36 | Add A to X | | `LDEL` | 4:73 | List Delete |
+| `ADD` | 3:20 | Add | | `LDH` | 6:22 | Load Halfword |
+| `ADDI` | 5:4 | Add Immediate | | `LDI` | 6:6 | Load Immediate |
+| `ADDS` | 5:32 | Add to S | | `LDIS` | 5:14 | Load Immediate (16-bit) |
+| `ADXA` | 3:37 | Add X to A | | `LDS` | 1:2 | Load (16-bit) |
+| `ADXI` | 5:26 | Add Immediate to X | | `LDSI` | 4:7 | Load Double Stack Indirect |
+| `ALM` | 4:42 | Address Lockout Mode | | `LDX` | 6:26 | Load Index |
+| `AND` | 3:67 | Logical AND | | `LDXA` | 3:44 | Load X onto Stack |
+| `ANDI` | 5:37 | AND Immediate | | `LDXI` | 5:12 | Load X Immediate |
+| `ASL` | 2:6 | Arithmetic Shift Left | | `LDXN` | 5:13 | Load X Negative Immediate |
+| `ASR` | 2:7 | Arithmetic Shift Right | | `LHSI` | 4:10 | Load Halfword Stack Indirect |
+| `BCC` | 6:31 | Branch on Condition Code | | `LIA` | 6:5 | Load Intermediate Address |
+| `BCCS` | 1:6 | Branch on Condition Code (16-bit) | | `LIAS` | 5:25 | Load Intermediate Address (16-bit) |
+| `BCY` | 2:60,64 | Branch on Carry | | `LINS` | 4:72 | List Insert |
+| `BIR` | 2:40,44 | Branch on Inexact Result | | `LLSH` | 2:36 | Linked List Search |
+| `BNC` | 2:61,65 | Branch on No Carry | | `LMPY` | 3:62 | Logical Multiply |
+| `BNO` | 2:63,67 | Branch on No Overflow | | `LNI` | 6:7 | Load Negative Immediate |
+| `BOV` | 2:62,66 | Branch on Overflow | | `LNIS` | 5:15 | Load Negative Immediate (16-bit) |
+| `BR` | 6:30 | Branch | | `LPP` | 6:4 | Load Program Pointer |
+| `BRE` | 2:71,75 | Branch on TOS Even | | `LPPS` | 5:34 | Load Program Pointer (16-bit) |
+| `BRO` | 2:72,76 | Branch on TOS Odd | | `LRA` | 6:36 | Load Relative Address |
+| `BRSI` | 4:37 | Branch Stack Indirect | | `LRAS` | 1:3 | Load Relative Address (16-bit) |
+| `BRZ` | 2:70,74 | Branch on TOS Zero | | `LSI` | 4:5 | Load Stack Indirect |
+| `BTD` | 4:1 | Binary to Decimal | | `LSL` | 2:2 | Logical Shift Left |
+| `BUN` | 2:41,45 | Branch on Unused Condition Code | | `LSR` | 2:3 | Logical Shift Right |
+| `CAB` | 3:56 | Rotate ABC | | `LSUB` | 3:61 | Logical Subtract |
+| `CCI` | 4:43 | Convert Condition Code to Integer | | `LSXL` | 2:10 | Logical Shift X Left |
+| `CDSF` | 3:30 | Convert Double to Single Floating | | `MPY` | 3:22 | Multiply |
+| `CHEK` | 6:2 | Check | | `MPYI` | 5:6 | Multiply Immediate |
+| `CMP` | 3:17 | Compare | | `MUC` | 4:13 | Modify Use Count |
+| `CMPB` | 2:54 | Compare Bytes | | `MVB` | 2:51 | Move Bytes |
+| `CMPI` | 5:3 | Compare Immediate | | `NEG` | 3:24 | Negate |
+| `CMPM` | 6:15 | Compare Memory | | `NOP` | 3:0 | No Operation |
+| `CMPN` | 5:2 | Compare Negative Immediate | | `NOT` | 3:64 | Logical Complement |
+| `CNTO` | 4:54 | Count Ones | | `OR` | 3:65 | Logical OR |
+| `CPAA` | 4:66 | Convert Pointer to Absolute Address | | `ORI` | 5:35 | OR Immediate |
+| `CPEP` | 4:67 | Convert Pointer to EDS Pointer | | `PCL` | 6:3 | Procedure Call |
+| `CPTR` | 4:70 | Convert Pointer | | `PCLS` | 5:22 | Procedure Call (16-bit) |
+| `CRB` | 2:73,77 | Compare Range and Branch | | `PLBA` | 4:47 | Priv Load Byte, Absolute |
+| `CSDF` | 3:31 | Convert Single to Double Floating | | `PLDA` | 4:64 | Priv Load, Absolute |
+| `CSL` | 2:4 | Circular Shift Left | | `PLHA` | 4:51 | Priv Load Halfword, Absolute |
+| `CSR` | 2:5 | Circular Shift Right | | `PMPB` | 2:31 | Push MPB Registers |
+| `CTCB` | 4:24 | Current TCB (not in the ERS, §10.19) | | `PMVA` | 2:50 | Priv Move Bytes, Absolute |
+| `DDEL` | 3:2 | Double Delete | | `POT` | 4:53 | Power of Ten |
+| `DDUP` | 3:46 | Double Duplicate | | `PSBA` | 4:50 | Priv Store Byte, Absolute |
+| `DECF` | 6:32 | Decrement Memory by Four | | `PSDB` | 4:15 | Pseudo Interrupt Disable |
+| `DECM` | 6:23 | Decrement Memory | | `PSEB` | 4:17 | Pseudo Interrupt Enable |
+| `DEL` | 3:40 | Delete A | | `PSHA` | 4:52 | Priv Store Halfword, Absolute |
+| `DELB` | 3:1 | Delete B | | `PSHN` | 3:5 | Push N Words |
+| `DISP` | 4:16 | Dispatch | | `PSHR` | 2:34 | Push Registers |
+| `DIV` | 3:23 | Divide (doubleword dividend) | | `PSLA` | 4:63 | Priv Semaphore Load, Absolute |
+| `DIVI` | 5:7 | Divide Immediate | | `PSTA` | 4:65 | Priv Store, Absolute |
+| `DIVS` | 3:33 | Divide, Single-Word Dividend | | `RCS` | 4:31 | Read Control Store |
+| `DLAD` | 3:11 | Decimal Logical Add | | `RFC` | 4:56 | Read From Channel |
+| `DLSB` | 3:12 | Decimal Logical Subtract | | `RSC` | 4:62 | Read Slave Channel |
+| `DOWN` | 4:21 | Semaphore Down (not in the ERS, §10.19) | | `SAS` | 2:30 | String Assign |
+| `DPF` | 6:1 | Deposit Field | | `SBIT` | 4:3 | Store Bit |
+| `DTB` | 4:0 | Decimal to Binary | | `SBSI` | 4:26 | Store Byte Stack Indirect |
+| `DUP` | 3:45 | Duplicate A | | `SBXI` | 5:27 | Subtract Immediate from X |
+| `DXCH` | 3:16 | Double Exchange | | `SCON` | 2:27 | String Concatenate |
+| `DZRO` | 3:7 | Double Push Zero | | `SCU` | 2:53 | Scan Until |
+| `EOP` | 4:44 | End of Procedure | | `SCW` | 2:52 | Scan While |
+| `EOS` | 4:4 | End of Subroutine | | `SDSI` | 4:27 | Store Double Stack Indirect |
+| `ESCP` | 4:41 | Escape | | `SEML` | 6:33 | Semaphore Load |
+| `EXF` | 6:0 | Extract Field | | `SETR` | 2:35 | Set Registers |
+| `EXIT` | 5:23 | Procedure Exit | | `SHSI` | 4:30 | Store Halfword Stack Indirect |
+| `FADD` | 3:51 | Floating Add | | `SLD` | 2:25 | String Load |
+| `FADS` | 3:72 | Floating Add Single | | `SMPB` | 2:32 | Set MPB Registers |
+| `FCMP` | 3:50 | Floating Compare | | `SMSG` | 4:60 | Send Message |
+| `FCPS` | 3:77 | Floating Compare Single | | `SOL` | 5:0 | Start of Line |
+| `FDIV` | 3:54 | Floating Divide | | `SOLC` | 5:31 | Start of Line Check |
+| `FDVS` | 3:75 | Floating Divide Single | | `SOP` | 5:1 | Start of Procedure |
+| `FILB` | 2:57 | Fill Bytes | | `SOS` | 5:16 | Start of Subroutine |
+| `FIXD` | 3:41 | Fix Double | | `SRM` | 2:33 | Set Rounding Mode |
+| `FIXS` | 3:71 | Fix Single | | `SSI` | 4:25 | Store Stack Indirect |
+| `FLMO` | 4:55 | Find Leftmost One | | `ST` | 6:13 | Store |
+| `FLTD` | 3:42 | Float Double | | `STAX` | 3:43 | Store A in X |
+| `FLTS` | 3:70 | Float Single | | `STB` | 6:34 | Store Byte |
+| `FMPS` | 3:74 | Floating Multiply Single | | `STD` | 6:35 | Store Double |
+| `FMPY` | 3:53 | Floating Multiply | | `STH` | 6:25 | Store Halfword |
+| `FNEG` | 3:55 | Floating Negate | | `STOP` | 4:77 | Stop |
+| `FNGS` | 3:76 | Floating Negate Single | | `STS` | 1:5 | Store (16-bit) |
+| `FSBS` | 3:73 | Floating Subtract Single | | `SUB` | 3:21 | Subtract |
+| `FSUB` | 3:52 | Floating Subtract | | `SUBI` | 5:5 | Subtract Immediate |
+| `FTSS` | 3:4 | Floating Test Single | | `SUBS` | 5:33 | Subtract from S |
+| `FTST` | 3:3 | Floating Test | | `SVAL` | 2:26 | String Validate |
+| `GMPY` | 6:21 | Not in the ERS (§10.19) | | `SXIT` | 5:24 | Subroutine Exit |
+| `GTSP` | 4:12 | Get Task Segment Pointers | | `TCC` | 2:37 | Test Condition Code |
+| `INCF` | 6:27 | Increment Memory by Four | | `TEST` | 3:25 | Test TOS |
+| `INCM` | 6:24 | Increment Memory | | `TRAN` | 2:56 | Translate |
+| `INT` | 4:11 | Interrupts | | `TRY` | 4:40 | Try |
+| `IOC` | 5:21 | I/O Control | | `TSTB` | 3:27 | Test Byte |
+| `IOR` | 5:20 | I/O Read | | `TSTD` | 3:26 | Test Double |
+| `IOW` | 5:17 | I/O Write | | `UP` | 4:20 | Semaphore Up (not in the ERS, §10.19) |
+| `ISC` | 3:34 | Integer Size Check | | `VPTR` | 4:71 | Validate Pointer |
+| `IXIT` | 4:74 | Interrupt Exit | | `WAIT` | 4:76 | Wait |
+| `LADD` | 3:60 | Logical Add | | `WTC` | 4:57 | Write To Channel |
+| `LBIT` | 4:2 | Load Bit | | `XAX` | 3:35 | Exchange X and A |
+| `LBSI` | 4:6 | Load Byte Stack Indirect | | `XCH` | 3:32 | Exchange A and B |
+| `LCMP` | 3:57 | Logical Compare | | `XGDS` | 4:14 | Exchange Global Data Segment |
+| `LD` | 6:10 | Load | | `XOR` | 3:66 | Exclusive OR |
+| `LDB` | 6:14 | Load Byte | | `XORI` | 5:36 | Exclusive OR Immediate |
+| `LDD` | 6:20 | Load Double | | `ZERO` | 3:6 | Push Zero |
 | `LDDS` | 1:4 | Load Double (16-bit) | | | | |
-| `LDEL` | 4:73 | List Delete | | | | |
-| `LDH` | 6:22 | Load Halfword | | | | |
-| `LDI` | 6:6 | Load Immediate | | | | |
-| `LDIS` | 5:14 | Load Immediate (16-bit) | | | | |
-| `LDS` | 1:2 | Load (16-bit) | | | | |
-| `LDSI` | 4:7 | Load Double Stack Indirect | | | | |
-| `LDX` | 6:26 | Load Index | | | | |
-| `LDXA` | 3:44 | Load X onto Stack | | | | |
-| `LDXI` | 5:12 | Load X Immediate | | | | |
+
 
 ## Appendix B — Adjudicated readings
 
@@ -1604,25 +1626,36 @@ against the raw chart transcription:
   Prose §158 gives "RFC (Read from Channel)", the natural pair to §159
   `WTC` "Write to Channel". Read as **RFC**.
 
-**Both readings are now confirmed by HP.** `/usr/lib/pascomp`, the Pascal
-compiler recovered from the 7914 tapes, carries the instruction set as an
-array of 16-byte records — mnemonic, opcode bits in place, operand class,
-attribute flags — and it spells them `brsi` and `rfc`.
+**Both readings are now confirmed by HP — twice.** `/usr/lib/pascomp`, the
+Pascal compiler recovered from the 7914 tapes, carries the instruction set
+as an array of 16-byte records — mnemonic, opcode bits in place, operand
+class, attribute flags — and it spells them `brsi` and `rfc`.
 [`tools/hptable.py`](../tools/hptable.py) reads that table and diffs it
-against `opcodes.csv`: **208 assignments agree, none disagree.** This is
-HP's own machine-readable table rather than a transcription of a degraded
-chart, so it is the strongest check this project has on the opcode map,
-and it independently validates the whole Appendix B reading.
+against `opcodes.csv`: **208 assignments agree, none disagree.** A second
+HP-authored copy, the 28-byte-record table inside the shipped assembler
+`/bin/as`, read by [`tools/astable.py`](../tools/astable.py), also agrees
+with every one of the chart's assignments (branches stored in their
+forward form) — and it too spells them `brsi` and `rfc`. These are HP's
+own machine-readable tables rather than transcriptions of a degraded
+chart, so they are the strongest check this project has on the opcode map,
+and they independently validate the whole Appendix B reading. The lone
+naming disagreement anywhere: the assembler spells F5:031 `sloc`, against
+`SOLC` in the compiler and the ERS prose ("Start Of Line Check") — HP's
+own typo.
 
-It is equally informative about what is *absent*. HP's 1987 tools leave
-exactly the same fourteen format 4 slots unassigned as the Dec-82 chart —
-`020`–`024`, `032`–`036`, `045`, `046`, `061`, `075` — even though the same
-table lists every documented privileged instruction (`PLDA`, `PSTA`,
-`PSLA`, `SEML`, `XGDS`, `GTSP`, `DISP`, `IXIT`, `RCS`, `WTC`, `SMSG`).
-The HP-UX kernels nonetheless execute `020` and `021`, so those two are
-implemented in silicon but were never exposed through the shipped
-assembler or compilers — systems instructions emitted by HP's internal
-MODCAL compiler, which is not on the tapes.
+The two tables are equally informative about what is *absent* — and there
+they differ. The compiler leaves exactly the same fourteen format 4 slots
+unassigned as the Dec-82 chart — `020`–`024`, `032`–`036`, `045`, `046`,
+`061`, `075` — even though it lists every documented privileged
+instruction (`PLDA`, `PSTA`, `PSLA`, `SEML`, `XGDS`, `GTSP`, `DISP`,
+`IXIT`, `RCS`, `WTC`, `SMSG`). But the assembler names four opcodes that
+the chart, the compiler and the ERS prose all leave blank: **`UP`
+(F4:020), `DOWN` (F4:021), `CTCB` (F4:024) and `GMPY` (F6:021)** — and
+the HP-UX kernels execute `020` and `021` in quantity. So the kernel-only
+instructions were emitted by HP's internal MODCAL compiler (not on the
+tapes) yet sat, named, in the shipped assembler all along. Their
+encodings are folded into §9 and §10.19; their semantics remain
+undetermined.
 
 (`opcodes.csv` and the generated disassembler tables carried `SRSI` and
 `RPC` until then.)
@@ -1646,15 +1679,19 @@ BASIC 2.0):
 - `LBSI`'s indicator prints as "CCE"; read as **CCB** to match `LDB`
   (both load a byte). Unverified against silicon.
 
-**Unassigned encodings.** 254 of 256 points are assigned. Format 4 ops
-32–36 are struck through in the chart; format 4 op 75, format 5 op 30, and
+**Unassigned encodings.** Formats 2–6 offer 254 opcode points beside the
+two escapes; the chart assigns 208 of them and `/bin/as` names four more
+(212), format 1 adding its five short forms. Format 4 ops 32–36 are
+struck through in the chart; format 4 op 75, format 5 op 30, and
 format 6 op 37 are unassigned **but do not raise** the Unimplemented
 Instruction trap on CPU 4.0 and earlier (Appendix G) — relevant to linear
 sweeps, since a run of `ff ff ff ff` decodes as format 6 op 37.
 
 **Still open.** CST entry word 0 / word 3 bit positions (mode, uncallable,
 use count); the exact `STAX`/`ADAX` `b` variants; `LIAS`'s 2+6 level/offset
-split is read from the prose and not yet confirmed against real code.
+split is read from the prose and not yet confirmed against real code; and,
+largest of all, the semantics of the four `/bin/as`-recovered opcodes
+(§10.19).
 
 ## Appendix C — Silicon bugs (ERS Appendix G digest)
 
@@ -1694,6 +1731,10 @@ Software probes the CPU revision via `RCS` location 6 (`YYYYMMDD` hex).
 - *FOCUS I/O ERS*, F. Gross, 09/20/82 — the IOP side of §10.17.
 - [opcodes.csv](opcodes.csv) — the validated chart transcription;
   `tools/check_opcodes.py` diffs it against a prose scrape.
+- `/bin/as` and `/usr/lib/pascomp` (HP-UX 5.30, recovered from the 7914
+  unit-save tapes) — HP's own instruction tables, read by
+  [tools/astable.py](../tools/astable.py) and
+  [tools/hptable.py](../tools/hptable.py).
 - [src/cpu/focus/](../src/cpu/focus/) and [src/test/](../src/test/) — the
   executable form of this specification and its evidence.
 - *HP Journal*, Aug 1983 / Mar 1984 / May 1984 — the chip set, HP-UX on
