@@ -145,6 +145,7 @@ struct probe_card : public iop_interface
 	u32 id = 0;
 	unsigned pa = 0;
 	bool log = false;
+	bool was_reset = false;
 	u32 fr[16] = {};
 	u32 status() override { return 0; }
 	u32 flag() override { return 1; }
@@ -153,9 +154,11 @@ struct probe_card : public iop_interface
 		// The powerup scan's presence test: FR3 must read zero after the
 		// WIF1/WIF8 reset, then it writes a bit pattern to FR0 and
 		// expects FR1 to read back nonzero. An interface that echoes
-		// satisfies it.
+		// satisfies it. An identity of 9 is the one the scan resets, so
+		// --probe 5 9 is the way to get a card registered and watch what
+		// the drivers then do with it.
 		u32 v;
-		if (n == 3)      v = id;
+		if (n == 3)      v = was_reset ? 0 : id;
 		else if (n == 1) v = fr[0];
 		else             v = fr[n & 15];
 		if (log)
@@ -164,6 +167,8 @@ struct probe_card : public iop_interface
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
+		if (n == 1 || n == 8)
+			was_reset = true;
 		fr[n & 15] = v & 0xffff;
 		if (log)
 			std::printf("[probe%u W fr%u = %04x]\n", pa, n, v & 0xffff);

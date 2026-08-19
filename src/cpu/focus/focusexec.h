@@ -1340,23 +1340,45 @@ private:
 
 		switch (op2)
 		{
-		case 002: { u32 v = stk(0) << operand; set_stk(0, v); cca(v);
-			return exec_trap::none; }                            // LSL
-		case 003: { u32 v = stk(0) >> operand; set_stk(0, v); cca(v);
-			return exec_trap::none; }                            // LSR
-		case 004: { const unsigned n = operand & 31;              // CSL
-			const u32 x = stk(0);
+		// The shift group. The note under ASL (ERS sheet 72) governs all
+		// of them and is easy to miss: "in all of the shift instructions
+		// CIR(19:1) is an index bit and CNT = 6 least significant bits of
+		// (CIR(26:6) + (if CIR(19:1)=1 then X else 0))". So bit 3 adds X
+		// to the operand, and the count can reach 63 -- past the width of
+		// what is being shifted, which the 32-bit forms have to saturate
+		// rather than shift by.
+		case 002: { const unsigned n = shift_count(operand, b3);  // LSL
+			const u32 v = (n >= 32) ? 0 : (stk(0) << n);
+			set_stk(0, v); cca(v); return exec_trap::none; }
+		case 003: { const unsigned n = shift_count(operand, b3);  // LSR
+			const u32 v = (n >= 32) ? 0 : (stk(0) >> n);
+			set_stk(0, v); cca(v); return exec_trap::none; }
+		case 004: { const unsigned n = shift_count(operand, b3) & 31;
+			const u32 x = stk(0);                                 // CSL
 			const u32 v = n ? ((x << n) | (x >> (32 - n))) : x;
 			set_stk(0, v); cca(v); return exec_trap::none; }
-		case 005: { const unsigned n = operand & 31;              // CSR
-			const u32 x = stk(0);
+		case 005: { const unsigned n = shift_count(operand, b3) & 31;
+			const u32 x = stk(0);                                 // CSR
 			const u32 v = n ? ((x >> n) | (x << (32 - n))) : x;
 			set_stk(0, v); cca(v); return exec_trap::none; }
-		case 006: { u32 v = stk(0) << operand; set_stk(0, v); cca(v);
-			return exec_trap::none; }                            // ASL
-		case 007: { u32 v = u32(s32(stk(0)) >> operand); set_stk(0, v);
-			cca(v); return exec_trap::none; }                    // ASR
-		case 010: r.x <<= operand; return exec_trap::none;        // LSXL
+		case 006: { const unsigned n = shift_count(operand, b3);  // ASL
+			const u32 x = stk(0);
+			const u32 v = (n >= 32) ? 0 : (x << n);
+			// "If the sign bit changes, Overflow is set."
+			r.put(sf::O, ((x ^ v) >> 31) & 1);
+			set_stk(0, v); cca(v); return exec_trap::none; }
+		case 007: { const unsigned n = shift_count(operand, b3);  // ASR
+			// Not an arithmetic shift: the ERS negates a negative TOS,
+			// shifts the magnitude right filling with zeros, and negates
+			// the result back, which rounds toward zero rather than down.
+			const s32 x = s32(stk(0));
+			const u32 mag = (x < 0) ? u32(-x) : u32(x);
+			const u32 sh = (n >= 32) ? 0 : (mag >> n);
+			const u32 v = (x < 0) ? u32(-s32(sh)) : sh;
+			set_stk(0, v); cca(v); return exec_trap::none; }
+		case 010: { const unsigned n = shift_count(operand, b3);  // LSXL
+			r.x = (n >= 32) ? 0 : (r.x << n);
+			cca(r.x); return exec_trap::none; }
 		case 050: {                                               // PMVA
 			// Privileged Move Bytes using Absolute Addresses (ERS sheet
 			// 101). As MVB, but the pointers are absolute addresses and no
@@ -2462,6 +2484,13 @@ private:
 		p = ers32::set(p, 12, 4, err);
 		p = ers32::set(p, 16, 16, m_cir);
 		return take_trap(trap_cause::string_trap, p);
+	}
+
+	// CNT for the shift group: the six-bit operand plus X when the
+	// instruction's index bit is set, kept to six bits (ERS sheet 72).
+	unsigned shift_count(u8 operand, bool indexed) const
+	{
+		return unsigned(operand + (indexed ? r.x : 0)) & 63;
 	}
 
 	// A stack segment pointer: tag 11 in the top two bits, the rest an

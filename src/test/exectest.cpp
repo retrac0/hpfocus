@@ -1852,6 +1852,85 @@ static void test_isc()
 	CHECK_EQ(h.cpu.r.get(sf::O), 0);
 }
 
+// The shift group's index bit (ERS sheet 72, the note under ASL): the count
+// is the six-bit operand plus X when bit 3 is set. The powerup device scan
+// depends on it -- "LDIS #1; LSL 0,X" is how it builds the bit for select
+// code X -- so getting it wrong silently registered every card as card 0.
+static void test_shift_index()
+{
+	std::printf("shift counts take the index bit\n");
+	harness h;
+
+	// Without the bit, the operand alone.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.r.x = 5;
+	h.cpu.push(1);
+	CHECK(h.one(f2(002, 3)) == exec_trap::none);          // LSL 3
+	CHECK_EQ(h.cpu.stk(0), 8);
+
+	// With it, operand + X: the scan's own "LSL 0,X" with X = 5.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(1);
+	CHECK(h.one(f2(002, 0, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 32);
+
+	// Operand and X add.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.r.x = 2;
+	h.cpu.push(1);
+	CHECK(h.one(f2(002, 3, true)) == exec_trap::none);    // 3 + 2
+	CHECK_EQ(h.cpu.stk(0), 32);
+
+	// A count can reach 63, past the width of the word, and saturates.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.r.x = 0;
+	h.cpu.push(0xffffffff);
+	CHECK(h.one(f2(002, 32)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0xffffffff);
+	CHECK(h.one(f2(003, 40)) == exec_trap::none);         // LSR
+	CHECK_EQ(h.cpu.stk(0), 0);
+
+	// The circular shifts take the count modulo the word.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.r.x = 4;
+	h.cpu.push(0x12345678);
+	CHECK(h.one(f2(004, 0, true)) == exec_trap::none);    // CSL by 4
+	CHECK_EQ(h.cpu.stk(0), s32(0x23456781u));
+
+	// ASR divides toward zero, which is not what an arithmetic shift
+	// right does: the ERS negates, shifts the magnitude, and negates back.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.r.x = 0;
+	h.cpu.push(u32(-7));
+	CHECK(h.one(f2(007, 1)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -3);                           // not -4
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(u32(-8));
+	CHECK(h.one(f2(007, 1)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -4);
+
+	// ASL reports a sign change as Overflow.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x40000000);
+	CHECK(h.one(f2(006, 1)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(1);
+	CHECK(h.one(f2(006, 1)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
+
+	// LSXL shifts X by a count that includes X, and reports CCA on it.
+	h.cpu.r.x = 3;
+	CHECK(h.one(f2(010, 1)) == exec_trap::none);          // X <<= 1
+	CHECK_EQ(h.cpu.r.x, 6);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.r.x = 1;
+	CHECK(h.one(f2(010, 2, true)) == exec_trap::none);    // count 2 + 1
+	CHECK_EQ(h.cpu.r.x, 8);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1878,6 +1957,7 @@ int main()
 	test_cpep();
 	test_decimal();
 	test_isc();
+	test_shift_index();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
