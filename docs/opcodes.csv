@@ -145,6 +145,14 @@ format,field,octal,mnemonic,operand,flags
 4,OP3,15,PSDB,"",
 4,OP3,16,DISP,"",
 4,OP3,17,PSEB,"",
+# UP, DOWN and CTCB are not in the Appendix B chart (020-024 are blank there)
+# nor in the Pascal compiler's table; the names come from /bin/as, HP-UX 5.30
+# (tools/astable.py). 020/021 are the kernel-only instructions both HP-UX
+# kernels execute: the semaphore signal/wait pair. CTCB matches the ERS's
+# "Current TCB Pointer" (CTCBP). Semantics undocumented.
+4,OP3,20,UP,"",
+4,OP3,21,DOWN,"",
+4,OP3,24,CTCB,"",
 4,OP3,25,SSI,"",X
 4,OP3,26,SBSI,"",X
 4,OP3,27,SDSI,"",X
@@ -201,6 +209,8 @@ format,field,octal,mnemonic,operand,flags
 5,OP2,25,LIAS,"level + byte offset",
 5,OP2,26,ADXI,"immediate operand",
 5,OP2,27,SBXI,"immediate operand",
+# /bin/as spells SOLC "sloc"; the ERS prose ("Start Of Line Check") and the
+# Pascal compiler agree on SOLC, so the assembler's spelling is HP's typo.
 5,OP2,31,SOLC,"parameter",
 5,OP2,32,ADDS,"immediate operand",
 5,OP2,33,SUBS,"immediate operand",
@@ -221,6 +231,10 @@ format,field,octal,mnemonic,operand,flags
 6,OP2,14,LDB,"byte offset",I X BASE
 6,OP2,15,CMPM,"byte offset",I X BASE
 6,OP2,20,LDD,"byte offset",I X BASE
+# GMPY is not in the chart or the compiler table; the name comes from /bin/as,
+# HP-UX 5.30 (tools/astable.py), which gives it operand syntax 'ds' rather
+# than the memory-op 'xi'. Semantics undocumented.
+6,OP2,21,GMPY,"",
 6,OP2,22,LDH,"byte offset",I X BASE
 6,OP2,23,DECM,"byte offset",I X BASE
 6,OP2,24,INCM,"byte offset",I X BASE

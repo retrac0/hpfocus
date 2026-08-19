@@ -166,11 +166,11 @@ const focus_disassembler::op focus_disassembler::s_fmt4[64] = {
 	{ "PSDB", OK_NONE },  // 015
 	{ "DISP", OK_NONE },  // 016
 	{ "PSEB", OK_NONE },  // 017
-	{ nullptr, OK_NONE },  // 020
-	{ nullptr, OK_NONE },  // 021
+	{ "UP", OK_NONE },  // 020
+	{ "DOWN", OK_NONE },  // 021
 	{ nullptr, OK_NONE },  // 022
 	{ nullptr, OK_NONE },  // 023
-	{ nullptr, OK_NONE },  // 024
+	{ "CTCB", OK_NONE },  // 024
 	{ "SSI", OK_NONE },  // 025
 	{ "SBSI", OK_NONE },  // 026
 	{ "SDSI", OK_NONE },  // 027
@@ -269,7 +269,7 @@ const focus_disassembler::op focus_disassembler::s_fmt6[32] = {
 	{ nullptr, OK_NONE },  // 016
 	{ nullptr, OK_NONE },  // 017
 	{ "LDD", OK_MEM_BYTE },  // 020  byte offset
-	{ nullptr, OK_NONE },  // 021
+	{ "GMPY", OK_NONE },  // 021
 	{ "LDH", OK_MEM_BYTE },  // 022  byte offset
 	{ "DECM", OK_MEM_BYTE },  // 023  byte offset
 	{ "INCM", OK_MEM_BYTE },  // 024  byte offset
