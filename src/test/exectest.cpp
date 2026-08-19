@@ -544,10 +544,10 @@ static void test_unimplemented_is_reported()
 	std::printf("unimplemented opcodes are reported\n");
 	harness h;
 
-	// The decimal group and the remaining string instructions are not
-	// modelled yet; they must not be silently treated as no-ops.
+	// The decimal group is not modelled yet; it must not be silently
+	// treated as a set of no-ops.
 	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);   // DTB
-	CHECK(h.one(u16(025 << 6)) == exec_trap::unimplemented);       // SLD
+	CHECK(h.one(u16(1 << 6 | 001)) == exec_trap::unimplemented);   // BTD
 }
 
 
@@ -601,6 +601,28 @@ static void test_floating_point()
 	CHECK(h.one(f3(055)) == exec_trap::none);          // FNEG
 	CHECK_EQ(h.cpu.stk(1), s32(0xc0040000u));
 	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	// CDSF narrows the double in the top two words to one single word;
+	// CSDF widens it back. -2.5 is exact in both formats (ERS sheet 88).
+	CHECK(h.one(f3(030)) == exec_trap::none);          // CDSF
+	CHECK_EQ(h.cpu.stk(0), s32(0xc0200000u));          // -2.5f
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	CHECK(h.one(f3(031)) == exec_trap::none);          // CSDF
+	CHECK_EQ(h.cpu.stk(1), s32(0xc0040000u));          // -2.5 high word
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	// The zero CSDF pushes is the low word, so a positive value still
+	// reports CCG and narrows back to exactly what it started as.
+	h.cpu.pop(); h.cpu.pop();
+	h.cpu.push(0x40a00000);                            // 5.0f
+	CHECK(h.one(f3(031)) == exec_trap::none);          // CSDF
+	CHECK_EQ(h.cpu.stk(1), 0x40140000);                // 5.0 high word
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	CHECK(h.one(f3(030)) == exec_trap::none);          // CDSF
+	CHECK_EQ(h.cpu.stk(0), s32(0x40a00000u));
 }
 
 static void test_new_groups()
@@ -1336,6 +1358,366 @@ static void test_string_group()
 	}
 }
 
+// SVAL and the descriptor checks every string instruction is specified in
+// terms of (ERS sheet 107). A descriptor is four stack words -- maximum
+// length, pointer, index of the first byte of interest, count of bytes of
+// interest -- and the string keeps its current length in the word the
+// pointer addresses. Here the pointer is a local program pointer, which is
+// the CIR(29:1)=0 case, so no data segment table is needed.
+static void test_string_descriptors()
+{
+	std::printf("string descriptors (SVAL)\n");
+	harness h;
+
+	constexpr u32 SOFF = 0x800;                        // PB-relative
+	const u32 sadr = h.cpu.r.pb + SOFF;
+	const u32 base = h.cpu.r.s;
+
+	auto descriptor = [&](s32 maxlen, u32 ptr, s32 first, s32 len) {
+		h.cpu.r.s = base;
+		h.cpu.push(u32(maxlen));
+		h.cpu.push(ptr);
+		h.cpu.push(u32(first));
+		h.cpu.push(u32(len));
+	};
+
+	h.mem.write32(sadr, 10);                           // current length
+
+	// Operand bit 4 is CIR(27:1), which asks for the actual length to be
+	// written back over the count of bytes of interest.
+	constexpr u8 RET = 0x10;
+
+	// A wholly valid descriptor passes and reports the length unchanged.
+	descriptor(20, SOFF, 1, 5);
+	CHECK(h.one(f2(026, RET)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 5);
+
+	// The two low bits of the pointer are forced to zero in place.
+	descriptor(20, SOFF | 3, 1, 5);
+	CHECK(h.one(f2(026, RET)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(2), s32(SOFF));
+
+	// A negative count means "as far as the string goes", but only when
+	// bit 3 of the instruction permits it: 10 - 1 + 1 = 10 bytes remain.
+	descriptor(20, SOFF, 1, -1);
+	CHECK(h.one(f2(026, RET, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 10);
+
+	// The count is clamped to what is left rather than what was asked
+	// for: from byte 8 of a ten-byte string only three bytes remain.
+	descriptor(20, SOFF, 8, 10);
+	CHECK(h.one(f2(026, RET)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 3);
+
+	// Without the option bit the descriptor is checked but left alone.
+	descriptor(20, SOFF, 8, 10);
+	CHECK(h.one(f2(026, 0)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 10);
+
+	// Each check in turn, by the error numbers of section 5.2.2.
+	struct { s32 maxlen, first, len, curlen; const char *why; } bad[] = {
+		{ -1, 1,  5, 10, "1: negative maximum length" },
+		{ 20, 1, -1, 10, "2: unexpectedly negative count" },
+		{ 20, 0,  5, 10, "3: first byte index not positive" },
+		{ 20, 1, 25, 10, "4: substring runs past the maximum length" },
+		{ 20, 1,  5, -1, "5: negative current length" },
+		{ 20, 1,  5, 25, "6: current length exceeds the maximum" },
+		{ 20, 8,  5,  3, "7: first byte beyond the current string" },
+	};
+	for (const auto &c : bad)
+	{
+		h.mem.write32(sadr, u32(c.curlen));
+		descriptor(c.maxlen, SOFF, c.first, c.len);
+		CHECK(h.one(f2(026, RET)) == exec_trap::trapped);
+		CHECK(h.cpu.last_trap() == trap_cause::string_trap);
+	}
+	h.mem.write32(sadr, 10);
+
+	// With a handler installed the trap carries a parameter word: the
+	// error number in bits 12-15, the source/target flag in bit 11 and
+	// the instruction itself in bits 16-31 (ERS sheet 47).
+	const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);
+	h.mem.write32(CST + 16 + 4, HLEN - 1);
+	h.mem.write32(CST + 16 + 8, HB);
+	h.mem.write32(HB + (HLEN - 1) - 3 - 4 * 005, 0x100);   // string trap
+	h.cpu.enable_traps(true);
+
+	const u16 insn = f2(026, RET);
+	descriptor(-1, SOFF, 1, 5);                        // error 1, source
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::string_trap);
+	CHECK_EQ(h.cpu.stk(0), s32((1u << 16) | insn));
+}
+
+// SLD (ERS sheet 108): the descriptor on top of the stack is replaced by a
+// string temp -- the substring's bytes, a size word, and a descriptor naming
+// them -- built where the old descriptor stood.
+static void test_string_load()
+{
+	std::printf("string load (SLD)\n");
+	harness h;
+
+	constexpr u32 SOFF = 0x800;
+	const u32 sadr = h.cpu.r.pb + SOFF;
+
+	h.mem.write32(sadr, 10);                           // current length
+	for (int i = 0; i < 10; i++)
+		h.mem.write8(sadr + 4 + u32(i), u8('A' + i));  // "ABCDEFGHIJ"
+
+	const u32 base = h.cpu.r.s;
+	h.cpu.push(20);                                    // maximum length
+	h.cpu.push(SOFF);                                  // pointer
+	h.cpu.push(3);                                     // first byte of interest
+	h.cpu.push(4);                                     // bytes of interest
+
+	const u32 tempadr = h.cpu.r.s - 15;
+	CHECK(h.one(f2(025, 0)) == exec_trap::none);
+
+	// One word of length and one holding the four bytes.
+	CHECK_EQ(h.cpu.r.s, s32(tempadr + 2 * 4 + 19));
+
+	CHECK_EQ(h.mem.read32(tempadr), 4);                // the temp's length
+	CHECK_EQ(h.mem.read8(tempadr + 4), 'C');
+	CHECK_EQ(h.mem.read8(tempadr + 5), 'D');
+	CHECK_EQ(h.mem.read8(tempadr + 6), 'E');
+	CHECK_EQ(h.mem.read8(tempadr + 7), 'F');
+
+	// Above the data sit the size word and a descriptor over the whole of
+	// it: maximum length 4, an SB-relative pointer, first byte 1, and a
+	// negative count meaning "as far as it goes".
+	CHECK_EQ(h.cpu.stk(4), 2);
+	CHECK_EQ(h.cpu.stk(3), 4);
+	CHECK_EQ(h.cpu.stk(2), s32((3u << 30) | (tempadr - h.cpu.r.sb)));
+	CHECK_EQ(h.cpu.stk(1), 1);
+	CHECK_EQ(h.cpu.stk(0), -1);
+
+	// The source string is not modified.
+	CHECK_EQ(h.mem.read32(sadr), 10);
+	CHECK_EQ(h.mem.read8(sadr + 4), 'A');
+
+	// A negative count loads to the end: from byte 8 of ten, three bytes.
+	h.cpu.r.s = base;
+	h.cpu.push(20); h.cpu.push(SOFF); h.cpu.push(8); h.cpu.push(u32(-1));
+	const u32 t2 = h.cpu.r.s - 15;
+	CHECK(h.one(f2(025, 0, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(t2), 3);
+	CHECK_EQ(h.mem.read8(t2 + 4), 'H');
+	CHECK_EQ(h.mem.read8(t2 + 6), 'J');
+
+	// An invalid descriptor is rejected before anything is built.
+	h.cpu.r.s = base;
+	h.cpu.push(20); h.cpu.push(SOFF); h.cpu.push(0); h.cpu.push(4);
+	CHECK(h.one(f2(025, 0)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::string_trap);
+}
+
+// SAS (ERS sheets 109-111). Both strings live in the global data segment,
+// so both descriptors carry data segment pointers.
+static void test_string_assign()
+{
+	std::printf("string assign (SAS)\n");
+	harness h;
+
+	constexpr u32 SRC = 0x100, TGT = 0x200;
+	const u32 sadr = h.cpu.r.db + SRC, tadr = h.cpu.r.db + TGT;
+	auto dsptr = [](u32 off) { return (2u << 30) | off; };
+
+	// The target's own current length matters: a first byte of interest
+	// must land within the target string or just past its end.
+	auto setup = [&](s32 tcurlen) {
+		const char *w = "HELLO";
+		h.mem.write32(sadr, 5);
+		for (int i = 0; i < 5; i++)
+			h.mem.write8(sadr + 4 + u32(i), u8(w[i]));
+		h.mem.write32(tadr, u32(tcurlen));
+		for (int i = 0; i < 12; i++)
+			h.mem.write8(tadr + 4 + u32(i), '.');
+	};
+
+	const u32 base = h.cpu.r.s;
+	auto descriptors = [&](u32 tptr, s32 tfirst, s32 tlen,
+			s32 sfirst, s32 slen) {
+		h.cpu.r.s = base;
+		h.cpu.push(10); h.cpu.push(tptr);
+		h.cpu.push(u32(tfirst)); h.cpu.push(u32(tlen));
+		h.cpu.push(10); h.cpu.push(dsptr(SRC));
+		h.cpu.push(u32(sfirst)); h.cpu.push(u32(slen));
+	};
+
+	// Bit 2 says the source pointer is a data segment pointer, bit 1 that
+	// the target's count of bytes of interest may be negative.
+	constexpr u8 OP = 0x6;
+
+	// A whole-string assignment into an empty target.
+	setup(0);
+	descriptors(dsptr(TGT), 1, -1, 1, 5);
+	CHECK(h.one(f2(030, OP)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.s, s32(base));                 // both descriptors gone
+	CHECK_EQ(h.mem.read32(tadr), 5);                // the new current length
+	CHECK_EQ(h.mem.read8(tadr + 4), 'H');
+	CHECK_EQ(h.mem.read8(tadr + 8), 'O');
+	CHECK_EQ(h.mem.read8(tadr + 9), '.');           // nothing written beyond
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);        // moved forwards
+
+	// A substring of the source into a substring of the target: "ELL"
+	// starting at the target's third byte.
+	setup(5);
+	descriptors(dsptr(TGT), 3, -1, 2, 3);
+	CHECK(h.one(f2(030, OP)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(tadr), 5);                // 3 + 3 - 1
+	CHECK_EQ(h.mem.read8(tadr + 6), 'E');
+	CHECK_EQ(h.mem.read8(tadr + 7), 'L');
+	CHECK_EQ(h.mem.read8(tadr + 8), 'L');
+
+	// With bit 3 set and a target substring longer than the source, the
+	// parameters for a following FILB are left on the stack: the blank
+	// itself, where to start, and how many.
+	setup(5);
+	descriptors(dsptr(TGT), 1, 8, 1, 5);
+	CHECK(h.one(f2(030, OP | 8)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.s, s32(base + 12));
+	CHECK_EQ(h.cpu.stk(2), 32);
+	CHECK_EQ(h.cpu.stk(1), s32(dsptr(TGT + 9)));
+	CHECK_EQ(h.cpu.stk(0), 3);
+	CHECK_EQ(h.mem.read32(tadr), 8);                // 1 + 8 - 1
+
+	// Assigning a string over a later part of itself has to run backwards,
+	// and says so in the condition code. "HEL" onto bytes 3-5 of "HELLO"
+	// leaves "HEHEL".
+	setup(5);
+	descriptors(dsptr(SRC), 3, 3, 1, 3);
+	CHECK(h.one(f2(030, OP)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	CHECK_EQ(h.mem.read8(sadr + 4), 'H');
+	CHECK_EQ(h.mem.read8(sadr + 5), 'E');
+	CHECK_EQ(h.mem.read8(sadr + 6), 'H');
+	CHECK_EQ(h.mem.read8(sadr + 7), 'E');
+	CHECK_EQ(h.mem.read8(sadr + 8), 'L');
+
+	// A source longer than a target that says how long it is: error 9,
+	// raised against the target.
+	setup(8);
+	descriptors(dsptr(TGT), 9, -1, 1, 5);           // 9 + 5 - 1 > 10
+	CHECK(h.one(f2(030, OP)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::string_trap);
+}
+
+// SCON (ERS sheets 111-112). Built on a real temp: SLD makes one, then SCON
+// appends a substring of the same source string to it.
+static void test_string_concatenate()
+{
+	std::printf("string concatenate (SCON)\n");
+	harness h;
+
+	constexpr u32 SRC = 0x100;
+	const u32 sadr = h.cpu.r.db + SRC;
+	auto dsptr = [](u32 off) { return (2u << 30) | off; };
+
+	h.mem.write32(sadr, 20);
+	for (int i = 0; i < 20; i++)
+		h.mem.write8(sadr + 4 + u32(i), u8('A' + i));   // "ABC...T"
+
+	// A temp holding the whole of it.
+	h.cpu.push(20); h.cpu.push(dsptr(SRC)); h.cpu.push(1); h.cpu.push(20);
+	const u32 tempadr = h.cpu.r.s - 15;
+	CHECK(h.one(f2(025, 4)) == exec_trap::none);        // SLD
+	CHECK_EQ(h.mem.read32(tempadr), 20);
+
+	// A source descriptor for "ABC" goes on top; the temp's own descriptor
+	// is then the four words below it, which is the CIR(31:1)=0 case.
+	h.cpu.push(20); h.cpu.push(dsptr(SRC)); h.cpu.push(1); h.cpu.push(3);
+	const u32 s_before = h.cpu.r.s;
+
+	CHECK(h.one(f2(027, 6)) == exec_trap::none);        // SCON
+
+	// The result fitted in the space the operands occupied, so S is
+	// unchanged and the temp simply claims all of it.
+	CHECK_EQ(h.cpu.r.s, s32(s_before));
+	CHECK_EQ(h.mem.read32(tempadr), 23);                // 20 + 3
+
+	// The original twenty bytes, then the three appended ones.
+	CHECK_EQ(h.mem.read8(tempadr + 4), 'A');
+	CHECK_EQ(h.mem.read8(tempadr + 23), 'T');
+	CHECK_EQ(h.mem.read8(tempadr + 24), 'A');
+	CHECK_EQ(h.mem.read8(tempadr + 25), 'B');
+	CHECK_EQ(h.mem.read8(tempadr + 26), 'C');
+
+	// And a descriptor over the whole of the new temp.
+	CHECK_EQ(h.cpu.stk(3), 23);
+	CHECK_EQ(h.cpu.stk(2), s32((3u << 30) | (tempadr - h.cpu.r.sb)));
+	CHECK_EQ(h.cpu.stk(1), 1);
+	CHECK_EQ(h.cpu.stk(0), -1);
+
+	// The source string is not modified.
+	CHECK_EQ(h.mem.read32(sadr), 20);
+	CHECK_EQ(h.mem.read8(sadr + 4), 'A');
+}
+
+// CPEP (ERS sheet 120): stack and global pointers become external data
+// segment pointers, using the segment numbers held in the current TCB.
+static void test_cpep()
+{
+	std::printf("convert pointer to external (CPEP)\n");
+	harness h;
+
+	constexpr u32 TCB = 0x600, STACK_SEG = 7, GLOBAL_SEG = 9;
+	constexpr u32 SEG_BASE = 0x3000;               // where the stack segment starts
+
+	// The dedicated block for this CPU points at the TCB, whose word 2
+	// carries the stack segment number at (4:12) and the global at (20:12).
+	// Bit 0 of each twelve-bit field selects the user table; left clear
+	// here, so both name system DST entries.
+	h.mem.write32(16 * ers32::get(h.cpu.r.mask, 3, 3) + 4, TCB);
+	h.mem.write32(TCB + 8,
+			ers32::set(ers32::set(0, 4, 12, STACK_SEG), 20, 12, GLOBAL_SEG));
+
+	// The stack segment's DST entry, so SB can be rebased onto it.
+	h.mem.write32(dst_walker::SYSTEM_DST_BASE + 16 * STACK_SEG + 8, SEG_BASE);
+
+	// A stack pointer at SB+0x40 becomes an external pointer whose offset
+	// is measured from the segment base instead: (SB - 0x3000) + 0x40.
+	h.cpu.push((3u << 30) | 0x40);
+	CHECK(h.one(f4(067)) == exec_trap::none);
+	u32 v = h.cpu.stk(0);
+	CHECK_EQ(ers32::get(v, 0, 1), 0);              // now external
+	CHECK_EQ(ers32::get(v, 1, 12), STACK_SEG);
+	CHECK_EQ(ers32::get(v, 13, 19), h.cpu.r.sb - SEG_BASE + 0x40);
+
+	// A global pointer keeps its offset and takes the global segment.
+	h.cpu.pop();
+	h.cpu.push((2u << 30) | 0x80);
+	CHECK(h.one(f4(067)) == exec_trap::none);
+	v = h.cpu.stk(0);
+	CHECK_EQ(ers32::get(v, 0, 1), 0);
+	CHECK_EQ(ers32::get(v, 1, 12), GLOBAL_SEG);
+	CHECK_EQ(ers32::get(v, 13, 19), 0x80);
+
+	// With bit 3 set the index register is folded in first.
+	h.cpu.pop();
+	h.cpu.r.x = 0x10;
+	h.cpu.push((2u << 30) | 0x80);
+	CHECK(h.one(f4(067, true)) == exec_trap::none);
+	CHECK_EQ(ers32::get(h.cpu.stk(0), 13, 19), 0x90);
+
+	// An offset too large for the nineteen-bit field cannot be converted.
+	h.cpu.pop();
+	h.cpu.r.x = 0;
+	h.cpu.push((2u << 30) | (1u << 19));
+	CHECK(h.one(f4(067)) == exec_trap::pointer_conversion);
+
+	// An external pointer is left alone unless indexing is asked for.
+	h.cpu.pop();
+	const u32 ext = ers32::set(0, 13, 19, 0x30);
+	h.cpu.push(ext);
+	CHECK(h.one(f4(067)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(ext));
+	h.cpu.r.x = 4;
+	CHECK(h.one(f4(067, true)) == exec_trap::none);
+	CHECK_EQ(ers32::get(h.cpu.stk(0), 13, 19), 0x34);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1355,6 +1737,11 @@ int main()
 	test_traps();
 	test_system_group();
 	test_string_group();
+	test_string_descriptors();
+	test_string_load();
+	test_string_assign();
+	test_string_concatenate();
+	test_cpep();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

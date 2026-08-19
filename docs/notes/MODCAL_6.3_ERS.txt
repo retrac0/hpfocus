@@ -1,1 +1,4197 @@
-
+. Product Identification
+
+Product Naue: MODCAL
+Product Mnemonic: MODCAL
+Project Number: 6651-006L4
+Project Engineers:: Steve Saunders
+
+Chris Maitz _
+
+Ron Smith
+
+Jon Henderson :
+Project Manager: Jean Danver .
+Product Manager: Ann Tse |
+Product Assurance Engineer: Ray 'Ling‘_,. _
+Product Abstract: |
+
+MODCAL is: the systems programming; language for the Vision Computer
+
+Family (VCF).: It is based on-HP Standard Pascal. Features have been added
+to enablé high level systems programming.. ' MODCAL ‘will -be implementéd on
+two architectures in the. Businegs” Computer Group--Visiofi and the HP3000.
+THe HP3000 version will be used:tp write systems soffware,.primirily in the
+fddta-base and data comunications ares’that will beugorted to Vision.
+. Table of Contents )
+Version 6.3 ChangesS....ccoseeccecccsssssccasscscssssocssssosssansssscsossal
+Version 6.1 ChangeS.....coeceecevcsosoosscessssncsscssascssossnssssensassel
+Version 6.0 ChangesS....cceveeesssssncscssocasssscssssssasssonsncssssssasssl
+Version 5.0 ChangesS. ..c.cccveseececssscossesasscssscssssscscsonsssssssssnsesd
+TNETOAUCEION . ¢ e e e evsvnasoeessnsnssnsoccoasesssssssssssoscssasascsssassnesld
+NOTALAOM . < v e v eeevvoceoenceossnsnenosnasaasacsscasssascsaasccassassosssanesd
+A. HP MODCAL Standardized and Required Features .......ccceeeeeeccenees?
+1. HP Standard Pascal...ccceeececoccesovcorssossssssnsssscsscssscsancal
+, 2., MOQULES.ovoreeecennsesoosasesssssssssssssssssscsossasnssnsasanss
+a. Programs and ModuleS....ceeeeceressnroesnsscnssnnsoccscsavsees o
+D. PrOGIaMS...ccoeeresassecosenanncosssssnssscsosansssssccsasscssd
+c. The Program BloCK......eceesoeseccosososcissssssosssesssasessll
+A. MOAULES. ccvvveeosescsrsssscsonssassssssssssnasscsnsssssssssesell
+e. Libraries NOT IMPLEMENTED ..cccieesarecvsonscnccssncsnsssseld
+3. Try Recover Statement.....cceeeeeesesscssscesssssssseascsanesssslb
+a. Try Recover Structure.......eeeeeeeeseessscecesccsassassssseslb
+b. Try Recover SemanticsS......eeeeeeeessesceresnanssnssscesessssdb
+€. Escape(i).ceceerececrsnasececnceasenssccncscacsvsnsnsossassssd
+d. Escapecode: integer.....cceeeececrccccscsosssssvssssosancssesd]
+e. Error Code Assignment......ceecevevesescosecccccsosccsccnsanesl] '
+f. EXamMPle..coeeereccoassocsocossasocssscscsoseascsoscccsssssssssll
+L. Type COEYCIOM..ectirereecesseosacssssssssnssnsasssssssssesssssssld
+8. Syntax/Semantics....cieiiieiicriiteiiicrccsanaretssssocrsanssesld
+~ b. Compatibility Levels.....ccveveencneccnnnccossraccannnneeess 19
+C. EXaMPle..cseeeeerscrcasecssssssscssssssasecssssssssasssscssssll
+5. Type Transfer function ReOrd ......cccccevcrccecrccnsssccncesess3
+6. Procedural/Functional VariableS......eeceeeeeesscsoscccccssnsess2l
+‘a. Procedural VariableS....c.eeeecececssscscssssssssccsscnaneess2l ’
+1. Type ProcedUIe.....eeesesssssscsessscsasscsnnnsesonosesessll
+P I o % B R PP -2
+3. Procedural Type Operations Model.......ecieevenccscrsseess25
+b, EXBIMPLe..ccoeserncsssnscssessassssssssarsassssscscscsassessl)
+b. Functional VariableS...c.eeeeeeceersoccssssssssasscosssnesseslb
+: 1. Type FUNCEiON. .ccvureerurencercnnccossosnsnsnanennonanesse2b
+2. FCALL <cvvvueecocasasnaassansassssassscesssascscsssssssssslb
+3. Functional Type Operations Model.......ceeeevccovcccoossce]
+l, EXAMPLe..ceeeeooeoscossssoscosansssssssssssassscasascssssell
+* 7. Special Predefined FunctionsS.......cecvecctessnscscccssccecessss9
+B. SiZ@OL tveeceeescesasssososssassecstsssnsassssossssscsocsovecscld o
+Do AQAT «vveevrrvennesesnsenessnssssnnsnssssnsasscnssssassssesss30 |
+B. HP MODCAL Standardized and Adaptable .......cceceaveresacancansssaa3l
+C. HP MODCAL Standardized and NonAdaptable .....ccccvceceovocscvoceeesldl
+D. EXPerimental ....cococececssssssnssosssssssccssssacccscscssasosssssll
+1. Read Only Parameters.....ceceeessescsscoccscosaosroscsnsssscssseldl
+a. Read Only Parameter Definition.......cececveeincncneveesssaes33
+b. Read Only Parameter EXxample........eeeeeeeeeccscocsscacsssess3dld
+2. Any Variable Parameters NOT IMPLEMENTED ......ccccveecccccssse3D
+: a. Any Variable Parameter Definition.........evevienneeennnses.35
+b. Any Variable Parameter EXample........ceveceesscecncsasccsess36
+3. Schema Arrays ~NOT IMPLEMENTED .......cveeeecceroccnnnosaossess3B
+a. Schema Array Definition............,.........................38
+b. Formal Discriminant Part.....cceeseesseeesessacoccccascnceess39
+' c. Discriminated SChemMa....cveseseecesceccsconcsoasioscacessses U0 ,
+d. Schema Discriminants...eeeeveceeesscoocsscscsssscsscssssssveoll
+e. Schema Array ParameterS.......cceeeecescessessosecssssncnnsss oi2
+f. Read Only ParametersS....ceeeececsssssssssscsssssassscssssans s lt3
+g. Discriminated Schema ACCeSS......cevveeeenerrscssnsacanassss b3
+_ . EXGMPLe. e, eeceereeesssssssacsssssssosncsssassssncssensasess b :
+B, ObDJECtS.eeeeeeeenencesescsosssssssssccasssssasssssssscssssssons i
+8. INtrodUCtion...veeeeeeececeoeoscaccsssavosocscasoassansassessliB
+b. Syntax AAAitionS.....ceececessevosssssacsosssessssascscsssessd9
+c. Object/Offset Model.....coveveoeonvenonsscncesscncaneancsosesdl
+d. Semantic Definition..cvvieetrecertsosesscccssccsscescsssscsssesed _
+" e. Object Manipulation...vcceesscecesoscocscnsssorcesansonsesasslh
+f. Pointer Arithmetic....cccceeseeevcccccccsssscsssnsasasccasessdd
+5, Crunch Packing...eceeeeeeesossssssssonsesssssssssssssnsscacenassdB
+6. Move R_to L & Move_L_to_R Predefined Procedures.........sssse...60
+T. XCall Mechanism. ..eeeeeeeeeeeeeeasconcscssccosssssosasssscssssssb3
+8. BACKEIOUNA. cceereerooosssascssarssssasssssssssssecssnsnseeessb3
+bD. Definition..ceeeeeeeeecrcsesssscsassscsscsasscssssssssssssssed3
+c. Supporting Definitions....cceceieresccessscsosanacsossosesss bl
+d. XCall Example (HP3000)....ccccecesciovaossccssnscsssascssosssb5
+8. Multiple Heaps NOT IMPLEMENTED ....ccocovesoccsnsnnnscascossssbT
+E. Standardized MOQULES «....ceveeveeenecenccasscccscssasssscssnssess b8
+a. HP3000 Foundation.....eeeeveceessssscescsoscscccocsassssssessb9 '
+b. Vision Foundation.....ceeeeeeeesecseoescsscescescsscssasnssesd9
+2. Assembly LangUage...ccoceeersecssososocosasocsssssscsassaarssassld
+a. HP3000 Predefined ProceduUresS.....ccessececcacccincasscnssonssild
+: b. Vision Predefined Procedures......cceoceeoescsoscscvasessssesfd
+Appendix A: Options and Directives ......ccoieeveaceccsicacenascenenssTh
+1. PROCEDURE/FUNCTION DEFINITION OPTIONS. . ceeereneronasoansnesesesTl
+B, OPTION INliNe....ceeeeoceeecccsssoarassscasssssssssssssnnsaseld
+D. OPTION GateWay..oceeesecssscscoscnssssassssssssscassssscscnceld
+c. OPTION Extensible Gateway....oeesvesecsseasanccsssasscsscnsssTb
+d. OPTION Interrupt PaImS.....cceceeescecsossensosssscnsosonsees]B ’
+©. OPTION Default ParmS.....ceeeeeescnsesnsssionsossssonssssvesesT
+£. OPTION Unresolved....ccceeeeescescenssosocssacessscassasscsanall
+g. OPTION Uncheckable ANYVAR NOT IMPLEMENTED ...cceecsnesnceesll -
+h. HaveExtension and HaveOptVarParm Functions.......ceveveveeee T
+i. Definition Option EXample.....eeeeecoessnscscosscccssassesesslB
+2. PROCEDURE/FUNCTION DIRECTIVES...:c0eosvesscsscsscsssssssscsnscesld ‘
+B. EXteTrNal..oveeeceoeoasesosssscsssacsscsssssosssssssssssasscanseld
+b. FOrward..coeeeescecvosesssasscsscssosansssosassssssssanessnsssld
+C. INELiNSiC.seeeeeeevencecenosacecosssssssessosscssscnssansssss80
+3. COMPILER OPTIONS . ¢ et evevcvsonssasascsessssosacsesssscscsosssnse Ol
+8. ADC_VersioN....eeeeeeessocescesenscnsosssscsssossessasssscess85
+D. AlifS.eeesocecesesoesessssansisasassasssssscscssscscsssssnsss 8D
+o ANSi.eeeeeeoaocosensosssssssssasesesisssisssssssasacsssscasss8Y
+d. Assert_ﬁalt.....;.............;.........‘;........;........;.85
+e. Begin Change NOT IMPLEMENTED PSP PR - 13
+f. Call_Privilege........,......g...............;........;....;.85
+g. Change_Info_Width  NOT IMPLEMENTED teecsecasesesesssesseces 85
+. h. Check_Actual_Parm..................;...................K.....BS :
+N Check_rormal_?arm.......................................;..;.86
+R oY L PR -
+k. Code OffSetB...oveececacncccccsnoncssnansaseciosnsoannaccssss86
+1. CopyTight.cceeeerecresoeeoscnossssasomassssscsosssascoassnssssBb
+m. Crunch Packing NOT IMPLEMENTED .......cccccteveenncccasss .86
+n. Dynamic_Side Effects_ Ok NOT IMPLEMENTED .....cccvoeeevess..86 N
+v BlS@.creeeroosesonarocecsscsosscoscsssosssssisonsssnsoseacceseB
+T i ¢ SRR )
+q. End_Change ~ NOT IMPLEMENTED ....cocoveiesiocvocnnoccaannneesdT
+T. Exec Privilege..ccceeeeessersoscsesscsoiossrecoesossoanssnaeeedT
+B. EXteInal..ccccerveerennseonsonneconneabivusiiobosesesessessssesBT
+Te FONB.eeeesroeoescoscersonsosssasscsnsscscossssasansssosenscseeeBT :
+1 T 3 - - g P - X
+V. Heap COMPACt...cveereressnatoscooaresossanssossosnsssccasesss8T :
+W. Heap Dispose....cereeeeeessseoerosescanesssonsccossassssanes 88
+Y. Include....ciirinnieiierannsersacessocscasassocasonsosnsasesss 88
+2. Index Checking NOT IMPLEMENTED .......cccceenoancnivesicss 88
+aa. Initial Exec Probe NOT IMPLEMENTED 'v:o.ccicevvsvivsocosses 88
+8D, LineS...civueesrocoeecessesroccscscosnonesraimnovesssssosessesBS
+BC. List..oiiieeeeiieineieenenneciosonninnesanaincecsiioncesess 88
+ad. List_Code..uiiunerecenereinenssncsssrasenssnioncssanosssssesBd
+ae. Multiple Heaps NOT IMPLEMENTED ......cccnsevvevevocnceess.89
+af. Object Definition NOT IMPLEMENTED .:...vesseeeccoccncesss 89
+‘ag. Object_Selection. (will be implemented) ...................89
+ah. Open Scope Checking NOT IMPLEMENTED ......\cecseeeeeees...89
+ai. Option Logging NOT IMPLEMENTED ....cccoceevvacccvencocscss.89 :
+8. PAB@.cererrrecscsesrsssssrasssnscrssssecrssssssscscssessacsss89
+8K, PATtial EVAL..,eeceoonnssneancansseannsnsinioneacacsssonseasBd
+AL, POPresesvesssesssesnsosssssnnsnssocssssssssssiosssssossossssB89
+1. Compiler Options Unaffected DY POP...s.eeeiiossssnonsionss 90 ‘
+am. Private ProC.....ccceeeeeeceenenccectaocsosiniocescsasanasss90
+an. Probe Insertion  NOT IMPLEMENTED ....... celddeaneees veseasss90 '
+ao. Probe_Resolution NOT IMPLEMENTED: {..iiiiciteceecesosossesa90
+8P. PuSh..ciiiiienrcennnentnanieernnsreevidiitaeiiaeerenesacioneas90
+1. Compiler Options Unaffected by Push..iiii.ifieseecesasns, 91
+8Q. RANBE...ciiuiiirieiinetennenrennnnesa@atuoivesionessenensesa9l
+1. Compiler Options Implied by $Range ON$ii...eseeesneeaaves.91
+2. Compiler Options Implied by $Range OFF$....:viceeeessevis. 91
+ar. Reference Checking (will be implemented) viveeveveceones..91
+as. Schema_Arrays  NOT IMPLEMENTED .vevoeroiivaioconnnancanesassd2 ‘
+at. Schema_Checking. NOT IMPLEMENTED ....i4evieboeeococsanas®esd2
+au. Search  NOT IMPLEMENTED ....... ieceossssnsioneecenasensassd2
+V. SEEMENT ..ot ersercsocessssvcncoceissssesssssocsonsassionssssI2 o
+BW. Set.cieecercosrsssnsssevensassee -‘._‘Q“.".- @_}:q.;y‘. R N Y .92 L
+ax. SKip TeXt..voiieorienasiosrnascesssinernvonerossossesseasses92
+BY. SPLINtr .. icteuiiiarrasoenrassesaissosaismasssssoensesoseisaised?
+az. Standard Level......ceeeerseaacssadviiaasiiertosaccaassaanasa93
+ba. Static_Side Effects Ok- NOT IMPLEMENTED .......eccceewsvs2.93
+bb. Stats NOT IMPLEMENTED .u\.oesevisssoivosionsvianssnansevesd3
+be. Symdebug  NOT IMPLEMENTED ......isi%esssvessceesecnesasesss93
+DA, SUDPTOGTAM. s coeeerressstosseosnaissssasosissssesscseccsessesd3
+be. Subrange Checking NOT IMPLEMENTED ........ co e Rk
+13 R = 3 L U PP P < X |
+bg. Tabulate Change Info  NOT IMPLEMENTED ...coivececeenacieessa93
+bh. Tag_Checking ' (will be implemented) .....cevievivecieioeess93
+bi. Target Machine . ...vueevereeaiostainnss vorogossssssanssoee G _
+o bj. Title...cineioaeinvinniess P Y TR SeE el e e e e nie .94
+: bK. Type_COrciOon....vsseressesssvivhessinaneniossnetorioneness Ol
+bl. Undefined Parm Checking = NOT IMPLEMENTED ...:..ilei.eescoess 9l
+bn. Undefined Var_Checking - NOT- IMPLEMENTED .i..ie.ivétessioss .94
+Jbp. XCall Machin®.iy.sviveerseassnvaiasosasisioarsesobiiosions Ol
+Appendix B: Data Types snd Representations .......ie.iesiseinissoseces95. ‘
+1. MODCAL Data TYPSS.iveeseesscescsatoososennneiiiovorababysensonssds
+2. MODCAL Data RepreéSentation.......v:sseeossesssnioesasisipenescs 95
+ “a. Location INfOrmation.....ieeeecivasesioesassansoessinsoensess96 »
+b. Nonimbedded Descriptor: INfOrmMatibmiv..i ieecisssoiossssness 96 -
+¢. Active Component Position INformationi.ii.v.e.eciissuseassss:96
+d. Valid Component ‘ount. Informatiofss. eviiisvisaiinisibrossnesi96:,
+: e. Value Bit VeCtoriceecerenresboesnanassoiiosnesninsasniesesysisdb. .
+f. Referenced Item Reference BAFt.....:viceiiovivosvnevisisessn:96 00
+Appendix C: Type Compatibility ...ei..voetibieiiiocioayssonaesisoinesn 9T
+1. Pascal Compatible Type Compatibilities. i iiiesveeieciuieivane’sssdT
+2. Pascal. Incompatible Type Compat¥bilities. ivoiiioeeneerinansns i98
+~ _ Appendix D: MODCAL REEerved WOrds ...7 . cesiisnsssssisnssosssonissss100
+1,.ANSI Standard ‘Pascal Reserved Words...v.idiisresiossosssacsess.100 .
+'2:. HP Standard Pastal ‘Additions...o . Siiiiieesiiiiiidaceeaives...100
+‘3. HP Standard MODCAL AdQitions..:.vesiseesscesiseseioecencidasess100
+4. BCG Experimerital MODCAL Additions......iisvsiseasssonesnncesse.100
+.
+' A Version §_._§.‘:_‘Changes ' |
+Version 6.3 of the MODCAL ERS contains a number of cha;iges. ‘_:to“‘co,nt,ent_ ,
+and formatting. A summary of the differences is given below:
+- Corrected Module Qualification syntax. ’ .
+- Marked several features as NOT IMPLEMENTED.
+- Correcfed assignment mechaniém for Procedural variables.
+- Extended the definition of Sizeof. o
+- Made a separate section for READONLY. |
+| - Added a section for ANYVAR.
+- Added Object/Offset model diagram. )
+- Added an example of XCaZZ. |
+- Updated predefined assembly instruction for Vision found;fion -
+module. ~ .
+- Added $PRIVATE_PROCE OFF$ requirement to OPTION Inline. |
+- Added OPTION Uncheckable ANYVAR. o
+- Modified OPTION Extensible_Gateway to work on the 3000. -
+- Added tables of permitted Definition Option / Directive
+combinations. ' , kN :
+- Added $SET, $IF, $ELSE, and $ENDIF compiler opiions. .
+- Added several missing Pasca1/3000 compiler options.
+- Expanded the descriptions of $PUSH$ and $POPS$.
+- Added new reserved word ANYVAR - -
+- Changes are shown in a BOLDEI_( type face, _
+- Features that will not be implemented soon are shown in a smaller type face; ,
+' Version 6.1 Changes . |
+Version 6.1 of the MODCAL ERS contains the XCall Mecha.nism. |
+4 ' Version 6.0 'Cha.ngés . |
+Version 6.0 of the MODCAL ERS contains the changes made that were,’
+reflected in the Delta ERS (May 19). A summary of the differences is given .
+below: , ’ , _
+- Try recover statememt and Escape. function are not permitted in code
+'~ that will execute on the ICS. ‘ .
+- Variable type coercion is permitted only for actual para.metegs:_ .
+- The grammar for object/offsets was changed. |
+- Predefined procedure BuildPointer was added
+- Predefined function CurrentObject was added. A
+- Predefined function GetObjectSize was added.
+- Predefined procedure TestDown was changed to a Boolean function.
+- Procedure definition options (Gateway, Extensible Gateway, Inline,
+Default Parms, Interrupt_Parms and Unresolved) were added. T
+- Predefined functions HaveExtension and HaveOptVarParm were added.
+- The size of crunched structures is temporarily limited to 2048 words
+(32 k-bits) or less. o S
+o Version 5.0 Changes
+Version 5.0 of the MODCAL ERS contains many significant changes and
+additions over versions 3.0 and 4.0 (both of these versions were very
+similar in-content). The differences in the order they appear in version
+5.0 are:
+- The syntax notation was changed to use regular expressions. ‘
+- Definition module feature was added. ' | '
+- Export qualifiers were added. ' . -
+- Escape and EscapeCode definitions were refined. '
+- - Type coercion definition was rewrittén. ' | ” '
+' - Variable type coercion was added.
+- ReOrd function was added. S - ,
+- Procedural type and Call definitions were refined. o ’
+- Functional type and FCall definitions were added. '
+- Sizeof and Addr functions were added.
+- Schema array féature ‘de_finifions were refiﬁed. _ '
+- Withobject syntax was extencied.
+- Predefined object procedure definitions were refingd.
+- Stack function was added. : ' » ‘
+- Predefined pointer arithmetic procedure/function definitions were o
+refingd. ' ' :
+- OffsetPart and ObjectPart functions were added.
+- Crunch packing definition was rewritten. ‘
+- Move R to_L and Move_L_to_R procedures were added. | :
+- Multiple heaps definition was removed. |
+- Portability foundation definitions were refined.
+- Assembly language predefined procedures/functions were added.
+- Definition option explanations were added. ‘
+- Unresolved definition option was added. ‘ '
+- Inline and Split directive stuff was deleted. '
+- Directive explanations were refined. ' ‘ |
+" - Compiler option explanations were added. , k
+- Data type / data representation matrix was added. v ‘ ‘
+- Data representation explanations were added.
+- Type compatibilit&»definitions were refined. |
+- - Reserved word lists were added. : ‘
+Introduction
+
+The original Pascal programming language is described in the
+Pascal User Manual and Report by Jensen and Wirth. Three of the principal
+design goals of the Pascal language were:
+
+1) The language should be suitable for teaching the concepts of struc-’
+tured programming, ‘
+
+2) It should be possible to construct simple, efficient and portable
+compilers for the language, and,
+
+3) The 1language should be type-safe and allow compile-time <type
+checking. -
+
+These design goals were essentially met; however they resulted in
+Pascal being based on a very simple, restricted machine model. The
+Pascal virtual machine consists of a program code area, a stack area for
+local and global variables, and a heap area for dynamically allocated
+
+: data. This machine model does not give the programmer access to the
+full power of the underlying computer architecture. For example, within '
+Pascal there is no way of storing and accessing variables in HP3000
+extra data segments or Vision objects.
+
+This is not surprising, since Pascal was never intended to be a
+systems programming language. It is, however, quite feasible to use
+Pascal as a basis for a systems programming language. Mesa and Ada are two
+prime examples of Pascal-based systems programming languages. The main
+sacrifice in converting Pascal to systems programming use is the loss of
+full type-safety.
+
+This document describes a set of extensions to HP Standard Pascal that
+enables it to be useful for systems programming work such as operating
+systems, data bases, and data communications. This extended version of
+Pascal is called MODCAL. '
+
+MODCAL is an acronym for Modular Pascal. Hence, one of its main fea- .
+tures is a module facility, allowing for separate compilation, encapsula-
+-tion, and libraries.
+
+In MODCAL heavy emphasis is placed on facilitating the construc- ‘
+tion of machine-independent programs, while not disallowing access to
+low-level machine features where necessary. This is done through such fea-
+tures as type coercion (interpreting data as a different type than it is
+declared), Sizeof and Addr functions and procedure variables.
+
+A Hewlett Packard Corporate Standard exists for MODCAL. This document ‘
+is organized to serve as a basis for the corporate standard. The table of
+contents reflect the main elements of this standard, required, adaptable, »
+nonadaptable and experimental.
+
+Required is a list of extensions to HP Standard Pascal which must be
+in all Modcals in the coporation. Adaptable are a list of extensions which
+appear in some existing Modcals which may not be possible or advisable to
+4
+
+|
+put in another. However, the extension is easily adapted to another :
+extension in the other MODCAL. Nonadaptable are extensions to HP Standard
+Pascal which are in an existing MODCAL today, but is so machine dependent
+
+that using it would make porting very difficult. Experimental features are )
+those agreed to be desirable. However, they have not yet been implemented
+
+or tested by an existing MODCAL.
+
+BCG MODCAL for the HP3000 and VCF contains some experimental features
+designed to allow the development of system code on the HP3000 that is of ,
+acceptable efficiency and transportable to VCF. There is support for the
+notion of an “object", which is found on HP3000, VCF, and Dawn architec-
+tures. Crunch packing allows data structures to be defined which will have
+the same bit offsets, no matter what computer the data was transfered to.
+Schema Array types was designed to allow a type safe way of passing, al-
+locating and slicing different sized arrays.
+
+5
+" Notation E : S |
+
+Notation ) a
+
+The syntax of the extensions are described by using a grammar notation
+with regular expressions.
+
+Terminal symbols are distinguished from other symbols by surrounding
+quotes, e.g. ’if’. Nonterminals are represented by standard identifiers (a
+letter followed by zero or more letters, digits, or underscores) enclosed
+in angle brackets (’< >’). The following are other meta symbols used in
+the notation:
+
+-> means the nonterminal on the left is replaced with the
+sequence of symbols on the right
+* means zero or more occurrence of what precedes it
++ means one or more occurrence of what precedes it.
+? means optional, zero or ome occurrence of what precedes it.
+| means alternative, either an occurrence of what precedes it
+or an occurrence of what follows it.
+list means one or more occurrence of what precedes it separated
+by an occurrence of what follows it
+() parentheses to change binding rules
+( juxtaposition) :
+: means concatenation
+Operator precedence hierarchy
+() v most binding
+?7,%,+,1list _next, left to right -
+(juxtaposition) next
+| least binding
+Examples:
+(a typical expression grammar)
+E->E’+ T F -> i’
+- T
+T ->T ' F ,
+->F .
+(The productions for a given nonterminal are collected together o
+and the left part is factored out.)
+) A -> ;a) ’b’*
+a, ab, abb, abbb, abbbb, ...
+A -> ’as ,b,'i' ’ca )
+abc, abbe, abbbe, abbbbe, ... : :
+A -> *a’ ’be’ list ’$’
+abc, abc$be, abefbedbe, ... ‘
+A -> ’a’ (’b’ l ’C,)? 9di _ .
+ad, abd, acd ' : A
+6 ‘
+. HP MODCAL
+A. HP MODCAL Standardized and Required Features
+1. HP Standard Pascai
+At the core of the MODCAL language is HP Standard Pascal. It makes
+
+up almost 90% of the language definition. HP Standard Pascal is not
+described in this document. A description can be found in the HP
+Standard Pascal document or the Pascal/3000 Reference Manual.
+
+. | 7
+Modules
+2. Modules ‘ ‘
+
+Note: Implementation of this feature requires segmenter changes.
+The extensions to Modules from HP Standard Pascal (Implement,
+Definition, Readonly, Hidden, Qualified) have been recently defined and
+are not yet implemented in any MODCAL. These features are subject to
+modification, especially if implementation difficulties arise.
+
+A module is a program fragment which can be compiled independently
+and later used to complete otherwise incomplete programs. A module
+usually defines some constants, data types and variables, and
+procedures which operate on these data. Such definitions are made ac-
+cessible to users of the module by its export declarations. The module
+may itself make use of other module definitions by importing the other
+modules.
+
+Additional Reserved Words ’
+
+MODULE | EXPORT | IMPORT | IMPLEMENT | DEFINITION |
+
+READONLY | HIDDEN | QUALIFIED 4
+
+a. Programs and Modules
+
+The source text input to a compiler (complete unit of compila-
+tion) may be a program or a list of modules. The input text is ter-
+minated by a period. ‘
+
+<compilation_unit>
+-> <program> °.°
+-> ( <module> list )
+
+A module.is a program fragment which can be compiled indepen-
+dently and later used to complete otherwise incomplete
+programs. An implementation may allow only a single module of
+input at a time, requiring multiple invocations of the com-
+piler to process several modules. It will probably be implemented
+this way in MODCAL/3000 and MODCAL/VCF cross compiler.
+
+b. Programs
+
+A MODCAL program is in form very similar to a  proce-
+dure declaration. It differs in its heading, and in that
+modules may be declared and imported in the declaration part of the
+program’s block. ,
+
+<program> ’
+-> <program heading> <program_block>
+8
+: _ Modules
+<program_heading> , )
+
+. =-> ’PROGRAM’ <identifier>
+
+( *(* <program_parameters> ')’ )? ’s?
+<program_parameters> '
+-> <identifier> list *,’
+
+' The identifier following the symbol program is the program name;
+it has no further significance inside the program. The program
+parameters denote entities that exist outside the program and
+through which the program communicates with its environment.
+
+These external entities (usually files) must be declared in
+
+: the ©block which constitutes the ©program 1like ordinary local
+variables.
+
+Identifiers declared to be program parameters may be of any
+Pascal type. External entities which are not files are implementa-
+tion defined.
+
+The +two standard files Input and Output must not be
+declared but have to be listed as parameters in the program heading,
+if they are used. The initializing statements Reset (Input) and
+Rewrite(Output) are automatically generated and need not be specified
+by the programmer.
+
+Examples ,
+PROGRAM copy (f,g); | |
+VAR f,g: FILE OF real; ,
+BEGIN .
+Reset(f);
+
+Reuwrite(g);
+
+WHILE NOT Eof(f) DO
+
+BEGIN \
+gr = 73 ‘ .
+Put(g);
+Get(f)
+END; ‘
+ENDQ
+9
+| Modules : ‘
+PROGRAM copytext(input,output);
+VAR ch:char; : _
+BEGIN
+~ WHILE NOT Eof(input) DO
+BEGIN
+WHILE NOT Eoln(input) DO
+, BEGIN
+Read(ch);
+Write(ch);
+END; :
+. Readln; Writeln
+END;
+END. '
+c. The Program Block
+Identifiers declared in the <program block> are said to have
+global scope; that is, they constitute the outermost 1level of the
+program’s declaration structure.
+v<program_block>
+-> <label declaration_part> <global declaration>*
+<procedure_and function_declaration_part> <statement_part>
+<global declaration> '
+-> <constant_definition_part>
+-> <type_definition part>
+-> <variable_declaration_part>
+-> <module_declaration> _
+-> <import_part> ,
+<module_declaration>
+-> <module> °;°
+<import_part>
+-> IMPORT’ ( <module_identifier> list *,” ) 3’
+<module_identifier>
+-> <identifier>
+Note: <label declaration_part>, <procedure_and function_declaration-
+part>, <statement_ part>, <constant_defintion part>, <type-
+defintion part>, <variable_declaration part>, <identifier>
+are defined as in HP Standard Pascal.
+Program blocks, unlike the block of a procedure or function,
+’ may contain module declarations. A module  is a collection of
+* global declarations which may be compiled independently and later
+made part of a program block. Any module used by a program, whether
+appearing in the program’s globals or compiled separately, must be
+named in an import list. Modules, and the entities they export,
+always belong to the global scope of a program which uses them.
+10
+Modules
+
+A module cannot be imported before its definition has been com-
+piled, either as a global of the importing program or by a
+previous invocation of the compiler. This limits construction of
+mutually-referring modules. Access to separately compiled modules
+is discussed in Section le.’ . :
+d. Modules
+
+Although a module declaration defines data and procedures
+which will Dbecome globals of any program importing the module, not
+everything declared in the module becomes known to an importer. A
+module specifies exactly what will be exported to the ‘“outside
+world", and lists any other modules on which the module being
+declared is itself dependent. That is, a module has access only to
+those global enitities which it either declares itself or imports.
+The only exception is the program parameters INPUT and OUTPUT. The
+default values for predefined file procedures and functions are al-
+lowed. An error will be issued, usually by the linker/segmenter if
+INPUT or OUTPUT are used by a module and are not program parameters
+of the importing program. :
+
+<module>
+-> °’MODULE’ <module_identifier> '3’
+<import_part>? <export_part>*
+<implement_part> ’'END’
+-> °’DEFINITION’ 'MODULE’ <module_identifier> °;°
+<import_part>? <export_part>+ ’END’
+
+There are two ways to define a module. A module can be com-
+pletely defined at once using the first form above. A module :
+defined this way must have an <export_part>. A module which did not
+
+4 export anything would be inaccessable, hence useless. A module can
+be defined in two parts, allowing for a certain amount of mutual
+referral of modules. This is done by using the ’DEFINITION’ °*MODULE’
+declaration. Here, anything the module will export is defined.
+Hence the <export part> is required as in the complete definition.
+Any modules needed for the export are listed in the <import part>. :
+There is no <implement part>. In order for the module to be com-
+pletely defined, a module definition must appear later in the program
+with an implement section. A warning will be issued for each incom-
+pletely defined module (has DEFINITION MODULE only) in a <com-
+pilation_unit>. This definition must not have an <export_part>, but
+it may have an <import part>. (Allowing this second <import part>
+has not been definitely decided. It is desirable because it allows
+mutually referring procedures in different modules. It also cuts
+down the amount of information loaded into symbol tables at compile
+time of the importing module.” It is undesirable ©because the
+'Definition’ ’Module’ would not contain all the dependencies of that
+module.). : : ‘
+
+The <import_part>, as in a program block, is a list of module
+identifiers. The <export_part> defines constants and types, declares
+variables, and gives the headings of procedures and functions whose
+
+, 11
+Modules :
+complete specifications appear in the <implement part> of the module.
+It is exactly the items in the <export_part> which become accessible
+to any other code which subsequently imports the module.
+<export_part> . )
+-> 'EXPORT’ <qualifier>* ( <export_declaration> list ’;’ )
+<qualifier>
+-> 'HIDDEN’ | *auauFiED’ | *READONLY’
+<export declaration>
+-> ( <constant_definition_part> | <type_definition_part> |
+<variable_declaration _;part> »
+( <routine_heading> List ’;’ ) °’;°?
+
+There can be multiple <export part>s in a module. This allows
+for different qualifiers to be used for different exported entities.
+Multiple qualifiers can also be applied to an export declaration.
+For example, one may want to make a list of variables ’qualified’
+*readonly’.’
+
+’Hidden® is a qualifier which only has meaning for types. Its
+use on other entities is ignored. A hidden type behaves as if only
+its name and size are known outside the module. When a hidden type
+is imported it can only be used in certain ways. Variables of the
+type can be declared. Other types can be declared equivalent to it.
+Variables. of the same type (identical or equivalent) may be assigned
+to each other (if assignable). Variables of hidden types may be
+passed by value (if assignment compatible as defined above) or ,
+reference. It is not possible to do anything which would require
+knowing the structure of the type, such as field references, index-
+ing, or assignment of expressions or constants. Any information
+about the internal structure of the type is not exported. Type coer-
+cion at any level except for structural compatibility is allowed.
+
+’Readonly’ only applies to variables. Its use on other entities
+
+' is ignored. A readonly variable may not be altered by assignment,
+' nor passed as a Var parameter to a procedure or function.
+
+Names which are exported ’qualified’ can only be used in the
+context of the name of the exporting module. This allows two
+modules to export names which have identical spelling to the same
+program or an importing program to have identically spelled names.
+
+Whenever the name of something exported from the module is used ,
+it must be qualified either with an explicit qualification
+(modulename ! entityname) or by a WITH statement. The semantics of the With
+statment is expanded from Pascal to allow module names to appear on the with list, syntax below
+(NOT IMPLEMENTED). The same scoping rules apply to the modules names as to the HP Pascal
+record expression list. Module names and record names can both appear in the same With list. .
+The syntax of identifiers is expanded from Pascal to allow any iden-
+tifier to be qualified using the following syntax.
+
+12
+' Modules
+<with__list> . ' ' '
+=> (( <module__name> )| <record__variable> ) LIST *;
+<identifier> '
+=> ( <module__name> ' )? <entity__name> ‘ '
+
+The modulename must be an imported module and entityname must be
+a constant, type, variable, procedure or function name exported by
+that module. .
+
+, NOTE: °"QUALIFIED’ most likely will go away!
+
+NOTE: MODCAL/3000 will not support <variable definition_part>
+code generation in this release.
+
+The functionality or capability of the module -- what it can
+do for an importer -- appears in the <implement part>.
+
+' <implement_part>
+
+-> °’IMPLEMENT’ <module_capability>
+
+<module_capability>
+-> <declaration_part>
+: <procedure_and function_declaration_part>
+Note: <declaration_part> and <procedure_and function-
+declaration_part> are defined as in HP Standard
+
+' Pascal. If <declaration_part> is not empty then
+there must be a <procedure_and function_declaration_part>
+also. ‘
+
+Examining the syntax of <declaration_part> and
+<procedure_and_function_declaration_part> reveals that the module ‘
+
+, capability may be empty.
+
+Any constants, types and variables declared in the implement
+part will not be made knowm to importers of the modules; they are
+only useful inside the module; outside of the module they are con- ‘
+cealed. To make them known outside the module, they must be ,
+declared in the <export part>. Variables of the <implement_part> of
+a module have the same lifetime as global program variables,
+even though they are concealed. An identifier which is concealed in '
+one module may be reused as a concealed identifier in another
+module, and the two are totally disjoint.
+
+Any procedures or functions whose headings are exported by
+the module must subsequently be completely specified in its <im-
+plement part>. In this respect the headings in the export part
+are like forward directives, and in fact the parameter 1list of
+such procedures need not be repeated in the <implement part>.
+_Procedures and functions which are not exported may be declared
+in the <implement_part>; they are known and useful only within the
+module. v
+
+13
+Modules ' '
+
+In the following example, module '"Symboltable" is declared
+to implement a generalized symbol table. This module defines
+the only operations which can be performed on a symbol table
+by exporting procedures "Add" and "Delete". The type of the .
+"data" in the symbol table, and the maximum size of its "name" field,
+are provided by module "Lexic". Since Symboltable depends on
+Lexic, Lexic must be imported into Symboltable. Hence Lexic must be
+compiled first.
+
+MODULE Lexic;
+EXPORT
+CONST idsize = 16;
+TYPE alpha = PACKED ARRAY [1..idsize] OF char;
+attr = RECORD :
+level: integer; ‘
+name: alpha
+END;
+IMPLEMENT '
+
+{ empty <implement part> since Lexic exports no procedures or
+
+functions }
+MODULE Symboltable; ‘
+IMPORT Lexic; ‘
+EXPORT
+
+PROCEDURE Add (ident: alpha; attrib: attr);
+
+PROCEDURE Delete (ident: alpha);
+
+PROCEDURE Initsymboltable;
+
+IMPLEMENT -
+TYPE symptr = “symbol; _
+symbol = RECORD
+link: symptr;
+name: alpha;
+data: attr
+END; ‘
+
+VAR symtab: symptr;
+
+PROCEDURE Initsymboltable;
+
+BEGIN symtab := NIL END;
+
+PROCEDURE Add (ident: alpha; attrib: attr);
+
+BEGIN
+
+{ body omitted for clarity )
+
+END;
+
+PROCEDURE Delete; (parameter list need not be repeated) ,
+
+BEGIN '
+
+{ body omitted for clarity )}
+
+END;
+
+END. o
+14
+‘ Modules
+e. Libraries NOT IMPLEMENTED
+) The modules Lexic and Symboltable as presented above iilustrate that modules can always
+be compiled without reference to a program. In fact, a module can directly refer to variables of
+a program only if those variables are passed as parameters to procedures exported from the
+module. This restriction is not so severe as it may sound, since a module can be set up to ex-
+port global variables shared among the program and other modules.
+
+Separately compiled modules are called "library modules”. To use library modules a
+
+program imports them just as if they had appeared in the program block:
+PROGRAM USER,;
+IMPORT Lexic, Symboltable;
+VAR .
+
+instring: aipha;
+
+characterize: attr; '
+
+PROCEDURE Scanner (VAR incoming: alpha; VAR description: attr);
+
+BEGIN
+
+{ code to scan a symbol and set up its attributes }
+
+END;
+
+. BEGIN .
+END.
+
+When an import declaration is seen, a module must be found matching each name in the import
+list. If a module of the required name appears in the compilation unit before the import declara-
+tion, the reference is to that module. Otherwise, external libraries must be searched.
+
+The compiter option $SEARCH ’string'$ names the order in which externals libraries are
+searched. The parameter is a literal string describing the external libraries in an
+implementation -dependent fashion; usually the string will be a list of file names. This option may
+appear anywhere in a compilation unit, and overrides any previous SEARCH option. An im-
+plementation may have a default library which will be searched upon failure of all other libraries
+
+: listed in 'string’, such as the system library.
+Note: How SEAHCH works in different implementations is not yet defined.
+15
+|
+Try Recover
+3. Try Recover Statement | . .
+This statement defines error recovery code to be executed if an
+execution error is detected within a controlled statement.
+a. Try Recover Structure
+<structured_statement>
+-> <compound_statement>
+-> <conditional statement>
+' ~> «<repetitive_statement> »
+-> <with_statement>
+-> <try_recover_statement>
+<try_recover_statement>
+
+-> ’TRY’ <statement_list> ’'RECOVER’ <unlabelled_statement>
+b. Try Recover Semantics
+
+On detecting an error in the execution of <statement_list> the
+following sequence of events occur:
+
+1) The Escapecode for the error is set, '
+
+2) the runtime environment is cut back to the enviroment in
+which the Try statement occurs, .
+
+3) Execution is transferred to the <unlabelled statement>
+after the Recover. _
+
+If no error is detected in the execution of <statement_list>
+the <unlabelled _statement> is skipped, and execution continues at the
+first statement following the Try statement.
+
+This construct divides the responsibilities of error recovery;
+
+; error recovery which requires the enviroment in which the error oc-
+curs should use a trap handler provided by the system; for error
+reporting, the Try construct should be used.
+
+If an error occurs in the execution of <the <unlabel-
+led_statement> , then execution is transferred to the enclosing Try
+statement. If there is no enclosing Try statement, then the
+program aborts.
+
+NOTE: Try Recover statements are not permited in code that will
+execute on the ICS, for MODCAL/VCF.
+
+16 : _ _
+Tf‘y Recover
+¢. Escape(i) ,
+Calling this predefined procedure indicates that a software er-
+ror has been detected. Execution is passed to the <unlabelled stat-
+ment> part of the first enclosing Try statement in the dynamic en-
+vironment. The parameter i is evaluated before control is passed and
+its value is made available to the Escapecode function defined in
+(3.d). Errors detected by hardware will cause an Escape to be ex-
+ecuted with a standard value. If Escape is called with no surround-
+ing try statement, then the action taken is to abort the program.
+WARNING: Escape will be 2-4 orders of magnitude more expensive
+then just entering and leaving a TRY statement normally,
+d. Escapecode: integer ' :
+Calling this function returns the execution error number set '
+by the most recent Escape call. If Escape has never been called the
+value zero (0) will be returned. If the <unlabelled__statement> passes con=
+trol to the statement following the <try__recover__statement> in normal sequential
+manner, then the escape code will be reset to zero (0),
+e. Error Code Assignment
+The error code numbers are assigned using the following. conven-
+tion: The first 16 bits signifies which subsytem reported the error.
+The negative range has been reserved for HP products where the posi-
+tive range is for user. The second 16 bits indicates which error oc-
+curred. The constants for HP products are defined in two include
+files, one for Vision and one for 3000.
+f. Example _
+The following program illustrates a wuse of the try
+statement for error TrTecovery in a hypothetical system. This
+system defines a set of run time support procedures (only one is
+shown) and a user program which may cause errors. If an error is
+detected in the user program by the hardware or in the support
+procedure by software, an Escape will be generated which causes ex-
+ecution to continue in the recover section of the main program. This
+. section prints out an error message. :
+17
+"Try Recover -
+PROGRAM xx3 ' : ‘
+CONST .
+$Include ’ModCode.Pub.Sys’$
+PROCEDURE support;
+BEGIN .
+IF error THEN Escape( ... )
+END; .
+PROCEDURE userprogram;
+BEGIN
+support
+END;
+BEGIN
+TRY userprogram '
+RECOVER ‘ :
+CASE Escapecode OF
+MinUser. .MaxUser: Writeln(’Software detected errors’);
+LanglRng : Writeln(’Value range error’);
+SysStkovf : Writeln(’Stack overflow’);
+SysIntOvf : Writeln(’Integer overflow’);
+SysIntDiv : Writeln(’Integer divide by zero’);
+: SysF1tOvf : Writeln(’Real overflow’);
+SysFltUnf ¢ Writeln(’Real underflow’);
+SysF1tDiv : Writeln(’Real divide by zero’);
+LanglNil : Writeln(’Nil pointer reference’);
+_ LanglCase : Writeln(’Case expression bounds error’);
+LanglStrovf : Writeln(’String overflow’);
+FileErr - : Writeln(’File I/0 error’); ,
+OTHERWISE
+Writeln(’unknown error’)
+END;
+END.
+The Escapecodes used in the example are not +the actual
+constants for the HP 3000 or VCF.
+18
+: Type Coercion
+4. Type Coercion : '
+
+Type coercion allows a programmer to circumvent the strong type .
+checking of Pascal. The type coercion mechanism is a compile time
+operation (except in some cases of discriminated schema acccess) for ap-
+plying a different interpetation to the data value part of a data item
+(Appendix B).
+
+' a. Syntax/Semantics
+Type coercion has two (2) syntactic/semantic forms:
+Value Type Coercion (no restrictions) -
+<factor>
+-> <target type id> ’(’ <expression> ’)’ :
+: This form of type coercion allows the value of an expression to
+be coerced to the target type. The evaluation of the expression may
+" create a copy of the value to be coerced, thus any machine dependent
+addressing problems can be avoided.
+Variable Type Coercion (machine dependent addressing restrictions)
+<variable> | |
+-> <target_type_id> ’(’ <variable> ’)’
+
+This form of type coercion allows ther source variable to be
+coerced to the target type. Variable type coercion is permitted only
+for actual parameters. The source variable may not be addressable as
+the target type on a given machine (e.g. a byte as a word on the
+3000). When this occurs the type coercion is not allowed and an error
+is issued. Three cases that are very likely to result in this con-
+dition are:
+
+- Coercing any component of any CRUNCHED structure.
+
+- Coercing any component of any PACKED structure whose component
+type BitSizeof is less than the BitSizeof of a SU. ,
+
+- Coercing any component of any array whose component type
+BitSizeof is less than the BitSizeof of a SU.
+
+b. Compatibility Levels :
+
+The use of type coercion can lead to the development of un- .
+transportable system software. Additionally one form of type coer-
+cion can result in the use or modification of storage beyond that oc-
+cupied by the expression or variable coerced. These problems can be
+reduced by defining several levels of type coercion that progress
+
+. 19
+Type Coercion : )
+ffom safe and transportable to very dangerous and untransportable.
+The four (4) levels of type coercion defined in MODCAL based on the .
+compatibilities in Appendix C are:
+. STRUCTURAL - This level permits any data item to be coerced to
+any structurally compatible data type. This level simply permits
+renaming components. It is safe and fully transportable. : o
+
+REPRESENTATION - This level permits any data item to be coerced '
+to any representation size compatible data type. This level requires
+identical BitSizeof values. It is unsafe only if reference types are
+involved (Appendix B). It is transportable because all untransport-
+able uses are flagged as errors. _
+
+STORAGE - This level permits any data item to be coerced to any
+storage size compatible data type. This level requires less or equal
+Sizeof values. It is unsafe and many untransportable uses will NOT
+be flagged as errors.
+
+NONCOMPATIBLE - This level permits any data item to be coerced
+to any data type, providing that syntactic/semantic form of type
+coercion is defined on the target machine. This level is very dan-
+gerous and no errors can be flagged. _
+
+The safest level sufficient to permit the required type coer-
+cions is selected with the $Type Coercion ’string’$ compiler option
+(Appendix A).
+
+c. Example : '
+MODULE MPE File System;
+IMPORT :
+MPE_IO System, v
+MPE Kernal; ,
+EXPORT B
+TYPE
+Word = ShortInt; '
+WordArray = ARRAY [1..1] OF Word;
+TargetLen = ShortlInt;
+FileNumbers = ShortInt;
+FUNCTION FRead ( '
+FileNum : FileNumber;
+VAR Target : WordArray;
+TCount : Targetlen
+): TargetlLen;
+20 '
+. Type Coercion
+' IMPLEMENT . _ .
+TYPE .
+ArraylLen = 1..32767;
+FileSet = SET OF FileNumbers;
+CONST ' ,
+ValidFiles = FileSet [1..255];
+FUNCTION BoundsCheck (
+Origin : OffsetSU; »
+Length  : Arraylen;
+ParmList : OffsetSU
+): BOOLEAN A
+OPTION INLINE;
+BEGIN { BoundsCheck }
+$Type_Coercion ’REPRESENTATION’$
+IF (Word(GetDL) <= Word(Origin)) ’
+AND ' ; { Value Type Coercion }
+(Word (ParmList) > Word(Origin)+Pred(Length))
+$Type_Coercion ’NONE’$
+THEN |
+BoundsCheck := TRUE
+ELSE '
+BoundsCheck := FALSE;
+END; { BoundsCheck }
+FUNCTION FRead (
+FileNum : FileNumber;
+VAR Target : WordArray;
+TCount : Targetlen :
+): Targetlen; "
+VAR
+Bufflen : Arraylen; )
+ByteLen : Targetlen;
+PROCEDURE FRead 1 (
+?EADONLY BufflLen : Arraylen
+OPTION INLINE;
+TYPE
+’ WordSchema (Len : ArrayLen) = ARRAY [1..Len] OF Word;
+~ WordArray = WordSchema (Bufflen);
+PROCEDURE FRead 2 ( ‘
+VAR Buffer : WordSchema
+)
+OPTION INLINE;
+BEGIN { FRead 2 }
+{ body omitted }
+END; { FRead 2 } '
+21
+Type Coercion '
+BEGIN { FRead 1 )
+$Type_Coercion *NONCOMPATIBLE'S$
+FRead_2 (WordArray (Target)); { Varaible Type Coercion }
+A $Type_Coercion ’NONE'$
+END; { FRead 1 }
+BEGIN { FRead }
+IF FileNum IN ValidFiles THEN
+BEGIN { have a file number }
+IF TCount < O THEN ‘
+BEGIN { byte target count }
+ByteLen := -TCount;
+BuffLen := ByteLen DIV 2 + ByteLen MOD 2;
+END { byte target count }
+ELSE
+BEGIN { word target count }
+BytelLen := 03
+Bufflen := TCount;
+END; { word target count }
+$Type_Coercion ’REPRESENTATION’$
+, IF BoundsCheck (0ffsetSU(Offsetpart (Addr(Target)))
+, BuffLen, AddtoOffset (GetQ , -6))
+$Type_Coercion ’NONE’$
+THEN
+’ BEGIN { target in stack )} .
+FRead 1 (Bufflen);
+END { target in stack }
+ELSE
+~ FRead := 03
+END { have a file number } '
+ELSE |
+FRead := 03
+END; { FRead }
+END.
+22 ~
+Type Transfer
+5. Type Transfer function ReOrd
+_ Type transfer allows a programmer to convert the representation of
+one type into the representation of another type. Type transfer differs
+from type coercion when the representation of one value is changed to
+another representation. For example, converting an integer expression
+to an enumerated type. The predefined function ReOrd performs the type
+transfer. «
+~ Function ReOrd (ordtype, expression): ordtype
+Example:
+PROGRAM ReOrd_Example;
+TYPE
+numbers = (zero,one,two,three,four,five,six,seven,eight,
+nine); .
+digit range = 0 .. 93
+VAR
+mnemonic: numbers; _
+binary value: digit_range;
+BEGIN :
+binary value := T3
+mnemonic := ReOrd (numbers,binary value); '
+(* mnemonic is now equal to enumerated value seven *)
+mnemonic := ReOrd (numbers,binary _value + 1);
+(* mnemonic is now equal to enumerated value eight *) '
+Assert (mnemonic = ReOrd (numbers,0nd (mnemonic), 0);
+END.
+23
+Procedural/Functional Variables
+6. Procedural/Functional Variables
+a. Procedural Variables .
+1. Type Procedure p '
+The Type definition syntax of Pascal is extended to allow
+the specification of procedural datatypes. This allows the
+creation and manipulation of procedural variables, and augments
+the parameter procedure mechanism already present in Pascal. A
+procedural type may be specified by using the keyword procedure
+followed by an optional parameter 1list as a type specifier.
+Variables of procedural types may be assigned procedures which
+have congruent parameter lists as defined in HP Pascal. Any pro-
+cedure assigned must have the same or wider scope than the vari-
+able it is assigned to. To assign a procedure to a procedural variable, the
+procedure name is used as a parameter to the Addr function. See example
+below. A procedural variable can be assigned NIL. This means no
+procedure has been assigned.
+2. Call
+The predefined procedure "Call(Pvar, parm, parm, ...)" '
+
+‘ causes the indicated procedure to be called with the indicated
+parameters. Pvar is the identifier of a variable of type
+procedure.  If during the execution of the procedure of a
+procedural variable, it accesses any non-local variables, then
+the variables accessed are the variables which were accessible at
+the time the procedure was assigned to the procedural variable.
+It is an error if Pvar has the value NIL or is undefined. It may
+not be possible to detect an undefined procedure variable.
+
+24 ,
+‘ Procedural/Functional Variables
+3. Procedural Type Operations Model "
+B W i
+I | := :
+| v |
+e ———— QAL 202090 90 36 4 9636 00 4
+| Procedural | *  Actual »
+| Variable | * Procedure *
+Frmccrem e~ (22212222222 22 2 13
+A I |
+| frmmmmmmmnennnae | ,
+| := | (parm) / Addr(Proc_Name) | (parm)
+| l \ Addr(Proc_Parm) I
+. $ommmmcm et $ormmmm—m— g
+| Procedural | | Procedure |
+| Parameter | : | Parameter |
+e — LR
+A | A | '
+I | (parm) | | (parm)
+N | R
+Proc Parm {( ... ) }
+CaZZTPrcdrl_Yar,...) } = { Proc_Name ( ... )
+. Call(Prcdrl_Parm,...) }
+4. Example . ‘
+
+This program illustrates a use of a procedural type. First, :
+type "p" is declared to be a procedural type with two real
+parameters. Subsequently, two procedures and one variable are
+declared which are compatible with this type. In the main
+program, the value of "pv" is set based upon some calculation and
+then the procedure “Call" is used to call the procedure referred
+to by “pv". Note that the identifiers in the parameter lists
+need not be identical.
+
+PROGRAM ProcVar(output);
+TYPE p = PROCEDURE (rl,r2: real); _
+VAR pv : p;
+test : boolean;
+PROCEDURE procl(num,denom: real); '
+BEGIN
+Writeln(num/denom);
+END; .
+PROCEDURE proc2(ml,m2: real); :
+BEGIN
+_ 25
+Procedural/Functional Variables
+Writeln(mi*m2); oo
+: END; ‘
+BEGIN A
+IF test THEN -
+pv := ADDR(procl) '
+ELSE
+pv := ADDR(proc2); ,
+Call(pv,3.1,4.34); _
+END. ‘
+b. Functional Variables
+1. Type Function .
+
+The Type definition syntax of Pascal is extended to allow
+the specification of functional datatypes. This allows the
+creation and manipulation of function variables, and augments
+the parameter function mechanism already present in Pascal. A
+function type may be specified by using the keyword Function fol-
+lowed by an optional parameter list and a required colon and
+result type identifier as a type specifier. Variables of func-
+tion types may be assigned functions which have congruent parame-
+ter lists as defined in HP Pascal and identical result types. Any
+function assigned must have the same or wider scope that the vari-
+able it is assigned to. To assign a function to a function vari-
+able, the function name is used as a parameter to the Addr func-
+tion. See example below. The reserved word NIL may be assigned
+to a function variable. This means that no function is assigned
+to it. : '
+2. FCall
+
+The predefined function "FCall(Fvar, parm, parm, ...)"
+
+' causes - the indicated function to be called with the indicated
+parameters. Fvar is the identifier of a variable of type
+function. The type of the result of FCall is identical to the
+result type of Fvar. If during the execution of the function
+of a function variable, it accesses any non-local variables,
+then the variables accessed are the variables which were acces-
+sible at the time the function was assigned to the function vari- :
+able. It is an error if Fvar is NIL or undefined. '
+
+26 ‘
+) ' Procedural/Functional Variables
+3. Functional Type Operations Model
+¥ e
+| | :=
+| v
+Ry ¥ . ] 36 J6 46 6 I I 26 6 36 96 3 36 36 %
+| Functional | *  Actual hd
+| Variable | * Function * .
+focecmcmm—————t 0963006 90 000 48 0 90 9696 00 00 00
+A | |
+I [mmmmmmmmmnmnnas |
+| := | (parm) / Addr(Func_Name) | (parm)
+- | \ Addr(Func_Parm) |
+| v A v |
+ommcmcacc————t 4rmmmmmm—— et
+| Functional | | Function |
+| Parameter | | Parameter |
+$mmemmmeme—————g $emmmemmeeeeand : .
+A | A | o
+| | (parm) | | (parm) '
+# e | S, .
+Func Parm ( ... ) } '
+FCall(Fnctnl Var,...) } = { Func Name ( ... )
+FCall(Fnctnl_Parm,...) } '
+4. Example ; , '
+
+This program illustrates a use of a function type. 'First,
+type "f" is declared to be a function type with two integer
+parameters. Subsequently, two functions and one variable are
+declared which are compatible with this type. In the main
+program, the value of "fv" is set based upon some calculation and
+then the function "FCall" is used to call the function referred to
+by "fv". Note that the identifiers in the parameter lists need
+not be identical. -
+
+PROGRAM FuncVar; '
+
+TYPE £ = FUNCTION(INT1,INT2: integer):integer; )
+
+VAR fv : £
+test : boolean; v
+Answer:integer; :
+
+FUNCTION funcl(num,denom: integer):integer; |
+BEGIN
+v funcl:=num DIV denom;
+) END;
+
+" FUNCTION func2(ml,m2: integer):integer; ,
+
+BEGIN :
+27
+Procedural/Functional Variables
+func2:=ml*m2;
+. END; : ,
+BEGIN _
+IF test THEN
+- fv := Addr(funcl)
+ELSE
+fv := Addr(func2); ,
+
+Answer:=FCall(fv,3,4); »
+END.
+
+28
+-' Special Predefined Functions
+7. Special Predefined Functions , ,
+a. Sizeof ' - o
+The Sizeof function returns the number of bytes needed to
+represent the data value part of a data item of the given type or the
+actual allocated size of a variable.
+Sizeof(t) Gives the number of bytes required to represent a
+variable of type t.
+Sizeoflv) Gives the number of bytes required to represent variable v or the actual
+number of bytes allocated to represent variable v.
+Sizeoflp) Gives the number of bytes required to represent ANYVAR parameter p
+or the actual number of bytes allocated to represent the actual parameter passed to
+ANYVAR parameter p.
+Sizeof(tl, t2, - ... ,tn) Gives the number of Dbytes
+required to represent a variable of type t1 with tag field values t2, ‘
+s ooy tno .
+' Stzeof(sl, s2, ... ,sn) Gives the number of bytes required to '
+represent a variable of the discriminated schema type selected from
+the schema array sl with discriminant values s2,..,,sn (Section D).
+. 29
+Special Predefined Functions
+The Addr function returns the reference part of the data item
+given to it as a parameter.
+Addr(V) returns a pointer to the variable, V. It returns a
+pointer of the same type as NIL; that is, it is assignment compatible
+to any other pointer. Implementations may restrict its result to a
+pointer of type “type of V. It is implemented this way in
+MODCAL/3000 and MODCAL/VCF. The pointer returned can be used as a pa-
+rameter to the ObjectPart and OffsetPart pointer arithmetic
+functions. ,
+30 _ -
+| | | HP MODCAL
+B. HP MODCAL Standardized and Adaptable
+
+/ \ ,
+
+/ \
+
+| == == |
+
+R |
+
+| IN_/|
+
+\ /
+
+\ I / .
+B \1/
+IEEEEVA
+| .
+HP MODCAL
+C. HP MODCAL Standardized and NonAdaptable '
+/ \ _ ‘
+/ \
+I 4 4 I
+T
+|
+\/ \/
+\ /
+| |
+/1A
+/ \
+32 |
+' : Experimental
+D. Experimental | |
+1. Read Only Parameters ' ‘ : ' »
+
+The current parameter passing mechanisms of HP Standard Pascal supports only "call-
+by-value" and “call-by-reference", denoted by VAR. The first protects the actual parame-
+ter from modification, but requires making a copy. The second does not make a copy, but
+provides no protection for the actual parameter.
+
+MODCAL provides a third mechanism “call-by-value-reference", denoted READONLY.
+This mechanism protects the actual parameter from modification, and makes a copy if and
+only if the actual parameter is an expression or a constant. No modification of a variable
+(actual parameter) is permitted between the call to and return from a routine with a
+READONLY (formal) parameter.
+
+a. Read Only Parameter Definition
+The following shows the syntax for defining read only formal parameters. ' ‘
+<formal__parm__section>
+=-> <value__parm__spec>
+=> <variable__parm__spec>
+» => <read__only__parm__spec>
+=> <procedure__parm__spec>
+=> <function__parm__spec>
+<variable__parm__spec>
+=> '"VAR’ <identifier__list> *’ <type__id>
+<read__only__parm__spec>
+' -> 'READONLY’ <identifier__list> *’ <type__id>
+b. Read Only Parameter Example
+: | 33
+READONLY Parameters ‘ , :
+TYPE | |
+ArrType = ARRAY [1.10] OF INTEGER;
+CONST _
+ArrConst = ArrType [10 OF 0];
+VAR .
+ArrVar : ArrType;
+FUNCTION ArrFunc : ArrType,;
+EXTERNAL; -
+- PROCEDURE Parm__Mechanisms ( _ ' '
+Value__Parm : ArrType; ’ ‘
+VAR Ref__Parm : ArrType; ‘
+READONLY Val__Ref__Parm: ArrType
+); ) .
+EXTERNAL; ) . ‘
+BEGIN
+Parm__Mechanisms (
+ArrConst, {a copy is made}
+ArrConst, {an ERROR} _ ,
+' ArrConst {a copy is made & address is passed}
+X ,
+Parm__Mechanisms (
+ArrVar, {a copy is made}
+ArrVar, {address is passed}
+ArrvVar {address is passed} ’ '
+Parm__Mechanisms ( ‘
+ArrFunc, {a copy is made}
+ArrFunc, {an ERROR} -
+ArrFune {a copy is made & address is passed} :
+\ .
+END;
+34 ) '
+| ANYVAR Parameters -
+2. Any Variable Parameters NOT IMPLEMENTED
+The current "call-by-reference", denoted VAR, parameter passing mechanism of HP
+Standard Pascal requires any actual parameter be of the SAME TYPE as the formal
+parameter. '
+_ MODCAL provides another mechanism "call-by-any-reference", denoted ANYVAR.
+This mechanism removes the SAME TYPE requirement while retaining all other require-
+ments of the "call-by-reference" mechanism (e.g. not passing components of PACKED or
+CRUNCHED structures). '
+This feature permits some very dangerous programming practices. Some MODCAL im-
+plementation may provide for some safety by creating a "phantom" parameter who value is
+the SUSizeof its companion ANYVAR actual parameter. This “phantom" can then be used
+by checking code and the Sizeof, SUSizeof, and BitSizeof functions (see Section E
+and Appendix A).
+a. Any Variable Parameter Definition
+The following shows the syntax for defining any variable formal parameters. .
+<formal__parm__section>
+=> <value__parm__spec>
+=> <variable__parm__spec>
+, ~> <anyvar__parm__spec> :
+-> <procedure__parm__spec> ' .
+=> <function__parm__spec> ,
+<variable__parm__spec>
+-> VAR’ <identifier__list> *’ <type__id>
+<aﬂyvar_parm___spec>
+-> 'ANYVAR’ <identifier__list> "’ <type__id>
+STRING must not be specified as the <type__id> when ANYVAR is specified.
+35
+ANYVAR Parameters -
+. b. Any Variable Parameter Example
+TYPE ‘
+ArrTypel = ARRAY [1.10] OF INTEGER,; :
+: ArrType2 = ARRAY [1.20] OF INTEGER;
+ArrType3 = ARRAY [1.11] OF REAL; '
+VAR
+ArrVarl: ArrTypel,
+: . Arrvar2: ArrType2; ’
+
+ArrVar3: ArrType3;
+
+PROCEDURE Parm__Mechanisms (
+VAR Ref__Parml :ArrTypel;
+VAR Ref__Parm2 : ArrType2;
+ANYVAR Any__Ref__Parm: ArrType2
+)
+EXTERNAL; )
+
+BEGIN
+
+Parm__Mechanisms (
+ArrVarl, {ok - std. Pascal} .
+ArrVarl, {an ERROR} ’
+ArrVarl {ok / an ERROR for Any__ Ref__Parm[11]}
+)
+
+Parm__Mechanisms ( _ _
+ArrVar2, {an ERROR}
+ArrVar2, {ok - std. Pascal} .
+Arrvar2 {ok}
+X
+
+Parm__Mechanisms (
+ArrVar3, {an ERROR} ‘ _
+ArrVar3, {an ERROR}
+ArrVar3 {ok / an ERROR for Any__Ref__ Parm[12]}
+) ‘
+
+END; : .
+
+36
+: - ANYVAR Parameters
+PROCEDURE Same__As_ ANYVAR__chkd (
+VAR Ref__Parm :ArrType2;
+Ref__Parm__Len : ObjectSize;
+ANYVAR Any__Ref_ Parm: ArrType2
+)
+EXTERNAL; .
+PROCEDURE Same__As__ ANYVAR__unchkd (
+VAR Ref__Parm : ArrType2; -
+ANYVAR Any__Ref__Parm: ArrType2
+) ‘
+OPTION Uncheckable__ ANYVAR;
+EXTERNAL;
+BEGIN ‘
+Same__As__ ANYVAR__chkd (
+‘$push, type__coercion *noncompatible’$
+_ ~ ArrType2(ArrVarl), Lo
+Spop$
+SUSizeof (ArrVarl), {allocated SU’s for Ref__Parm}
+: ArrVarl , ‘ _
+) -
+Same__As__ ANYVAR__unchkd (
+$push, type__coercion *noncompatibie’$
+- ArrType2(ArrVarl),
+$pop$
+{allocated SU’s for Ref__Parm UNKNOWN} ‘
+ArrVarl
+X .
+END; .
+’ 37
+Schema Arrays ’ : ‘
+" 3.Schema Arrays NOT IMPLEMENTED
+
+Types in Pascal are used for determining the storage requirements of variables and for checking
+the compatibility of assignments and procedure/function parameters. This double duty use of the
+type concept is too restrictive for some areas of system programming. To alleviate some of these
+restrictions, schema arrays have been added to MODCAL.
+
+A schema can be thought of as a collection of types; each member of the coliection is related to
+the other members in that they each have the same overall structure. The structure of each typeis
+that of an array with the same component type and packing. However, each array type has a dif-
+ferent index type.
+
+MODCAL permits a formal parameter of a procedure or function to specify that it will accept any
+actual parameter whose type is a member of a specified schema. in this way the procedure or func-
+tion can operate on a number of arrays with different index types, aithough only from the same
+
+: schema.
+
+Through the use of schemata, MODCAL aiso allows local arrays declared within a procedure or
+function to have their bounds specified at runtime. This permits the procedure or function to adapt its
+activation storage requirements in cases where local work areas are required.
+
+a. Schema Array Definition ‘
+<type__definition__part> , ’
+-> <type__def__section>? -
+<type__def__section>
+: -> 'TYPE’ .
+( <type__definition> | <schema__definition> ) list
+This says that the <type__ definition__part> of a block is composed of any number of type
+and schema definitions. )
+<new__type>
+-> <new__ordinal__type>
+-> <new__structured__type> '
+-> <new__pointer__type> ‘
+=> <discriminated__schema>
+This specifies that a <new__type> may be created by any of the means existing in Pascal or
+by selecting one of the members of a schema. Selecting one of the members of a schema is.cal-
+led discriminating a schema, that is, specifying its actual index types. ‘
+A schema -definition shall introduce an identifier to denote a schema. A schema defines a col-
+~ lection of <new__type>s whose type-denoter is a discriminated schema.
+38
+Schema Arrays
+<schema__definition> .
+-> <identifier> <formal__discriminant__part>
+'=' <array__schema> _
+<formal__discriminant__part>
+=> (" <discriminant__spec> list'; ')
+<discriminant__spec>
+-> <identifier__list> '’ <ordinal__type_id> ‘
+<array__schema> : '
+' => ('PACKED’ | 'CRUNCHED’ )? _
+'ARRAY' [ :
+{<schema__index__type> list',)
+'T 'of' <component__type>
+<schema__index__type> o
+-> ( <constant> | <discriminant__id> )
+' ( <constant> | <discriminant__id> )
+<discriminant__id> '
+~> <identifier>
+
+The occurrence of an identifier in a <schema__definition> of a <type__definition__part> shali
+constitute its defining point for the region that is a block. Each applied occurrence of that iden-
+tifier shall denote the same schema. Except for applied occurrences of the identifier as the
+domain type of a pointer type, the schema shall not contain an applied occurrence of the schema
+definition. v
+
+NOTE: Currently, the <schema__index__type> must be an explicit subrange; therefore, it may
+not be the <type__id> of a subrange type.
+
+The above definitions add the mechanism by which to define a schema. The leading identifier
+on the schema -definition becomes known. A schema may nhot have any references to itself ex-
+cept when used as the domain of a pointer. Thus, a schema has the same scope as a type
+declared at the same place.
+
+b. Formal Discriminant Part '
+
+The <formal__discriminant__part> in a schema definition shail define the formal discriminants. k
+The occurrence of an identifier in a- <discriminant__spec> shall constitute its defining point as a
+<discriminant__id> for that region of the program that is the following <array__schema>.
+
+For every <discriminant__id> In a <formal__discriminant__part>, there shall be at least one
+applied occurrence in the <array__schema>. The occurrence of a <discriminant_id> in a \
+<schema__index__type> of an <array__schema> shall specify that there is one type denoter
+which is a member of the schema for each allowed value of the <discriminant__id> such that all
+other <schema__index__type> values in the schema are the same.
+
+The <formal__discriminant__part> is used to associate identifiers with the schema so that the
+domain (members of the schema) can be determined. Every identifier used in the
+<formal__discriminant__part> must be used at least once in the following <array__schema>. In
+
+39
+'~ Schema Arrays
+the following, SmallVec is a collection of ten type denoters with index types "0..1","0..2", ...,
+"0..10". ' .
+type _
+Smallint= 1 .. 10;
+Smallvec (HighBound : Smallint) =
+array [0 .. HighBound] of reat;
+¢. Discriminated Schema ,
+
+A <discriminated__schema> selects one of the members of a schema as a <new-type>. The
+<discriminant__value>s are bound to their corresponding <discriminant__specs> in the <for-
+mal__discriminant_part> of the schema. The number of discriminant values must be equal to the
+number of formal discriminants and each value must be assignment compatibie with the type of
+the corresponding formal discriminant.
+
+<discriminated__schema> :
+-> <schema__id> <actual__discriminant-part> - ;
+<actual__discriminant__part>
+=> (" <discriminant__value> list’’ ')’
+<discriminant__value> ' ‘
+-> <constant__expression> |
+<read__only__variable>
+
+A <discriminated__schema> appearing in the declaration part of a block must have only con-
+stant or read__only variable discriminant values. This restriction assures that evaluation of dis-
+criminant vaiues in the declaration part of a block can have no side effects.
+
+Any schema designated PACKED and denoting an array schema having its <schema__in-
+dex__type> specifying as its smallest value a constant whose value is 1, and having as its com-
+ponent type a denotation of the char type, shall be a PAC schema. Any new type specifying a
+discriminated ~schema which is a PAC schema shall be designated a PAC, and has all the special
+properties of a PAC defined in Pascal.
+
+A discriminated schema is a type denoter selected from the collection of type denoters in the
+schema. The values given in the <actual__discriminant__part> are used (substituted) for the
+<formal__discriminant__part> in the <array__schema>. Thus the discriminated schema
+"SmallVec(7)” selects the member of the schema which is structurally compatible to (but not the
+same as) the array: o
+
+ARRAY [0 .. 7] OF REAL .
+
+An attempt to specify the schema as "Smalivec(1 1)” will resuit in an error because the vaiue
+11 is not assignment compatible with the type of Highbound.
+
+it must be noted that although a <discriminated__schema> is equivalent in structure to an ar-
+ray type, it is never the same (in the sense of Pascal type compatibility). Moreover, two dis-
+criminated schemas that specify the same discriminant values are not the same. ’
+
+Any <discriminated__schema> having the same. number of components of structurally
+compatible types with the identical packing are said to be STRUCTURALLY compatible. Any
+
+Lo : ‘
+Schema Arrays
+. unpacked arrays or unpacked discriminated -schemas having the same number of components of
+structurally compatible types are said to be structurally compatible (see Section A and Appendix
+
+C).
+
+' Any <discriminated__schema> with <read__only__variable>s in its <ac- .
+tual__discriminant__part> = denotes a type that may be wused only in a
+<variable__declaration__part> or a type coercion.
+
+d. Schema Discriminants . _
+<factor> ‘
+
+=> <variable__access>
+
+-> <unsigned__constant> _
+
+-> <function__designator> :
+
+-> <set__constructor>
+
+-> '’ <expression> ') .
+
+=> 'NOT’ <factor>
+
+-> <schema__discriminant>
+
+-> <read__only__variable>
+
+<schema__discriminant>
+
+-> <variable__access> '’ <discriminant__id>
+
+<read__only__variable> -
+
+=> <variable__access>
+
+The schema discriminants for a discriminated schema value are simply the values that were
+used to satisfy the formal discriminants in the declaration of the discriminated schema which is its
+type. The notation to access this value uses the name of the formal discriminant from the
+schema declaration. For example, consider the following schema, discriminated schema and dis -
+
+' criminated schema value: . :
+) TYPE
+Smallint = 1..10;
+Schema(StartLength : Smallint) = ARRAY[Start.Length] OF _
+INTEGER;
+DiscSchema = Schema(1,5);
+VAR
+
+X : Smallint; )
+
+DiscSchemaValue : DiscSchema
+
+The actual discriminant values for DiscSchemaValue are 1 and 5, accessible by the nota-
+tion DiscSchemaValue . Start and DiscSchemaValue.Length, respectively.
+
+Because a factor can never appear as a target of an assignment, the discriminant may never
+be altered. The value of the discriminant could be thought of as a "read only variable” associated
+with the variable or parameter. The vector addition example above shows the use of
+<schema__discriminant>s. . :
+
+51
+Schema Arrays ' ’ . :
+e. Schema Array Parameters
+
+Discriminant values can be constants or read only variables (va'riablés whose value cannot be
+altered); thus discriminant values are constant over the entire scope of a discriminated schema.
+The following shows the syntax for defining read only variables and schema array formai
+parameters. ) ,
+
+<formal__parm__section>
+=-> <value__parm__spec>
+=> <variable__parm__spec> :
+=> <read__only__parm__spec> '
+=> <procedure__parm__spec>
+‘ -> <function__parm__spec>
+<variable__parm__spec> '
+- => 'VAR' <identifier__list> '
+( <type__id> | <schema__id> )
+<read__only__parm__spec>
+-> 'READONLY’ <identifier__list> "’
+{ <type__id> | <schema__id>) v
+
+These productions deal With read only parameters and schema parameters. Read only para-
+meters are discussed in the next section; this section deals exclusively with schema parameters.
+
+A variable inay be passed into a procedure or function whose type denoter is a member of a
+schema. When a schema identifier is specified, the parameter may be of any type which is a
+member of that schema. ‘ )
+
+if the formal parameters are specifiéd in a <variable__parm__spec> in which there is a
+<schema__id>, the type possessed by the actual parameter shall be itseif a parameter that was
+
+. specified with the same <schema_id>; and the type possessed by the formal parameter shall be
+distinct from any other type.
+. This states that a formal parameter that was declared with a schema will only permit the ac- »
+" tual parameter to be of a type which is a member of the same schema. A formal parameter which
+is a schema may in turn be passed on as a variable -parameter utilizing the same schema.
+
+If the form of the parameter list includes an <identifier_list>, then ali the actual parameters
+must be of the same type (only for variable parameters); this is true for schemas as well as other
+types.
+
+The foliowing example adds two vectors, element by element, and returns the resuit in the
+first parameter.
+
+o 42
+; S . . Schema Arrays
+PROCEDURE AddVectors (VAR A,B,C : SmalivVec);
+VAR
+I : Smallint;
+BEGIN .
+Assert (AHighBound = B.HighBound, 1);
+Assert (A.HighBound = C.HighBound, 2);
+FOR i == 0 TO B.HighBound DO
+A[i] := B[i] + C[i}; '
+END;
+{. Read Oniy Parameters
+
+The productions from the previous section state that read only variables are defined by
+<read__only__parm__spec>s (read only variables are aiso exported by modules). The occur-
+rence of an identifier in the <identifier _list> of a <read__only__parm__spec> shall constitute its
+defining point as a read only variable for the region that is the block, if any, of which it is a formal
+parameter. .
+
+All parameters that are specified with the read only mechanism are identified as being read
+only variables; this permits them to be limited to being factors within the block. The actual pa-
+rameter shall be an expression. A formal parameter declared with a schema as its type
+specification and occuring in a single <read__only__parm__spec> shall possess an array type
+which is distinct from any other type. The type possessed by the actual parameter shall be a
+discriminated schema designating the same <schema__id> as the formai__parameter or the ac-
+tual__parameter shall be itself a parameter that was specified with the same schema identifier; or.
+the actual parameter must be a PAC and the formal parameter must designate a PAC-schema; or
+the actual parameter must be of the same type as the formai-parameter. .
+
+For an actual parameter that denotes a read only variable access, there shall be no assigning
+reference during the activation of the block of the procedure or function to the actual parameter.
+
+This introduces a parameter mechanism into MODCAL that requires that the actuai__parameter
+may not be altered during the activation of the associated procedure or function. Any expression ,
+may be specified by the actual__parameter. Thus, the mechanism achieves not only protection of
+the actual-parameter but also permits literal strings or value type coercions to be specified.
+
+g. Discriminated Schema Access
+L3
+Schema Arrays '
+
+<discriminated__schema__access> '
+
+~> <discriminated__schema__vailue>
+
+' <schema__access__list> ']
+
+<discriminated__schema__value>
+
+-> <variable__access>
+<schema__access__list> .
+
+=> ( <index__expression> '’ )¥ <schema__access__expr>
+<schema__access__expr>
+
+-> <disriminant__value> 'FOR' <discriminant_length>
+<index__expression>
+
+-> <expression> '
+<discriminant__length>
+
+-> <expression>
+
+NOTE: Only <schema__access__ List> -> <schema__access__expr> will be permitted in the
+next several releases. Also, the following restrictions are being considered: 1) Discriminated
+schema access only permitted with one -dimensional schemas and 2) <discriminant__length> must
+be a constant (e.g., DiscSchemaVvaiue[x FOR 5]).
+
+A <discriminated__schema__value> is any variable, parameter, or constant which has a dis~
+criminated schema as its type denoter. A <discriminatgd_schema_access) selects a con-
+tiguous sequence of the components of a <discriminated__schema__vaiue>. This contiguous se-
+quence has a type denoted by another member of the same uniquely discriminated schema as the
+<discriminated__schema__value>. A contiguous sequence of components of any array or <dis~
+criminated__schema> type is just a sequence of components that occupy consecutive storage
+units. That is, for array types stored in row major order, any subrange of the last index type of
+the array defines a contiguous sequence of its components. A subrange can aiso be specified for
+an index type other than the last one. In this case, no following index types may be specified; the
+entire ranges of the following index types are used in order to ensure contiguity. Consider the ’
+following schema, discriminated schema and discriminated schema value: '
+
+TYPE
+" Smaliint = 1..10; ‘
+Schema2D(L 1,U1,L2,U2 : Smallint) = {A schema}
+Array[L 1.U1,L2.U2] OF INTEGER,;
+Square = Schema2D(1,5,1,5); {A disc. schema}
+VAR
+Square 1 : Square; {A disc. schema value}
+
+The discriminated schema access Squarel[4, 3 FOR 3] specifies the 3rd through Sth
+components of the 4th row of Squarel Squarel[2 FOR 2] specifies the entire 2nd and 3rd
+rows of Squarel Clearly, if a schema access expression (1 FOR ) were permitted for the
+
+. second index position of this second example, the selected components would not be contiguous.
+
+Also a discriminated schema access is a discriminated schema value; its type is a member of
+the same schema, but its index types are a subrange of the corresponding index types of the
+original discriminated schema value. For example, Squarel[4, 3 FOR 3] is a discriminated
+
+LY
+Schema Arrays
+schema value; its type is a discriminated schema with its first index type the subrange 4..4and
+’ its second index type the subrange 3..5. This discriminated schema is still 2 member of "the
+schema Schema2D. ‘
+it was mentioned above that a discriminated schema access is only permitted with a uniquely
+discriminated schema. A uniquely discriminated schema is defined as any schema definition
+having two formal discriminants in the formal discriminant part for each schema index type in the
+*  array schema. This means that each of the upper and lower bounds of each index type has its
+own formal discriminant. So the schema Schema2D is uniquely discriminated, whereas the
+schema SmallVec from the preceding discussion of formal discriminants is not. We required ear -
+lier that a discriminated schema access itself be a member of the original schema. This is not .
+guaranteed when the discriminated schema is not uniquely discriminated. To see this, consider
+again the schema SmallVec.
+TYPE .
+Smallint = 0..10;
+SmaliVec(HighBound : Smallint) = ARRAY[0.HighBound] OF REAL; .
+VAR
+Vec7 : Smallvec(7), ,
+Now if we were allowed to use Vec? in a discriminated schema access, say Vec?[3 FOR
+4], then the type of the resulting discriminated schema access would not be a member of the
+schema SmallVec. Any member of SmallVec must have O as its lower bound; however, the
+~ type of Vec?[3 FOR 4] has 3 as its lower bound. Clearly, this is not a member of the schema
+SmallVec. : '
+The following example illustrates the use of discriminated schema access, declaration of a
+uniquely discriminated schema, and schema array parameters.
+PROGRAM Discrm__Schema__Access;
+TYPE o ’
+indexType = 1.12;
+Schema (L1,U1,L2,U2: IndexType) =
+ARRAY [L1.U1, L2.U2] OF ComponentType;
+DiscrSchemat = Schema (1,10,1,12);
+DiscrSchema2 = Schema (3,3,2,8);
+DiscrSchema3 = Schema (2,4,1,12);
+VAR
+DiscrSchema 1Value : DiscrSchema1;
+DiscrSchema2Value : DiscrSchema2;
+- DiscrSchema3value : DiscrSchema 3;
+- PROCEDURE SchemaParm (VAR DiscrParm : Schema); )
+'BEGIN
+END; )
+. u5
+Schema Arrays
+BEGIN )
+’ SchemaParm (DiscrSchema 1Value);
+(*DiscrParm.L1 = 1 v
+DiscrParm.U1 = 10 ' )
+DiscrParm.L2 = 1 '
+DiscrParmU2 = 12%)
+‘ SchemaParm (DiscrSchema2Value);
+SchemaParm (DiscrSchemaiValue[3, 2 FOR 7]);
+(*DiscrParm.t.1 = 3 ’
+DiscrParmUi = 3 ’
+DiscrParmlL2 = 2
+) DiscrParm.U2 = 8%) oo
+SchemaParm (DiscrSchema 1Value[2 FOR 3]);
+SchemaParm (DiscrSchema 3Value); T
+(*DiscrParm.L1 = 2
+' DiscrParmUt = 4
+DiscrParm.L2 = 1
+DiscrParm.U2 = 12%)
+END.
+h. Example
+PROGRAM ShowSchemaArrays,
+- CONST
+' maxsize = 25;
+$include 'other.consts.example’$
+TYPE ' '
+Size = 1.Maxsize; )
+Matrix(Row,Col : Size) = ARRAY [ 1..Row, 1..Col] OF Real,
+) VAR
+A : Matrix(10,5); )
+) B : Matrix(5,10);
+PROCEDURE MatrixMultiply ( )
+VAR A : Matrix;
+READONLY B : Matrix);
+VAR
+1LJ,K : Size;-
+' T :real
+) C :Matrix(A.Row,B.Col);
+46
+Schema Arrays '
+BEGIN (* MatrixMultiply *) ' v ‘
+IF (A.Row = B.Col) _
+OR
+(A.Col = B.Row)
+THEN .
+BEGIN _
+FORI:= 1 TO A.Row DO :
+FOR J:= 1 TO B.Col DO
+BEGIN .
+T := 0.0;
+TRY ‘
+FORK:= {1 TO ACol DO
+T:=T + A[l,J] * B[K.J] .
+RECOVER
+CASE EscapeCode oF
+FitPtOverfiow:
+T = MaxReal, '
+FitPtUnderfiow:
+T := MinReal;
+OTHERWISE
+Escape (BscapeCode); :
+END;
+ClilJ]=T;
+END;
+FORI1:= 1 TO A.Row DO
+FOR J:= 1 TO A.Col DO
+A[LJ] := C[I,J]; (¥return funky results¥)
+' END v
+ELSE
+Escape (BadMatrix); '
+END; (* MatrixMultiply *)
+BEGIN
+MatrixMultiply (A,B);
+END. .
+. 47
+Objects
+4. Objects » :
+a. Introduction '
+
+The HP 3000 and Vision Computer families are segmented
+machines. It is impossible to place Pascal variables in data )
+segments/objects, §o the type classes object and offset have been
+placed in MODCAL to correct this deficiency.
+
+An object is a contiguous sequence of SU’s numbered from
+zero to some maximum. An object may be dynamically created and
+destroyed, and its lifetime 1is independent of any Pascal
+scope. Upon creation, an object is given an initial size and a
+maximum size in SU’s. An object may grow up to its maximum size and
+may shrink down to zero. Each object has a compile-time defined
+storage area in its first n SU’s, where n is the size of this
+static area (which may be O, e.g. RECORD END). The remaining space '
+in the object may be used as the programmer chooses.
+
+A pointer in MODCAL is composed of +two parts: an object
+specifier and an offset. An object specifier is declared and
+used much in the same way that pointers are used. The symbol
+used for dereferencing an object specifier is '%’, while the
+symbol used for dereferencing pointers is ’~’. A dereferenced ob- .
+Ject specifier with an offset forms a pointer. An offset is useless
+in referencing data without a dereferenced object specifier.
+
+Note: Heap pointers in MODCAL/3000 do not have the same under- |
+lying representation as an object, offset pair.
+
+48 ' :
+: Objects
+b. Syntax Additions ‘ A
+Objects require the following changes to the syntax charts for
+Pascal:
+variable '
+
+—eecdomc—————-------> variable id --------------c-ccrme——->+
+| |
+4ecccccccnccnccncaae> field id =-mece-mmcccccccconccaoa>4
+| |
++--> object var -> %’ -+-> *(’ -> offset var -> )’ -->+
+
+' | |
+v v
+T L s
+|
+R e e T e
+| I
++--> ’[* -+--> expression =+--> ]’ -------->+
+| - | |
+I | v |
+| $mmmmn 0, ooy |
+| ‘ |
+#==> *,% ceuo> field id mm=mmmmm—momememoeoo>d ;
+| | |
+[P S ol e b T
+| : ‘
+v ,
+or in grammar notation:
+<variable>
+-> <object_var> %’ ( ’(’ <offset_var> )’ )?
+' <object_var>
+-> <variable> ,
+<offset_var>
+-> <variable> ‘ ’
+Objects ‘ ' ‘
+type .
+
+-=+-=> gimple type -----c-ce-ceccmccmccccmcccccce e3>
+| , ”
+$ommmmmccccmccmcgedmn> N cccccccccoc4-> type id -3+
+
+o | -, | -
+4<-= "PACKED’ --+ #-=> %’ cocemcomccoooy |
+| I | |
++<- 'CRUNCHED’ -+ +-> °OFFSET’ -> ’'TO’ -+ |
+| . I
++--> *ARRAY’ --> '[® -+--> simple type -+--> ']’ -+ |
+| . | I
+
+' | == P, Comecceeg I
+| I
+[ T e e |
+I |
+| +-=> *0F’ --> type -==-=-cc-cccccmccccncnancnnnea>
+. .
++--> ’FILE® --> *OF°’ --> type -------c-ec-c-memmmaeuo>4
+‘ | ‘ |
++-=> ’SET’ --> *OF’ --> simple type ------====-==c=c=>+ |
+: | ' o
+| +--> *RECORD’ --> field list --> ’END’ =--c-====-e-co>4
+I |
++--> schema arrays =-------=-cccemccrcrcmmcnccncncnann>
+or in grammar notation: e '
+<1;ype> .
+-> <gimple type>
+-> ( ’PACKED’ | ’CRUNCHED’ ) <type>
+o => (*** | % | "OFFSET’ 'TO’* ) <type id>
+-> ’ARRAY’ ’[> ( <simple_type> list Ty '°r
+*OF’ <type>
+-> °FILE’ °OF’ <type>
+-> °’SET’ ’'OF’ <type>
+-> °’RECORD® <field list> ‘END’
+-> <schema_definition> _
+’ -> <discriminated_schema> _
+<statement>
+_ -> 'WITHOBJECT® ( (<object var> ’%’) list °,’ )
+’DO’ <statement>
+50 |
+Objects
+c. Object/Offset Model .
+VAR objl : % type namel; ‘ ‘
+. obj2 : % type_name2;
+off : OFFSET TO type_namel;
+ptrl : © type_namel; ‘ - '
+ptr2 : ~ type_name2;
+objl ====>4t=-c--cccccccncodt ===
+|1l objs o
+1l || : Static Area
+| |I{ type_namel }II :
+S off  |+----meemmeemeem4]
+. |
+o |
+o |
+z==> |4emmmmmmmmmme o] 2
+:{ objl%(off)" }! :
+|1{ type_namel }|| GetObjectSize(objl)
+[#==mmmmmmmcmeeet] .
+| I .
+ptrl ====>44e-coco-cmcmooeotd 3
+Il ptr1t 0o |
+I =
+|I{ type_namel }|| :
+[#ommmm S| :
+| |
+B S
+obj2 ====>++--------------;++ ——
+| Il objek I
+|  |I{ type_name2 }|| : Static Area
+| |4=--mmmmmeeees|
+off | | ,
+I I
+|| |
+. I
+Y PR [
+Il obj2k(off)~ Il
+I || GetObjectSize(obj2)
+[1{ type_namel }|| :
+ER TR EEETEES B _ ‘
+| b 4
+I b
+Ptr2 ====s>tt--ccccomemeecendd 3 ‘
+Il ptr2® |
+[1{ type_name2 }|| :
+R et B
+- o ' |
+4o—cmmecmecm—e——et -eo ,
+. 51
+Objects
+d. Semantic Definition
+Consider the following MODCAL block: _
+TYPE '
+Foo = RECORD
+intl, int2: integer
+END; '
+Obj = %Foo; :
+: OffsetInt = OFFSET TO integer;
+VAR
+
+systable : Obj;
+
+£ : Foos
+
+off : Offsetint;
+
+errcode : integer;
+
+BEGIN | ‘
+: CreateObject(systable,100,100,errcode); .
+IF errcode = 0 THEN _
+
+BEGIN
+
+systable%.intl := 1; ,
+
+systable%.int2 := systable¥k.intl;
+
+f := systablef; '
+
+MakeOffset(off, SUSizeof(Foo));
+
+WITHOBJECT systable% DO :
+
+off” := T3 ‘
+END; '
+
+This declares systable as an object variable of type ’Obj’
+with a static area containing +two integers. The notation
+systable% denotes systable’s static area and is a variable of
+type Foo. The notation systable%(off) denotes a pointer of type
+~“Integer. The first statement of the program stores a 1’  into
+the first integer of the static area, and the second statement
+copies the value of the first integer into the value of the second
+integer in the static area. The third statement copies the entire
+static area into f. The final two statements have the effect of
+placing a seven following systable’s static area. See the sec-
+tion on pointer arithmetic for the definition of MakeOffset.
+
+As an abbreviated notation, a dereferenced object variable, sys-
+table%, can be used as a variable in a Withobject list. In this use,
+one can denote an offset in systable or part of systable’s static
+area without having to qualify the offset or static area field
+name with systable for the scope of the Withobject statement.
+
+Note: On the 30‘00, only one object variable can be used in a .
+Withobject list. ' ‘
+
+52
+- Objects
+
+The assignment and compatibility rules for objects and
+offsets are the same as for pointers in Pascal. 4
+
+, 53
+Objects ' _
+e. Object Manipulation :
+The following predefined  procedures which operate on
+objects have been defined. ,
+PROCEDURE Createobject (
+VAR object : objectform;
+size : ObjectSize;
+maxsize : ObjectSize;
+
+VAR status : errorcode);
+
+' The var parameter object contains the object number of
+the object created. = The parameter size is the initial al-
+location of space given to the object, and the parameter maxsize
+is the maximum number of storage units that the objeet may
+grow to. The var parameter status is an integer which indi-
+cates the success of the operation (zero (0) = success).
+PROCEDURE AlterObjectsize ( '
+
+object : objectform; ‘
+
+newsize : ObjectSize; )
+
+VAR status : integer);
+
+' This predefined procedure alters the size of an object.
+The var parameter object is the object whose size is to altered,
+the value parameter newsize is the new size of the object, and the
+var parameter status is an errocode vwhich indicates the success
+or failure of the operation (zero (0) = success). If the newsize is
+greater than the maxsize given in the call to Createobject, then the
+results are system dependent. ‘
+
+PROCEDURE DestroyObject ( ‘
+
+VAR object : objectform;
+
+VAR status : integer);
+
+This predefined procedure returns an object to the operating
+system. The var parameter object is the object to be returned, and
+the var parameter status is an integer which indicates the success
+or failure of the operation (zero (0) = success).
+
+Because target machines may provide more powerful operations
+on objects through operating system intrinsics or a user may want to
+gain access to an object maintained by the operating system or some
+other user, the following operation is provided. _ :
+
+PROCEDURE AttachObject (
+
+VAR object : objectform;
+
+id : objectid;
+
+VAR status : integer);
+
+or
+54 |
+- . Objects
+
+PROCEDURE AttachObject ( '
+VAR object : objectform; . . '
+id : objectid );
+' ‘This predefined procedure places the value parameter id into the
+
+var parameter object, and returns the success or failure of the
+
+operation in the var parameter status (zero (0) = success). It is
+
+assumed that id is the object number of an already existing operating
+
+- system object. 8
+
+FUNCTION Stack
+
+: objectform;
+
+This predefined function returns an object that corresponds to :
+the active process stack. The type of the object returned is struc-
+turally compatible with any object having a fixed part with Sizeof
+equal to zero. . X
+
+FUNCTION CurrentObject , '
+
+: objectform;
+
+This predefined function returns an object that corresponds to
+the object refence of the most resently executed WITHOBJECT clause. '
+The type of the object returned is structurally compatible with any
+object having a fixed part with Sizeof equal to zero. MODCAL/3000
+will insure that DB points to this object when any procedure or func-
+tion with a directive of EXTERNAL SPL is called.
+
+FUNCTION GetObjectId ( :
+Object: objectform
+): objectld; :
+
+This predefined function returns the “"object id" of the object
+denoted by the value parameter object (basically the inverse of
+AttachObject). -
+
+FUNCTION GetObjectSize (
+Object: objectform
+‘ ): ObjectSize; _
+
+This predefined function returns the number of SU’s currently
+allocated to the object denoted by the value parameter object.  If
+Stack is passed to GetObjectSize the size of the currently accessable
+area is returned (HP3000 : S-DL, VISION : S-SB).
+
+f. Pointer Arithmetic
+
+The following predefined functions are provided to permit point-
+er arithmetic. The types ObjectSize and ObjectDelta are defined in _
+the portability foundation section. '
+
+' 55
+Objects
+PROCEDURE MakeOffset (
+
+VAR offsetvar : offsetform;
+
+value : ObjectDelta);
+
+The var parameter offsetvar is made to point to the variable
+beginning at the storage unit position given in <the value pa-
+rameter value.
+
+FUNCTION AddToOffset ( '
+offsetvar : offsetform;
+delta ¢ ObjectDelta
+
+): offsetform;
+
+This predefined function adds the value parameter delta to the
+value parameter offsetvar and returns this value. The type of offset
+returned is identical to the type of the offset parameter.
+
+PROCEDURE MakePointer ( .
+, VAR ptr ¢ pointerform;
+object : objectform;
+‘ offset : offsetform); .
+
+This procedure constructs a pointer from the value parameters
+object and offset, and returns the constructed pointer in the var pa-
+rameter ptr. The reference type of the offset type and the pointer
+type must be identical. MODCAL/3000 requires that the object parame-
+ter be equal to the object returned by Stack.
+
+PROCEDURE BuildPointer (
+
+VAR ptr : pointerform;
+
+object : Objectld;
+offset : ObjectDelta);
+
+This procedure constructs a pointer from the value parameters
+object and offset, and returns the constructed pointer in the var pa-
+rameter ptr. MODCAL/3000 requires that the object parameter be equal
+0. This procedure is intended to replace a sequence of: AttachObject,
+MakeOffset, MakePointer.
+
+FUNCTION AddToPointer (
+ptr : pointerform;
+delta : ObjectDelta
+
+): pointerform; ‘
+
+This predefined function returns a pointer wvalue which
+points delta - storage units away from where the value parameter ptr
+originally pointed. The type of the pointer returned is identical to ,
+the type of the pointer parameter. )
+
+56
+. Objects . :
+- FUNCTION OffsetPart ( o
+ptr : pointerform :
+): offsetform;
+This predefined function returns the offset part of the pointer
+parameter. The offset has the same reference type as the pointer.
+FUNCTION ObjectPart (
+ptr : pointerform :
+): objectform;
+This predefined function returns the object part of the pointer
+parameter. The object has the same reference type as the pointer.
+The meta-types "pointerform”, “objectform", and “offsetform" are
+used above to indicate that these predefined procedures and functions
+will accept and return any form of pointer type, object type, or off-
+set type.
+. 57
+Crunch Packing ‘
+§. Crunch Packing )
+
+The word ’crunched’ has been added to the reserved word liéf
+to indicate that the components of a structured type are allocated
+contiguously, first to last in a bit-aligned fashion. . Components may
+cross any arbitrary machine storage unit boundry. The word ’crunched’
+may be substituted for the word ’packed’.
+
+Example
+TYPE t = CRUNCHED RECORD
+a:0..15; :
+b : -3276T7 .. 327673
+¢ : #0 .. #255; {currect Char subrange)
+END;
+
+MSB LSB
+dodododod ot ot od oot bttt
+laaaalbbbbbbbdbbd bl
+e e et e e R et ot T3
+lbbbbleceececee clXXX| :
+S R e R s s s s it R RS ,
+
+Layout of type crunched type t (assuming 16 bit SUs)
+
+(note: the value of XXX is undefined) B
+
+The number of bits used to represent each component of a crunched '
+structured type is the minimum needed to represent the values associated
+with that component. The calculation for the minimum number of bits is:
+
+Integer Based Types (lo .. hi)
+
+if (lo <> 0) or (hi <> 0)
+then ceil(log2(max({abs(lo),succ(abs(hi))))) + ord(lo < 0)
+' else 1
+
+Character & Enumerated Based Types (lo .. hi)
+
+if ord(hi) > 0
+then ceil(log2( succ(ord(hi)) ))
+"else 1
+
+Set Types (SET OF lo .. hi)
+succ(abs{ord(hi) - ord(lo)))
+
+Record, Array & Nonimbedded Descriptor Types
+The sum of the minimum number of bits to represent all
+
+- of the components (consider largest variant only).
+
+For example, it would take only four bits to represent a component
+with the subrange type O .. 15 or the subrange type 14 .. 15, but it
+will take five bits to represent a component with the subrange type -1
+
+) . 1h Ld
+58
+' - Crunch Packing ’
+
+The restrictions which apply to packed types also apply to crunched
+types. This means that record comparisons are not allowed. . In addi-
+tion, it is not legal to pass by reference a component of a crunched
+
+~ structured type to any procedure or function.
+
+The primary purpose of crunch packing is to provide an implementa-
+tion invariant specification of the data item type to data item
+representation mapping. The implementation invariant requirement neces-
+sitates the restrictions listed below.
+
+No file types or any structured type containing any file, real,
+string, or reference types may be crunch packed.
+
+Any structured type contained in a crunched structured type must be '
+crunch packed also. »
+
+No structured type containing an Integer or Char may be crunch
+packed. The range of these predefined types may be changed in the fu-
+ture. The user can always replace the types Integer and Char with a sub-
+range type. .
+
+NOTE: Crunched structures are temporarily required to be less than
+or equal to 2048 words (16 k-bits) in length.
+
+59
+Move Procedures ' ‘
+6. Move_R_to_L & Move L_to_R Predefined Procedures .
+
+The Move predefined procedures provide generalized array structure ,
+copying mechanisms in MODCAL. The syntax of the Move procedures is :
+identical to the syntax of the StrMove predefined procedure. The seman-
+tics of the Move procedures are presented below in a Meta-MODCAL form.
+The lower case identifiers denote the meta-parameters of the semantics.
+The actual parameters to a Move are (structurally) type coerced to match
+the formal parameters by the compiler.
+
+TYPE
+COUNT RANGE = 1 .. MAXINT;:
+SOURCE_TYPE (MIN, MAX : INTEGER) = '
+source_packing ARRAY [MIN .. MAX] OF component_type;
+TARGET TYPE (MIN, MAX : INTEGER) =
+target_packing ARRAY [MIN .. MAX] OF component_type;
+PROCEDURE move r to_l move 1 to_r (
+MOVE_CNT : INTEGER;
+READONLY SOURCE : SOURCE_TYPE;
+SOURCE_BIAS : INTEGER;
+VAR TARGET : TARGET TYFPE;
+TARGET BIAS : INTEGER
+) OPTION INLINE;
+VAR ,
+LOOP_CNT,
+: LOOP_LIMIT : COUNT_RANGE;
+60 .
+l | Move Procedures
+BEGIN { MOVE Semantics )} o
+IF MOVE_CNT > O THEN .
+BEGIN { Move Some Components )}
+LOOP_LIMIT := Pred (MOVE_CNT);
+Assert (SOURCE_BIAS | >= SOURCE.MIN, 0, move_error);
+Assert (SOURCE_BIAS + LOOP_LIMIT <= SOURCE.MAX, O, move_grror);
+Assert (TARGET BIAS >= TARGET.MIN, 0, move_error);
+Assert (TARGET BIAS + LOOP_LIMIT <= TARGET.MAX, 0, move_error);
+CASE move_r to_l move_ 1 to_r OF A _
+MOVE_R TO L:
+FOR LOOP_CNT := LOOPLIMIT DOWNTO 0 DO
+TARGET [LOOP_CNT + TARGET BIAS] :=
+SOURCE [LOOP_CNT + SOURCE_BIAS];
+MOVE_L_TO R:
+FOR LOOP_CNT := 0 TO LOOP_LIMIT DO
+TARGET [LOOP_CNT + TARGET BIAS] :=
+SOURCE [LOOP_CNT + SOURCE_BIAS];
+END; { CASE } '
+END; { Move Some Components }
+END; { MOVE Semantics }
+The interpretation of each of the meta-parameters is given below:
+componént_type '
+This meta-parameter permits the basic generality of each Move, ’
+such that the only restriction on component_ type is that it
+is identical for source and target.
+source_packing v '
+This meta-parameter permits the source to be unpacked, PACKED,
+or CRUNCHED independent of target_packing. ’
+target packing
+This meta-parameter permits the target to be unpacked, PACKED,
+or CRUNCHED independent of source packing.
+move_error
+This meta-parameter permits implementation flexibility, such that
+the method of signalling the error is not defined beyond that it is
+signaled.
+move r_to_l1 move_ 1 to r
+This meta-parameter permits the description of both Move R fo L
+and Move L _to_R in the procedure given above. The CASE on this
+meta- parameter selects the component movement semantics for each
+procedure.
+MOVE Procedure Example
+61
+Move Procedures ‘ ‘
+MODULE MoveExample; :
+'IMPORT OtherModule; |
+EXPORT
+PROCEDURE ExampleProc;
+IMPLEMENT | |
+TYPE
+IxTypel = 0..20;
+IxType2 = -3..17;
+‘ Schemal (L,H : IxType2) =
+ARRAY [L..H,IxTypel] OF ImportedType;
+Schema2 (L,H : IxTypel) = :
+CRUNCHED ARRAY [L..H] OF ImportedType;
+Discrml = Schemal (0,15);
+Discrm2 = Schema2 (5,10);
+Arrayl = PACKED ARRAY [IxTypel] OF ImportedType;
+Array2 = ARRAY [IxType2,IxTypel] OF ImportedType;
+VAR '
+DVarl : Discrml;
+, DVar2 : Discrm2;
+AVarl : Arrayl; ’
+AVar?2 : Array2; _
+PROCEDURE ExampleProc;
+VAR
+ix : Integer; } : ‘
+BEGIN
+Move L to R (10,DVarl,6,AVar2,0);
+FOR ix := 0 TO 9 DO {equivalent FOR loop)
+AVar2[ix] := DVarl[ix+6];
+Move L to R (5,Avar2[5],-3,AVarl,-3);
+FOR ix := 0 TO 4 DO {equivalent FOR loop)
+AVarl[ix-3] := AvVar2[5,ix-3];
+Move R to_L (6,DVar2,5,AVarl,5);
+v FOR ix := 5 DOWNTO 0 DO {equivalent FOR loop)
+AVari[ix+5] := DVar2[ix+5];
+END;
+END. :
+62 ‘
+‘ ‘ ' XCall Mechanism ‘
+7. XCall Mechanism ' . .
+_ - EXtermely Flexible Procedure CALL Mechanism
+a. Background ‘
+- Some system software needs to call routines whose identity and
+parameter list structure are COMPLETELY UNKNOWN until the system is
+executing. The unknown structure of the parameter list makes the
+strong type checking of CALL/FCALL inadequate for this SMALL class of
+system software. The predefined procedure XCall was included in BCG
+MODCAL to support ONLY this small class of system software. The por-
+tability of XCall is limited by the requirement that the system
+programmer provide for the (machine dependent) structuring of the pa-
+rameter list. The use of this feature should be VERY limited.
+b. Definition :
+
+' The following procedure declaration describes the calling se-
+quence and semantics of the XCall predefined procedure. The defini-
+tion of a supporting predifined procedure, predefined types and a
+compiler option are described in a later section. Not all parameters
+or operations of XCall may be supported on all target machines (e.g.
+del_cnt for VISION), their use may be flagged.
+
+Simply XCall checks the given preconditions. Copies a parameter
+list from a buffer built by the system software into the "parameter-
+area" of the target machine (e.g. the stack for the HP3000).
+Invokes the routine denoted by the procedural variable paramenter.
+The invoked routine may or may not clear/delete part of the
+“parameter-area”. When the invoked routine completes (a machine
+dependent) part of the "parameter-area” may be copied into a buffer.
+Finally the "parameter-area" is cleared/deleted and XCall completes.
+
+. | 63
+'XCall Mechanism ‘
+PROCEDURE XCall ( ‘
+: proc_var : NullProc;
+ANYVAR in buf : SU; '
+in_cnt : ObjectSize; ,
+) del cnt : ObjectSize;
+ANTVAR out_buf : SU;
+' out_cnt : ObjectSize ' :
+)
+- OPTION ‘
+Inline '
+Default Parm (
+in buf := NIL,
+' in ent := 0,
+del cnt := O, ,
+out_buf := NIL,
+out_cnt := 0);
+BEGIN
+ASSERT (proc_var <> NIL s XCALL_err);
+ASSERT (in_cnt >= (del_cnt + out_cnt) » XCALL err); ‘
+ASSERT ((in_cnt = 0) OR (HaveOptVarParm(in buf)) , XCALL err);
+ASSERT ((out_cnt = 0) OR (HaveOptVarParm(out_buf)), XCALL err);
+{COPY in_cnt SUs FROM in_buf INTO "PARAMETER-AREA" }
+{INVOKE proc_var}
+{COPY out_cnt SUs FROM "PARAMETER-AREA" INTO out_buf)
+~ {CLEAR/DELETE in_cnt - del_cnt SUs FROM "PARAMETER-AREA")
+END;
+c¢. Supporting Definitions ‘
+’ The MakeRoutine predefined procedure is intended to provide a
+mapping from a target machine dependent form to a target machine in-
+dependent (language encapulated) form for procedural variables. If
+the mapping can not made "proc_var" is set to NIL. '
+64 '
+| . : XCall Mechanism ’
+o PROCEDURE MakeRoutine ( : .
+VAR proc_var : NullProc; o .
+plabel val : PLabel
+)
+OPTION
+Inline .
+Type_Coerce_Parms ( : '
+proc_var := ’Similar Form');
+; BEGIN
+{MAP plabel val INTO proc_var}
+END3
+The following type PLabel is added to the foundation module for
+each target machine (operating system).
+TYPE ’
+PLabel = -32768 .. -1; (*HP3000 - CST ext.*)
+PLabel = -32768 .. 32767; (™HP3000 + CST ext.*)
+_PLabel = MinInt .. MaxInt; (*VISION*)
+The type NullProc is any user procedural type variable with no
+parameters. For example: ‘
+TYPE
+: NullProc = PROCEDURE; ,
+: The XCALL MACHINE compiler option denotes to the compiler and
+the system programmer which target machine’s parameter passing con-
+ventions are used in any XCalls. This option must specify the same
+‘ target machine name as the $TARGET MACHINE compiler option did. This
+option may appear anywhere between tokens. It must appear and must
+specify a value other than ’NONE’ before any XCall is encountered.
+It should also be used to "bracket" any code used to build parameter
+lists.
+$XCALL_MACHINE *NONE'$ {default}
+$XCALL MACHINE *HP3000°$
+, : $XCALL_MACHINE ’VISION’$
+d. XCall Example (HP3000)
+. 65 .
+XCall Mechanism
+TYPE
+’ NoParms = PROCEDURE; :
+7 VAR |
+i,j,k : INTEGER,;
+buffer : ARRAY[1.3] OF INTEGER;
+FUNCTION Min__Int (parml,parm2 : INTEGER). INTEGER;
+EXTERNAL; 2
+BEGIN
+$XCall__MACHINE °HP3000’$ :
+' buffer[1] := 0; {function return space} :
+bufferf2] = i;
+buffer[3] := j;
+$SPUSH,TYPE__ COERCION 'REPRESENTATION'S
+. ——
+XCall (NoParms{(Addr{Min__Int) ), ,
+buffer, 6, {pushed onto stack}
+4, {EXIT 4 from Min__Int}
+k,2); {poped from stack} '
+‘ $POP,XCALL__MACHINE 'NONE’$ :
+END;
+66
+~ Multipie Heaps
+8 Mul;iple Heaps NOT IMPLEMENTED . : , |
+However, routines can be written to manage MODCAL objects in a "heap-like” fashion, by
+manipulating offsets. .
+' I\ _
+/[ \_/\
+/ THE \
+/ HEAP |\
+o Mmoo
+/ \_/\ /[ \_/\
+/ other \ / other \
+/ Heap #1 \ / Heap #2 \
+| o o
+/ \_/\ /LN
+/ other / other \
+/ Heap #3 \ / Heap #4 \
+67
+Multiple Heaps . '
+E. Standardized Modules :
+1. Portability Foundation | . '
+
+In order to assist the programmer in writing programs which will
+be portable between various machines, MODCAL must provide facilities for
+determining attributes of the targeted computer architecture. This
+section describes a set of predefined types, constants, and functions which
+will provide this function. These facilities are essentially a subset of
+the portability facilities found in Ada.
+
+The cornerstone of these facilities is the notion of a storage unit
+(sU). A SU is the most useful addressable unit of storage on the tar-
+get machine. All memory-related features of MODCAL (e.g., pointers, off-
+sets, and objects) are defined in terms of SU’'s and many of the
+predefined functions work in terms of SU’s.
+
+In MODCAL/VCF integer is the default size for arithmetic expressions;
+No expression will use Longint arithmetic unless a variable or constant of
+Longint is 1in the expression. Thus it ©possible to have arith-
+metic traps on expressions involving only the integer type. Longint will
+only be supported on Vision. The assignment compatibility rules which
+apply to type integer also apply to type shortint and longint.
+
+Note: LongInt constants MaxLongInt or MinLonglnt or any constant ‘
+
+. which needs more than 32 bits of storage WILL NOT be available on the
+MODCAL/VCF cross compiler. 7
+
+Floating point is not generally required for  systems program-
+ming and so will not be addressed in this proposal.
+
+Using the Sizeof function instead of absolute, hardcoded constants
+will aid in portability, since the values will automatically be adjusted
+when a program is recompiled for a different target machine. In
+addition to Sizeof, MODCAL/3000 and MODCAL/VCF have: i
+
+Bitsizeof(t) Gives the minimum number of bits reéuired to
+represent a variable of type t. v
+
+Bitsizeof(tl, t2, ... ,tn) Gives the minimum number of bits
+required to represent a variable of type tl with tag field values t2, ... ,
+tn.
+
+BitSizeof(sl, s2, ... ,sn) Gives the minimum number of bits required
+to represent a variable of the discriminated schema type select from the
+schema array sl with discriminate values s2,...,sn. ,
+
+SUsizeof (t) ‘
+
+SUsizeof (t1, t2, ... ,tn) ,
+
+68 ‘ '
+. | :  Portability Foundation
+SUsizeof is similar to Bitsizeof but returns the storage size in SU .
+units instead of bits.
+The following are the predefined types and constants. The exact
+values of these types and constants are indicated below: , -
+
+a. HP3000 Foundation
+
+CONST
+MachineName = *HP3000’;
+
+Minint = -2147L483648; (* -2%%31 *)
+Maxint = 21LTU8364T; (* (2%*31)-1 %)
+: MaxObjectSize = 32760; (* maximum number of SUs in a HP 3000
+: object *)
+
+TYPE
+
+SU = -32768..32767T; (* A type requiring a SU of space *)
+- (* 16 vits on HP 3000 *)
+
+PointSU = “SU;
+
+OffsetSU = OFFSET TO SU;
+
+ObjectSize = 0..MaxObjectSize;
+
+ObjectDelta = -MaxObjectSize..MaxObjectSize;
+
+ShortInt = -32768..32767; (* 16 bit, 2’s complement integer *)
+
+Integer = Minint .. Maxint; ‘
+
+Objectid = Shortint;
+
+b. Vision Foundation
+
+CONST ‘
+MachineName = ’Vision’;
+
+Minint = -2147483648; (* -2%%31 %)
+
+Maxint = 21474836LT; (* (2%*31)-1 *)
+
+MaxObjectSize = Maxint; (* maximum number of SUs in a Vision
+object *)
+
+{the following 2 constants are not implemented in the cross compiler}
+Maxlongint = 9223372036854775807; (* (2**63)-1 Vision only")
+Minlongint = -9223372036854775808; (* -(2**63) Vision only *)
+
+TYPE '
+
+SU = 0..255; (* A type requiring a SU of space *)
+
+(* 8 bits on VCF *)
+PointSU = “SU;
+OffsetSU = OFFSET TO SU;
+ObjectSize = 0..MaxObjectSize;
+ObjectDelta = -MaxObjectSize..MaxObjectSize;
+ShortInt = -32768..32767; (* 16 bit, 2’s complement integer *)
+Integer = Minint .. Maxint;
+LongInt = -Minlongint .. Maxlongint; (* VCF machine only *)
+
+. 69
+Portability Foundation - '
+Objectid = Integer; - v
+T0
+. ’ Assembly Language
+2. Assembly Language ' :
+A set of ©predefined procedures will be provided,
+which when seen by the compiler, will emit instructions that are
+not normally generated, such as SINC, and DISP on the HP 3000,
+and PROBE on VCF. This set of predefined procedures is in the :
+process of being determined. The list given here is for Version
+5 of the Vision emulator only. .
+The normal method for accessing assembly language is to
+compile the code into a SPL procedure on the HP 3000, or using
+the assembler on Vision. :
+a. HP3000 Predefined Procedures
+TYPE ‘
+Word = ShortlInt; { SizeOf = 2 }
+PAC = Any Packed Array of Char
+: or String
+Function GetDl : Word; .
+" Function GetQ : Word;
+Function GetS : Word;
+Function GetStatus : Word; _
+Procedure PutQ (Q_val : Word); {NOT IMPLEMENTED})
+Procedure PutStatus (Status_val: Word);
+Procedure MoveBytesWhile (var Source,
+Target: PAC;
+Alpha, Numeric, UpShift: Boolean;
+var Position: Word);
+Function ScanWhile (var Source: PAC;
+TestChar, TermChar: Char;
+var Position: Word) : Boolean;
+Function ScanlUntil (var Source: PAC;
+TestChar, TermChar: Char;
+var Position: Word) : Boolean;
+Function CmpBytes ( Len: Word;
+var Source,
+‘ Target: PAC
+) ¢ Word; .
+b. Vision Predefined Procedures
+TYPE '
+' Byte = (opl, op2, op3); { SizeOf =1 )}
+Byteld = Integer; { SizeOf = 4 }
+‘ Byte8 = LonglInt; { SizeOf = 8 }
+Procedure Break; ,
+Procedure CIS ( Channel: Byte;
+' Status: Byte
+var ConditionCode: Byte);
+71
+Assembly Language v
+Procedure CmpC ( Length: Bytel;
+' o StriPtr: Byte8; ' .
+Str2Ptr: Byte8; ‘
+. var Index: Bytel; _
+, var Result: Bytel);
+Procedure CvLATVA ( Operand: Byte;
+. var GSVA: Byte8);
+~ Procedure CuVATFP ( GSVA: Byte8;
+var Physicalpage: Bytel);
+Procedure Disable; :
+Procedure Disp;
+Procedure Down (var Semaphore: Bytel);
+Procedure Enable;
+Function GetQ: Byte8; :
+Procedure Halt Inst; .
+Procedure Hash ( GSVA: Byte8;
+var HashIndex: Bytel);
+Procedure IEBxit;
+Procedure Interrupt (var 0ldIntVal: Byte);
+Procedure IfC;
+Procedure Idle;
+Procedure ISwitch;
+Procedure Launch (TCBA: Byte8;
+TCBVA: Byte8);
+Procedure MoveFSp4 ( Selector: Byte;
+var Destination: Byteld);
+Procedure MoveFSp8 ( Selector: Byte;
+var Destination: Byte8);
+Procedure MoveSema ( Operand: Bytel;
+var Result: Bytel);
+Procedure MoveTSp4 (Selector: Byte;
+Source: Bytel);
+Procedure MoveTSp8 (Selector: Byte;
+Source: Byte8);
+Procedure PDDel (Physpage: Bytel);
+‘ Procedure PDIns (Physpage: Bytel);
+' Function Probe (Ring: Byte; Access: Byte;
+Address: Byte8;
+Lenght: Byteli): Boolean;
+Procedure PsDb;
+Procedure PsEb;
+Procedure PurgelB;
+Procedure PurgeTLB; A
+Procedure FRCI; ‘
+‘ Procedure RDP ( Channel: Byte;
+var Data: ??7?
+var Length: Byte;
+var Result: Byte );
+Procedure Restore Registers (RegPtr: Byte8);
+Procedure RIS { Channel: Byte;
+var Status: Byte;
+var Result: Byte);
+Procedure RSwitch;
+Procedure Save Registers (var RegPtr: Byte8);
+72
+: - Assembly Language
+Procedure SetIRT (Channel: Byte;
+' Intr_Pri_Level: Byte;
+Parm: Byteld );
+Procedure SetQ Bxit (NewQ: Byte8); _
+Procedure SetQ IExit (NewQ: Byte8); "
+~ Procedure SIS { Channel: Byte;
+Status: Byte;
+var Result: byte);
+Procedure StartI0_Inst (SubChannel: Bytel; '
+‘ ChannelProg: Byte8);
+Procedure Stop;
+Procedure Switch; ]
+Function TestA : Boolean;
+Function TestB : Boolean;
+Function TestDown (var Semaphore: Byteli): Boolean;
+Function TestOv : Boolean;
+Function TestRef (GVSP: Byte8): Boolean;
+Function TestSema (var Operand: Bytel;
+Result: Bytel): Boolean;
+Procedure Up (var Semaphore: Bytel);
+Procedure VsimIn ( ReadCount: Bytel;
+var ActualCount: Bytel;
+BufferPtr: Byte8);
+Procedure VsimOut (WriteCount: Bytel;
+BufferPtr: Byte8);
+Procedure WDP ( Channel: Byte;
+Data: 77?7
+_ var Lenght: Byte); :
+The following Version 3 emulator predefined procedures are
+deleted from the ERS and the compiler:
+Intoff
+ReSetInt
+IExit -
+CheckA
+CheckB
+EditTBL
+EditIB
+AsReset
+GrpZero
+CVLAtVP | - o
+'~ CvVPtPP _ i
+. ‘ : 73
+Appendices »
+Appendix A: Options and Directives
+1. PROCEDURE /FUNCTION DEFINITION OPTIONS
+Definition options specify optional attributes of
+a procedure or function (e.g. method of envoking it)
+as part of the routine head; the form is:
+PROCEDURE proc_name (parm_name : type name)
+OPTION INLINE; ‘
+BEGIN
+END; A
+| the syntax is: .
+<routine_heading>
+-> <procedure_heading> <defn_options> ?
+-> <function_heading> <defn options> ?
+<defn_options>
+- -> ’OPTION’ <defn_opt> +
+<defn_opt>
+-> <option_id> ( <optiom_spec list> | _
+<option_spec_value> ) ?
+<option_id> ‘
+-> <jdentifier> o
+<option_spec_list>
+-> '(* <opt_spec_assoc> LIST ’,” )’
+<opt_spec_assoc> '
+-> <spec_parm_id> ’:=’ <expression>
+<spec_parm_id> |
+-> <jdentifier>
+<option_spec_value> , ,
+- -> <integer>
+Pascal Definition Options
+' not a feature of Pascal
+T4
+Appendices
+MODCAL Definition Options and Restrictions
+(which <option_id>’s can be used together) _
+MODCAL Parameter/Calling ’ Optional Linker
+Keyword Convention Parameters Binding  Other
+{}s
+OPTION ‘ Unresolved {3};
+OPTION Default_Parms{1} {};
+OPTION Default_Parms{l1} Unresolved {3};
+OPTION Inline {4}; .
+OPTION Inline Default_Parms{1} {4}; :
+OPTION Gateway {5};
+OPTION Gateway Unresolved (5};
+OPTION Gateway Default_Parms{1} {5});
+OPTION Gateway Default_Parms{l1} Unresolved {5};
+OPTION Extensible Gateway{2} {5};
+OPTION Extensible_Gateway{2} ' Unresolved {5}:
+OPTION Extensible Gateway{2)} Default_Parms{1} {5}; _
+OPTION Extensible Gateway{2} Default_Parms{l} Unresolved ({5};
+OPTION Interrupt_Parms{1l} {3,6};
+OPTION Interrupt_Parms{l} Unresolved {3,6);
+{1} <opt_defn> -> <option_id> <option_spec_list>
+{2} <opt_defn> -> <option_id> <option_spec_value> ?
+{3} routine is declared on level 1
+{4} routine is non-recursive
+{5} routine is declared in EXPORT part
+{6} PROCEDUREs only
+note : Uncheckable__ ANYVAR can be used with any other
+
+definition option
+a. OPTION Inline ‘
+
+Definition option Inline denotes a procedure or function that :
+will be expanded inline wherever it is invoked. This macro-like ex- :
+pansion removes most procedure call overhead and increases the amount
+of object code generated. This expansion is performed so as to
+retain "Call-By-Reference" where a simple macro expansion would
+result in "Call-By-Name" (i.e. variable parameters work the same with
+OPTION Inline). Inline procedures or functions cannot invoke themsel-
+ves or any other mutually recursive inline procedures or functions.
+
+~ If an inline procedure or function contains any non-inline procedures or functions
+$Private__Proc Off$ MUST BE specified for them. :
+b. OPTION Gateway
+
+Definition option Gateway denotes a procedure or function that
+is a gateway into the MODCAL environment. That is, Gateway
+procedures or functions are MODCAL procedures or functions that must
+support the system defined calling conventions. In other words,
+Gateway is used to denote intrinsics that can be called from any
+
+75
+‘Appendices . : :
+programming language. This definition option can be specified only
+' on level one procedures or functionms. )
+c. OPTION Extensible Gateway
+: Definition option Extensible Gateway denotes a procedure or
+function that is ‘a gateway into the MODCAL environment and that has
+an txtensible parameter list. That is the parameter list has a fixed
+number of non-extension parameters and any number of optional exten-
+sion parameters. The integer value part of this definition option
+specifies the number of non-extension parameters. This definition
+" option can be specified only on level one procedures or functions.
+(see HaveExtension function)
+
+NOTE: This option will be accepted by MODCAL/3000 but it will have
+several special properties. The specification of extension parameters is not supported,
+due to 3000 parameter stacking conventions. Code generated for one of these
+Extensible__Gateway routines expects an EXTERNAL SPL VARIABLE (in
+Pascal/MODCAL) style bit map. This implies that they should be specified as OPTION
+VARIABLE EXTERNAL (in SPL) to BUILDINT.PUBSYS. The bit map is checked just
+before any data references. Any omitted optional parameters are supplied (see Option
+Default__Parms) and any omitted required parameter causes an Escape. This checking
+delay permits the first statement in a routine to be a TRY, so missing parameter escapes
+can be handled,
+
+d. OPTION Interrupt Parms
+Definition option Interrupt Parms denotes a procedure that has
+' its parameter list allocated AS SPECIFIED BY the <option_spec_list>
+part of this option. The <spec_parm_id> denotes the formal parameter
+and the constant <expression> denotes the "activation base relative”
+: offset (on VCF the Q base register relative SU, byte, offset) of that
+parameter. This option can be specified only on level one procedures.
+Theseé procedure have their local variables allocated so as to not
+overlay-any parameters. The consistency of the parameter offsets IS
+NOT CHECKED. No procedure defined with the option may appear in any
+procedure statement. No variable of a procedural type defined with
+this option may appear in any Call. Only the standard activation
+record or stack marker is deleted when this procedure exits.
+
+NOTE: FORM OF PROCEDURE EXIT IS SUBJECT TO REVISION!!!
+
+o ' NOTE: MODCAL/3000 WILL TREAT THIS OPTION AS AN NO OP!!!
+e. OPTION Default Parms . '
+
+Definition option Default Parms denotes which parameters may be
+omitted in any actual parameter list for this procedure or function.
+This is specified by the parameter name. appearing as the
+<spec_parm_id> in the <option_spec_list> syntax, with an assignment
+compatible constant <expression>. If the actual parameter is omitted
+the compiler suppilies the default value for the formal parameter
+corresponding to the position of the omitted actual parameter. This
+
+76 ,
+Appendices
+. requires that the compiler supply all the parameters defined in the '
+
+formal parameter list for every call. Thus any formal parameter that
+does not appear as a <spec_parm id> in this definition option is
+required and can not be omitted from ANY actual parameter list. The
+only default value permitted for a variable (VAR), any variable
+(ANYVAR), procedure, or function parameter is a SPECIAL CASE USE of
+NIL. (see HaveOptVarParm function) - .
+f. OPTION Unresolved '
+
+Definition option Unresolved denotes a procedure or function
+that is left unresolved by both the segmenter/linker and the loader.
+The resolution of the symbolic name to its reference part is delayed :
+until the procedure or function is used (e.g. LOADPROC (); PCAL 0 /
+CALLPROC (); CALLV). The suggested way to use this kind of procedure
+or function is to use Addr to determine if it can be resolved (NIL ‘
+will be returned if it is not). This definition option can be
+specified only on level one procedures or functions,
+
+g. OPTION Uncheckable ANYVAR NOT IMPLEMENTED
+
+Defintion option Uncheckable_ ANYVAR indicates the no "phantom" size-of pa-
+rameter is to be created for the ANYVAR parameters in the formal parameter list. It
+is an error to specify option Uncheckable_ ANYVAR if there are no ANYVAR formal
+parameters. It is not possible to perform checking of ANYVAR parameter accesses if
+this option is specified. The use of this definition option greatly increases the danger of
+undetected errors in the use of ANYVAR parameters. (see Section D)
+h. HaveExtension and HaveOptVarParm Functions
+
+The predefined boolean function HaveExtension indicates for a
+formal parameter name of the surrounding scope whether an actual ex-
+tension parameter was supplied, either explicitly or by default
+
+- (TRUE) or the formal parameter appears after the last supplied actual
+parameter in the parameter list (FALSE). If the formal parameter
+name is not an extension parameter a compile time error is issued.
+
+The predefined boolean function HaveOptVarParm indicates for a
+formal parameter name of the surrounding scope whether an actual pa-
+rameter was supplied (TRUE) or it was defaulted to NIL (FALSE). 1If
+the formal parameter name is not an optional variable, any variable,
+procedure, or function parameter a compile time error is issued.
+
+17
+. Appendices '
+i. Definition Option Example o
+$TARGET MACHINE ‘*VISION'S$
+PROCEDURE UseNewFuncs ( -
+VAR Parml : Typel; :
+VAR Parm2 : Type2 ) ' '
+OPTION
+Extensible Gateway 1
+Default_Parms (
+Parml := NIL, : _ ‘
+Parm2 := NIL );
+BEGIN '
+IF HaveExtension (Parm2) THEN
+IF HaveOptVarParm (Parml) THEN
+IF HaveOptVarParm (Parm2) THEN
+|  {*CALL1 ")
+(* cALL 3 %)
+IF HaveOptVarParm (Parm2) THEN
+(* CALL 2 *) ;
+ELSE ;
+(* CALL 4 *)
+ELSE .
+IF HaveOptVarParm (Parml) THEN
+ (* CcALL 5 %)
+Assert (NOT HaveOptVarParm (Parm2), 3) _
+ELSE '
+(* caLL 6 *)
+Assert (NOT HaveOptVarParm (Parm2), L);
+
+END; . :
+
+{ It is assumed that the following calls to "UseNewFuncs"
+were compiled AFTER its parameter list was extended by '
+the addition of “Parm2" )}
+
+(* CALL 1 *) UseNewFuncs (Varl,Var2);
+(* CALL 2 *) UseNewFuncs (,Var2);
+
+(* CALL 3 *) UseNewFuncs (Varl);
+
+(* CALL 4 *) UseNewFuncs ();
+
+{ It is assumed that the following calls to "UseNewFuncs"
+were compiled BEFORE its parameter list was extended by
+the addition of "Parm2" }
+
+. (* CALL 5 *) UseNewFuncs (Varl);
+(* CALL 6 *) UseNewFuncs ()3
+' 78 .
+Appendices
+2. PROCEDURE /FUNCTION DIRECTIVES
+Pascal Procedure/Function Directives
+*EXTERNAL _
+external SPL 3000 only
+external SPL VARIABLE 3000 only
+external FORTRAN
+external COBOL ‘
+. *FORWARD
+*INTRINSIC :
+MODCAL Procedure/Function Directives
+*EXTERNAL ,
+external ASSEMBLER Vision only NOT IMPLEMENTED '
+a. External
+Directive External indicates that the procedure or function will
+be compiled/assembled by another language processor (default is
+Pascal). The MODCAL language processor assumes that the procedure or
+. function will use the system defined calling conventions.
+NOT IMPLEMENTED
+e b R L e S
+| | EXTERNAL |
+| | - : any : SPL :ASSEMBLER]
+T et et it
+| Gateway | yes |Error|Error| Error |
+|Extensible Gateway | yes |Error|Error| Error |
+|Unresolved | yes | yes | yes | yes |
+|Inline |Error|Error|Error|some day?]
+|Default Parms | yes | yes | yes | yes |
+| Interrupt_Parms | yes |Error| yes | yes |
+|Uncheckable ANYVAR | yes | yes | yes | yes |
+e e e R R
+{ any IN [COBOL,FORTRAN,SPL VARIABLE] )
+b. Forward :
+
+: Directive Forward indicates that the procedure or function body
+occurs somewhere later in the compilation unit. This directive per-
+mits mutually refering procedures and functions.
+
+79
+Appendices
+NOT IMPLEMENTED
+: $oeccmcccmccmceccmcedecmc et
+| | FORWARD |
+e LT T TP
+|Gateway | yes |
+|Extensible Gateway | yes |
+|Unresolved | Error |
+|Inline | Error |
+|Default_Parms |  yes |
+: |Interrupt_Parms | yes |
+|Uncheckable ANYVAR | yes |
+e T LT E LT
+¢. Intrimsic .
+Directive Intrinsic indicates that the procedure or function
+declaration is contained in the system intrinsic file.
+- NOT IMPLEMENTED
+Focmmccmcmemceccemmcjecmem——————t
+| | INTRINSIC |
+e T T
+|Gateway | Error |
+|Extensible Gateway | Error |
+|Unresolved | yes |
+|Inline |  Error |
+' |Default_Parms | yes |
+| Interrupt_Parms | Errer |
+|Uncheckable ANYVAR | yes |
+T i LT LSS
+80
+Appendices
+3. COMPILER OPTIONS ‘ ‘ ‘
+Compiler options specify compilation controls ,
+(e.g. features allowed, disabling run-time checking);
+the form is: '
+$STANDARD LEVEL *BCG_MODCAL’$ :
+PROGRAM prog name;
+PROCEDURE proc_name
+$EXEC_PRIVILEGE 0$
+(parm_name : type_name);
+$BEGIN_CHANGE ’001601°$
+$END_CHANGE ’001601° ,PAGE$
+Pascal Compiler Options
+Compilation Unit Options
+*COPYRIGHT :
+copyright *’° o
+*EXTERNAL :
+* *GLOBAL
+“HEAP_COMPACT ‘
+heap compact ON
+heap_compact OFF
+*HEAP_DISPOSE
+heap_dispose ON
+heap dispose OFF
+*SET
+set *°
+*SUBPROGRAM
+subprogram
+subprogram °’
+*USLINIT '
+Routine Head Options .
+*¥ALIAS ‘
+alias *’
+SYMDEBUG
+symdebug ON
+symdebug OFF
+Any Token Options, Deferred
+*CHECK_ACTUAL_PARM
+check_actual parm 0..3
+*CHECK_FORMAL_PARM
+check_formal parm 0..3
+*CODE
+code ON
+code OFF
+*CODE_OFFSETS : '
+code_offsets ON
+81
+Appendices : ' :
+code_offsets OFF
+. *LINES ) o
+* lines 20, .MAXINT
+*LIST_CODE
+list_code ON .
+list_code OFF
+*PRIVATE PROC :
+privs.‘te _proc ON
+private_proc OFF
+*SEGMENT :
+segment °’°
+*SPLINTR
+' splintr *°
+STATS
+' stats ON
+stats OFF
+*TABLES
+tables ON
+tables OFF
+*TITLE ’ ,
+title *’ ‘
+*XREF
+xref ON .
+xref OFF
+Any Token Options, Immediate
+*ANSI :
+ansi ON
+ansi OFF
+*ASSERT HALT :
+assert_halt ON
+. assert_halt OFF o _
+*ELSE
+else , :
+' *ENDIF
+endif .
+*FONT
+font *°
+*IF
+if L ]
+*INCLUDE ,
+include *’
+*LIST .
+' list ON
+list OFF )
+*PAGE '
+*PARTIAL EVAL
+partial_eval ON
+partial eval OFF
+*RANGE
+range ON A v
+range OFF
+*SKIP_TEXT o
+skip_text ON
+82
+. Appendices
+skip text OFF .
+*STANDARD LEVEL ‘
+standard_level 'ANSI’
+N standard_level 'HP STANDARD’
+B standard_level 'HP3000° ‘
+*WIDTH , .
+width 10..128 :
+: MODCAL Compiler Options
+Compilation Unit Options
+*ACD_VERSION :
+acd_version 3..5
+CRUNCH_PACKING '
+crunch_packing ON
+crunch_packing OFF
+MULTIPLE_HEAPS
+multiple heaps ON
+' multiple_heaps OFF
+INITIAL_EXEC_PROBE '
+initial_exec_probe 0..MAXINT
+OBJECT DEFINITION
+object_definition ON
+: object_definition OFF , ' '
+OPTION_LOGGING
+option_logging ON
+option_logging OFF
+SCHEMA_ARRAYS _
+schema_arrays ON
+schema_arrays OFF
+*TARGET MACHINE
+. target_machine 'HP3000° o
+target_machine *VISION®
+Routine Head Options
+*CALL_PRIVILEGE '
+call privilige 0..3 '
+DYNAMIC SIDE_EFFECTS_OK
+dynamic_side_effects_ok ON .
+dynamic_side_effects_ok OFF
+*EXEC_PRIVILEGE
+exec_privilige 0..3
+PROBE_RESOLUTION (see DEBUG) :
+probe_resolution 'NO PROBES’
+probe_resolution 'ROUTINE’
+probe_resolution *DECISION_PATH’ '
+probe_resolution ’STATEMENT’
+probe_resolution *OPERATION’ ~
+STATIC_SIDE_EFFECTS_OK
+' static_side_effects_ok ON
+static_side_effects_ok OFF i
+UNDEFINED_VAR_CHECKING
+undefined var_checking ON
+undefined var_ checking OFF
+83
+Appendices
+Any Token Options, Deferred .
+BEGIN_CHANGE }
+begin_change *°’
+CHANGE_INFO_WIDTH
+change_info_width 4..30 .
+' END_CHANGE
+end_change °°
+OBJECT_SELECTION
+object_selection ON )
+object_selection OFF
+PROBE_INSERTION
+probe_insertion ON
+probe_insertion OFF
+. SEARCH
+search ’
+TABULATE_CHANGE _INFO
+tabulate_change info ON
+tabulate_change_info OFF
+*TYPE_COERCION
+type_coercion 'NONE’
+type_coercion *STRUCTURAL®
+type_coercion 'REPRESENTATION’
+type_coercion 'STORAGE’
+type_coercion *NONCOMPATIBLE’
+Any Token Options, Immediate '
+INDEX CHECKING
+index_checking ON
+index_checking OFF
+OPEN_SCOPE_CHECKING :
+open_scope_checking ON '
+open_scope_checking OFF ' ‘
+*POP
+*PUSH
+REFERENCE_CHECKING
+: reference_checking ON '
+reference_checking OFF
+*STANDARD_LEVEL
+standard level 'HP MODCAL’ ,
+standard level *BCG_MODCAL’
+SUBRANGE_CHECKING
+subrange_checking ON :
+subrange_checking OFF
+SCHEMA CHECKING
+schema_checking ON .
+schema_checking OFF
+TAG_CHECKING
+tag_checking ON -
+tag_checking OFF
+UNDEFINED PARM CHECKING ,
+undefined parm checking ON
+undefined parm_checking OFF
+*XCALL_MACHINE , _
+xcall machine ’NONE’ ‘
+84
+' Appendices |
+xcall _machine 'HP3000’
+xcall _machine 'VISION’ : 5 ,
+» (*) denotes feature operational in current release MODCAL/3000
+a. ADC Version .
+This compiler option is used to inform the compiler which version of the Vision ACD
+is be used, so that the correct set of assembly instructions is made availible.
+b. Alias |
+| This compiler option substitutes an alias as an external name
+for a procedure or function. See the Pascal/3000 reference manual.
+c. Ansi
+This compiler option causes all non ANSI Standard Pascal fea-
+tures to be flagged. The default setting is OFF. See the Pascal/3000
+reference manual.
+d. Assert_Halt
+This compiler option specifies that when an assertion fails, the :
+program will terminate. The default setting is OFF. See the
+Pascal/3000 reference manual. '
+e. Begin Change NOT IMPLEMENTED
+This compiler option specifies the identifying string to be made the most recent in the change
+history of the source. The change history is displayed to the right of the source line with the
+most resent change closest to the source.. See Tabulate__Change__Info option.
+f. Call Privilege
+This compiler option specifies the least privilege (largest numerical value) that any
+procedure or function may be executing at when it invokes this procedure or function.
+This compiler option provides the functionality of OPTION UNCALLABLE in
+SPL /3000 (HP3000: 0 => Uncallable, 1 => Callable). Default is least privilege on target
+machine (HP3000: 1, Vision: 3). . , :
+g. Change Info Width NOT IMPLEMENTED
+This compiler option specifies the number of characters displayed in each column of the
+change history. Defauit is 8.
+, , 85
+Appendices ' -
+h. Check Actual Parm
+This compiler option specifies the level of checking the
+Segmenter will perform when MODCAL calls a procedure or function.
+The default setting is 1level 3. See the Pascal/3000 reference
+manual. _
+i. Check Formal Parm '
+This compiler option specifies <the level of checking the .
+' Segmenter will perform when a procedure or function is called. The
+default setting is level 3. See the Pascal/3000 reference manual.
+. J. Code
+: This compiler option casues object code to be generated at the
+end of each procedure, function or outer block. The default setting
+is on. See the Pascal/3000 reference manual. _ ,
+k. Code_Offsets v
+This compiler option causes a table of P locations to be printed
+for each statement. The default setting is OFF. See the Pascal/3000
+reference manual. '
+1. Copyright
+This compiler option inserts a copyright notice and the
+specified name in the USL file. See the  Pascal/3000 reference
+manual.
+m. Crunch_Packing NOT IMPLEMENTED
+. Crunch__Packing ON telis the compiler that the Crunch Packing feature of MODCAL will be
+‘ used in the source. OFF tells the compiler that CRUNCHED will not be used; CRUNCHED will then
+be flagged as an error. Defaultis ON. -
+4n. Dynamic_Side_Effects_Ok NOT IMPLEMENTED
+
+This compiler option turns ON and OFF the ability to make modifications to the variables
+referenced by reference types. Default is ON.
+
+o. Else _
+
+This compiler option is used in conditional compilation. If the corresponding $IF ex-
+pression is FALSE, then the source between the $ELSE and the corresponding SENDIF
+will be compiled.
+
+86 _
+Appendices
+p. EndIf
+
+This compiler option is used in conditional compilation. SENDIF signals the end of a
+SIF block or a SELSE block.
+
+q. End_Change NOT IMPLEMENTED
+
+This compiler option specifies the (previously defined) identifying string that is to be removed
+from the change history. If the identifying string appear more than once the most recent is
+removed.
+
+r. Exec_Privilege .
+
+This compiler option specifies the privilege at which this procedure or function will
+execute. This compiler option provides the functionality of OPTION PRIVILEGED in
+SPL /3000 (HP3000; 0 -> Priv-Mode, 1 => User-Mode). Default is least privilege on tar-
+get machine (HP3000: 1, Vision: 3).
+
+s. External
+
+This compiler. option is used with the option Global to permit
+separate compilation of procedures and functions. See Pascal/3000
+reference manual.
+t. Font |
+
+This compiler option is used to change the primary and alternate character set used
+in the listing file (for use with 2680A laser printer) The string parameter is composed of
+2 integers separated by a comma, the first is the number of the new primary set, and
+the second is the number of the new secondary set. Note: the switch between the charac-
+ter set can be done only within comments,
+
+u. Global ‘
+This compiler option is used with the option External to permit
+
+separate compilation of procedures and functions. See Pascal/3000
+
+reference manual. '
+
+v. Heap Compact , :
+
+, This compiler option causes free areas in the heap to be com-
+bined. The default setting is OFF. See the Pascal/3000 reference
+manual. ' .
+
+87
+Appendices -
+i w. Heap Dispose ‘
+
+This compiler option permits disposed areas in the heap to be
+reallocated. ‘The default setting is OFF. See the Pascal/3000
+reference manual.
+
+x. If : '
+
+This compiler option ‘is used in conditional compilation. If the expression in the
+string following the SIF evaluates to the logical value TRUE, then the source between
+the SIF and the corresponding SENDIF or SELSE will be compiled. If the expression is
+FALSE, then the source will be skipped. The expression may include the AND, OR, and
+NOT operators and parenthesis. $IF may be nested to a depth of 16.
+
+y. Include
+
+This compiler option permits the inclusion of another file which
+the compiler will process as source code. See the Pascal/3000
+reference manual. : '
+
+z. Index_Checking NOT IMPLEMENTED ) :
+
+This compiler option turns ON and OFF the generation of checking
+code for array indexing operations. Default is ON.
+aa. Initial Exec_Probe NOT IMPLEMENTED
+
+Not yet fully defined.
+ab. Lines ‘
+
+This compiler option specifies the number of lines that will ap-
+pear on a single page of the listing. The default setting is 55. See
+
+. the Pascal/3000 reference manual. '
+ac. List ‘
+
+This compiler option turns ON and OFF the compiler’s listing.
+The default value is ON. See the Pascal/3000 reference manual.
+ad. List_Code
+
+This compiler option causes a mnemonic listing of the object
+code generated to appear at the end of each procedure, function, or
+outer block. The default setting is OFF. See the Pascal/3000
+
+: reference manual.
+88 A
+. ' Appendices
+ae. Multiple Heaps NOT IMPLEMENTED ‘
+Muitiple__Heaps ON tells the compiler that the Multiple Heap feature of MODCAL will be used in
+the source. OFF tells the compiler that Multiple Heaps will not be used; any use of multiple heap
+features will then be flagged as an error. Default is OFF. Multiple heaps will not be available initial - '
+ly. A .
+af. Object Definition NOT IMPLEMENTED ‘
+Object__Definition ON telis the compiler that Object features will be used in the source. OFF
+tells the compiler that Objects will not be used; any use of object features will then be flagged as
+an error. Default is ON.
+ag. Object_Selection (will be implemented) v
+This compiler option turns ON and OFF special code generation to
+optimize the access of the object most recently selected in a
+WITHOBJECT statement (e.g. on HP3000 calls to ExchangeDB). Default
+is ON.
+ah. Open_Scope_Checking NOT IMPLEMENTED
+This compiler option turns ON and OFF generation of checking code for open scope checking.
+The default value is ON.
+ai. Option_Logging NOT IMPLEMENTED
+This compiler option turns ON and OFF the generation of a statement by statement log file of
+the compiler options in effect. The default setting is ON.
+aj. Page
+This compiler option causes the compiler listing to a line
+printer to perform a page eject and start a new page. See the
+Pascal/3000 reference manual.
+ak. Partial Eval
+This compiler option controls the way conditional (BOOLEAN) ex-
+pressions are evaluated. Default is ON. See the Pascal/3000 reference
+manual.
+al. Pop ’ »
+This compiler option restores the compile option to the state before the last Push.
+89
+Appendices
+1. Compiler Options Unaffected by Pop
+ACD__Version ' -
+Alias _ '
+Call__Privilege
+Copyright ‘ ‘
+Exec__Privilege ' S
+External ’
+Font
+Global :
+Include
+Page '
+Profile__Cnt
+Push
+Segment
+Skip__Text ’
+Splintr ' :
+Target__Machine
+Title :
+am. Private_Proc
+This compiler option is used to make (ON) nested procedures and functions (level > 1)
+private to the RBM containing the surrounding level 1. If it is OFF each procedure or
+. function is placed in a separate RBM, and must have a name unique at 15 characters.
+Default is ON. See the Pascal/3000 reference manual. ' :
+an. Probe_Insertion  NOT IMPLEMENTED
+This compiler option turns ON and OFF the generation of software probes without affecting
+their syntactic resolution. Default is OFF. This option is set ON any time the Probe__Resoiution
+option is specified. '
+ao. Probe_Resolution NOT IMPLEMENTED
+This compiler option specifies the syntax unit resolution of software probes inserted into the
+. code generated. Default is that no probes are inserted.
+ap. Push ‘
+This compiler option saves the current setting of options in an option set. No options
+are changed.
+90
+- ' Appendices
+1. Compiler Options Unaffected by Push _
+ACD__Version : '
+Alias _
+Call__Privilege '
+Copyright .
+Exec__Privilege '
+External :
+Font v
+. Global
+Include ‘
+Page _
+Pop . '
+Profile__Cnt
+Segment .
+Skip__Text ' '
+Splintr
+Target__Machine
+Title
+aq. Range ' A
+
+This compiler option causes range checking code to be generated.
+The default value is ON. See the Pascal/3000 reference manual.
+
+1. Compiler Options Implied by SRange ONS _
+$Index__Checking ONS
+SRaference__Checking ONS$S
+$Subrange__Checking ONS
+
+2. Compiler Options Implied by $Range OFF$ :
+$Index_ Checking OFF$S
+SRaference__Checking OFF$
+$Subrange__Checking OFF$
+$Open__Scope__Checking  OFF$
+$Schema__Checking OFF$ ,
+$Tag__Checking OFF$
+$Undefined__Parm__Checking OFF$
+
+ar. Reference_Checking (will be implemented)
+
+This compiler option turns ON and OFF generation of checking
+code for references, i.e. pointer and object, offsets. The default
+value is ON. ‘
+
+i 91
+Appendices ' ‘
+) as. Schema_Arrays NOT IMPLEMENTED
+Schema__Arrays ON tells the compiler that Schema Array features will be used in the source.
+OFF tells the compiler that Schema Arrays will not be used; any use of schema array features will
+then be flagged as an error. Default is OFF.
+at. Schema Checking NOT IMPLEMENTED .
+This compiler option turns ON and OFF generation of checking code for schema arrays. The
+default value is ON.
+au. Search  NOT IMPLEMENTED
+The string literal parameter for Search names external libraries to be searched when satisfy -
+ing import lists. The libraries are searched in the order listed in the literal. This option overrides
+all prior Search options. Exactly how Search works is implementation defined. it has not yet
+been defined for MODCAL/VCF or MODCAL/3000.
+av. Segment .
+
+This compiler option specifies the name for the current segment. -
+The default segment name is Seg’. See the Pascal/3000 reference
+manual.
+aw. Set
+
+This compiler option is used in conditional compilation. $SET specifies all identifiers
+to be used as flags in the conditional compilation of the soucre. (See $IF.) The string
+which follows the $SET option contains a list consisting of an identifier, an ’=°, and the
+value of the identifier, either TRUE or FALSE. Each element is separated by a comma.
+(e.g. SSET 'Red=TRUE,Blue=FALSE’S )
+ax. Skip Text ' ‘
+
+This compiler option causes the compiler to ignore all sub-
+sequent source code, including any compiler options, until Skip Text
+is turned OFF. See the Pascal/3000 reference manual.
+ay. Splintr ' '
+
+This compiler option specifies which SPL intrinsic file to
+search for a procedure or function declared with the INTRINSIC direc-
+tive. The default file is Splintr.pub.sys. See the Pascal/3000
+reference manual.
+
+92
+Appendices
+
+az. Standard Level ' :
+
+ fThis compiler option specifies which syntax and semantics to ac-
+cept. If the source code contains a feature which is not in the cur-
+rent langage level, the compiler will issue a warning. See the
+Pascal/3000 reference manual.
+ba. Static_Side Effects_Ok NOT IMPLEMENTED
+
+This compiler option turns ON and OFF the ability to make modifications to noniocal variables.
+Detfault is ON. .
+bb. Stats NOT IMPLEMENTED |
+
+This compiler option produces statistical information about the
+compilation. The default setting is OFF.
+bc. Symdebug NOT IMPLEMENTED
+
+~ This compiler option insertvs symbolic debugging information into
+the object code. The default setting is OFF.
+bd. Subprogram
+
+This compiler option permits compilation of a subset of level 1
+procedures or functions.
+be. Subrange Checking NOT IMPLEMENTED »
+
+This compiler option turns ON and OFF generation of checking
+code for subrange violations. The default value is ON.
+bf. Tables
+
+This compiler option causes an idendifier map to be produced at
+the end of each procedure, function or outer block. The map includes
+the class, type, and address or constant value for each identifier.
+The default setting is OFF. See the Pascal/3000 reference manual.
+bg. Tabulate_Change Info  NOT IMPLEMENTED
+
+This compiler option cause change information to appear in the right margin of the listing. The
+Begin__Change and End__Change options are not listed while Tabulate__Change__Info is ON. The
+default setting is ON. See Begin__Change option.
+bh. Tag Checking (will be implemented) :
+
+This compiler option causes checking code for references to
+fields in the variant part of records to be checked against tag
+fields. The default setting is OFF.
+
+93
+Appendicés- L . , : .
+bi. Target_Machine _ :
+
+This compiler option specifies which target machine to genérate
+code for. '
+bj. Title _ .
+
+This compiler option specifies the string to be printed next to
+the page number on subsequent pages of the 1listing. See the
+PascaJ./3000 reference manual.
+bk. Type_Coercion
+
+This compiler option specifies the level of type coercion to al-
+low. The default setting is none.
+bl. Undefined Parm Checking NOT IMPLEMENTED _
+
+' This compiler option turns ON and OFF the generation of checking
+code for references to optional parameters. Default is OFF.
+bm. Undefined Var_Checking NOT IMPLEMENTED .
+
+This compiler option turns ON and OFF the generation of checking code for references to local
+variables not yet assigned to. Default is OFF.
+bn. Usllnit ’
+
+This compiler option causes the USL file to be initialized to
+empty. See the Pascal/3000 reference manual.
+bo. Width
+
+This compiler option specifies the number of columns which the
+compiler will process from each input record. See the Pascal/3000
+reference manual.
+bp. ZCall Machine ' ' -
+
+See eXtremely flexible procedure CALL mechanism section.
+bq. Xref |
+
+This compiler option causes a cross reference listing to be
+produced for each procedure, function or outer block. The default
+setting is OFF. See the Pascal/3000 reference manual.
+
+94 |
+Appendix B
+Appendix B: Data Types and Representations
+1. MODCAL Data Types '
+Simple Types . EHENNEN
+Ordinal Types ' x| 1] Ix] |
+Integer Based Types - integer XP L Ix) |
+Character Based Types - char HEEEREIE
+Enumerated Based Types IXI | | IX] | '
+Predefined - boolean 1X] | | IX] |
+User Defined , X| X|
+Real Types ' 1| 1 1 1X] |
+Single Binary Flt. Pt. - real X| X
+' Double Binary Flt. Pt. - longreal X | | IX] |
+Reference Types Xl | X
+Routine Reéference Types IX | X
+Procedural Types - PROCEDURE X7 | * E
+Functional Types - FUNCTION : X1
+Data Reference Types 1] | X|
+Pointer Types - ~ v IXI 1 L1 IX
+Object Types - % 1X] X
+Offset Types - OFFSET TO X| [IES
+Structured Types X|?l?]?2{X]|
+Simple Structured Types X I I1X]
+Record Types - RECORD CASE OF END - EL IR
+' Array Types - ARRAY [] OF X | 1X|
+Set Types - SET OF 1X] | X| |
+Descripted Structured Types X{?l?]?]X] .
+Nonimbedded Descriptor Types X|X x| |
+Schema Arrays - () = ARRAY [] OF X|X|] | |X]
+Discriminated Schemas - () XX IX]
+Imbedded Descriptor Types X {2]20X] |
+File Types - FILE OF 1X] x| Ix} |
+String Types - STRING [] Xl | IXIXI | '
+: + + + + + +
+++ + 4+ 4+
++ 4+ 4+ 4+
+2. MODCAL Data Representation
++ 4+ + o+
+Reference Part , + 4+ + 4+
+Location Information =---<---=-c-----cemoc--—ccoocd 4+ 4+ + + +
+Nonimbedded Descriptor Information =------=--=--=--=t + + + +
+Data Value Part + 4+ +
+Imbedded Descriptor Information + + + 4+
+Active Component Position Information =----==----==<4 + + +
+Valid Component Count Information ------vv--c----co-t+ + + ‘
+Value Bit Vector ---------ccermececcccmmmmcccmccccccceeeet ¢
+Referenced Item Reference Part --------------=----cc-cco---d
+95
+Appendix B : ' : :
+a. Location Information o
+
+The location information portion of the reference part of a data .
+item describes how to locate the data value part of the data item. In
+its most generalized form this is an object offset pair or a static-
+link STT-entry pair.
+
+b. Nonimbedded Descriptor Information
+
+The nonimbedded discriptor information portion of the reference
+part of a data item describes what the discriminant values associated
+with that data item are. This can be viewed as dope vector
+information.
+c¢. Active Component Position Information
+
+The active component position information portion of the data
+value part of a data item describes which component of a sequence of
+data items is currently contained in the value bit vector portion of
+the data value part. This portion may contain additional
+information. :
+d. Valid Component Count Information '
+
+The valid component count information portion of the data value
+part of a data item discribes the number of valid components current-
+ly contained in the value bit vector portion of the data value part.
+e. Value Bit Vector |
+
+The value bit vector portion of the data value part of a data
+item is the actual bit vector representing the value of the data
+item. The value bit vector portion of structured data items contains
+the value bit vector protions of all of the component data items plus
+any "padding" bits.
+
+. f. Referenced Item Reference Part . _
+
+The referenced item reference part portion of the data value
+part of a data item contains the refernce part of the referenced
+(pointed to) data item. This portion contains all the information
+needed to locate and access the referenced (pointed to) data item.
+
+|
+- 96
+_ Appendix C
+Appendix C: Type Compatibility
+1. Pascal Compatible Type Compatibilities
+Implicit Type Conversion for assignment
+Identical Types (T1 <=> T2)
+if either
+(1) Tl.identifier = T2.identifier
+(2) TYPE Tl.identifier = T2.idenitifier;
+appears in a declaration part
+Compatible Types (T1 <= T2)
+if any
+(1) T1 and T2 are Identical Types
+(2) T1 and T2 are subranges of T3, or .
+T1 is a subrange of T2, or
+T2 is a subrange of T1 :
+_ - (3) TYPE T1 = SET OF T3; T2 = SET OF Tk;,
+and T3 and T4 are Compatible Types,
+and Tl.packing = T2.packing
+(4) T1 and T2 are PAC types with the same length or if a
+value of either Tl or T2 is a literal whose length
+<= the length of the other type which is a literal :
+- or PAC, the literal is extended on the right with .
+blanks to reach a compatible type.
+(5) T1 is a string type and T2 is a string type
+or literal.
+(6) T1 and T2 are both Floating Point Types
+Assignment Compatible Types (T1 <= T2)
+A value of type T2 is assignment compatible with a
+type T1 if any of the statements that follow are true
+and the restrictions following them are observed.
+(1) TL and T2 are compatible types which are neither
+file types nor structured types which (recursively)
+contain file types.
+(2) T1L is a Real Type,
+and T2 is an Integer Type
+(3) T1 is a procedure type and T2 is a procedure
+with a parameter list congruent (as defined
+in HP Pascal) to the parameter list of Tl
+(4) T1 is a function type and T2 is a function
+with a parameter list congruent to the
+parameter list of Tl and result type identical ,
+. to the result type of T1 '
+The following rules must hold:
+. (1) If T1 and T2 are Ordinal Types, '
+then the value of type T2 must be in
+Al
+Appendix C _ : v '
+interval specified by T1
+(2) If T1 and T2 are Set Types, then 4
+‘ all members of the value of type T2 must be in
+the interval of the base type of T1
+(3) If T1 is a string type, and T2 is any
+string type or string literal, the length of the -
+value of T2 must be <= the maximun length of T1. o
+The length of the variable of type Tl is set to
+the length of the value of type T2. .
+: (4) If T1 is a procedure or function type, then value
+of T2 must have the same or wider scope than the
+variable or parameter of type Tl being assigned
+to. :
+2. Pascal Incompatible Type Compatibilities
+Explicit Type Coercion required for assignment
+Structurally Compatible Types (T1 <=> T2)
+Same number, order, and packing of Structurally :
+Compatible Typed components (1 for 1 mapping) '
+Two types Tl and T2 are structurally compatible if ’
+any of the following are true: '
+' (1) T1 and T2 are identical types
+(2) T1 and T2 are ordinal types and the
+‘ ORD(minimum value of T1)=ORD(minimum value of \
+. '72) and the ORD(maximum value of T1)=ORD(
+maximum value of T2) :
+AND
+T1 & T2 base types are user enumerated types,
+OR T1 & T2 base types are integer,
+OR T1 & T2 base types are boolean,
+OR T1 & T2 base types are char.
+(3) T1 and T2 are types of a procedure. Two
+procedures have structurally compatible types i
+if they have the same number of parameters .
+and each corresponding parameter has the
+same form (Var or value) and the type of
+each corresponding parameter is structurally
+compatible '
+‘ (4) T1 and T2 are types of a function. Two ] /
+functions have structurally compatible types
+if they have the same number of parameters
+and each corresponding parameter has the
+~ same form (Var or value) and the type of ' .
+each corresponding parameter is structurally
+‘ compatible and the results types of both
+: functions are structurally compatible
+(5) T1 and T2 are data reference types of identical
+form (i.e. both are either pointer, object, offset) o
+‘ which reference data with structurally compatible types. '
+98
+&
+: ‘ Appendix €
+(6) T1 and T2 are record types with the same .
+’ , packing and each field in T1 is structurally '
+compatible with the corresponding field in
+T2 and the number of fields in Tl= the .
+number of fields in T2 ; ,
+(7) T1 and T2 are array types with identical packing
+‘ and structurally compatible components and index
+types , ‘
+(8) TL and T2 are set types with identical packing and '
+structurally compatible base types v
+(9) T1L and T2 are file types with structurally compatible
+' component types
+(10)T1 and T2 are schema types with structurally compatible
+index types and structurally compatible component types
+and identical packing
+(11)T1 and T2 are string types with identical maximum
+lengths
+Representation Size Compatible Types (Tl <= T2)
+BitSizeOf(T1) = BitSize0f(T2)
+Storage Size Compatible Types (T1 <= T2) ~
+SUSizeOf (T1) >= SUSizeOf(T2)
+NonCompatible Types (Tl <=> T2)
+, (1) SizeOf(T1) < SizeOf(T2)
+(2) SizeOf(T1) = SizeOf(T2)
+(3) SizeOf(T1) > SizeOf(T2) ~ ,
+- ANYTHING GOES -
+Pascal/Modcal Special Case Compatibilities
+(1) All Reference Types are Type Compatible with NIL
+(2) All Set Types are Type Compatible with []
+_ 99
+Appendix D '
+
+Appendix D: MODCAL Reserved Words
+1. ANSI Standard Pascal Reserved Words
+AND FUNCTION PROGRAM
+ARRAY GOTO RECORD
+BEGIN IF REPEAT ,
+CASE IN SET ‘
+CONST LABEL THEN -
+DIV MOD TO
+DO NIL ' TYPE
+DOWNTO NOT UNTIL
+ELSE OF VAR
+END OR WHILE
+FILE PACKED WITH :
+FOR PROCEDURE
+2. HP Standard Pascal Additions
+OTHERWISE |
+3. HP Standard MODCAL Additions
+DEFINITION IMPORT READONLY
+
+_ EXPORT MODULE RECOVER ,
+HIDDEN QUALIFIED TRY
+IMPLEMENT | |
+4. BCG Experimental MODCAL Additions '
+ANYVAR CRUNCHED OFFSET
+OPTION WITHOBJECT
+
+) ,
+100 | | - ‘

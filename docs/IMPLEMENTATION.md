@@ -222,10 +222,30 @@ Step 3 of the sequence, adjusting code segment use counts, is not modelled:
 the counts exist for the operating system's benefit and nothing in the CPU
 depends on them.
 
-Not yet: decimal (BCD), move/scan/string, external interrupts and `IXIT`. Procedure calls take local program
+The structured byte string group is in: `SVAL` supplies the descriptor
+checks of ERS §2.3.4 that the others are all specified in terms of, and
+`SLD`, `SAS` and `SCON` build on it — including the string temps SLD lays
+out on the stack, the backward move SAS uses when a string is assigned over
+a later part of itself, and the blank-fill parameters SAS stacks for a
+following `FILB`. All four finish by running MVB, which is now a shared
+helper rather than a case body.
+
+Not yet: decimal (BCD), external interrupts and `IXIT`, and `RFC` — the
+last reads a word from an MPB channel, and with no memory controller
+modelled on the bus there is nothing to say what it should return, so it
+stays unimplemented rather than guessing. Procedure calls take local program
 pointers only — external pointers need the Code Segment Table walk and the
 U-bit check. Unimplemented opcodes return `trap::unimplemented` rather than
 behaving as no-ops, so gaps surface immediately instead of corrupting state.
+
+One bug found while adding the string group, and worth recording because the
+shape recurs: `take_trap` returns `exec_trap::none` when a handler *was*
+reached, so a helper that raises a trap and returns that value cannot be
+checked with `if (t != none) return t;` — the caller sails on and undoes
+what the trap just did. `enter_segment` had exactly this, and PCL would
+carry on after a CST violation and branch to an uninitialised target.
+Both it and `string_validate` now return `bool` with the trap as an out
+parameter.
 
 ### Measuring progress
 
@@ -236,13 +256,16 @@ where the real code is rather than where the opcode table looks empty.
 
 ```
 298,238 instructions decoded
-288,430 would execute  (96.7%)
+293,547 would execute  (98.4%)
 ```
 
-The three largest remaining entries — format 6 opcode 37 and format 4 opcodes
-20 and 21 — are encodings **Appendix B leaves unassigned**. They cannot be
-real instructions, so they are data caught by the linear sweep. Actual code
-coverage is therefore higher than 95.9%.
+Almost everything left is unassigned encodings — format 6 opcode 37 and
+format 4 opcodes 20 and 21 lead the table, and **Appendix B leaves all of
+them unassigned**. Appendix G confirms it from the other side: it lists
+format 4 opcode 75, format 5 opcode 30 and format 6 opcode 37 as patterns
+that *should* trap as unimplemented and do not. They cannot be real
+instructions, so they are data caught by the linear sweep, and actual code
+coverage is higher again.
 
 Two caveats on that number. It is a static count over whole images, so data
 regions decoded as instructions inflate the denominator — several of the
@@ -250,14 +273,11 @@ regions decoded as instructions inflate the denominator — several of the
 real code. And static frequency is not dynamic frequency: a rare opcode inside
 a hot loop matters more than the count suggests.
 
-`MVB` is in — the highest-frequency string instruction, moving bytes in
-either direction between a data segment and either another data segment or
-the code segment.
-
-Largest genuine gaps by frequency: the rest of the move/scan/string group,
-`CRB`, `LPP`/`LPPS`, `LIA`/`LIAS`, and the decimal instructions. The string
-group needs the four-word string descriptor machinery of ERS §2.3.4, which is
-a subsystem rather than a handful of opcodes.
+Only three named instructions are left anywhere in the table: `RFC` (44
+occurrences), `DTB` (36) and its partner `BTD`. The decimal pair is a
+subsystem rather than two opcodes — DTB converts a *decimal floating point*
+number held in three stack words, with its own exponent-size trap — which is
+why it is the last thing standing rather than the easiest.
 
 One open question from the trap sequence: step 4 says the parameter is pushed
 "at Q+3", but after the marker `S` equals `Q`, making the next free word

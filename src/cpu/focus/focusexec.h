@@ -586,6 +586,13 @@ private:
 		case 004: set_fp_cc(to_float(stk(0)));
 			if (b3) pop();
 			return exec_trap::none;                            // FTSS
+		case 030: { const double d = pop_double();             // CDSF
+			const float f = float(d);
+			push(from_float(f)); set_fp_cc(f);
+			return exec_trap::none; }
+		case 031: { const double d = double(to_float(pop())); // CSDF
+			push_double(d); set_fp_cc(d);
+			return exec_trap::none; }
 		case 041: { const double d = pop_double();             // FIXD
 			const u32 v = u32(s32(d)); push(v); cca(v);
 			return exec_trap::none; }
@@ -892,6 +899,55 @@ private:
 			set_sb_word(2, word_below(temp, 3));
 			r.q = temp;
 			return do_exit(0);
+		}
+
+		case 067: {                                             // CPEP
+			// Convert Pointer to External Data Segment Pointer (ERS sheet
+			// 120). A stack or global pointer becomes an external one.
+			// The segment numbers come from the current TCB rather than
+			// from any register, which is why the ERS warns this must not
+			// be executed while on the ICS.
+			const u32 ptr = stk(0);
+
+			// An external pointer is only touched when indexing is asked
+			// for, and then it folds X into the offset as CPTR does.
+			if (ers32::get(ptr, 0, 1) == 0)
+			{
+				if (!b3) return exec_trap::none;
+				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(r.x);
+				if (noff < 0 || noff >= (1 << 19))
+					return exec_trap::pointer_conversion;
+				set_stk(0, ers32::set(ptr, 13, 19, u32(noff)));
+				return exec_trap::none;
+			}
+
+			u32 offset = ers32::get(ptr, 2, 30);
+			if (b3) offset += r.x;
+
+			const u32 ctcbp = m_mem.read32(ded_base() + 4);
+			const u32 w2 = m_mem.read32(ctcbp + 8);
+			u32 seg;
+			if (ers32::get(ptr, 0, 2) == 2)
+				seg = ers32::get(w2, 20, 12);       // global segment
+			else
+			{
+				// A stack pointer's offset is relative to SB, so it has
+				// to be rebased onto the segment SB itself sits in.
+				seg = ers32::get(w2, 4, 12);
+				const u32 table = (seg >> 11)
+						? r.dst : dst_walker::SYSTEM_DST_BASE;
+				const u32 ea = table + 16 * (seg & 0x7ff);
+				offset += r.sb - m_mem.read32(ea + 8);
+			}
+
+			if (ers32::get(offset, 0, 13) != 0)
+				return exec_trap::pointer_conversion;
+
+			u32 out = ers32::set(ptr, 0, 1, 0);
+			out = ers32::set(out, 1, 12, seg);
+			out = ers32::set(out, 13, 19, offset);
+			set_stk(0, out);
+			return exec_trap::none;
 		}
 
 		case 070: {                                             // CPTR
@@ -1234,43 +1290,15 @@ private:
 			r.s -= 4 * sdec;
 			return exec_trap::none;
 		}
-		case 051: {                                               // MVB
+		case 051:                                                 // MVB
 			// Move Bytes (ERS sheet 101). The stack holds a byte count on
 			// top, then a target pointer, then a source pointer. Bit 3 of
 			// the instruction picks the direction; within the 6-bit
 			// operand, bit 3 says the source is a data segment pointer
 			// rather than a local program pointer, and bits 4-5 give how
 			// many words to pop at the end.
-			const int d = b3 ? -1 : 1;
-			const unsigned sdec = operand & 3;
-			const bool src_is_ds = ((operand >> 2) & 1) != 0;
-
-			const s32 count = s32(stk(0));
-			const u32 tptr = stk(1);
-			const u32 sptr = stk(2);
-
-			u32 sba;
-			const exec_trap st = string_source(sptr, src_is_ds, sba);
-			if (st != exec_trap::none) return st;
-
-			const ea_result te = m_au.resolve_data_pointer(tptr, false, true);
-			m_addr_trap = te.t;
-			if (!te.ok()) return exec_trap::address_error;
-			u32 tba = te.addr;
-
-			s32 x = 0;
-			while (count > d * x)
-			{
-				m_mem.write8(tba, m_mem.read8(sba));
-				tba = u32(s32(tba) + d);
-				sba = u32(s32(sba) + d);
-				x += d;
-			}
-			r.x = u32(x);
-			set_stk(0, u32(count - d * x));
-			r.s -= 4 * sdec;
-			return exec_trap::none;
-		}
+			return do_mvb(b3 ? -1 : 1, operand & 3,
+					((operand >> 2) & 1) != 0);
 		case 052: return do_scan(operand, b3, false);             // SCW
 		case 053: return do_scan(operand, b3, true);              // SCU
 
@@ -1346,6 +1374,262 @@ private:
 			set_stk(0, u32(count - d * x));
 			r.s -= 4 * sdec;
 			return exec_trap::none;
+		}
+
+		case 025: {                                               // SLD
+			// String Load (ERS sheet 108). The descriptor in the top four
+			// words is replaced by a string temp holding the substring it
+			// names -- the bytes, a size word above them and a fresh
+			// descriptor above that. The source string is not modified.
+			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+			str_desc d;
+			d.maxlen = s32(stk(3));
+			d.ptr    = stk(2);
+			d.first  = s32(stk(1));
+			d.len    = s32(stk(0));
+
+			exec_trap t;
+			if (!string_validate(d, src_is_ds, b3, false, t))
+				return t;
+
+			// Byte FIRST of a string sits FIRST+3 past the pointer: one
+			// word of current length, and FIRST counts from one.
+			u32 sptr;
+			if (!string_offset(d.ptr, d.first + 3, false, sptr, t))
+				return t;
+
+			// The temp starts where the descriptor did, and carries four
+			// words of new descriptor plus a size word above its data.
+			const u32 tempadr = r.s - 15;
+			const s32 nwords = ((d.len + 3) / 4) + 1;
+			const u32 news = tempadr + u32(nwords) * 4 + 19;
+			if (news > r.sl)
+				return take_trap(trap_cause::stack_overflow, 0);
+			r.s = news;
+
+			m_mem.write32(tempadr, u32(d.len));
+			set_stk(4, u32(nwords));
+			set_stk(3, u32(d.len));
+			set_stk(2, stack_pointer_to(tempadr));
+			set_stk(1, 1);
+			set_stk(0, u32(-1));
+
+			// Hand the copy itself to MVB, which pops the three words of
+			// parameters it is given.
+			r.s += 12;
+			set_stk(2, sptr);
+			set_stk(1, stack_pointer_to(tempadr + 4));
+			set_stk(0, u32(d.len));
+			return do_mvb(1, 3, src_is_ds);
+		}
+
+		case 026: {                                               // SVAL
+			// String Validate (ERS sheet 107): check the descriptor in the
+			// top four words, and optionally replace the count of bytes of
+			// interest with the actual length the checks worked out.
+			str_desc d;
+			d.maxlen = s32(stk(3));
+			d.ptr    = stk(2) & ~u32(3);
+			d.first  = s32(stk(1));
+			d.len    = s32(stk(0));
+			set_stk(2, d.ptr);          // the alignment is written back
+
+			exec_trap t;
+			if (!string_validate(d, (operand >> 2) & 1, b3, false, t))
+				return t;
+
+			if ((operand >> 4) & 1) set_stk(0, u32(d.len));
+			return exec_trap::none;
+		}
+
+		case 027: {                                               // SCON
+			// String Concatenate (ERS sheets 111-112). A source substring
+			// is appended to a target string temp, in place: the temp's
+			// own space is reused and grows only if it has to.
+			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+			const bool from_temp = (operand & 1) != 0;
+			const bool tneg_ok   = ((operand >> 1) & 1) != 0;
+
+			str_desc s;
+			s.maxlen = s32(stk(3));
+			s.ptr    = stk(2);
+			s.first  = s32(stk(1));
+			s.len    = s32(stk(0));
+
+			exec_trap t;
+			if (!string_validate(s, src_is_ds, b3, false, t))
+				return t;
+
+			str_desc g;
+			if (from_temp)
+			{
+				const u32 tdesc = s.stringadr - 16;
+				if (tdesc < r.q || tdesc > r.s - 31)
+					return take_trap(trap_cause::bounds_violation, r.p);
+				g.maxlen = s32(m_mem.read32(tdesc));
+				g.ptr    = m_mem.read32(tdesc + 4);
+				g.first  = s32(m_mem.read32(tdesc + 8));
+				g.len    = s32(m_mem.read32(tdesc + 12));
+			}
+			else
+			{
+				g.maxlen = s32(stk(7));
+				g.ptr    = stk(6);
+				g.first  = s32(stk(5));
+				g.len    = s32(stk(4));
+			}
+			if (!string_validate(g, true, tneg_ok, true, t, false))
+				return t;
+
+			// The target has to be a temp on this stack. The ERS writes
+			// the upper bound as "S-14"; read as words, the way "(S-n)"
+			// is read everywhere else and the way SAS's own "S-7" is,
+			// that means fourteen words clear of the top.
+			if (g.stringadr < r.q || g.stringadr > r.s - 3 - 4 * 14)
+				return take_trap(trap_cause::bounds_violation, r.p);
+
+			s32 tcurlen = g.curlen;
+			if (g.len >= 0)
+			{
+				const s32 reach = g.first + g.len - 1;
+				if (reach < tcurlen) tcurlen = reach;
+			}
+
+			u32 msrc, mdst;
+			if (!string_offset(s.ptr, s.first + 3, false, msrc, t)) return t;
+			if (!string_offset(g.ptr, tcurlen + 4, true, mdst, t))  return t;
+
+			const s32 tmaxlen = tcurlen + s.len;
+			s32 nwords = ((tmaxlen + 3) / 4) + 1;
+			const u32 news = g.stringadr + u32(nwords) * 4 + 19;
+			if (news < r.s)
+			{
+				// The result already fits in what the operands occupied,
+				// so the temp simply claims all of it.
+				nwords = s32((r.s - g.stringadr - 19) / 4);
+			}
+			else
+			{
+				if (news > r.sl)
+					return take_trap(trap_cause::stack_overflow, 0);
+				r.s = news;
+			}
+
+			m_mem.write32(g.stringadr, u32(tmaxlen));
+			set_stk(4, u32(nwords));
+			set_stk(3, u32(tmaxlen));
+			set_stk(2, g.ptr);
+			set_stk(1, u32(g.first));
+			set_stk(0, u32(-1));
+
+			r.s += 12;
+			set_stk(2, msrc);
+			set_stk(1, mdst);
+			set_stk(0, u32(s.len));
+			return do_mvb(1, 3, src_is_ds);
+		}
+
+		case 030: {                                               // SAS
+			// String Assign (ERS sheets 109-111). A source descriptor sits
+			// on top; the target descriptor is either the four words below
+			// it, or -- when the source is a string temp -- the four words
+			// immediately below that temp.
+			const bool src_is_ds  = ((operand >> 2) & 1) != 0;  // CIR(29:1)
+			const bool from_temp  = (operand & 1) != 0;         // CIR(31:1)
+			const bool fill       = ((operand >> 3) & 1) != 0;  // CIR(28:1)
+			const bool tneg_ok    = ((operand >> 1) & 1) != 0;  // CIR(30:1)
+
+			str_desc s;
+			s.maxlen = s32(stk(3));
+			s.ptr    = stk(2);
+			s.first  = s32(stk(1));
+			s.len    = s32(stk(0));
+
+			exec_trap t;
+			if (!string_validate(s, src_is_ds, b3, false, t))
+				return t;
+
+			str_desc g;
+			if (from_temp)
+			{
+				const u32 tdesc = s.stringadr - 16;
+				if (tdesc < r.q || tdesc > r.s - 31)
+					return take_trap(trap_cause::bounds_violation, r.p);
+				g.maxlen = s32(m_mem.read32(tdesc));
+				g.ptr    = m_mem.read32(tdesc + 4);
+				g.first  = s32(m_mem.read32(tdesc + 8));
+				g.len    = s32(m_mem.read32(tdesc + 12));
+			}
+			else
+			{
+				g.maxlen = s32(stk(7));
+				g.ptr    = stk(6);
+				g.first  = s32(stk(5));
+				g.len    = s32(stk(4));
+			}
+
+			// The target pointer is always a data segment pointer, and its
+			// count of bytes of interest stays as written.
+			if (!string_validate(g, true, tneg_ok, true, t, false))
+				return t;
+
+			// How much moves, and what the target's length becomes.
+			s32 mvlen, tcurlen;
+			if (g.len < 0)
+			{
+				tcurlen = g.first + s.len - 1;
+				if (tcurlen > g.maxlen) return string_trap(9, true);
+				mvlen = s.len;
+			}
+			else
+			{
+				const s32 reach = g.first + g.len - 1;
+				tcurlen = (g.curlen > reach) ? g.curlen : reach;
+				mvlen = (s.len < g.len) ? s.len : g.len;
+			}
+
+			// Assigning a string to a later part of itself has to run
+			// backwards. The condition code reports which way it went.
+			const bool backward = (g.stringadr == s.stringadr)
+					&& (g.first > s.first);
+			r.put(sf::CC, backward ? CCL : CCG);
+
+			u32 msrc, mdst;
+			const s32 sadj = backward ? s.first + mvlen + 2 : s.first + 3;
+			const s32 tadj = backward ? g.first + mvlen + 2 : g.first + 3;
+			if (!string_offset(s.ptr, sadj, false, msrc, t)) return t;
+			if (!string_offset(g.ptr, tadj, true, mdst, t))  return t;
+
+			// Blank fill covers the tail of a target substring longer than
+			// what was moved into it. SAS only stacks the parameters; a
+			// following FILB does the work.
+			u32 filltarget = 0;
+			s32 filllen = 0;
+			if (fill && g.len > mvlen)
+			{
+				if (!string_offset(g.ptr, g.first + mvlen + 3, true,
+						filltarget, t))
+					return t;
+				filllen = g.len - mvlen;
+			}
+
+			r.s -= from_temp ? 16 : 32;
+			if (fill)
+			{
+				r.s += 12;
+				set_stk(2, 32);             // the blank itself
+				set_stk(1, filltarget);
+				set_stk(0, u32(filllen));
+			}
+
+			m_mem.write32(g.stringadr, u32(tcurlen));
+
+			r.s += 12;
+			set_stk(2, msrc);
+			set_stk(1, mdst);
+			set_stk(0, u32(mvlen));
+			return do_mvb(backward ? -1 : 1, 3, src_is_ds);
 		}
 
 		case 031: {                                               // PMPB
@@ -2064,6 +2348,126 @@ private:
 	// pointer is a byte offset from PB bounds checked against PB and PL
 	// (ERS convention note 18), which is how a constant table compiled into
 	// the code segment gets addressed.
+	// Structured byte strings (ERS section 2.3.4). A descriptor is four
+	// stack words -- maximum length, pointer, index of the first byte of
+	// interest, and the number of bytes of interest. The string itself
+	// carries its current length in the word the pointer addresses.
+	struct str_desc
+	{
+		s32 maxlen = 0;
+		u32 ptr = 0;
+		s32 first = 0;
+		s32 len = 0;        // replaced by the actual length on return
+		u32 stringadr = 0;
+		s32 curlen = 0;
+	};
+
+	// The String Trap parameter packs the error number from section 5.2.2
+	// and which of the two strings failed alongside the instruction word.
+	exec_trap string_trap(unsigned err, bool target)
+	{
+		u32 p = ers32::set(0, 11, 1, target ? 1 : 0);
+		p = ers32::set(p, 12, 4, err);
+		p = ers32::set(p, 16, 16, m_cir);
+		return take_trap(trap_cause::string_trap, p);
+	}
+
+	// A stack segment pointer: tag 11 in the top two bits, the rest an
+	// SB-relative byte offset (ERS sheet 55).
+	u32 stack_pointer_to(u32 addr) const
+	{
+		return ers32::set(u32(3) << 30, 2, 30, addr - r.sb);
+	}
+
+	// Adding a byte offset to a string pointer must not disturb the two
+	// bits that say which kind of pointer it is (section 5.2.2, error 8).
+	// The stricter rule the ERS gives for external data segment pointers
+	// into unpaged segments -- a trap if any of the top thirteen bits
+	// change -- needs the segment's paged flag to apply safely, so only
+	// the tag check is made here.
+	bool string_offset(u32 ptr, s32 delta, bool target, u32 &out,
+			exec_trap &t)
+	{
+		out = u32(s32(ptr) + delta);
+		if (ers32::get(out, 0, 2) != ers32::get(ptr, 0, 2))
+		{
+			t = string_trap(8, target);
+			return false;
+		}
+		t = exec_trap::none;
+		return true;
+	}
+
+	// The fetch, validate and actual-length steps SVAL defines (ERS sheet
+	// 107), which every other string instruction is specified in terms of.
+	// neg_len says whether a negative count of bytes of interest is
+	// allowed; the instructions take it from different bits for source and
+	// target, so the caller passes it in already resolved.
+	//
+	// Returns false if the descriptor was rejected, and only then is `out`
+	// meaningful. It cannot report that through `out` alone: a trap that
+	// vectored to a handler leaves exec_trap::none behind, and the caller
+	// must still abandon the instruction rather than carry on and write
+	// over the parameter word the trap just pushed.
+	// compute_len asks for the final step as well. SAS and SCON validate
+	// their target descriptor but must see its count of bytes of interest
+	// as it was written, negative and all, so they leave it out.
+	bool string_validate(str_desc &d, bool is_ds, bool neg_len, bool target,
+			exec_trap &out, bool compute_len = true)
+	{
+		d.ptr &= ~u32(3);                       // force word alignment
+
+		out = string_source(d.ptr, is_ds, d.stringadr);
+		if (out != exec_trap::none) return false;
+		d.curlen = s32(m_mem.read32(d.stringadr));
+
+		unsigned err = 0;
+		if (d.maxlen < 0)                                          err = 1;
+		else if (d.len < 0 && !neg_len)                            err = 2;
+		else if (d.first <= 0)                                     err = 3;
+		else if (d.len >= 0 && d.first + d.len - 1 > d.maxlen)     err = 4;
+		else if (d.curlen < 0)                                     err = 5;
+		else if (d.curlen > d.maxlen)                              err = 6;
+		else if (d.first > d.curlen + 1)                           err = 7;
+		if (err) { out = string_trap(err, target); return false; }
+
+		if (compute_len && (d.len < 0 || d.len > d.curlen - d.first + 1))
+			d.len = d.curlen - d.first + 1;
+		out = exec_trap::none;
+		return true;
+	}
+
+	// The body of MVB, which SLD, SAS and SCON all finish by executing
+	// with parameters of their own making (ERS sheets 108-112).
+	exec_trap do_mvb(int d, unsigned sdec, bool src_is_ds)
+	{
+		const s32 count = s32(stk(0));
+		const u32 tptr = stk(1);
+		const u32 sptr = stk(2);
+
+		u32 sba;
+		const exec_trap st = string_source(sptr, src_is_ds, sba);
+		if (st != exec_trap::none) return st;
+
+		const ea_result te = m_au.resolve_data_pointer(tptr, false, true);
+		m_addr_trap = te.t;
+		if (!te.ok()) return exec_trap::address_error;
+		u32 tba = te.addr;
+
+		s32 x = 0;
+		while (count > d * x)
+		{
+			m_mem.write8(tba, m_mem.read8(sba));
+			tba = u32(s32(tba) + d);
+			sba = u32(s32(sba) + d);
+			x += d;
+		}
+		r.x = u32(x);
+		set_stk(0, u32(count - d * x));
+		r.s -= 4 * sdec;
+		return exec_trap::none;
+	}
+
 	exec_trap string_source(u32 ptr, bool is_ds, u32 &out)
 	{
 		if (is_ds)
@@ -2248,18 +2652,29 @@ private:
 	// STT entry number, bits 20-31 the code segment number (ERS sheet 28)
 	// -- switching PB, PL, CSN and the mode bit to the named segment. On
 	// success `target` is the absolute entry address.
-	exec_trap enter_segment(u32 ptr, u32 &target)
+	// Returns false if the call was rejected, and only then is `out`
+	// meaningful. As with string_validate, a trap that reached a
+	// handler leaves exec_trap::none behind, so the caller cannot use
+	// that value alone to decide whether to go on -- and going on here
+	// would branch to an uninitialised target.
+	bool enter_segment(u32 ptr, u32 &target, exec_trap &out)
 	{
 		const u32 stt_off = ers32::get(ptr, 1, 19);
 		const u32 seg = ers32::get(ptr, 20, 12);
 
 		u32 ea;
 		if (!cst_entry_addr(seg, ea))
-			return take_trap(trap_cause::cst_violation, seg);
+		{
+			out = take_trap(trap_cause::cst_violation, seg);
+			return false;
+		}
 
 		const u32 w0 = m_mem.read32(ea);
 		if (ers32::get(w0, 29, 1))          // A: segment absent
-			return take_trap(trap_cause::cst_violation, seg);
+		{
+			out = take_trap(trap_cause::cst_violation, seg);
+			return false;
+		}
 
 		const u32 pb = m_mem.read32(ea + 8);
 		const u32 pl = pb + m_mem.read32(ea + 4);   // length-1, low bits 11
@@ -2267,9 +2682,15 @@ private:
 		// The STT entry in the called segment must be a local pointer.
 		const u32 slot = m_mem.read32(pl - stt_off);
 		if (ers32::get(slot, 0, 1))
-			return take_trap(trap_cause::external_program_pointer, slot);
+		{
+			out = take_trap(trap_cause::external_program_pointer, slot);
+			return false;
+		}
 		if (ers32::get(slot, 1, 1) && !r.privileged())
-			return take_trap(trap_cause::uncallable_procedure, slot);
+		{
+			out = take_trap(trap_cause::uncallable_procedure, slot);
+			return false;
+		}
 
 		cst_use_count(r.get(sf::CSN), -1);
 		r.pb = pb;
@@ -2288,7 +2709,8 @@ private:
 		cst_use_count(seg, +1);
 
 		target = pb + ers32::get(slot, 2, 30);
-		return exec_trap::none;
+		out = exec_trap::none;
+		return true;
 	}
 
 	// PCL/PCLS. `offset` is a byte offset back from PL naming the Segment
@@ -2316,8 +2738,8 @@ private:
 		u32 target;
 		if (ers32::get(ptr, 0, 1))
 		{
-			const exec_trap t = enter_segment(ptr, target);
-			if (t != exec_trap::none)
+			exec_trap t;
+			if (!enter_segment(ptr, target, t))
 				return t;
 		}
 		else
