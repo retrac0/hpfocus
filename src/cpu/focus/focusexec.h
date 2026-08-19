@@ -183,6 +183,21 @@ public:
 	{
 		if (!r.test(sf::I))
 			return false;
+
+		// The Message Trap comes before I/O interrupts in the priority
+		// order (ERS sheet 43: message trap third, I/O fourth). Unmasked
+		// bits in the 16 most significant bits of MSG with STATUS.I set
+		// are cleared, and the handler runs on the ICS with a parameter
+		// carrying the bits at Q+3 (section 5.2.2, cause 54).
+		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u;
+		if (sysmsg != 0)
+		{
+			r.msg &= ~sysmsg;
+			m_halted = false;
+			message_trap(sysmsg);
+			return true;
+		}
+
 		const u32 pend = r.msg & ~r.mask;
 		for (unsigned bit = 16; bit < 32; bit++)
 		{
@@ -2381,7 +2396,21 @@ private:
 	void mpb_message(u32 msg, bool broadcast)
 	{
 		r.sar = msg;
-		(void)broadcast;
+		// A broadcast "goes to all channels simultaneously" (ERS sheet
+		// 125) -- and that includes the sender's own CPU, which is how
+		// the operating system rings its own doorbell: the trap segment
+		// posts work to the queue in low dedicated memory and then does
+		// SMSG,B with 0x200000, raising MSG bit 10, the one bit the
+		// dispatcher's idle mask always leaves enabled. The message bits
+		// OR into the Message register; an unmasked result wakes a
+		// STOPped CPU. A targeted message would go to one channel; with
+		// no other processors modelled it is recorded and dropped.
+		if (broadcast)
+		{
+			r.msg |= msg & 0x1fffffffu;
+			if ((r.msg & ~r.mask) != 0)
+				m_halted = false;
+		}
 	}
 
 	//----------------------------------------------------------------
@@ -3142,6 +3171,59 @@ private:
 	// save the mask at (Q+2) and the device at (Q+3), load DB/DL and
 	// PB/PL/P from the DRT entry's data and program pointers, and run
 	// the service routine privileged in its segment.
+
+	// Message Trap delivery (cause 054): the same ICS frame as an
+	// external interrupt -- marker on the interrupted stack, hop to the
+	// ICS, previous mask at Q+2, parameter at Q+3 -- but vectored through
+	// code segment 1's Segment Transfer Table entry 054 rather than a
+	// DRT entry. IXIT's CSN==1 path restores the mask on the way out.
+	exec_trap message_trap(u32 bits)
+	{
+		const u32 ret = r.p - r.pb;
+		const u32 old_q = r.q;
+		r.s += 16;
+		set_stk(3, r.x);
+		set_stk(2, ret);
+		set_stk(1, r.status);
+		set_stk(0, r.s - old_q);
+		r.q = r.s;
+
+		if (!m_ics_flag)
+		{
+			m_mem.write32(r.sb - 4, r.s - r.sb);
+			const u32 ded = ded_base();
+			r.q = m_mem.read32(ded + 8);
+			r.sl = m_mem.read32(ded + 12);
+			r.sb = (r.q & ~3u) - 256;
+			m_ics_flag = true;
+		}
+		else
+		{
+			if (m_disp_flag)
+			{
+				m_disp_flag = false;
+				set_qword(0, qword(0) | 0x80000000u);
+			}
+			set_qword(1, m_mem.read32(r.sb));
+		}
+
+		set_qword(2, r.mask);
+		r.s = r.q + 12;                     // S := Q + 3
+		set_qword(3, bits);
+
+		// CST entry 1 carries the handler segment; its STT entry 054 the
+		// routine, exactly as the in-stack traps use it.
+		const u32 cst = m_mem.read32(0);
+		const u32 entry = cst + 16;
+		const u32 len_m1 = m_mem.read32(entry + 4);
+		const u32 location = m_mem.read32(entry + 8);
+		r.pb = location;
+		r.pl = location + len_m1 - 3;
+		r.status = ers32::mask(14, 1);
+		r.put(sf::CSN, 1);
+		branch_to(r.pb + m_mem.read32(r.pl - 4 * 054));
+		return exec_trap::none;
+	}
 
 	exec_trap external_interrupt(u32 device)
 	{

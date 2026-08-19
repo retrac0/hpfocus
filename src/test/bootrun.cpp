@@ -335,6 +335,9 @@ int main(int argc, char **argv)
 	// missing producer would have delivered (e.g. faking a semaphore V).
 	unsigned long long poke_step = 0;
 	u32 poke_addr = 0, poke_val = 0;
+	// --tick N: raise MSG bit 13 -- the I/O ERS's "13 for timer
+	// interrupt" -- every N steps, once the boot has settled.
+	unsigned long long tick_period = 0;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -379,6 +382,8 @@ int main(int argc, char **argv)
 			console_id = u32(strtoul(argv[++i], nullptr, 0));
 		else if (!std::strcmp(argv[i], "--resp9") && i + 1 < argc)
 			console_resp9 = u32(strtoul(argv[++i], nullptr, 0));
+		else if (!std::strcmp(argv[i], "--tick") && i + 1 < argc)
+			tick_period = strtoull(argv[++i], nullptr, 0);
 		else if (!std::strcmp(argv[i], "--poke") && i + 3 < argc)
 		{
 			poke_step = strtoull(argv[++i], nullptr, 0);
@@ -617,6 +622,8 @@ int main(int argc, char **argv)
 					"TCB dispatch\n");
 			nudged = true;
 		}
+		if (tick_period && (steps % tick_period) == 0)
+			cpu.raise_message(13);
 		if (poke_step && steps == poke_step)
 		{
 			std::printf("poke: [%08x] %08x -> %08x at step %llu\n",
@@ -693,10 +700,22 @@ int main(int argc, char **argv)
 						(fault_pc & 2) ? prev_cir << 16 : prev_cir,
 						cpu.r.pb, cpu.r.q, cpu.r.s, cpu.r.status);
 		}
-		// A halted CPU is idling for an interrupt; only a halt with
-		// interrupts disabled can never wake.
-		if (t == exec_trap::halted && cpu.r.test(sf::I))
-			continue;
+		// A halted CPU is idling for a message or interrupt. The
+		// dispatcher STOPs with STATUS.I clear and an armed MASK, so a
+		// wake can come from either path; keep the world turning --
+		// timer ticks, typed input, attention -- and let raise_message
+		// un-halt the core. Halted iterations still consume the step
+		// budget, so an idle machine ends the run rather than spinning
+		// the harness forever.
+		if (t == exec_trap::halted)
+		{
+			// The for loop's own increment advances the budget; a halted
+			// iteration must not double-count or the harness's modulo
+			// schedules (ticks) skip.
+			if (tick_period || (type_text && *type_text))
+				continue;
+			break;
+		}
 		if (t != exec_trap::none)
 			break;
 	}
