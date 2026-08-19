@@ -906,6 +906,115 @@ private:
 		case 006: return stack_indirect(b3, 1, false);          // LBSI
 		case 007: return stack_indirect(b3, 8, false);          // LDSI
 		case 010: return stack_indirect(b3, 2, false);          // LHSI
+		case 020:                                               // UP
+		case 021: {                                             // DOWN
+			// The semaphore signal/wait pair, named only by the shipped
+			// assembler's table and executed only by the HP-UX kernels.
+			// Semantics derived from the BASIC kernel's software
+			// implementation of the same structure (routine at 0x45720
+			// of the diagnostics environment, and the dispatcher that
+			// consumes it): the operand is the absolute address of a
+			// semaphore -- word 0 the wait-list head, doubling as the
+			// multiprocessor lock (-1 while held), the count in word 1.
+			// Both HP-UX sites confirm the fixed layout ({0, 1} each
+			// time -- an unlocked, one-unit mutex); the X the software
+			// implementation loads before its own DECM is that
+			// routine's business, not an operand of these.
+			//
+			// Only the non-blocking halves are modelled: DOWN with the
+			// count going negative must park the task and enter the
+			// dispatcher, UP with waiters must wake one, and both walks
+			// through TCB conventions better proven before they are
+			// guessed. Those cases restore the count and report
+			// unimplemented so the boot stops visibly on them.
+			if (!r.privileged()) return exec_trap::unimplemented;
+			// The operand is a data segment pointer, like SEML's: the
+			// kernels feed both LRA-built tagged pointers (DB- and
+			// SB-relative) and raw absolute addresses. A raw absolute
+			// reads as an external pointer with segment number zero,
+			// which is invalid as an EDS reference, so that encoding is
+			// free to mean absolute -- the privileged instructions' own
+			// convention.
+			const u32 ptr = stk(0);
+			u32 a;
+			if (ers32::get(ptr, 0, 1) == 0 && ers32::get(ptr, 2, 11) == 0)
+				a = ptr;                     // absolute
+			else
+			{
+				const ea_result e = m_au.resolve_data_pointer(ptr, false, true);
+				m_addr_trap = e.t;
+				if (!e.ok()) return exec_trap::address_error;
+				a = e.addr;
+			}
+			const u32 head = m_mem.read32(a);
+			if (head == 0xffffffffu)
+			{
+				// Another processor holds the word; spin by retrying
+				// the instruction. Single-CPU, this only happens if
+				// the OS itself left it locked.
+				branch_to(r.p);
+				return exec_trap::none;
+			}
+			const u32 ca = a + 4;
+			const s32 count = s32(m_mem.read32(ca));
+			const u32 ctcbp = m_mem.read32(ded_base() + 4);
+			if (op3 == 021)
+			{
+				m_mem.write32(ca, u32(count - 1));
+				if (b3) pop();
+				if (count - 1 >= 0)
+					return exec_trap::none;
+
+				// Block. The BASIC kernel's software version fixes the
+				// conventions the microcode must share: the TCB's wait
+				// link node lives at CTCBP-8 ({forward, backward}, the
+				// backward convention LDEL expects), its state word at
+				// CTCBP-16, low halfword 2 meaning blocked -- the TCB
+				// stays spliced in the dispatcher's priority chain, whose
+				// LLSH walk simply skips anything whose state is not 1.
+				// Then the task leaves through the dispatcher, exactly
+				// the entry DISP performs.
+				const u32 link = ctcbp - 8;
+				const u32 old_head = head;
+				m_mem.write32(link, old_head);
+				m_mem.write32(link + 4, a + 4);
+				if (old_head != 0)
+					m_mem.write32(old_head + 4, link + 4);
+				m_mem.write32(a, link);
+				const u32 sw = ctcbp - 16;
+				m_mem.write32(sw,
+						(m_mem.read32(sw) & 0xffff0000u) | 2);
+				return do_disp();
+			}
+			else
+			{
+				m_mem.write32(ca, u32(count + 1));
+				if (count + 1 <= 0)
+				{
+					// Wake the first waiter: unlink its node from the
+					// list, mark its TCB ready, and ring the doorbell
+					// bit the dispatcher's idle mask always leaves
+					// enabled, so a STOPped processor comes back to
+					// find it.
+					const u32 l = head;
+					if (l != 0)
+					{
+						const u32 fwd = m_mem.read32(l);
+						m_mem.write32(a, fwd);
+						if (fwd != 0)
+							m_mem.write32(fwd + 4, a + 4);
+						const u32 sw = l - 8;
+						m_mem.write32(sw,
+								(m_mem.read32(sw) & 0xffff0000u) | 1);
+						r.msg |= 0x00200000u;
+						m_halted = false;
+					}
+				}
+				if (b3) pop();
+				return exec_trap::none;
+			}
+		}
+
 		case 025: return stack_indirect(b3, 4, true);           // SSI
 		case 026: return stack_indirect(b3, 1, true);           // SBSI
 		case 027: return stack_indirect(b3, 8, true);           // SDSI

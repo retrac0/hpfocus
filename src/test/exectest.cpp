@@ -1987,6 +1987,67 @@ static void test_sbit()
 	CHECK_EQ(h.mem.read8(addr - 1), 0x80);
 }
 
+// UP and DOWN (format 4, 020/021): the semaphore pair named only by the
+// shipped assembler and executed only by the HP-UX kernels. Layout fixed
+// by both kernels' data and the BASIC kernel's software twin: word 0 the
+// wait-list head, word 1 the count.
+static void test_up_down()
+{
+	std::printf("UP and DOWN semaphores\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);                       // privileged
+
+	const u32 sem = h.cpu.r.db + 0x40;           // via a global pointer
+	const u32 ptr = (2u << 30) | 0x40;
+	h.mem.write32(sem, 0);                       // no waiters
+	h.mem.write32(sem + 4, 1);                   // one unit free
+
+	// DOWN acquires without blocking while the count is positive.
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+	CHECK_EQ(h.cpu.r.s, s32(h.cpu.r.sb + 3));    // popped
+
+	// UP releases it.
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(020, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 1);
+
+	// A raw absolute address works too: as an external pointer it would
+	// name segment zero, which is invalid, so the encoding means
+	// absolute.
+	h.cpu.push(sem);
+	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+
+	// Without the b bit the pointer survives.
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(020)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(ptr));
+	CHECK_EQ(h.mem.read32(sem + 4), 1);
+	h.cpu.pop();
+
+	// A waiter: park a fake TCB on the list the way a blocking DOWN
+	// does -- link node at CTCBP-8, state word at CTCBP-16 -- and check
+	// that UP unlinks it, marks it ready, and rings the doorbell bit.
+	const u32 TCB = 0x3000;
+	h.mem.write32(16 * ers32::get(h.cpu.r.mask, 3, 3) + 4, TCB + 0x18);
+	const u32 link = TCB + 0x10;
+	h.mem.write32(link, 0);
+	h.mem.write32(link + 4, sem + 4);
+	h.mem.write32(sem, link);
+	h.mem.write32(sem + 4, u32(-1));             // one waiter
+	h.mem.write32(TCB + 8, 0x00050002);          // blocked
+
+	h.cpu.r.msg = 0;
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(020, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+	CHECK_EQ(h.mem.read32(sem), 0);              // unlinked
+	CHECK_EQ(h.mem.read32(TCB + 8), 0x00050001); // ready
+	CHECK_EQ(h.cpu.r.msg, 0x00200000);           // doorbell rung
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -2015,6 +2076,7 @@ int main()
 	test_isc();
 	test_shift_index();
 	test_sbit();
+	test_up_down();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
