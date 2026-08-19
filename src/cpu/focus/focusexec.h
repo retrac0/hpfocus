@@ -166,6 +166,60 @@ public:
 
 	// The unmasked message bits, highest priority (lowest number) first.
 	u32 pending_messages() const { return r.msg & ~r.mask; }
+
+	// The front half of the microcode interrupt handler (ERS section
+	// 5.1.3, flowchart sheet 142): pick the highest priority unmasked
+	// I/O message bit, remove the first device from that level's list in
+	// dedicated memory, clear the message bit when the list empties, and
+	// vector through the device's DRT entry. The lists are the ones the
+	// IOP builds: a (tail, head) pair of absolute pointers per level at
+	// octal 2000, the link in the left halfword of each DRT entry's
+	// first word (I/O ERS section 4.1.4).
+	//
+	// Returns true when an interrupt was taken. The host calls this
+	// between instructions; conditions 1-4 of section 5.1.3 are exactly
+	// the checks made here.
+	bool service_interrupts()
+	{
+		if (!r.test(sf::I))
+			return false;
+		const u32 pend = r.msg & ~r.mask;
+		for (unsigned bit = 16; bit < 32; bit++)
+		{
+			if (!(pend & ers32::mask(bit, 1)))
+				continue;
+			const unsigned level = bit - 16;
+			const u32 la = 1024 + 8 * level;          // octal 2000 + 2 words per level
+			const u32 head = m_mem.read32(la + 4);
+			if (head == 0 || head == 0xffffffffu)
+			{
+				// All devices at this level serviced: clear the bit.
+				r.msg &= ~ers32::mask(bit, 1);
+				continue;
+			}
+			const u32 link = m_mem.read32(head) >> 16;
+			if (link == 0)
+			{
+				m_mem.write32(la + 4, 0);
+				m_mem.write32(la, 0);
+				r.msg &= ~ers32::mask(bit, 1);        // list now empty
+			}
+			else
+				m_mem.write32(la + 4, link);
+
+			m_halted = false;
+			external_interrupt(head);
+
+			// "Mask current & lower int. levels" -- the service routine
+			// runs shielded from its own level and everything below it,
+			// and IXIT restores the mask from the frame at Q+2.
+			for (unsigned b = bit; b < 32; b++)
+				r.mask |= ers32::mask(b, 1);
+			return true;
+		}
+		return false;
+	}
+
 	trap_cause last_trap() const { return m_last_trap; }
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
@@ -801,11 +855,17 @@ private:
 			return exec_trap::none;
 		}
 		case 003: {                                             // SBIT
-			const u32 spec = stk(0);
+			// Unlike LBIT, the operands run the other way up (ERS sheet
+			// 66): "a 2's complement bit offset in the second word on the
+			// stack and a data segment pointer in the third word... the
+			// least significant bit of the TOS is stored". So the value
+			// is on top, the offset beneath it and the pointer below
+			// that, and all three are popped.
+			const u32 bit = stk(0) & 1;
+			const u32 spec = stk(1);
 			const u32 bitno = spec & 7;
 			r.x = u32(s32(spec) >> 3);
-			const u32 ptr = stk(1);
-			const u32 bit = stk(2) & 1;
+			const u32 ptr = stk(2);
 			r.s -= 12;
 			const ea_result e = m_au.resolve_data_pointer(ptr, true, true);
 			m_addr_trap = e.t;
@@ -3082,6 +3142,7 @@ private:
 	// save the mask at (Q+2) and the device at (Q+3), load DB/DL and
 	// PB/PL/P from the DRT entry's data and program pointers, and run
 	// the service routine privileged in its segment.
+
 	exec_trap external_interrupt(u32 device)
 	{
 		const u32 ret = r.p - r.pb;
@@ -3116,10 +3177,11 @@ private:
 		r.s = r.q + 12;                     // S := Q + 3
 		set_qword(3, device);
 
-		// The DRT entry: word 1 is the service routine's program
-		// pointer, word 2 its data segment pointer (ERS section 5.1.3).
-		const u32 pgm = m_mem.read32(device);
+		// The DRT entry (ERS sheet 43): the first word is the link
+		// halfword plus operating system information, the second the
+		// data segment pointer, the third the interrupt routine pointer.
 		const u32 dsp = m_mem.read32(device + 4);
+		const u32 pgm = m_mem.read32(device + 8);
 		exec_trap t = set_dbdl_from_pointer(dsp);
 		if (t != exec_trap::none)
 			return t;

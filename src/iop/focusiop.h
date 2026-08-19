@@ -113,6 +113,10 @@ public:
 	// True when the card wants a DMA transfer.
 	virtual bool service_request() { return false; }
 
+	// True while the card is asserting ASYNC outside a transfer -- an
+	// attention request, e.g. a keystroke waiting (I/O ERS section 4.4).
+	virtual bool attention() { return false; }
+
 	// A single DMA transfer in each direction.
 	virtual u8 dma_read() { return 0; }
 	virtual void dma_write(u8) { }
@@ -153,10 +157,14 @@ public:
 		for (auto &c : m_chan)
 			c = channel_state();
 		m_int_mask = 0;
+		for (auto &c : m_chan)
+			c.int_enabled = false;
 		m_int_request = 0;
 		m_int_event = false;
 		m_int_message = 0;
 		m_attn_mask = 0;
+		m_attn_log = 0;
+		m_attn_event = false;
 		m_timer_start = 0;
 		m_timer_count = 0;
 		m_timer_enabled = false;
@@ -239,7 +247,15 @@ public:
 		case CMD_RTM:  data = m_timer_count; return true;
 		case CMD_RDPA: data = c.dma_pa; return true;
 		case CMD_RDB:  data = c.data_buffer; return true;
-		case CMD_RDTF: data = c.termination; return true;
+		case CMD_RDTF:
+			// TF0 doubles as the attention state (I/O ERS section 4.4):
+			// the poll mask in (0:8) and the log of PAs given an ARD in
+			// (16:8). Only channel 0's field carries them.
+			data = c.termination;
+			if (t.pa == 0)
+				data |= ((m_attn_mask & 0xff) << 24)
+						| ((m_attn_log & 0xff) << 8);
+			return true;
 		case CMD_RIRV: data = REVISION; return true;
 		case CMD_RIST: data = c.iface ? c.iface->status() : 0; return true;
 		case CMD_RIFG: data = c.iface ? c.iface->flag() : 0; return true;
@@ -276,15 +292,24 @@ public:
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
 		case CMD_CDMK: m_dma_mask = 0; return true;
 		case CMD_CIRQ: m_int_request &= ~(1u << t.pa); update_interrupt(); return true;
-		case CMD_ETMI: m_timer_enabled = true; return true;
+		case CMD_CAAK: m_attn_log &= ~(1u << t.pa); return true;
+		case CMD_ETMI:
+			// Enabling the timer interrupt also arms its device slot --
+			// ETMI is the timer's own EINT.
+			m_timer_enabled = true;
+			m_chan[TIMER_PA].int_enabled = true;
+			return true;
 		case CMD_CALM: m_lockout = false; return true;
 		case CMD_SALM: m_lockout = true; return true;
 		case CMD_DCE:  m_enabled = false; return true;
 		case CMD_LON:  m_led = true; return true;
 		case CMD_LOFF: m_led = false; return true;
-		case CMD_CAAK: m_attn_ack = false; return true;
-		case CMD_EINT: m_int_enable = true;  update_interrupt(); return true;
-		case CMD_DINT: m_int_enable = false; update_interrupt(); return true;
+		// Interrupt enable is per device: the ERS's request sequence ends
+		// with "the interrupt mask on the IOP now disables the device that
+		// requested from requesting again", so EINT is how the CPU re-arms
+		// a device after servicing it (I/O ERS section 4.1.4).
+		case CMD_EINT: c.int_enabled = true;  update_interrupt(); return true;
+		case CMD_DINT: c.int_enabled = false; update_interrupt(); return true;
 		case CMD_RIOB:
 			// Reset I/O Bus: drop every channel's DMA and clear pending
 			// requests, as a power-up sequence expects.
@@ -323,6 +348,29 @@ public:
 	{
 		if (!m_enabled)
 			return;
+
+		// The attention poll (I/O ERS section 4.4). A card asserting
+		// ASYNC outside a transfer is priority encoded by PA, the winner
+		// gets a write of 1 to its FR1 -- the Attention Request Disable,
+		// which stops it asserting until re-armed -- and its PA is logged
+		// in TF0(16:8). The mask excludes unwanted PAs ("to exclude any
+		// unwanted PA's"), so a zero mask, which is what the powerup
+		// writes, leaves every card eligible. The CPU hears about it as
+		// message 14, "CSG attention requests" (section 2.1).
+		for (unsigned pa = CHANNELS; pa-- > 0; )
+		{
+			channel_state &c = m_chan[pa];
+			if (!c.iface || !c.iface->attention())
+				continue;
+			if ((m_attn_mask >> pa) & 1)        // excluded
+				continue;
+			if ((m_attn_log >> pa) & 1)         // ARD already given
+				continue;
+			c.iface->write_fr(1, 1);            // Attention Request Disable
+			m_attn_log |= (1u << pa);
+			m_attn_event = true;
+			break;
+		}
 
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
 		{
@@ -368,6 +416,46 @@ public:
 	// Let a card raise an interrupt of its own.
 	void raise(unsigned pa)
 	{
+		channel_state &c = m_chan[pa];
+		if (!c.int_enabled)
+			return;
+
+		// Record the request in memory (I/O ERS section 4.1.4): link the
+		// device's DRT entry onto the list for its priority level. The
+		// sixteen lists live in dedicated locations 2000-2177 octal, a
+		// (tail, head) pair of absolute pointers per level; the link
+		// field is the left halfword of the entry's first word, and a
+		// zero link ends the list. Figure 4.1's worked example pins the
+		// device number arithmetic: CH4 PA4 sits at octal 1100 = 576 =
+		// 128*4 + 16*4.
+		const u32 device = 128u * m_channel + 16u * pa;
+		const u32 tail_addr = 01000 * 2 / 2;    // octal 2000 = 1024
+		memory_interface &mem = m_host.iop_memory();
+		const u32 ta = 1024 + 8u * c.int_level;
+		const u32 tail = mem.read32(ta);
+		if (tail != 0xffffffffu)                // -1 = locked by the CPU
+		{
+			// The new last entry's own link must read zero.
+			mem.write32(device,
+					mem.read32(device) & 0x0000ffffu);
+			if (tail != 0)
+			{
+				mem.write32(tail, (mem.read32(tail) & 0x0000ffffu)
+						| (device << 16));
+				mem.write32(ta, device);
+			}
+			else
+			{
+				mem.write32(ta + 4, device);    // head first,
+				mem.write32(ta, device);        // tail last (step 4)
+			}
+		}
+		(void)tail_addr;
+
+		// "...except that the interrupt mask on the IOP now disables the
+		// device that requested from requesting again."
+		c.int_enabled = false;
+
 		m_int_request |= (1u << pa);
 		m_int_event = true;
 		update_interrupt();
@@ -381,6 +469,15 @@ public:
 	// being serviced moves the level not at all. A host waking a STOPped
 	// CPU wants the event.
 	bool take_request_event() { const bool e = m_int_event; m_int_event = false; return e; }
+
+	// True once per attention the poll latched; the host forwards it to
+	// the CPU as message 14.
+	bool take_attention_event() { const bool e = m_attn_event; m_attn_event = false; return e; }
+	u32 attention_log() const { return m_attn_log; }
+
+	// The interrupt level a device's requests are recorded at, which is
+	// also which message bit (16 + level) announces them.
+	unsigned interrupt_level(unsigned pa) const { return m_chan[pa & 7].int_level; }
 	u32 dma_mask() const { return m_dma_mask; }
 
 private:
@@ -398,6 +495,13 @@ private:
 		u32 data_buffer = 0;
 		u8 dma_pa = 0;
 		u8 int_level = 0;
+		// Devices power up with interrupt requests disabled: the CPU
+		// arms each one with EINT after it has installed the device's
+		// DRT entry -- vectoring through an empty entry lands at
+		// absolute zero, so the hardware cannot default to armed. The
+		// boot logs bear it out: the OS runs its whole device scan
+		// without ever issuing an EINT.
+		bool int_enabled = false;
 		bool dma_active = false;
 	};
 
@@ -426,10 +530,11 @@ private:
 	bool m_int_event = false;
 	u32 m_int_message = 0;
 	u32 m_attn_mask = 0;
+	u32 m_attn_log = 0;     // TF0(16:8): PAs holding an unacknowledged ARD
+	bool m_attn_event = false;
 	u32 m_timer_start = 0;
 	u32 m_timer_count = 0;
 	bool m_timer_enabled = false;
-	bool m_attn_ack = false;
 	bool m_led = false;
 	bool m_lockout = false;
 	bool m_enabled = true;

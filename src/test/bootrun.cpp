@@ -88,6 +88,7 @@ struct run_host : public iop_core::host
 struct console_card : public iop_interface
 {
 	std::string out;
+	std::string report;    // panic text, see write_fr
 	// The powerup device scan (image offset 0x656) reads FR3 and only
 	// counts a card present when it reads zero. A card answering exactly
 	// 9 first gets a reset -- WIF1 then WIF8, opcodes 012 and 0102 -- and
@@ -99,8 +100,16 @@ struct console_card : public iop_interface
 	u32 fr0 = 0;               // pending input: 0 = none, else keycode
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
-	u32 status() override { return 0; }   // not busy
+	u32 status() override { return 1; }   // status line asserted
 	u32 flag() override { return 1; }     // done
+	// The 520 service manual (sheet C-1 error codes, "Theory of
+	// Operation" 2-32) names what lives behind these registers on the
+	// keyboard interface: bus test latches whose input and output are
+	// both on the bus, exercised at powerup by writing FR12 and reading
+	// the value back through FR9 -- the error codes for this are "FR12
+	// failed loopback" and "FR9 failed loop back". The visible powerup
+	// "character ramp" is that test, not display output.
+	u32 latch12 = 0;
 	u32 read_fr(unsigned n) override
 	{
 		switch (n)
@@ -108,26 +117,65 @@ struct console_card : public iop_interface
 		case 0:  { const u32 v = fr0; fr0 = 0; return v; }
 		case 1:  return 0x80;   // ready to accept a character
 		case 3:  return was_reset ? 0 : id;
-		case 9:  return 0xff;   // complemented response code: zero
+		// FR9 is the command-response register of the SCM-style console
+		// protocol (trap segment ~0x48060): the driver reads it, takes
+		// ~FR9 & 15, and expects a decimal digit -- 0 for success.
+		// 0xff is therefore "response code 0". The powerup loopback ramp
+		// through FR12 tolerates this value; a true latch echo would
+		// satisfy it too, but then reads as digit errors during command
+		// exchanges, which loop forever on their first command.
+		case 9:  return 0xff;
 		default: return 0;
 		}
 	}
 	bool input_ready() const { return fr0 != 0; }
+	bool attention() override { return fr0 != 0 && !ard; }
+	bool ard = false;      // attention request disable, set by the IOP's poll
 	void type(u8 c)
 	{
 		fr0 = c;
-		if (iop)
-			iop->raise(pa);
+		ard = false;       // a fresh keystroke re-asserts ASYNC
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
-		if (n == 1 || n == 8)   // the scan's reset pair
+		if (n == 1 || n == 8)   // the scan's reset pair, and the ARD
 		{
 			was_reset = true;
+			if (n == 1 && (v & 1))
+				ard = true;    // attention request disable from the poll
+			return;
+		}
+		// The system's panic reporter writes its text a character at a
+		// time to FR0 with 0x70 in the high byte, which is how a run
+		// that dies says so in words:
+		//   "System halted due to system error. TRAP:00000030 ..."
+		// followed by the trap number and the register set. The scan
+		// also writes FR0, without the marker, so the marker is what
+		// separates report text from a plain register write.
+		if (n == 0)
+		{
+			if ((v & 0xff00) == 0x7000)
+			{
+				const char c = char(v & 0xff);
+				report.push_back(c);
+				std::printf("%c", (c >= 32 && c < 127) ? c : '.');
+				std::fflush(stdout);
+			}
+			return;
+		}
+		if (n == 9)
+		{
+			// A command parameter. The exchange is command out through
+			// FR12/FR9, then an interrupt when the console has acted on
+			// it -- without the raise the driver's task blocks forever
+			// on the last command of its open sequence.
+			if (iop)
+				iop->raise(pa);
 			return;
 		}
 		if (n != 12)
 			return;
+		latch12 = v & 0xff;
 		const char c = char(v & 0xff);
 		out.push_back(c);
 		std::printf("[%u:%02x]%c", pa, v & 0xff,
@@ -554,6 +602,11 @@ int main(int argc, char **argv)
 					"TCB dispatch\n");
 			nudged = true;
 		}
+		// The microcode interrupt handler runs between instructions:
+		// when STATUS.I permits and an unmasked I/O message bit is up,
+		// pull the first waiting device from its level's list and vector
+		// through its DRT entry (ERS section 5.1.3).
+		cpu.service_interrupts();
 		// The machine's heartbeat: tick the interval timer and run a DMA
 		// poll round every few instructions, and deliver the IOP's
 		// interrupt line to the CPU between instructions. The device
@@ -582,9 +635,18 @@ int main(int argc, char **argv)
 			const u32 rq = iop.interrupt_request();
 			const u32 fresh = rq & ~prev_rq;
 			prev_rq = rq;
+			// The message bit is 16 + the device's interrupt level: the
+			// microcode handler maps the bit back to a level and pulls
+			// the device from that level's list (ERS sheet 142).
 			for (unsigned pa = 0; pa < 8; pa++)
 				if (fresh & (1u << pa))
-					cpu.raise_message(16 + 8 * iop.channel_number() + pa);
+					cpu.raise_message(16 + iop.interrupt_level(pa));
+			// The IOP's attention poll reaches the CPU as message 14,
+			// "CSG attention requests" (I/O ERS section 2.1) -- this is
+			// how a keystroke waiting on a card becomes visible to the
+			// dispatcher's PMPB poll.
+			if (iop.take_attention_event())
+				cpu.raise_message(14);
 			// A STOPped CPU resumes on a *new* request, not on the level.
 			// CMD_RIRQ's word is a latch that only CIRQ clears, so testing
 			// it directly undoes every STOP the moment any device has ever

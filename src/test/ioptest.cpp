@@ -147,13 +147,27 @@ static void test_registers()
 	CHECK_EQ(iop.dma_mask(), 0u);
 	CHECK_EQ(iop.interrupt_request(), 0u);
 
-	// Enable and disable interrupt gate the line without losing requests.
+	// Interrupt enable is per device (I/O ERS section 4.1.4): DINT on
+	// one PA does not gate another, a disabled device's raise is ignored
+	// outright, and every accepted raise disables its own device until
+	// the CPU re-arms it with EINT.
 	CHECK(iop.io_write(tgt(CMD_WIMK, 3, 0), 0));
-	CHECK(iop.io_control(tgt(CMD_DINT, 3, 0)));
 	iop.raise(4);
-	CHECK(!h.irq);
-	CHECK(iop.io_control(tgt(CMD_EINT, 3, 0)));
+	CHECK(!h.irq);                       // powers up disabled
+	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
+	iop.raise(5);
+	CHECK(h.irq);                        // armed, accepted
+	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));
+	iop.raise(5);
+	CHECK_EQ(iop.interrupt_request(), 0u);   // the raise disarmed it
+	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
+	iop.raise(5);                        // re-armed, accepted again
 	CHECK(h.irq);
+	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));
+	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
+	CHECK(iop.io_control(tgt(CMD_DINT, 3, 5)));
+	iop.raise(5);
+	CHECK(!h.irq);                       // DINT disarms again
 }
 
 
@@ -165,6 +179,10 @@ static void test_interrupts()
 	iop.reset();
 
 	CHECK(!h.irq);
+
+	// Devices power up disabled; arm the two this test raises.
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 2)));
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 3)));
 
 	// A masked request must not pull the line.
 	CHECK(iop.io_write(tgt(CMD_WIMK, 1, 0), 1u << 2));
@@ -207,6 +225,7 @@ static void test_dma()
 
 	card.next_in = 0x11;
 	card.wants = true;
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 2)));   // arm the completion
 	for (int i = 0; i < 6; i++)
 		iop.poll_and_service();
 

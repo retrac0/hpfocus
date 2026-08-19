@@ -1931,6 +1931,62 @@ static void test_shift_index()
 	CHECK_EQ(h.cpu.r.x, 8);
 }
 
+// SBIT (ERS sheet 66). Its operands run the opposite way up to LBIT's: the
+// bit value is on top, the offset beneath it, the pointer below that. The
+// powerup device scan builds its present bitmap with one, so getting the
+// order wrong wrote the bit through whatever happened to be in the second
+// word -- which is how a machine with any device attached ended up taking
+// an unexpected-pointer-type trap.
+static void test_sbit()
+{
+	std::printf("SBIT operand order\n");
+	harness h;
+
+	const u32 ptr = (2u << 30) | 16;          // global segment, DB+16
+	const u32 addr = h.cpu.r.db + 16;
+	const u32 base = h.cpu.r.sb + 3;
+
+	auto sbit = [&](s32 offset, u32 value) {
+		h.cpu.r.s = base;
+		h.cpu.push(ptr);
+		h.cpu.push(u32(offset));
+		h.cpu.push(value);
+		CHECK(h.one(f4(003, true)) == exec_trap::none);
+	};
+
+	// Bit 0 is the left-most bit of the byte the pointer addresses.
+	h.mem.write32(addr, 0);
+	sbit(0, 1);
+	CHECK_EQ(h.mem.read8(addr), 0x80);
+	CHECK_EQ(h.cpu.r.s, s32(base));           // all three words popped
+	CHECK_EQ(h.cpu.r.x, 0);
+
+	sbit(3, 1);
+	CHECK_EQ(h.mem.read8(addr), 0x90);        // and bit 3
+	sbit(7, 1);
+	CHECK_EQ(h.mem.read8(addr), 0x91);
+
+	// A zero value clears rather than sets.
+	sbit(0, 0);
+	CHECK_EQ(h.mem.read8(addr), 0x11);
+
+	// Bits past the first byte carry into X as a byte offset, and the
+	// pointer is evaluated indexed by it.
+	h.mem.write32(addr + 4, 0);
+	sbit(8 + 1, 1);                           // byte 1, bit 1
+	CHECK_EQ(h.cpu.r.x, 1);
+	CHECK_EQ(h.mem.read8(addr + 1), 0x40);
+	sbit(32 + 2, 1);                          // byte 4, bit 2
+	CHECK_EQ(h.cpu.r.x, 4);
+	CHECK_EQ(h.mem.read8(addr + 4), 0x20);
+
+	// The offset is two's complement, so it can reach backwards.
+	h.mem.write32(addr - 4, 0);
+	sbit(-8, 1);                              // byte -1, bit 0
+	CHECK_EQ(h.cpu.r.x, -1);
+	CHECK_EQ(h.mem.read8(addr - 1), 0x80);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -1958,6 +2014,7 @@ int main()
 	test_decimal();
 	test_isc();
 	test_shift_index();
+	test_sbit();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
