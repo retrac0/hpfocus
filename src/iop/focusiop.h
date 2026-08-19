@@ -154,6 +154,7 @@ public:
 			c = channel_state();
 		m_int_mask = 0;
 		m_int_request = 0;
+		m_int_event = false;
 		m_int_message = 0;
 		m_attn_mask = 0;
 		m_timer_start = 0;
@@ -368,10 +369,18 @@ public:
 	void raise(unsigned pa)
 	{
 		m_int_request |= (1u << pa);
+		m_int_event = true;
 		update_interrupt();
 	}
 
 	u32 interrupt_request() const { return m_int_request; }
+
+	// True once for each raise. The request word is a latch that only
+	// CIRQ clears, so its level means "a request is pending", not "a
+	// request just arrived" -- and a device that interrupts twice without
+	// being serviced moves the level not at all. A host waking a STOPped
+	// CPU wants the event.
+	bool take_request_event() { const bool e = m_int_event; m_int_event = false; return e; }
 	u32 dma_mask() const { return m_dma_mask; }
 
 private:
@@ -414,6 +423,7 @@ private:
 	u32 m_dma_mask = 0;
 	u32 m_int_mask = 0;
 	u32 m_int_request = 0;
+	bool m_int_event = false;
 	u32 m_int_message = 0;
 	u32 m_attn_mask = 0;
 	u32 m_timer_start = 0;

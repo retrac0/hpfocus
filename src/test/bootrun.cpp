@@ -88,7 +88,14 @@ struct run_host : public iop_core::host
 struct console_card : public iop_interface
 {
 	std::string out;
+	// The powerup device scan (image offset 0x656) reads FR3 and only
+	// counts a card present when it reads zero. A card answering exactly
+	// 9 first gets a reset -- WIF1 then WIF8, opcodes 012 and 0102 -- and
+	// has to read zero afterwards, so 9 is the one identity this powerup
+	// knows how to quiesce. Answering 4, nothing is registered at all.
+	// --consoleid drives that experiment; see the comment at the flag.
 	u32 id = 4;
+	bool was_reset = false;
 	u32 fr0 = 0;               // pending input: 0 = none, else keycode
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
@@ -100,7 +107,7 @@ struct console_card : public iop_interface
 		{
 		case 0:  { const u32 v = fr0; fr0 = 0; return v; }
 		case 1:  return 0x80;   // ready to accept a character
-		case 3:  return id;
+		case 3:  return was_reset ? 0 : id;
 		case 9:  return 0xff;   // complemented response code: zero
 		default: return 0;
 		}
@@ -114,6 +121,11 @@ struct console_card : public iop_interface
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
+		if (n == 1 || n == 8)   // the scan's reset pair
+		{
+			was_reset = true;
+			return;
+		}
 		if (n != 12)
 			return;
 		const char c = char(v & 0xff);
@@ -254,6 +266,16 @@ int main(int argc, char **argv)
 	u32 probe_id = 8;              // the identity it answers
 	bool probe_log = false;
 	u32 cpu_date = 0x19820319;     // what RCS location 6 reports
+	// What the console at select code 6 answers to RIF3. The powerup
+	// scan registers a card only when this reads zero, and resets an
+	// identity of 9 to get there (bootrun.cpp console_card). At the
+	// default 4 nothing is registered, the device table stays empty and
+	// the machine idles in the dispatcher. At 9 the console registers
+	// and the driver drives it for real -- which currently ends in a
+	// repeating instruction-sequencing trap out of an SXIT, because the
+	// card model does not implement the completion queues the driver
+	// then expects (absolute 6096; see the I/O protocol notes).
+	u32 console_id = 4;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -294,6 +316,8 @@ int main(int argc, char **argv)
 			probe_log = true;
 		else if (!std::strcmp(argv[i], "--cpudate") && i + 1 < argc)
 			cpu_date = u32(strtoul(argv[++i], nullptr, 16));
+		else if (!std::strcmp(argv[i], "--consoleid") && i + 1 < argc)
+			console_id = u32(strtoul(argv[++i], nullptr, 0));
 		else
 			path = argv[i];
 	}
@@ -326,6 +350,10 @@ int main(int argc, char **argv)
 	probe_card probe;
 	console_card console, console6;
 	console.iop = &iop;
+	// Select code 0 is where the error reporter writes rather than a CIO
+	// interface, so it keeps the identity the scan does not know and
+	// stays out of the device bitmap whatever the console is set to.
+	console6.id = console_id;
 	iop.attach(0, &console);       // select code 0: the error reporter's
 	console6.iop = &iop;
 	console6.pa = 6;
@@ -540,9 +568,6 @@ int main(int argc, char **argv)
 			std::printf("[type '%c']\n", type_text[-1] >= 32
 					? type_text[-1] : '?');
 		}
-		// A STOPped CPU resumes when an interrupt request arrives.
-		if (cpu.halted() && iop.interrupt_request() != 0)
-			cpu.resume();
 		// The IOP's interrupt request reaches the CPU as Message
 		// register bits 16-31, one per device (ERS sheet 13). The OS
 		// polls MSG through PMPB and services the device itself; there
@@ -555,6 +580,13 @@ int main(int argc, char **argv)
 			for (unsigned pa = 0; pa < 8; pa++)
 				if (fresh & (1u << pa))
 					cpu.raise_message(16 + 8 * iop.channel_number() + pa);
+			// A STOPped CPU resumes on a *new* request, not on the level.
+			// CMD_RIRQ's word is a latch that only CIRQ clears, so testing
+			// it directly undoes every STOP the moment any device has ever
+			// interrupted -- which is what kept the diagnostics' idle loop
+			// spinning instead of settling.
+			if (cpu.halted() && (fresh != 0 || iop.take_request_event()))
+				cpu.resume();
 		}
 		const u32 prev_cir = mem.read32(fault_pc & ~1u);
 		const u32 watch_was = (watch != 0xffffffff) ? mem.read32(watch) : 0;
