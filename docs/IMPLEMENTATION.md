@@ -621,9 +621,72 @@ and diagnostic discs.
 HARDWARE.md §6 — the Device Reference Table, the interrupt priority head and
 tail pointers, and the per-CPU blocks.
 
-### Phase 3 — 520 display and keyboard
+### Phase 3 — the device roadmap
 
-Then the diagnostics, then BASIC 2.0, then the demo discs.
+Every system on the tapes now boots to a correct dispatcher idle, in both
+the standalone harness and MAME, and the frontier is one thing: a console
+open that blocks waiting for a completion no device yet delivers. The
+2026-08-19 debugger sessions pinned down *why*, and it reshapes the device
+plan. The console request is a full producer/consumer protocol over a unit
+record (`{+0 request code, +8 mutex, +16 request-available semaphore, +28
+handle, +40 completion event}`): the kernel P's the mutex, writes request
+code 5, V's the request-available semaphore, and P's the completion event
+into the block. The V goes unconsumed because **the driver task that would
+service it never runs** — HP-UX's spawned server parks exactly on such a
+queue, but BASIC and the diagnostics create only one task. So the missing
+piece is not a hardware interrupt but a *driver*, and each real device
+below is the backing that lets its driver task start and complete requests.
+
+Ordered by what unblocks the most, soonest:
+
+1. **Keyboard + alpha console (select code 6, the 520's integrated
+   display).** The console the boots already open. The interface is
+   understood end to end (`docs/notes/09020-90037` §2-32: keyboard I/O
+   register, service-request latch, FR12/FR9 loopback, the complemented
+   command protocol). What remains is the driver-task side: find where the
+   console driver task is created and why it does not start on BASIC/diag,
+   then give the card real keystroke and completion semantics so a request
+   code 5 (read line) actually returns. This is the single highest-value
+   next step; it turns three idle machines into interactive ones.
+
+2. **HP-IB (IEEE-488) mass storage.** MAME already carries `bus/ieee488/`
+   with CS80 drives, so the work is the FOCUS side: a CIO HP-IB interface
+   card driven through the IOP's DMA (the `service_request`/`dma_read`/
+   `dma_write` hooks the IOP core already exposes), plus the AMIGO/CS80
+   command protocol the OS speaks. This mounts the BASIC utility and demo
+   discs and HP-UX's own filesystem, and is what `AUTOBN` reaches for.
+   Second priority because a booted-but-diskless machine is already useful
+   and the console comes first.
+
+3. **9895 / Teledisk floppy path.** The disc images are all Teledisk
+   (`tools/td0.py` reads them); MAME's `formats/td0_dsk.cpp` mounts them.
+   Needed for the standalone floppy drive the 520 shipped with, and a
+   simpler protocol than CS80 — a reasonable warm-up for the HP-IB work if
+   mass storage is tackled before the console driver is finished.
+
+4. **Serial ports (98626/98644 RS-232).** Another CIO card, FR-register
+   programmed like the console, but pointed at a host PTY or socket rather
+   than the integrated display. Low effort once the console driver pattern
+   exists, and the path to a remote terminal on the 530/540 (which have no
+   integrated display — their console *is* a serial terminal, so this may
+   be the natural console for the `hp9040` machine).
+
+5. **The 520 raster display and its graphics.** The alpha console text
+   already flows as characters; turning it into pixels is the framebuffer
+   and the 98760 alpha/graphics controller (`docs/notes/98760-90039`). This
+   is presentation rather than function — it makes the machine *watchable*
+   but blocks nothing — so it comes after the machine is doing real work.
+
+6. **GPIO / GP-IO (98622) and the CIO expander.** The general-purpose
+   parallel interface and the 97098 I/O expander that adds select codes.
+   Breadth rather than depth: needed for full diagnostic coverage and
+   period-authentic configurations, not for any boot. Last.
+
+The through-line: items 1–2 are what "boot" now means, and both are driver
+work standing on device models the CPU/IOP/DST layers already support. The
+MAME debugger harness (`tools/mame/focusdbg.lua`) is the instrument for all
+of it — breakpoints, watchpoints and memory windows over the exact request
+protocol, one run per question.
 
 ---
 
