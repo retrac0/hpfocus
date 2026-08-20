@@ -34,9 +34,12 @@
 #include "iop/focusiop.h"
 #include "iop/focusscm.h"
 #include "iop/focuscards.h"
+#include "iop/focusdim.h"
 #include "imagedev/snapquik.h"
+#include "machine/keyboard.h"
 #include "machine/terminal.h"
 #include "sound/beep.h"  // terminal.cpp needs it linked; the scanner follows driver includes
+#include "emupal.h"
 #include "screen.h"
 
 namespace {
@@ -50,6 +53,8 @@ public:
 		, m_cpu(*this, "cpu")
 		, m_ram(*this, "ram")
 		, m_terminal(*this, "terminal")
+		, m_keyboard(*this, "keyboard")
+		, m_screen(*this, "screen")
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -64,6 +69,8 @@ protected:
 private:
 	void mem_map(address_map &map) ATTR_COLD;
 	void kbd_put(u8 data);
+	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
+			const rectangle &cliprect);
 
 	// focus::iop_core::host -- the IOP reaches memory and the CPU through
 	// these. The CPU device already implements focus::memory_interface.
@@ -84,10 +91,13 @@ private:
 	required_device<focus_device> m_cpu;
 	required_shared_ptr<u32> m_ram;
 	optional_device<generic_terminal_device> m_terminal;
+	optional_device<generic_keyboard_device> m_keyboard;
+	optional_device<screen_device> m_screen;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
-	focus::console_card m_console0;   // select code 0: display/reporter
+	focus::dim_card m_dim;            // select code 0: the display
+	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::probe_card m_probe1;       // hp9040: a serial-slot probe
 	emu_timer *m_iop_timer = nullptr;
@@ -103,6 +113,12 @@ private:
 // the top-of-memory word at Q+64, and the loader's stack lives just below
 // the top (SB 0xe00000, Q 0xf00203).
 static constexpr u32 RAM_SIZE = 16 * 1024 * 1024;
+
+// The character cell the display's CRTC asks for: 15 scan lines tall, and
+// eight pixels wide for the font this build draws with.
+static constexpr unsigned CELL_WIDTH = 8;
+static constexpr unsigned CELL_HEIGHT = 15;
+static constexpr unsigned SCREEN_ROWS = 26;
 
 void hp9000_5xx_state::mem_map(address_map &map)
 {
@@ -122,13 +138,11 @@ void hp9000_5xx_state::machine_start()
 	// blanks, one per character cell) the way the 520 manual describes,
 	// so it is the default. Select code 6 is the keyboard board.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_console0.id = 6;
 	if (const char *e = getenv("FOCUS_SC0ID"))
-		m_console0.id = strtoul(e, nullptr, 0);
-	m_console0.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
-	if (const char *e = getenv("FOCUS_SC0ST"))
-		m_console0.st = strtoul(e, nullptr, 0);
-	m_iop.attach(0, &m_console0);
+		m_dim.id = strtoul(e, nullptr, 0);
+	m_dim.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
+	m_dim.log_cells = getenv("FOCUS_DIMCELLS") != nullptr;
+	m_iop.attach(0, &m_dim);
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
 	if (const char *e = getenv("FOCUS_KBDST"))
@@ -138,11 +152,7 @@ void hp9000_5xx_state::machine_start()
 	m_iop.attach(6, &m_console6);
 	// SC6 keyboard interrupts are enabled by the hardware itself.
 	m_iop.enable_interrupt(6);
-	// The 520's alphanumeric console: characters the OS writes to the
-	// select code 0 display flow into the generic terminal, whose
-	// keyboard feeds the keyboard board's keycode register back.
-	if (m_terminal)
-		m_console0.on_char = [this](u8 c) { m_terminal->write(c); };
+
 	// hp9040 carries a probe in a spare slot to map what HP-UX's SERIAL
 	// driver expects from a 98626/98644 card; FOCUS_SC1ID picks the
 	// identity it answers.
@@ -222,7 +232,7 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.reset();
 	m_scm.reset();
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_iop.attach(0, &m_console0);
+	m_iop.attach(0, &m_dim);
 	m_iop.attach(6, &m_console6);
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
@@ -312,45 +322,102 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 }
 
 
-// A keystroke from the terminal becomes a keycode in the keyboard
-// board's holding register (R10), with the service-request latch set.
-// The real board sends keycodes from the keyswitch matrix, not ASCII,
-// and the system translates them through a 256-byte table -- the same
-// one in the diagnostic and BASIC images (diag.bin 0x23694), whose
-// entries the emulated keyboard was read against: sweeping every
-// keycode from 0x20 to 0x7e and reading the screen echo reproduced the
-// table exactly -- 0x54 an S, 0x5c a D, 0x74 an R -- and 0x70 cleared
-// the line, so that is Return. This is that half of the table
-// inverted, with a lowercase letter arriving as its uppercase key.
-// Keycodes below 0x20 index it through a modifier not yet identified
-// (they echoed nothing of what the table promised), which is why the
-// five characters reachable only there (, - . ; =) map to zero, along
-// with the keys that are not characters at all.
+// A keystroke becomes a keycode in the keyboard board's holding
+// register (R10), with the service-request latch set. The keyswitch
+// matrix does not send ASCII: the system translates keycodes through a
+// 256-byte table, and sweeping every keycode from 0x20 to 0x7f through
+// the emulated keyboard -- clearing the input line between each, and
+// reading the character each one put in the display's frame buffer --
+// reproduced the table at diag.bin 0x23614 entry for entry, all
+// thirty-seven characters that the sweep could read unambiguously. The
+// system folds letters to upper case as it echoes them. Four keys are
+// not characters: 0x58 executes the line -- typing RUN and 0x58 answers
+// LABEL NOT FOUND, where 0x60 answers IMPROPER LINE NUMBER, so 0x60 is
+// the one that stores a line into the program and 0x58 is EXECUTE --
+// 0x70 clears the line, and 0x7f is the space bar. Anything the table reaches only through a modifier --
+// the keycodes below 0x20, and the shifted punctuation -- is unmapped
+// until the modifier is identified.
 static const u8 KEYCODES[128] =
 {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x00, 0x00, 0x70, 0x00, 0x00, 0x70, 0x00, 0x00,   // ........
+	0x00, 0x00, 0x58, 0x00, 0x00, 0x58, 0x00, 0x00,   // ........
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x7f, 0x79, 0x59, 0x2c, 0x7d, 0x20, 0x25, 0x3f,   //  !"#$%&'
-	0x26, 0x2f, 0x2e, 0x29, 0x00, 0x00, 0x00, 0x3c,   // ()*+,-./
-	0x41, 0x52, 0x4a, 0x53, 0x62, 0x5a, 0x63, 0x6a,   // 01234567
-	0x72, 0x6b, 0x61, 0x00, 0x51, 0x00, 0x49, 0x45,   // 89:;<=>?
-	0x24, 0x7c, 0x21, 0x4d, 0x5c, 0x60, 0x65, 0x36,   // @ABCDEFG
-	0x35, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
-	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x3e,   // PQRSTUVW
-	0x48, 0x75, 0x4c, 0x22, 0x73, 0x2b, 0x2d, 0x27,   // XYZ[\]^_
-	0x5b, 0x7c, 0x21, 0x4d, 0x5c, 0x60, 0x65, 0x37,   // `abcdefg
-	0x39, 0x31, 0x38, 0x30, 0x3a, 0x32, 0x3b, 0x6f,   // hijklmno
-	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x33, 0x3e,   // pqrstuvw
-	0x48, 0x75, 0x4c, 0x2a, 0x42, 0x23, 0x28, 0x00,   // xyz{|}~.
+	0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,   // ........
+	0x7f, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x59,   //  !"#$%&'
+	0x22, 0x2b, 0x3d, 0x43, 0x42, 0x27, 0x40, 0x3c,   // ()*+,-./
+	0x2f, 0x39, 0x24, 0x2c, 0x30, 0x3a, 0x2d, 0x25,   // 01234567
+	0x2e, 0x26, 0x00, 0x61, 0x35, 0x29, 0x36, 0x45,   // 89:;<=>?
+	0x00, 0x7c, 0x21, 0x4d, 0x5c, 0x2a, 0x33, 0x5d,   // @ABCDEFG
+	0x66, 0x76, 0x5e, 0x67, 0x3f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
+	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // PQRSTUVW
+	0x48, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0x00,   // XYZ[\]^_
+	0x28, 0x7c, 0x21, 0x4d, 0x5c, 0x2a, 0x33, 0x5d,   // `abcdefg
+	0x66, 0x76, 0x5e, 0x67, 0x3f, 0x4f, 0x57, 0x6f,   // hijklmno
+	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // pqrstuvw
+	0x48, 0x75, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00,   // xyz{|}~.
 };
 
 void hp9000_5xx_state::kbd_put(u8 data)
 {
-	const u8 code = KEYCODES[data & 0x7f];
+	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
+	// how the table above was read off the machine.
+	const u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
 	if (code)
 		m_console6.type(code);
+}
+
+
+// The screen is the display card's frame buffer drawn through a built-in
+// character generator: the CRTC's display start picks the first cell, its
+// vertical-displayed register the row count, and its cursor address the
+// cell drawn inverted. Each cell carries its attribute in the high byte;
+// bit 15 is the one the system sets on inverse-video text.
+u32 hp9000_5xx_state::screen_update(screen_device &screen,
+		bitmap_rgb32 &bitmap, const rectangle &cliprect)
+{
+	const rgb_t phosphor(0x00, 0xff, 0x40);
+	const unsigned rows = std::min<unsigned>(m_dim.rows(), SCREEN_ROWS);
+	const bool blink = (screen.frame_number() & 0x10) != 0;
+
+	if (getenv("FOCUS_DIMDUMP")
+			&& (screen.frame_number() % strtoul(getenv("FOCUS_DIMDUMP"), nullptr, 0)) == 0)
+	{
+		std::printf("--- frame %d start %04x rows %u\n",
+				int(screen.frame_number()), m_dim.start(), rows);
+		for (unsigned r = 0; r * focus::dim_card::COLUMNS < focus::dim_card::CELLS; r++)
+		{
+			std::string line;
+			for (unsigned c = 0; c < focus::dim_card::COLUMNS; c++)
+			{
+				const u8 ch = u8(m_dim.vram[r * focus::dim_card::COLUMNS + c]);
+				line.push_back((ch >= 32 && ch < 127) ? char(ch) : '.');
+			}
+			if (line.find_first_not_of(' ') != std::string::npos)
+				std::printf("|%2u %s|\n", r, line.c_str());
+		}
+	}
+
+	bitmap.fill(rgb_t::black(), cliprect);
+	for (unsigned row = 0; row < rows; row++)
+		for (unsigned col = 0; col < focus::dim_card::COLUMNS; col++)
+		{
+			const unsigned offset = row * focus::dim_card::COLUMNS + col;
+			const u16 v = m_dim.cell(offset);
+			bool invert = (v & 0x8000) != 0;
+			if (m_dim.cursor_visible() && blink
+					&& ((m_dim.start() + offset) & (focus::dim_card::CELLS - 1))
+							== m_dim.cursor())
+				invert = !invert;
+
+			for (unsigned line = 0; line < CELL_HEIGHT; line++)
+			{
+				const u8 gfx = focus::font8x16[((v & 0xff) << 4) | line];
+				u32 *p = &bitmap.pix(row * CELL_HEIGHT + line, col * CELL_WIDTH);
+				for (unsigned bit = 0; bit < CELL_WIDTH; bit++)
+					*p++ = (BIT(gfx, 7 - bit) != invert) ? phosphor : rgb_t::black();
+			}
+		}
+	return 0;
 }
 
 
@@ -361,12 +428,19 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
 
-	// The 520's 98760A alpha display is 26 rows by 80 columns of 7x9
-	// characters. Until its frame-buffer protocol is decoded, the
-	// character stream renders on a generic terminal with a built-in
-	// font, and the terminal's keyboard plays the keyswitch matrix.
-	GENERIC_TERMINAL(config, m_terminal, 0);
-	m_terminal->set_keyboard_callback(FUNC(hp9000_5xx_state::kbd_put));
+	// The 520's integrated display, as its own CRTC programs it: 80
+	// columns by 26 rows of 15-scanline characters.
+	SCREEN(config, m_screen);
+	m_screen->set_refresh_hz(60);
+	m_screen->set_size(focus::dim_card::COLUMNS * CELL_WIDTH,
+			SCREEN_ROWS * CELL_HEIGHT);
+	m_screen->set_visarea_full();
+	m_screen->set_screen_update(FUNC(hp9000_5xx_state::screen_update));
+
+	// The keyswitch matrix: a keystroke becomes a keycode in the keyboard
+	// board's holding register.
+	GENERIC_KEYBOARD(config, m_keyboard, 0);
+	m_keyboard->set_keyboard_callback(FUNC(hp9000_5xx_state::kbd_put));
 
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));

@@ -22,6 +22,7 @@
 #include "focusiop.h"
 
 #include <cstdio>
+#include <deque>
 #include <functional>
 #include <string>
 
@@ -120,6 +121,11 @@ struct console_card : public iop_interface
 	}
 	u8 nvm[2048] = {};
 	u32 keycode = 0;           // holding register behind R10
+	// The board holds one keycode at a time; a host that types faster
+	// than the system reads would lose the rest, so the extras wait
+	// here and each read of R10 hands the next one over with a fresh
+	// service request, which is what a person typing looks like.
+	std::deque<u8> pending;
 	u32 read_fr(unsigned n) override
 	{
 		u32 v = 0;
@@ -138,7 +144,19 @@ struct console_card : public iop_interface
 			v = u32(~rtc[latch12 & 63]) & 0xff;
 			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
 			break;
-		case 10: v = keycode; keycode = 0; break;
+		case 10:
+			v = keycode;
+			keycode = 0;
+			if (!pending.empty())
+			{
+				const u8 next = pending.front();
+				pending.pop_front();
+				keycode = next;
+				fr0 = next;
+				if (iop)
+					iop->raise(pa);
+			}
+			break;
 		case 13: v = nvm[(~latch12) & 2047]; break;
 		default: break;
 		}
@@ -177,6 +195,11 @@ struct console_card : public iop_interface
 	bool ard = false;      // attention request disable, set by the IOP's poll
 	void type(u8 c)
 	{
+		if (keycode)       // the holding register is still full
+		{
+			pending.push_back(c);
+			return;
+		}
 		fr0 = c;
 		keycode = c;
 		ard = false;       // a fresh keystroke re-asserts ASYNC

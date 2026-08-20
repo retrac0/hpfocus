@@ -75,7 +75,8 @@ public:
 	std::vector<u8> written;
 	u32 st = 0xabcd, fl = 0x1234;
 
-	u32 status() override { return st; }
+	u32 status() override { return 1; }
+	u32 status_reg() override { return st; }
 	u32 flag() override { return fl; }
 	bool service_request() override { return wants; }
 	u8 dma_read() override { return next_in++; }
@@ -291,7 +292,9 @@ static void test_poll_and_timer()
 	CHECK(iop.io_read(tgt(CMD_IFPL, 1, 0), v));
 	CHECK_EQ(v, (1u << 1) | (1u << 4));
 
-	// Card status and flag reach the CPU.
+	// The interface status register and the flag reach the CPU. RIST
+	// reads the register a card composes, which is not the one-bit
+	// STATUS line RISF reports.
 	CHECK(iop.io_read(tgt(CMD_RIST, 1, 1), v));
 	CHECK_EQ(v, 0xabcd);
 	CHECK(iop.io_read(tgt(CMD_RIFG, 1, 1), v));
