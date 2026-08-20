@@ -2707,6 +2707,17 @@ private:
 		r.status &= ers32::mask(14, 1);
 		r.put(sf::CSN, 1);
 
+		// Entering the handler segment confers its privilege, exactly as
+		// calling into it does: the CST entry's M attribute (word 0 bit
+		// 30) says the segment executes privileged, and CS1's is set.
+		// Without this a trap taken in user mode ran the OS's own handler
+		// unprivileged, so the first privileged instruction in it -- a
+		// PLDA a few words in -- trapped as unimplemented, and that trap
+		// entered the same handler the same way. The machine recursed
+		// until the stack left memory and the processor jumped to -1.
+		if (ers32::get(m_mem.read32(entry), 30, 1))
+			r.put(sf::M, 1);
+
 		if (m_trap_log_len < 16)
 		{
 			m_trap_log[m_trap_log_len][0] = u32(cause);
@@ -3624,6 +3635,7 @@ public:
 	// Memory access on the core's own bus, for host-side boot plumbing
 	// (the loader handoff and its nudge).
 	u32 read_mem32(u32 a) { return m_mem.read32(a); }
+	u8 read_mem8(u32 a) { return m_mem.read8(a); }
 	void write_mem32(u32 a, u32 v) { m_mem.write32(a, v); }
 
 	// Observation hook for UP/DOWN's slow paths: called on a blocking

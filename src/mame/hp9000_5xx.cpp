@@ -122,8 +122,15 @@ private:
 	unsigned m_watch_hits = 0, m_watch_max = 12;
 	double m_watch_from = 0.0;
 	double m_break_from = 0.0;
+	double m_wp_from = 0.0;
+	bool m_runaway = false, m_ran_away = false;
+	std::array<std::pair<u32, u32>, 48> m_trail{};
+	size_t m_trail_at = 0;
 	void trip_watch(u8 c);
 	void report_state(const char *why);
+	void memory_find();
+	TIMER_CALLBACK_MEMBER(find_tick);
+	TIMER_CALLBACK_MEMBER(state_tick);
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
 	emu_timer *m_type_timer = nullptr;
@@ -178,6 +185,53 @@ void hp9000_5xx_state::trip_watch(u8 c)
 }
 
 
+
+// FOCUS_FIND=<hex bytes> or ="<text>" scans ALL of memory for a byte
+// string -- an instruction pair to locate a site in the loaded copy, or a
+// piece of text to find out whether the system composed it at all and
+// where it put it. (It used to scan only the first 2 MB, which silently
+// missed everything the running system builds up near the top of RAM.)
+// FOCUS_FINDAT=<emulated seconds> runs the search at a chosen moment
+// instead of at a breakpoint, which is how "did the system ever compose
+// this text?" gets asked of a machine that is simply sitting there.
+void hp9000_5xx_state::memory_find()
+{
+	focus::cpu_core &core = m_cpu->core();
+	if (const char *e = getenv("FOCUS_FIND"))
+	{
+		std::vector<u8> want;
+		if (*e == '"')
+			for (const char *p = e + 1; *p && *p != '"'; p++)
+				want.push_back(u8(*p));
+		else
+			for (const char *p = e; p[0] && p[1]; p += 2)
+			{
+				const char pair[3] = { p[0], p[1], 0 };
+				want.push_back(u8(strtoul(pair, nullptr, 16)));
+			}
+		unsigned found = 0;
+		for (u32 a = 0; a + want.size() <= RAM_SIZE && found < 12; a++)
+		{
+			size_t k = 0;
+			while (k < want.size() && core.read_mem8(a + u32(k)) == want[k])
+				k++;
+			if (k != want.size())
+				continue;
+			std::printf("  found at %08x:", a);
+			for (u32 j = 0; j < want.size() + 8 && j < 24; j++)
+			{
+				const u8 c = core.read_mem8(a + j);
+				std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+			}
+			std::printf("\n");
+			found++;
+		}
+		if (!found)
+			std::printf("  found nothing\n");
+	}
+
+}
+
 void hp9000_5xx_state::report_state(const char *why)
 {
 	focus::cpu_core &core = m_cpu->core();
@@ -185,6 +239,9 @@ void hp9000_5xx_state::report_state(const char *why)
 			"SB=%08x X=%08x]\n",
 			why, core.r.p, core.r.pb, core.r.p - core.r.pb,
 			core.r.q, core.r.s, core.r.db, core.r.sb, core.r.x);
+	std::printf("  DL=%08x SL=%08x PL=%08x DST=%08x STATUS=%08x M=%d\n",
+			core.r.dl, core.r.sl, core.r.pl, core.r.dst, core.r.status,
+			core.r.test(focus::sf::M) ? 1 : 0);
 	std::printf("  SB+0..+16: %08x %08x %08x %08x %08x\n",
 			core.read_mem32(core.r.sb), core.read_mem32(core.r.sb + 4),
 			core.read_mem32(core.r.sb + 8), core.read_mem32(core.r.sb + 12),
@@ -215,19 +272,8 @@ void hp9000_5xx_state::report_state(const char *why)
 			p = comma + 1;
 		}
 
-	// FOCUS_FIND=<hex word> scans memory for an instruction pair, which
-	// is how a site found in the image gets located in the loaded copy.
-	if (const char *e = getenv("FOCUS_FIND"))
-	{
-		const u32 want = strtoul(e, nullptr, 16);
-		unsigned found = 0;
-		for (u32 a = 0; a < 0x200000 && found < 8; a += 2)
-			if (core.read_mem32(a) == want)
-			{
-				std::printf("  found %08x at %08x\n", want, a);
-				found++;
-			}
-	}
+	if (getenv("FOCUS_FIND") && !getenv("FOCUS_FINDAT"))
+		memory_find();
 
 	// The code segment table says which module each frame is in: entry
 	// zero's first word is sixteen times the entry count, and every entry
@@ -441,7 +487,33 @@ void hp9000_5xx_state::machine_start()
 			m_watch_from = strtod(n, nullptr);
 	}
 
+	// FOCUS_RUNAWAY reports the moment the processor leaves real memory,
+	// with the last instructions it executed before it did. A machine
+	// that has jumped to nowhere cannot say where it came from, and the
+	// stack marker is usually gone too, so the trail has to be kept.
+	m_runaway = getenv("FOCUS_RUNAWAY") != nullptr;
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
+		if (m_runaway)
+		{
+			if (!m_ran_away && (core.r.p >= RAM_SIZE || core.r.pb >= RAM_SIZE))
+			{
+				m_ran_away = true;
+				std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
+						machine().time().as_double(), core.r.p, core.r.pb);
+				std::printf("  last %u instructions, oldest first:\n",
+						unsigned(m_trail.size()));
+				for (size_t i = 0; i < m_trail.size(); i++)
+				{
+					const size_t k = (m_trail_at + i) % m_trail.size();
+					if (m_trail[k].first)
+						std::printf("    P=%08x PB=%08x\n",
+								m_trail[k].first, m_trail[k].second);
+				}
+				report_state("runaway");
+			}
+			m_trail[m_trail_at] = std::make_pair(core.r.p, core.r.pb);
+			m_trail_at = (m_trail_at + 1) % m_trail.size();
+		}
 		if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
 				&& m_watch_hits < m_watch_max
 				&& machine().time().as_double() >= m_watch_from)
@@ -514,7 +586,7 @@ void hp9000_5xx_state::machine_start()
 	// FOCUS_WPOINT=<addr> reports every change of one memory word with
 		// the instruction that made it, which is how a table's builder is
 		// found when the table is all there is to go on.
-		if (m_wpoint)
+		if (m_wpoint && machine().time().as_double() >= m_wp_from)
 		{
 			const u32 now = core.read_mem32(m_wpoint);
 			if (now != m_wpoint_last)
@@ -578,6 +650,21 @@ void hp9000_5xx_state::machine_start()
 	// the boot has settled -- the headless way to drive the command line.
 	// \n becomes EXECUTE. FOCUS_TYPEAT=<emulated seconds> delays the
 	// first keystroke (default 15).
+	if (const char *e = getenv("FOCUS_FINDAT"))
+	{
+		emu_timer *const t = timer_alloc(FUNC(hp9000_5xx_state::find_tick), this);
+		t->adjust(attotime::from_double(strtod(e, nullptr)));
+	}
+	if (const char *e = getenv("FOCUS_STATEAT"))
+		for (std::string list(e); !list.empty(); )
+		{
+			const size_t comma = list.find(',');
+			const double at = strtod(list.substr(0, comma).c_str(), nullptr);
+			list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+			emu_timer *const t =
+					timer_alloc(FUNC(hp9000_5xx_state::state_tick), this);
+			t->adjust(attotime::from_double(at));
+		}
 	if (const char *e = getenv("FOCUS_TYPE"))
 	{
 		for (const char *pc = e; *pc; pc++)
@@ -592,6 +679,21 @@ void hp9000_5xx_state::machine_start()
 				attotime::from_msec(150));
 	}
 }
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
+{
+	memory_find();
+}
+
+
+// FOCUS_STATEAT=<emulated seconds>[,<more>...] reports the processor and
+// its stack at chosen moments -- where a wedged machine is sitting, which
+// a breakpoint cannot ask because the code in question is not known yet.
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::state_tick)
+{
+	report_state("stateat");
+}
+
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 {
