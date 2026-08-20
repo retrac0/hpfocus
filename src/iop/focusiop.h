@@ -467,7 +467,14 @@ public:
 			channel_state &c = m_chan[pa];
 			if (!c.iface || !c.iface->attention())
 				continue;
-			if ((m_attn_mask >> pa) & 1)        // excluded
+			// The mask's sense: a set bit makes the PA eligible. The
+			// device scan writes 1<<7 before commanding the internal
+			// disc and expects its completion through this poll; the
+			// "exclude unwanted PAs" reading of the (poorly scanned)
+			// ERS text, with 0 meaning everyone, matched nothing the
+			// running system does -- powerup writes 0 first, when it
+			// wants quiet.
+			if (!((m_attn_mask >> pa) & 1))     // not armed
 				continue;
 			if ((m_attn_log >> pa) & 1)         // ARD already given
 				continue;

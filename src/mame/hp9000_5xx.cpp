@@ -106,7 +106,7 @@ private:
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
 	u32 m_break_at = 0;
-	bool m_broke = false;
+	unsigned m_break_hits = 0, m_break_max = 1;
 	bool m_traced = false;
 	u32 m_trace_left = 0;
 	u32 m_wpoint = 0, m_wpoint_last = 0;
@@ -319,8 +319,11 @@ void hp9000_5xx_state::machine_start()
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	m_iop.attach(6, &m_console6);
-	// SC6 keyboard interrupts are enabled by the hardware itself.
+	// SC6 keyboard interrupts are enabled by the hardware itself; the
+	// internal disc's select code is armed the same way when present.
 	m_iop.enable_interrupt(6);
+	if (getenv("FOCUS_DISC"))
+		m_iop.enable_interrupt(7);
 
 	// FOCUS_PROBE=<select code>[:<identity>] parks a logging card in an
 	// empty slot, which is how what a driver expects of a controller we
@@ -343,6 +346,19 @@ void hp9000_5xx_state::machine_start()
 		if (const char *e = getenv("FOCUS_DISCBUSY"))
 			m_disc.busy_ms = strtoul(e, nullptr, 0);
 		m_disc.reset_self_test();
+		if (const char *e = getenv("FOCUS_DISCRESULT"))
+			m_disc.result = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_DISCRLEN"))
+			m_disc.response_len = strtoul(e, nullptr, 0);
+		// FOCUS_DISCRESP=aa,bb,... an explicit response byte string.
+		if (const char *e = getenv("FOCUS_DISCRESP"))
+			for (const char *p2 = e; *p2; )
+			{
+				m_disc.response.push_back(u8(strtoul(p2, nullptr, 16)));
+				const char *comma = strchr(p2, ',');
+				if (!comma) break;
+				p2 = comma + 1;
+			}
 		m_disc.want_service = getenv("FOCUS_DISCSRQ") != nullptr;
 		m_disc.want_irq = getenv("FOCUS_DISCIRQ") != nullptr;
 		m_iop.attach(7, &m_disc);
@@ -361,7 +377,11 @@ void hp9000_5xx_state::machine_start()
 	// window of the current stack frame -- enough to read the arguments a
 	// routine was called with.
 	if (const char *e = getenv("FOCUS_BREAK"))
+	{
 		m_break_at = strtoul(e, nullptr, 16);
+		if (const char *colon = strchr(e, ':'))
+			m_break_max = strtoul(colon + 1, nullptr, 0);
+	}
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
 	if (const char *e = getenv("FOCUS_WPOINT"))
@@ -452,11 +472,11 @@ void hp9000_5xx_state::machine_start()
 			if (!m_trace_left)
 				std::fflush(stdout);
 		}
-		if (m_break_at && core.r.p == m_break_at && !m_broke)
+		if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max)
 		{
 			m_traced = true;
-			m_broke = true;
-			std::printf("\n[break %08x]\n", m_break_at);
+			m_break_hits++;
+			std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
 			report_state("break");
 			for (int k = -10; k <= 14; k++)
 				std::printf("    Q%+3d (%08x) = %08x\n", k, core.r.q + 4 * k,

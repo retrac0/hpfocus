@@ -48,6 +48,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <vector>
 
 namespace focus {
 
@@ -78,6 +80,10 @@ struct disc_card : public iop_interface
 	// its STATUS, so those bits are failure codes.
 	u32 status_word = 0x80;
 	u32 status_after = 0xc0;
+	// What FR1 answers for an executed command; not yet established.
+	u32 result = 0;
+	unsigned response_len = 1;
+	std::vector<u8> response;   // explicit byte string, wins if set
 	// The card's self test takes time, not a number of reads: the host
 	// ticks this once a millisecond and the status changes when the time
 	// is up, so what the system sees does not depend on how often it
@@ -114,6 +120,11 @@ struct disc_card : public iop_interface
 			{
 				v = 0;
 			}
+			else if (!m_response.empty())
+			{
+				v = m_response.front();
+				m_response.pop_front();
+			}
 			else
 			{
 				v = m_busy_left ? status_word : status_after;
@@ -137,6 +148,11 @@ struct disc_card : public iop_interface
 		{
 			std::printf("[disc W fr%u = %04x]\n", n, v & 0xffff);
 			std::fflush(stdout);
+		}
+		if (n == 1 && (v & 1))
+		{
+			m_attention = false;   // Attention Request Disable
+			return;
 		}
 		m_fr[n & 15] = v & 0xffff;
 		if (n == 0)
@@ -165,7 +181,31 @@ struct disc_card : public iop_interface
 			std::printf("[disc C fr%u  (fr9=%04x)]\n", n, m_fr[9]);
 			std::fflush(stdout);
 		}
+		// The strobe on register 7 executes the command latched in FR9
+		// (the boot writes 0x27 there first). The driver issues no reads
+		// afterwards and never arms the interrupt with EINT, so the
+		// completion must arrive as an interrupt the hardware arms by
+		// itself -- the keyboard's select code works the same way.
+		if (n == 7)
+		{
+			m_attention = true;
+			// The command's response is a stream of bytes the CPU takes
+			// from FR1 one read at a time.
+			m_response.clear();
+			if (!response.empty())
+				for (u8 b : response)
+					m_response.push_back(b);
+			else
+				for (unsigned i = 0; i < response_len; i++)
+					m_response.push_back(u8(result));
+		}
 	}
+
+	// The device scan writes WAMK 1<<7 before commanding the card, so the
+	// completion channel is the attention poll: the card asserts ASYNC
+	// when the command is done, the poll answers with an ARD write to
+	// FR1, and the CPU hears message 14.
+	bool attention() override { return m_attention; }
 
 	bool want_service = false;   // assert the service-request line
 	bool want_irq = false;       // and/or raise an interrupt
@@ -188,6 +228,8 @@ private:
 	bool m_echo_pending = false;
 	bool m_present = false;
 	bool m_service = false;
+	bool m_attention = false;
+	std::deque<u8> m_response;
 	unsigned m_busy_left = 50;
 };
 
