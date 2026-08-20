@@ -33,6 +33,7 @@
 #include "focusdst.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 
@@ -1668,6 +1669,13 @@ private:
 			const s32 count = s32(stk(0));
 			u32 tba = absolute_or_pointer(stk(1));
 			u32 sba = absolute_or_pointer(stk(2));
+			// A count in the tens of megabytes is not a copy the OS
+			// means: it stalls the emulator for the whole transfer
+			// inside one instruction, which reads as a hang from
+			// outside. Say so instead of silently grinding.
+			if (count > 0x1000000 || count < -0x1000000)
+				std::fprintf(stderr, "[core] PMVA count %d at P=%08x "
+						"src=%08x dst=%08x\n", count, r.p, sba, tba);
 
 			s32 x = 0;
 			while (count > d * x)
@@ -2897,6 +2905,9 @@ private:
 	exec_trap do_mvb(int d, unsigned sdec, bool src_is_ds)
 	{
 		const s32 count = s32(stk(0));
+		if (count > 0x1000000 || count < -0x1000000)
+			std::fprintf(stderr, "[core] MVB count %d at P=%08x\n",
+					count, r.p);
 		const u32 tptr = stk(1);
 		const u32 sptr = stk(2);
 
@@ -3651,6 +3662,29 @@ private:
 					return launch_ics_frame();
 				}
 				// Pseudo-disabled: fall through as cases 3 and 6.
+			}
+			else if (m_mem.read32(qi - 3) == 0)
+			{
+				// The frame at QI is empty: there is no interrupted
+				// dispatcher to return to, only a dispatcher to enter.
+				// This is the boot handoff's own path -- all three
+				// systems (BASIC 2.0 and both HP-UX kernels) end SYSTEM
+				// POWERUP by writing CTCBP, QI and SLI into the
+				// dedicated words and executing IXIT under a marker
+				// whose (Q) has its top bit set (the MPB inventory's
+				// first halfword, 0x9004, carries it by construction).
+				// Case 5's return-to-interrupted-dispatcher would unwind
+				// the loader's marker, whose delta word IS the
+				// inventory; entering the dispatcher through the TCB is
+				// what the empty QI frame means. This replaces the
+				// harness hack that zeroed (Q) to reach the same
+				// dispatch by a different door.
+				r.q = qi;
+				r.sb = (qi & ~3u) - 256;
+				r.sl = m_mem.read32(ded_base() + 12);
+				m_ics_flag = true;
+				m_disp_flag = false;
+				return tcb_dispatch();
 			}
 			else
 			{

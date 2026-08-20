@@ -137,8 +137,6 @@ private:
 	std::string m_type_text;
 	size_t m_type_pos = 0;
 	u32 m_prev_rq = 0;
-	bool m_nudged = false;
-	u32 m_handoff_q = 0;
 	// The discs in the drive, in the order the loader asks for them: a
 	// boot image is a set, and the operator feeds the volumes one by one.
 	std::vector<std::vector<u8>> m_media;
@@ -445,11 +443,6 @@ void hp9000_5xx_state::machine_start()
 	m_iop.trace_pc = [this]() { return m_cpu->core().r.p; };
 
 
-	// The powerup module's final IXIT unwinds a frame whose delta-Q word
-	// is the loader's MPB inventory; the word must be cleared when the
-	// module reaches that IXIT with the handoff stack still current --
-	// what the real loader does to reconcile the two roles is unknown.
-	// Same nudge as the bootrun harness, instruction-precise.
 	// FOCUS_BREAK=<absolute address> reports the same state as the trip
 	// wire the first time the processor reaches that instruction, with a
 	// window of the current stack frame -- enough to read the arguments a
@@ -553,6 +546,17 @@ void hp9000_5xx_state::machine_start()
 		};
 	}
 
+	// FOCUS_SEMLOG traces the hardware semaphores: which one a task blocks
+	// on and which one wakes it. An idle kernel that has stopped short
+	// says so here -- the semaphore it parked on names what it is waiting
+	// for.
+	if (getenv("FOCUS_SEMLOG"))
+		m_cpu->core().sem_hook = [](bool block, u32 sem, u32 tcb, u32 pc) {
+			std::printf("[sem %s sem=%08x tcb=%08x at P=%08x]\n",
+					block ? "DOWN-block" : "UP-wake  ", sem, tcb, pc);
+			std::fflush(stdout);
+		};
+
 	if (getenv("FOCUS_ESCLOG"))
 		m_cpu->core().on_escape = [this](u32 p, u32 value) {
 			// FOCUS_ESCVAL=<hex> logs only that escape value, uncapped;
@@ -633,16 +637,6 @@ void hp9000_5xx_state::machine_start()
 		// built the tables and pointed dedicated location 0 at them.
 		if (!core.traps_enabled() && core.read_mem32(0) != 0)
 			core.enable_traps(true);
-		if (m_nudged || core.r.q != m_handoff_q || m_handoff_q == 0)
-			return;
-		const u32 w = core.read_mem32(core.r.p & ~3u);
-		const u16 insn = (core.r.p & 2) ? u16(w) : u16(w >> 16);
-		if (insn == 0x007c)
-		{
-			core.write_mem32(m_handoff_q - 3, 0);
-			m_nudged = true;
-			logerror("nudge: (Q) cleared for the final IXIT\n");
-		}
 	});
 
 	// The IOP polls its interfaces continuously and runs the interval
@@ -820,8 +814,6 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &img,
 	core.r.mask = focus::ers32::set(0, 3, 3, 1);
 
 	const u32 q = core.r.q;
-	m_handoff_q = q;
-	m_nudged = false;
 
 	// The loader's parameter block; see bootrun.cpp for the full
 	// derivation of every word.
