@@ -112,6 +112,9 @@ private:
 	u32 m_wpoint = 0, m_wpoint_last = 0;
 	unsigned m_wpoint_hits = 0;
 	unsigned m_traps_seen = 0, m_escapes = 0;
+	u32 m_ea_at = 0;
+	unsigned m_ea_want = 6;
+	bool m_ea_armed = false;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
 	unsigned m_watch_hits = 0, m_watch_max = 12;
 	void trip_watch(u8 c);
@@ -331,6 +334,8 @@ void hp9000_5xx_state::machine_start()
 		m_disc.log = getenv("FOCUS_DISCLOG") != nullptr;
 		if (const char *e = getenv("FOCUS_DISCID"))
 			m_disc.identity = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_DISCFR3"))
+			m_disc.id_fr3 = strtoul(e, nullptr, 0);
 		if (const char *e = getenv("FOCUS_DISCSTATUS"))
 			m_disc.status_word = strtoul(e, nullptr, 0);
 		if (const char *e = getenv("FOCUS_DISCAFTER"))
@@ -395,6 +400,24 @@ void hp9000_5xx_state::machine_start()
 			}
 		};
 
+	// FOCUS_EATRACE=<addr>[:<n>] prints the next n data addresses the
+	// processor computes once it reaches that instruction, with what it
+	// found there.
+	if (const char *e = getenv("FOCUS_EATRACE"))
+	{
+		m_ea_at = strtoul(e, nullptr, 16);
+		if (const char *colon = strchr(e, ':'))
+			m_ea_want = strtoul(colon + 1, nullptr, 0);
+		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
+			if (!m_ea_armed || !m_ea_want)
+				return;
+			m_ea_want--;
+			std::printf("[ea pc=%08x addr=%08x = %08x]\n", pc, addr,
+					m_cpu->core().read_mem32(addr & ~3u));
+			std::fflush(stdout);
+		};
+	}
+
 	if (getenv("FOCUS_ESCLOG"))
 		m_cpu->core().on_escape = [this](u32 p, u32 value) {
 			if (m_escapes++ < 400)
@@ -420,6 +443,8 @@ void hp9000_5xx_state::machine_start()
 				std::fflush(stdout);
 			}
 		}
+		if (m_ea_at && core.r.p == m_ea_at)
+			m_ea_armed = true;
 		if (m_traced && m_trace_left)
 		{
 			m_trace_left--;

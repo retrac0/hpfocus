@@ -60,6 +60,10 @@ struct disc_card : public iop_interface
 	// The identity the slot answers on FR0. Which value means "internal
 	// disc" is not established: any nonzero answer binds a driver.
 	u32 identity = 1;
+	// The identity register the other slots are typed by. This slot is
+	// scanned differently and answers zero here by default; whether a
+	// real controller says something else is what the sweep asks.
+	u32 id_fr3 = 0;
 	// What FR1 reads once the presence test has had its echo. The driver
 	// polls this as a status register; 0x140 is the value that gets it
 	// through to its initialisation commands.
@@ -91,6 +95,9 @@ struct disc_card : public iop_interface
 		{
 		case 0:
 			v = identity;
+			break;
+		case 3:
+			v = id_fr3;
 			break;
 		case 1:
 			// Before the presence test this register reads zero -- the

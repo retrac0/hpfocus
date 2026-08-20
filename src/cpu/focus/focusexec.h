@@ -274,6 +274,10 @@ public:
 	// their failures up this way, so this is where an error number that
 	// never reaches the screen can still be caught.
 	std::function<void(u32, u32)> on_escape;
+	// Every data effective address as it is computed, with the
+	// instruction that asked for it: the way to see which word a load
+	// through a pointer actually reached.
+	std::function<void(u32, u32)> on_ea;
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
 
@@ -414,6 +418,8 @@ private:
 				modify);
 		m_addr_trap = e.t;
 		out = e.addr;
+		if (on_ea && e.ok())
+			on_ea(r.p, e.addr);
 		return e.ok();
 	}
 
