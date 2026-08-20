@@ -5,7 +5,7 @@
     HP FOCUS disassembler
 
     Instruction formats (ERS section 6.1, sheet 53; field widths confirmed
-    against Appendix B and against real code -- see docs/HARDWARE.md 5.2).
+    against Appendix B and against real code -- see docs/FOCUS.md Appendix B).
     Bit 0 is the most significant bit throughout.
 
       Fmt 1 (16b, OP1=2..6)   OP1(0:3) I(3) X(4) BASE(5:3) OFFSET(8:8)

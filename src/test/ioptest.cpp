@@ -147,10 +147,9 @@ static void test_registers()
 	CHECK_EQ(iop.dma_mask(), 0u);
 	CHECK_EQ(iop.interrupt_request(), 0u);
 
-	// Interrupt enable is per device (I/O ERS section 4.1.4): DINT on
-	// one PA does not gate another, a disabled device's raise is ignored
-	// outright, and every accepted raise disables its own device until
-	// the CPU re-arms it with EINT.
+	// Interrupt enable is per device (I/O ERS section 4.1.4): a disabled
+	// device's raise latches until EINT delivers it, and every accepted
+	// raise disables its own device until the CPU re-arms it with EINT.
 	CHECK(iop.io_write(tgt(CMD_WIMK, 3, 0), 0));
 	iop.raise(4);
 	CHECK(!h.irq);                       // powers up disabled
@@ -161,13 +160,15 @@ static void test_registers()
 	iop.raise(5);
 	CHECK_EQ(iop.interrupt_request(), 0u);   // the raise disarmed it
 	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
+	CHECK(h.irq);                        // ...but EINT delivers the latch
+	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));
+	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
 	iop.raise(5);                        // re-armed, accepted again
 	CHECK(h.irq);
 	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));
-	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
 	CHECK(iop.io_control(tgt(CMD_DINT, 3, 5)));
 	iop.raise(5);
-	CHECK(!h.irq);                       // DINT disarms again
+	CHECK(!h.irq);                       // DINT holds the latch back
 }
 
 
@@ -216,10 +217,11 @@ static void test_dma()
 	test_card card;
 	iop.attach(2, &card);
 
-	// Input: card to memory. Status bit 0 clear selects that direction.
+	// Input: card to memory. F1 (status bit 27) clear selects that
+	// direction; bit 29 set selects byte transfers (Table 5.1).
 	CHECK(iop.io_write(tgt(CMD_WDA, 1, 2), 0x1000));
 	CHECK(iop.io_write(tgt(CMD_WDC, 1, 2), 4));
-	CHECK(iop.io_write(tgt(CMD_WDS, 1, 2), 0));
+	CHECK(iop.io_write(tgt(CMD_WDS, 1, 2), ers32::mask(29, 1)));
 	CHECK(iop.io_control(tgt(CMD_EDMA, 1, 2)));
 	CHECK(iop.io_control(tgt(CMD_SD, 1, 2)));
 
@@ -237,7 +239,7 @@ static void test_dma()
 	CHECK_EQ(h.mem.read8(0x1004), 0);
 	CHECK(h.irq);
 
-	// Output: memory to card, direction bit set.
+	// Output: memory to card, F1 set; byte width again.
 	iop.reset();
 	iop.attach(2, &card);
 	card.written.clear();
@@ -245,7 +247,8 @@ static void test_dma()
 	h.mem.write8(0x2001, 0xad);
 	CHECK(iop.io_write(tgt(CMD_WDA, 1, 2), 0x2000));
 	CHECK(iop.io_write(tgt(CMD_WDC, 1, 2), 2));
-	CHECK(iop.io_write(tgt(CMD_WDS, 1, 2), ers32::mask(0, 1)));
+	CHECK(iop.io_write(tgt(CMD_WDS, 1, 2),
+			ers32::mask(27, 1) | ers32::mask(29, 1)));
 	CHECK(iop.io_control(tgt(CMD_EDMA, 1, 2)));
 	CHECK(iop.io_control(tgt(CMD_SD, 1, 2)));
 	for (int i = 0; i < 4; i++)

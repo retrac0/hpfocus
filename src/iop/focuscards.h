@@ -156,6 +156,10 @@ struct console_card : public iop_interface
 		std::printf("%c", (c >= 32 && c < 127) ? c : '.');
 		std::fflush(stdout);
 	}
+	// The DIM's halfword transfers carry an attribute in the high byte
+	// and the character in the low one -- the same layout the panic
+	// reporter uses on FR0 (0x70xx).
+	void dma_write16(u16 v) override { dma_write(u8(v)); }
 	// A pending keycode does not raise attention yet. The OS registers a
 	// bit-14 handler (sysglobal DB+1700[14] -> trap seg STT[344]) and
 	// writes an all-eligible attention mask, but its message router

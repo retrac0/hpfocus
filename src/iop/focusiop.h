@@ -123,9 +123,12 @@ public:
 	// attention request, e.g. a keystroke waiting (I/O ERS section 4.4).
 	virtual bool attention() { return false; }
 
-	// A single DMA transfer in each direction.
+	// A single DMA transfer in each direction; the halfword forms serve
+	// status-word bit 29 clear and default to byte pairs.
 	virtual u8 dma_read() { return 0; }
 	virtual void dma_write(u8) { }
+	virtual u16 dma_read16() { return u16((dma_read() << 8) | dma_read()); }
+	virtual void dma_write16(u16 v) { dma_write(u8(v >> 8)); dma_write(u8(v)); }
 
 	// Direct CPU access to the card.
 	virtual void write_data(u32) { }
@@ -208,6 +211,8 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
+		if (t.pa == 0 && std::getenv("FOCUS_IOPLOG"))
+			std::printf("[iop W op=%03o pa=0 d=%08x]\n", t.opcode, data);
 
 		switch (t.opcode)
 		{
@@ -309,24 +314,39 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
+		if (t.pa == 0 && std::getenv("FOCUS_IOPLOG"))
+			std::printf("[iop C op=%03o pa=0]\n", t.opcode);
 
 		switch (t.opcode)
 		{
-		case CMD_SD:   c.dma_active = true; return true;
-		// The start-DMA variants (I/O ERS sheets 30-31): SDC also clears
-		// the PA's interrupt request bit, SDEC additionally enables its
+		// Start DMA "sets a bit in the DMA Mask register" itself (I/O ERS
+		// sheet 30) -- EDMA is not a prerequisite. SDC also clears the
+		// PA's interrupt request bit, SDEC additionally enables its
 		// interrupt, SRC is the RAMD flavour of SDC.
+		case CMD_SD:
+			c.dma_active = true;
+			m_dma_mask |= (1u << t.pa);
+			run_dma(t.pa);
+			return true;
 		case CMD_SDC:
 		case CMD_SRC:
 			c.dma_active = true;
+			m_dma_mask |= (1u << t.pa);
 			m_int_request &= ~(1u << t.pa);
 			update_interrupt();
+			if (std::getenv("FOCUS_IOPLOG"))
+				std::printf("[iop SDC pa=%u addr=%08x cnt=%u st=%08x en=%d]\n",
+						t.pa, c.dma_addr, c.dma_count, c.dma_status,
+						c.int_enabled);
+			run_dma(t.pa);
 			return true;
 		case CMD_SDEC:
 			c.dma_active = true;
+			m_dma_mask |= (1u << t.pa);
 			c.int_enabled = true;
 			m_int_request &= ~(1u << t.pa);
 			update_interrupt();
+			run_dma(t.pa);
 			return true;
 		case CMD_EDMA: m_dma_mask |= (1u << t.pa); return true;
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
@@ -352,7 +372,15 @@ public:
 		// with "the interrupt mask on the IOP now disables the device that
 		// requested from requesting again", so EINT is how the CPU re-arms
 		// a device after servicing it (I/O ERS section 4.1.4).
-		case CMD_EINT: c.int_enabled = true;  update_interrupt(); return true;
+		case CMD_EINT:
+			c.int_enabled = true;
+			update_interrupt();
+			if (c.int_pending)      // a latched request delivers now
+			{
+				c.int_pending = false;
+				raise(t.pa);
+			}
+			return true;
 		case CMD_DINT: c.int_enabled = false; update_interrupt(); return true;
 		case CMD_RIOB:
 			// Reset I/O Bus: drop every channel's DMA and clear pending
@@ -420,36 +448,58 @@ public:
 		}
 
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
-		{
-			channel_state &c = m_chan[pa];
-			if (!c.dma_active || !c.iface)
-				continue;
-			if (!(m_dma_mask & (1u << pa)))
-				continue;
+			run_dma(pa);
+	}
 
-			// Direction lives in the DMA status word; bit 0 set means the
-			// transfer runs from memory out to the card. The real IOP
-			// streams a byte per bus cycle; the whole remaining block per
-			// poll keeps a memory-to-display write from taking a
-			// millisecond of emulated time per character.
-			memory_interface &mem = m_host.iop_memory();
-			// Burst only counted transfers; an uncounted transfer (count
-			// zero) moves one byte per poll as the hardware's cadence
-			// approximation, so it cannot spin the poll forever.
-			u32 burst = c.dma_count ? c.dma_count : 1;
-			while (burst-- && c.dma_active && c.iface->service_request())
+	// Run a channel's DMA as far as it will go. A counted transfer
+	// completes at bus speed on real hardware -- microseconds after the
+	// start command, well inside a driver's completion spin -- so a
+	// start command calls this directly rather than waiting for the
+	// next poll round (the display driver quiesces the channel as a
+	// timeout error if the completion is a poll period late). An
+	// uncounted transfer moves one unit per call so the loop cannot
+	// spin forever.
+	void run_dma(unsigned pa)
+	{
+		channel_state &c = m_chan[pa];
+		if (!c.dma_active || !c.iface)
+			return;
+		if (!(m_dma_mask & (1u << pa)))
+			return;
+
+		memory_interface &mem = m_host.iop_memory();
+		// Direction and width come from the DMA status word (Table
+		// 5.1): bit 27 (F1) set = output, memory to the card; bit 29
+		// set = byte transfers, clear = halfword. The count is "the
+		// length of the DMA block transfer in transfers".
+		const bool output = ers32::get(c.dma_status, 27, 1) != 0;
+		const bool bytes  = ers32::get(c.dma_status, 29, 1) != 0;
+		u32 burst = c.dma_count ? c.dma_count : 1;
+		while (burst-- && c.dma_active && c.iface->service_request())
+		{
+			if (bytes)
 			{
-				if (ers32::get(c.dma_status, 0, 1))
+				if (output)
 					c.iface->dma_write(mem.read8(c.dma_current));
 				else
 					mem.write8(c.dma_current, c.iface->dma_read());
-
 				c.dma_current++;
-				if (c.dma_count && --c.dma_count == 0)
-				{
-					c.dma_active = false;
-					raise(pa);
-				}
+			}
+			else
+			{
+				if (output)
+					c.iface->dma_write16(mem.read16(c.dma_current));
+				else
+					mem.write16(c.dma_current, c.iface->dma_read16());
+				c.dma_current += 2;
+			}
+
+			if (c.dma_count && --c.dma_count == 0)
+			{
+				c.dma_active = false;
+				if (std::getenv("FOCUS_IOPLOG"))
+					std::printf("[iop DMA-done pa=%u en=%d]\n", pa, c.int_enabled);
+				raise(pa);
 			}
 		}
 	}
@@ -491,13 +541,22 @@ public:
 		if (std::getenv("FOCUS_IOPLOG"))
 			std::printf("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
 		if (!c.int_enabled)
+		{
+			// The request latches while the device is disabled; EINT
+			// delivers it then. A DMA completion can beat the driver's
+			// SIL/EINT pair, which lands right after the start command
+			// -- on real hardware the transfer takes long enough that
+			// the completion interrupt always finds the enable set.
+			c.int_pending = true;
 			return;
+		}
 		// "The interrupt mask on the IOP now disables the device that
 		// requested from requesting again" (I/O ERS 4.1.4): an accepted
 		// raise disarms the device until the service routine's EINT, and
 		// each accepted raise is one message to the CPU -- the request
 		// LATCH (cleared only by CIRQ) is separate bookkeeping, so the
 		// host forwards raise events, not latch edges.
+		c.int_pending = false;
 		c.int_enabled = false;
 		m_raise_events |= (1u << pa);
 
@@ -570,6 +629,7 @@ private:
 		iop_interface *iface = nullptr;
 		u32 dma_addr = 0;
 		u32 dma_current = 0;
+		bool int_pending = false;   // request latched while disabled
 		u32 dma_count = 0;
 		u32 dma_status = 0;
 		u32 termination = 0;

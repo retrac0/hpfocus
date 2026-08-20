@@ -4,7 +4,7 @@
 # Two independent implementations of the same spec, compared instruction by
 # instruction over real FOCUS code. Any divergence is a bug in one of them.
 # Both are driven from docs/opcodes.csv, so this checks the decoding logic,
-# not the opcode table -- that is validated separately (docs/HARDWARE.md 5.2).
+# not the opcode table -- that is validated separately (docs/FOCUS.md Appendix B).
 
 set -euo pipefail
 
