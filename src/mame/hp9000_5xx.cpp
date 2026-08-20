@@ -307,6 +307,8 @@ void hp9000_5xx_state::machine_start()
 	m_iop.attach(0, &m_dim);
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
+	if (const char *e = getenv("FOCUS_NVMFILL"))
+		m_console6.fill_nvm(u8(strtoul(e, nullptr, 0)));
 	if (const char *e = getenv("FOCUS_SC6FR1"))
 		m_console6.fr1_base = strtoul(e, nullptr, 0);
 	if (const char *e = getenv("FOCUS_KBDST"))

@@ -120,7 +120,12 @@ struct console_card : public iop_interface
 		if (!bump(8, 12)) return;         // month
 		bump(9, 100);                     // year
 	}
+	// The board's non-volatile memory. The boot reads it out in full at
+	// powerup -- four thousand accesses, descending through complemented
+	// addresses -- so this is where its configuration lives. What the
+	// system expects to find is not known; an erased part reads 0xff.
 	u8 nvm[2048] = {};
+	void fill_nvm(u8 v) { for (u8 &b : nvm) b = v; }
 	u32 keycode = 0;           // holding register behind R10
 	// The board holds one keycode at a time; a host that types faster
 	// than the system reads would lose the rest, so the extras wait
