@@ -453,6 +453,13 @@ void hp9000_5xx_state::machine_start()
 			// otherwise the first 400.
 			if (const char *e = getenv("FOCUS_ESCVAL"))
 			{
+				if (*e == '*')      // log everything, uncapped
+				{
+					std::printf("[escape at %08x value=%08x q=%08x]\n",
+							p, value, m_cpu->core().r.q);
+					std::fflush(stdout);
+					return;
+				}
 				if (value == strtoul(e, nullptr, 16) && m_escapes++ < 40)
 				{
 					std::printf("[escape at %08x value=%08x q=%08x]\n",
@@ -729,6 +736,13 @@ static const u8 KEYCODES[128] =
 
 void hp9000_5xx_state::kbd_put(u8 data)
 {
+	// Shift is bit 7 of the keycode, not a key of its own: the
+	// translation table at diag.bin 0x23614 is 256 bytes, its top half
+	// the shifted map, and feeding a keycode with 0x80 set produces
+	// exactly that half -- 0x59 types an apostrophe, 0xd9 a double
+	// quote. (The earlier reading of bit 7 as a make/break release flag
+	// was taken before the UI existed to echo anything.) Host bytes that
+	// need shift on the real keyboard therefore map to code | 0x80.
 	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
 	// how the table above was read off the machine.
 	const u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
