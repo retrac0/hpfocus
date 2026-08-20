@@ -99,7 +99,7 @@ private:
 	focus::dim_card m_dim;            // select code 0: the display
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
-	focus::probe_card m_probe1;       // hp9040: a serial-slot probe
+	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
 	u32 m_prev_rq = 0;
@@ -142,9 +142,13 @@ void hp9000_5xx_state::machine_start()
 		m_dim.id = strtoul(e, nullptr, 0);
 	m_dim.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
 	m_dim.log_cells = getenv("FOCUS_DIMCELLS") != nullptr;
+	if (const char *e = getenv("FOCUS_SC0FR1"))
+		m_dim.fr1 = strtoul(e, nullptr, 0);
 	m_iop.attach(0, &m_dim);
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
+	if (const char *e = getenv("FOCUS_SC6FR1"))
+		m_console6.fr1_base = strtoul(e, nullptr, 0);
 	if (const char *e = getenv("FOCUS_KBDST"))
 		m_console6.st = strtoul(e, nullptr, 0);
 	m_console6.iop = &m_iop;
@@ -153,16 +157,26 @@ void hp9000_5xx_state::machine_start()
 	// SC6 keyboard interrupts are enabled by the hardware itself.
 	m_iop.enable_interrupt(6);
 
-	// hp9040 carries a probe in a spare slot to map what HP-UX's SERIAL
-	// driver expects from a 98626/98644 card; FOCUS_SC1ID picks the
-	// identity it answers.
-	if (const char *e = getenv("FOCUS_SC1ID"))
-	{
-		m_probe1.id = strtoul(e, nullptr, 0);
-		m_probe1.pa = 1;
-		m_probe1.log = getenv("FOCUS_SC1LOG") != nullptr;
-		m_iop.attach(1, &m_probe1);
-	}
+	// FOCUS_PROBE=<select code>[:<identity>] parks a logging card in an
+	// empty slot, which is how what a driver expects of a controller we
+	// do not have gets read off a run.
+	if (const char *e = getenv("FOCUS_PROBE"))
+		for (const char *p = e; *p; )
+		{
+			const unsigned sc = strtoul(p, nullptr, 0) & 7;
+			const char *colon = strchr(p, ':');
+			const char *comma = strchr(p, ',');
+			m_probes[sc].id = (colon && (!comma || colon < comma))
+					? strtoul(colon + 1, nullptr, 0) : 0;
+			m_probes[sc].pa = sc;
+			m_probes[sc].log = getenv("FOCUS_PROBELOG") != nullptr;
+			if (const char *m = getenv("FOCUS_PROBEFR1"))
+				m_probes[sc].fr1_mode = strtoul(m, nullptr, 0);
+			m_iop.attach(sc, &m_probes[sc]);
+			if (!comma)
+				break;
+			p = comma + 1;
+		}
 	m_cpu->set_io(&m_iop);
 
 	// The powerup module's final IXIT unwinds a frame whose delta-Q word

@@ -74,7 +74,10 @@ public:
 	u8 next_in = 0;
 	std::vector<u8> written;
 	u32 st = 0xabcd, fl = 0x1234;
+	u32 fr[16] = {};
 
+	u32 read_fr(unsigned n) override { return fr[n & 15]; }
+	void write_fr(unsigned n, u32 v) override { fr[n & 15] = v & 0xffff; }
 	u32 status() override { return 1; }
 	u32 status_reg() override { return st; }
 	u32 flag() override { return fl; }
@@ -294,11 +297,17 @@ static void test_poll_and_timer()
 
 	// The interface status register and the flag reach the CPU. RIST
 	// reads the register a card composes, which is not the one-bit
-	// STATUS line RISF reports.
+	// STATUS line the poll reports.
 	CHECK(iop.io_read(tgt(CMD_RIST, 1, 1), v));
 	CHECK_EQ(v, 0xabcd);
 	CHECK(iop.io_read(tgt(CMD_RIFG, 1, 1), v));
 	CHECK_EQ(v, 0x1234);
+
+	// Opcode 011 reads the card's FR1, the register the powerup self
+	// test writes a pattern against.
+	a.fr[1] = 0x5aa5;
+	CHECK(iop.io_read(tgt(CMD_RIF1, 1, 1), v));
+	CHECK_EQ(v, 0x5aa5);
 
 	// The timer reloads from its start value; an underflow becomes a
 	// pending message-13 event only once enabled (I/O ERS 7.1: underflow

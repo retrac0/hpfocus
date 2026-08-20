@@ -52,6 +52,7 @@ struct dim_card : public iop_interface
 	u32 id = 6;             // the identity the alphanumeric driver binds
 	unsigned pa = 0;
 	bool log_fr = false;
+	u32 fr1 = 0x80;         // what the powerup self test reads
 	bool log_cells = false;
 
 	// The card powers up with a blank buffer; the boot clears it anyway.

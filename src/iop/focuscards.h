@@ -76,6 +76,7 @@ struct console_card : public iop_interface
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
 	bool log_fr = false;       // trace every register access
+	u32 fr1_base = 0x80;       // the status bits above the pending flag
 	// Where display characters go: the panic reporter (and, on the
 	// same evidence so far, the console output path) writes them to
 	// FR0 with 0x70 in the high byte; a host that renders a screen
@@ -135,7 +136,7 @@ struct console_card : public iop_interface
 		// Status: bit 7 selects the direct RTC read flavor in the
 		// driver's exchange helper (trap seg 0x48066); bit 0 is the
 		// keyboard-interrupt-pending bit from the manual.
-		case 1:  v = 0x80 | (fr0 ? 1 : 0); break;
+		case 1:  v = fr1_base | (fr0 ? 1 : 0); break;
 		case 3:  v = (was_reset && reset_clears_id) ? 0 : id; break;
 		// RTC data, complemented on the bus; reads auto-increment the
 		// location (manual 2-34). The rollover triple-read never relies
@@ -288,6 +289,22 @@ struct probe_card : public iop_interface
 	u32 fr[16] = {};
 	u32 status() override { return 0; }
 	u32 flag() override { return 1; }
+	// What FR1 answers the powerup self test, which writes 1<<pa to FR0
+	// and reads here. The right answer is not known yet, so the shapes
+	// worth trying are selectable.
+	unsigned fr1_mode = 0;
+	u32 fr1_policy(u32 pattern) const
+	{
+		switch (fr1_mode)
+		{
+		case 1:  return ~pattern & 0xffff;
+		case 2:  return 0;
+		case 3:  return 0xffff;
+		case 4:  return id;
+		case 5:  return pattern << 8;
+		default: return pattern;
+		}
+	}
 	u32 read_fr(unsigned n) override
 	{
 		// The powerup scan's presence test: FR3 must read zero after the
@@ -298,7 +315,7 @@ struct probe_card : public iop_interface
 		// the drivers then do with it.
 		u32 v;
 		if (n == 3)      v = was_reset ? 0 : id;
-		else if (n == 1) v = fr[0];
+		else if (n == 1) v = fr1_policy(fr[0]);
 		else             v = fr[n & 15];
 		if (log)
 			std::printf("[probe%u R fr%u = %04x]\n", pa, n, v);

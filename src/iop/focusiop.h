@@ -71,8 +71,7 @@ enum iop_cmd : u8
 
 	// Interfaces
 	CMD_IFPL  = 047,   // R  interface poll
-	CMD_RISF  = 011,   // R  read interface status and flag (sheet 34):
-	                   //    STATUS in bit 30, FLAG in bit 31, rest zero
+	CMD_RIF1  = 011,   // R  read interface FR1, by the 8n+1 rule
 	//
 	// The HP-UX 5.30 powerup module's device scan also issues opcodes
 	// 002, 012, 031, 0102 and 0132, none of which the Dec-82 ERS names --
@@ -168,8 +167,14 @@ public:
 
 	void reset()
 	{
+		// A reset clears the channel registers but does not unplug the
+		// cards: what is in a slot stays there.
 		for (auto &c : m_chan)
+		{
+			iop_interface *const iface = c.iface;
 			c = channel_state();
+			c.iface = iface;
+		}
 		m_int_mask = 0;
 		for (auto &c : m_chan)
 			c.int_enabled = false;
@@ -216,8 +221,8 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
-		if (t.pa == 0 && std::getenv("FOCUS_IOPLOG"))
-			std::printf("[iop W op=%03o pa=0 d=%08x]\n", t.opcode, data);
+		if (std::getenv("FOCUS_IOALL"))
+			std::printf("[iop W op=%03o pa=%u d=%08x]\n", t.opcode, t.pa, data);
 
 		switch (t.opcode)
 		{
@@ -268,6 +273,8 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
+		if (std::getenv("FOCUS_IOALL"))
+			std::printf("[iop R op=%03o pa=%u]\n", t.opcode, t.pa);
 
 		switch (t.opcode)
 		{
@@ -295,17 +302,22 @@ public:
 		case CMD_RIST: data = c.iface ? c.iface->status_reg() : 0; return true;
 		case CMD_RIFG: data = c.iface ? c.iface->flag() : 0; return true;
 		case CMD_IFPL: data = poll(); return true;
-		case CMD_RISF:
-			// STATUS in bit 30, FLAG in bit 31, all else zero (sheet 34).
-			data = c.iface
-					? (((c.iface->status() & 1) << 1) | (c.iface->flag() & 1))
-					: 0;
+		case CMD_RIF1:
+			// Opcode 011 is RIF 1 by the 8n+1 rule, and the powerup self
+			// test reads it as one: it writes 1<<pa to FR0 with WIF 0
+			// (opcode 002) and then reads here, reporting what it finds
+			// as "Self test error 1: IO address 003,0000 STATUS:
+			// 00000008" when the card just echoes the pattern back --
+			// which a card that answered its own status would not do.
+			// The status-and-flag reading of this opcode, taken from a
+			// poor scan of sheet 34, does not survive that.
+			data = c.iface ? (c.iface->read_fr(1) & 0xffff) : 0;
 			return true;
 		default:
 			// RIF n, Read Interface FRn (sheet 33): opcode 8n+1 reads
 			// the addressed card's register n into the low 16 bits. An
 			// empty slot reads as an idle bus. RISF keeps 011.
-			if ((t.opcode & 7) == 1 && t.opcode <= 0171 && t.opcode != CMD_RISF)
+			if ((t.opcode & 7) == 1 && t.opcode <= 0171 && t.opcode != CMD_RIF1)
 			{
 				data = c.iface ? (c.iface->read_fr(t.opcode >> 3) & 0xffff) : 0;
 				return true;
@@ -319,8 +331,8 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
-		if (t.pa == 0 && std::getenv("FOCUS_IOPLOG"))
-			std::printf("[iop C op=%03o pa=0]\n", t.opcode);
+		if (std::getenv("FOCUS_IOALL"))
+			std::printf("[iop C op=%03o pa=%u]\n", t.opcode, t.pa);
 
 		switch (t.opcode)
 		{
