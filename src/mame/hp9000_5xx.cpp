@@ -129,6 +129,8 @@ void hp9000_5xx_state::machine_start()
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	m_iop.attach(6, &m_console6);
+	// SC6 keyboard interrupts are enabled by the hardware itself.
+	m_iop.enable_interrupt(6);
 	// The 520's alphanumeric console: characters the OS writes to the
 	// select code 0 display flow into the generic terminal, whose
 	// keyboard feeds the keyboard board's keycode register back.
@@ -187,15 +189,13 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 	if (m_iop.take_timer_event())
 		m_cpu->core().raise_message(13);
 
-	// A fresh interrupt request raises the message bit for its level
-	// (16 + level; the microcode handler maps it back and pulls the
-	// device from the level's list). The attention poll reaches the CPU
-	// as message 14 (I/O ERS section 2.1).
-	const u32 rq = m_iop.interrupt_request();
-	const u32 fresh = rq & ~m_prev_rq;
-	m_prev_rq = rq;
+	// Every accepted device raise is one message at 16 + its level (the
+	// microcode handler maps it back and pulls the device from the
+	// level's list). The attention poll reaches the CPU as message 14
+	// (I/O ERS section 2.1).
+	const u32 raised = m_iop.take_raise_events();
 	for (unsigned pa = 0; pa < 8; pa++)
-		if (fresh & (1u << pa))
+		if (raised & (1u << pa))
 			m_cpu->core().raise_message(16 + m_iop.interrupt_level(pa));
 	if (m_iop.take_attention_event())
 		m_cpu->core().raise_message(14);
@@ -217,6 +217,7 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	m_iop.attach(0, &m_console0);
 	m_iop.attach(6, &m_console6);
+	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
 
 	// A loader ROM image would be installed here. None is dumped, so the

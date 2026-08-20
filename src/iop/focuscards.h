@@ -171,6 +171,12 @@ struct console_card : public iop_interface
 		fr0 = c;
 		keycode = c;
 		ard = false;       // a fresh keystroke re-asserts ASYNC
+		// "The keyboard service request latch is set when the keyboard
+		// microprocessor outputs a keycode ... Select code 6 is enabled
+		// for keyboard and printer interrupts at all times" (520 service
+		// manual 2-32, 2-30): a keycode raises the SC6 interrupt.
+		if (iop)
+			iop->raise(pa);
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
@@ -217,7 +223,11 @@ struct console_card : public iop_interface
 			rtc[latch12 & 15] = u8(~v);
 			latch12 = (latch12 & ~15u) | ((latch12 + 1) & 15);
 			return;
-		case 12:           // RTC location / complemented NVM address
+		case 12:           // RTC location / complemented NVM address.
+			// Just an address latch: it does NOT interrupt. (A legacy
+			// raise here kept a stale request queued at the keyboard's
+			// level, and the real keystroke's request then made no fresh
+			// edge for the host to forward.)
 			latch12 = v & 0xffff;
 			out.push_back(char(v & 0xff));
 			if (log_fr)
@@ -225,8 +235,6 @@ struct console_card : public iop_interface
 				std::printf("[%u:%02x]", pa, v & 0xff);
 				std::fflush(stdout);
 			}
-			if (iop)
-				iop->raise(pa);
 			return;
 		case 13:           // NVM data byte
 			nvm[(~latch12) & 2047] = u8(v);

@@ -229,6 +229,18 @@ public:
 				r.msg &= ~ers32::mask(bit, 1);
 				continue;
 			}
+			// This OS never fills the DRT's program-pointer word: its
+			// interrupt service is software, driven by RIRQ polling from
+			// the woken dispatcher, with the DRT holding only per-device
+			// data records. A zero program word therefore means "wake
+			// only": clear the message bit and leave the device queued
+			// for the OS to find, rather than vectoring through address
+			// zero.
+			if (m_mem.read32(head + 8) == 0)
+			{
+				r.msg &= ~ers32::mask(bit, 1);
+				continue;
+			}
 			const u32 link = m_mem.read32(head) >> 16;
 			if (link == 0)
 			{
@@ -1497,14 +1509,12 @@ private:
 			// stack and hands it to STOP,B to arm atomically.
 			if (b3)
 				r.mask = pop();
-			// The wake path resumes with interrupts off: the dispatcher
-			// consumes its doorbell bit by polling (SEML/PMPB) right
-			// after the STOP, and re-enables with INT,B each loop pass.
-			// Waking with I still set delivered the doorbell as a
-			// message trap in the one-instruction window before the
-			// dispatcher's PSDB, which the OS routes to system error 44
-			// and a soft halt.
-			r.put(sf::I, 0);
+			// I is left as the dispatcher set it (INT,B each loop pass):
+			// a STOPped machine must vector an I/O interrupt the moment
+			// its message wakes it, or the dispatcher's own PMPB reads
+			// the bit away and the device request rots in its level
+			// list. The doorbell (bit 10) staying poll-only is handled
+			// by its exclusion from message-trap delivery.
 			m_halted = true;
 			r.p = m_next;
 			return exec_trap::halted;
@@ -3518,10 +3528,15 @@ private:
 			return tcb_dispatch();
 		}
 
-		// Interrupt service routines run in code segment 1; on the way
-		// out the previous interrupt mask is restored from (Q+2). A
-		// pending external interrupt would be dispatched here.
-		if (r.get(sf::CSN) == 1)
+		// An interrupt or message frame on the ICS carries the previous
+		// interrupt mask at (Q+2); IXIT restores it on the way out
+		// whatever segment the service routine ran in -- external
+		// interrupts vector into DRIVER segments (the keyboard ISR runs
+		// in segment 7), and only restoring for CSN 1 leaked the ISR's
+		// "current and lower levels masked" state into the idle STOP,
+		// blocking every later I/O interrupt. Bits 3-5, the live level
+		// field, carry over as before.
+		if (m_ics_flag)
 			r.mask = ers32::set(qword(2), 3, 3, ers32::get(r.mask, 3, 3));
 
 		if (ers32::get(qword(0), 0, 1))

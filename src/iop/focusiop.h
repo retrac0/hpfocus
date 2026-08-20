@@ -187,6 +187,15 @@ public:
 			m_chan[pa].iface = iface;
 	}
 
+	// Hardware-default interrupt enable: "Select code 6 is enabled for
+	// keyboard and printer interrupts at all times" (520 service manual
+	// 2-30) -- some channels come up armed without any EINT.
+	void enable_interrupt(unsigned pa)
+	{
+		if (pa < CHANNELS)
+			m_chan[pa].int_enabled = true;
+	}
+
 	u8 channel_number() const { return m_channel; }
 	bool led() const { return m_led; }
 
@@ -322,7 +331,12 @@ public:
 		case CMD_EDMA: m_dma_mask |= (1u << t.pa); return true;
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
 		case CMD_CDMK: m_dma_mask = 0; return true;
-		case CMD_CIRQ: m_int_request &= ~(1u << t.pa); update_interrupt(); return true;
+		case CMD_CIRQ:
+			m_int_request &= ~(1u << t.pa);
+			update_interrupt();
+			if (std::getenv("FOCUS_IOPLOG"))
+				std::printf("[iop CIRQ pa=%u]\n", t.pa);
+			return true;
 		case CMD_CAAK: m_attn_log &= ~(1u << t.pa); return true;
 		case CMD_ETMI:
 			// Clears Timer Disable (I/O ERS sheet 33); underflows then
@@ -466,12 +480,26 @@ public:
 	// as message 13.
 	bool take_timer_event() { const bool e = m_timer_event; m_timer_event = false; return e; }
 
+	// One bit per accepted device raise since the last call; the host
+	// forwards each as message 16 + the device's interrupt level.
+	u32 take_raise_events() { const u32 e = m_raise_events; m_raise_events = 0; return e; }
+
 	// Let a card raise an interrupt of its own.
 	void raise(unsigned pa)
 	{
 		channel_state &c = m_chan[pa];
+		if (std::getenv("FOCUS_IOPLOG"))
+			std::printf("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
 		if (!c.int_enabled)
 			return;
+		// "The interrupt mask on the IOP now disables the device that
+		// requested from requesting again" (I/O ERS 4.1.4): an accepted
+		// raise disarms the device until the service routine's EINT, and
+		// each accepted raise is one message to the CPU -- the request
+		// LATCH (cleared only by CIRQ) is separate bookkeeping, so the
+		// host forwards raise events, not latch edges.
+		c.int_enabled = false;
+		m_raise_events |= (1u << pa);
 
 		// Record the request in memory (I/O ERS section 4.1.4): link the
 		// device's DRT entry onto the list for its priority level. The
@@ -589,6 +617,7 @@ private:
 	u32 m_timer_count = 0;
 	bool m_timer_enabled = false;
 	bool m_timer_event = false;
+	u32 m_raise_events = 0;
 	bool m_led = false;
 	bool m_lockout = false;
 	bool m_enabled = true;
