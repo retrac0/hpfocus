@@ -274,6 +274,33 @@ struct disc_card : public iop_interface
 	}
 	void reset_self_test() { m_busy_left = busy_ms; }
 
+	// Put a medium in the drive. The bootstrap loader changes discs the
+	// way an operator does, one volume of a set after another.
+	void mount(std::vector<u8> medium)
+	{
+		m_image = std::move(medium);
+		m_poweron = true;
+	}
+	bool loaded() const { return !m_image.empty(); }
+	u32 blocks() const { return u32(m_image.size() / BLOCK); }
+
+	// Read `count` bytes from block `block`, through the controller's own
+	// Locate-and-Read path -- the bootstrap loader gets its data the same
+	// way the driver does, bounds checks and status flags included, rather
+	// than reaching around the card into the file.
+	bool read_blocks(u32 block, u32 count, std::vector<u8> &out)
+	{
+		m_address = block;
+		m_length = count;
+		m_out.clear();
+		locate_read();
+		if (m_out.size() != count)
+			return false;
+		out.assign(m_out.begin(), m_out.end());
+		m_out.clear();
+		return true;
+	}
+
 private:
 	void fr1_command(u32 v)
 	{

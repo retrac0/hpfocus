@@ -71,6 +71,8 @@ private:
 	void mem_map(address_map &map) ATTR_COLD;
 	void kbd_put(u8 data);
 	void attach_probes();
+	void install_boot_image(const std::vector<u8> &img, const char *whence);
+	bool boot_from_disc();
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 
@@ -130,6 +132,10 @@ private:
 	u32 m_prev_rq = 0;
 	bool m_nudged = false;
 	u32 m_handoff_q = 0;
+	// The discs in the drive, in the order the loader asks for them: a
+	// boot image is a set, and the operator feeds the volumes one by one.
+	std::vector<std::vector<u8>> m_media;
+	unsigned m_boot_volumes = 0;   // how many of them the image needed
 };
 
 
@@ -352,24 +358,39 @@ void hp9000_5xx_state::machine_start()
 			m_disc.id_fr3_alt = u16(strtoul(e, nullptr, 0));
 		if (const char *e = getenv("FOCUS_DISCBUSY"))
 			m_disc.busy_ms = strtoul(e, nullptr, 0);
-		// FOCUS_FLOPPY=<raw image>: the medium in the flexible disc
-		// drive, one byte per byte (35 cyl x 2 heads x 16 sectors of
-		// 256 bytes = 286,720 for the discs the system shipped on).
+		// FOCUS_FLOPPY=<raw image>[,<raw image>...]: the discs in the
+		// drive, one byte per byte (35 cyl x 2 heads x 16 sectors of 256
+		// bytes = 286,720 for the media the system shipped on). A boot
+		// image is a SET -- BASIC 2.0 is two volumes, the diagnostics
+		// three -- and the loader works through them in order, which is
+		// what an operator feeding discs to the drive does.
 		if (const char *e = getenv("FOCUS_FLOPPY"))
-		{
-			if (FILE *f = fopen(e, "rb"))
+			for (std::string list(e); !list.empty(); )
 			{
-				fseek(f, 0, SEEK_END);
-				const long n = ftell(f);
-				fseek(f, 0, SEEK_SET);
-				m_disc.m_image.resize(size_t(n));
-				if (fread(m_disc.m_image.data(), 1, size_t(n), f) != size_t(n))
-					m_disc.m_image.clear();
-				fclose(f);
+				const size_t comma = list.find(',');
+				const std::string path = list.substr(0, comma);
+				list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+				if (path.empty())
+					continue;
+				if (FILE *f = fopen(path.c_str(), "rb"))
+				{
+					fseek(f, 0, SEEK_END);
+					const long n = ftell(f);
+					fseek(f, 0, SEEK_SET);
+					std::vector<u8> medium(size_t(n), 0);
+					if (fread(medium.data(), 1, size_t(n), f) == size_t(n))
+						m_media.push_back(std::move(medium));
+					else
+						osd_printf_error("FOCUS_FLOPPY: short read on %s\n",
+								path.c_str());
+					fclose(f);
+				}
+				else
+					osd_printf_error("FOCUS_FLOPPY: cannot open %s\n",
+							path.c_str());
 			}
-			else
-				osd_printf_error("FOCUS_FLOPPY: cannot open %s\n", e);
-		}
+		if (!m_media.empty())
+			m_disc.mount(m_media.front());
 		m_disc.reset_self_test();
 		m_iop.attach(7, &m_disc);
 	}
@@ -630,9 +651,14 @@ void hp9000_5xx_state::machine_reset()
 
 	// A loader ROM image would be installed here. None is dumped, so the
 	// SCM answers the select-code scan but has nothing to hand over; see
-	// docs/SOFTWARE.md.
+	// docs/SOFTWARE.md. What the ROM would do -- find a boot volume, read
+	// its descriptor, load the image and jump to it -- is done at a high
+	// level instead, from whatever discs are in the drive.
 	const u8 *rom = memregion("loader") ? memregion("loader")->base() : nullptr;
 	m_scm.set_rom(rom, focus::scm_device::ROM_SIZE);
+
+	if (!m_media.empty())
+		boot_from_disc();
 }
 
 
@@ -642,21 +668,16 @@ void hp9000_5xx_state::machine_reset()
 // place with PB = 0, and the loader's parameter block sits at Q: the
 // MPB inventory doubling as the final IXIT's frame, the load address at
 // Q+52, the top-of-memory word at Q+64.
-QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
+void hp9000_5xx_state::install_boot_image(const std::vector<u8> &img,
+		const char *whence)
 {
 	constexpr u32 LOAD = 0x100000;
-	const u64 size = image.length();
-	if (size < 0x100 || LOAD + size > RAM_SIZE)
-		return std::make_pair(image_error::INVALIDLENGTH,
-				"image empty or larger than RAM allows");
-
-	std::vector<u8> img(size);
-	image.fread(img.data(), size);
+	const u32 size = u32(img.size());
 
 	auto &core = m_cpu->core();
 	focus::memory_interface &mem = m_cpu->memory();
-	for (u64 i = 0; i < size; i++)
-		mem.write8(LOAD + u32(i), img[i]);
+	for (u32 i = 0; i < size; i++)
+		mem.write8(LOAD + i, img[i]);
 
 	auto beword = [&img](u32 off) {
 		return (u32(img[off]) << 24) | (u32(img[off + 1]) << 16)
@@ -666,8 +687,11 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 	for (u32 off = 0x30; off + 4 <= 0x80; off += 4)
 		if (beword(off) == 0xc4) { entry_off = off + 0x20; break; }
 	if (!entry_off)
-		return std::make_pair(image_error::INVALIDIMAGE,
-				"no 000000c4 terminator in the module header");
+	{
+		osd_printf_error("%s: no 000000c4 terminator in the module header\n",
+				whence);
+		return;
+	}
 
 	core.r.pb = 0;
 	core.r.pl = LOAD + beword(8) + 3;
@@ -707,8 +731,172 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 	core.push(u32(-2));                   // cold start
 
 	core.enable_traps(false);
-	logerror("boot image %s: %u bytes at %#x, entry %#x\n",
-			image.filename(), u32(size), LOAD, core.r.p);
+	logerror("boot image from %s: %u bytes at %#x, entry %#x\n",
+			whence, size, LOAD, core.r.p);
+}
+
+
+// The bootstrap loader's own job, done from the medium instead of from a
+// file handed in around the side: read the volume header, read the boot
+// descriptor behind it, and copy each volume's slice of the image into
+// memory. Every byte comes through the controller's Locate-and-Read path,
+// so the loader uses the disc the way the driver later will.
+//
+// A boot disc is not a filesystem (docs/HARDWARE.md 3.2), and the volume
+// header says everything the loader needs:
+//
+//   +0x1c  the volume's BLOCK SIZE -- 1024 on boot media, 256 on data
+//          media. (HARDWARE.md reads this field as a bootable flag
+//          because those are the only two values it ever saw. It is the
+//          block size: 1024 puts block 1 at byte 0x400, which is where
+//          boot media carry their descriptor and data media their file
+//          directory. Both kinds keep block 1 for "what is on this
+//          volume", and both agree once the field is read this way.)
+//   +0x28  the first free block, which is where the boot area ends.
+//
+// So block 1 holds the descriptor -- image size, how many volumes carry
+// it, which one this is, where its slice belongs -- block 2 begins the
+// slice, and the first free block ends it. Taking the length from the
+// medium rather than from the file's size is what keeps a volume from
+// over-reading into whatever follows its boot area.
+bool hp9000_5xx_state::boot_from_disc()
+{
+	constexpr u32 SECTOR = focus::disc_card::BLOCK;
+	constexpr u32 MAGIC = 0xe9c28206;
+
+	if (m_media.empty())
+		return false;
+
+	auto beword = [](const std::vector<u8> &v, u32 off) {
+		return (u32(v[off]) << 24) | (u32(v[off + 1]) << 16)
+				| (u32(v[off + 2]) << 8) | v[off + 3];
+	};
+
+	std::vector<u8> image;
+	u32 total = 0, volumes = 0, placed = 0;
+	for (unsigned v = 0; v < m_media.size(); v++)
+	{
+		m_disc.mount(m_media[v]);
+
+		std::vector<u8> header;
+		if (!m_disc.read_blocks(0, SECTOR, header))
+		{
+			osd_printf_error("boot: cannot read the volume header\n");
+			return false;
+		}
+		const u32 blocksize = beword(header, 0x1c);
+		const u32 first_free = beword(header, 0x28);
+		if (blocksize < SECTOR || (blocksize % SECTOR) != 0 || first_free < 3)
+		{
+			osd_printf_error("boot: %.16s has no usable boot area "
+					"(block size %u, first free block %u)\n",
+					reinterpret_cast<const char *>(header.data()) + 4,
+					blocksize, first_free);
+			return false;
+		}
+
+		std::vector<u8> desc;
+		if (!m_disc.read_blocks(blocksize / SECTOR, SECTOR, desc))
+			return false;
+		if (beword(desc, 0) != MAGIC)
+		{
+			osd_printf_error("boot: %.16s is not a boot volume -- block 1 "
+					"begins %08x, not the boot magic %08x\n",
+					reinterpret_cast<const char *>(header.data()) + 4,
+					beword(desc, 0), MAGIC);
+			return false;
+		}
+
+		const u32 this_total = beword(desc, 4);
+		const u32 nvols = beword(desc, 8);
+		const u32 number = beword(desc, 12);
+		const u32 offset = beword(desc, 16);
+		// The volumes go in in order, as the operator would feed them.
+		if (number != v + 1)
+		{
+			osd_printf_error("boot: this is volume %u of %u; %s\n",
+					number, nvols, v == 0
+							? "the loader wants volume 1 first"
+							: "that is not the volume it asked for");
+			return false;
+		}
+		if (v == 0)
+		{
+			total = this_total;
+			volumes = nvols;
+			if (total > RAM_SIZE - 0x100000)
+			{
+				osd_printf_error("boot: image of %u bytes will not fit\n", total);
+				return false;
+			}
+			image.assign(total, 0);
+		}
+		else if (this_total != total)
+		{
+			osd_printf_error("boot: volume %u belongs to a different set\n",
+					number);
+			return false;
+		}
+
+		// The slice runs from block 2 to the first free block, and holds
+		// either the rest of the image or as much of it as the boot area
+		// has room for.
+		const u32 slice_start = 2 * blocksize;
+		const u32 boot_area = (first_free - 2) * blocksize;
+		const u32 length = std::min(total - offset, boot_area);
+		std::vector<u8> slice;
+		if (!m_disc.read_blocks(slice_start / SECTOR, length, slice))
+		{
+			osd_printf_error("boot: volume %u is short\n", number);
+			return false;
+		}
+		std::copy(slice.begin(), slice.end(), image.begin() + offset);
+		placed += length;
+		logerror("boot: volume %u of %u, %u bytes at image offset %#x\n",
+				number, nvols, length, offset);
+
+		if (placed >= total)
+		{
+			// Anything mounted past the volumes the image needed is the
+			// disc the operator puts in once the machine is up.
+			if (v + 1 < m_media.size())
+				m_boot_volumes = v + 1;
+			break;
+		}
+		if (v + 1 >= m_media.size())
+		{
+			osd_printf_error("boot: the image needs %u volumes and %u "
+					"%s mounted; %u of %u bytes loaded\n", volumes,
+					unsigned(m_media.size()),
+					m_media.size() == 1 ? "is" : "are", placed, total);
+			return false;
+		}
+	}
+
+	install_boot_image(image, "the internal disc");
+
+	// Put a disc back in the drive for the running system: the one after
+	// the boot set if the operator mounted a spare, else volume 1.
+	const unsigned after = (m_boot_volumes && m_boot_volumes < m_media.size())
+			? m_boot_volumes : 0;
+	logerror("boot: leaving volume %u in the drive\n", after + 1);
+	m_disc.mount(m_media[after]);
+	m_disc.reset_self_test();
+	return true;
+}
+
+
+QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
+{
+	constexpr u32 LOAD = 0x100000;
+	const u64 size = image.length();
+	if (size < 0x100 || LOAD + size > RAM_SIZE)
+		return std::make_pair(image_error::INVALIDLENGTH,
+				"image empty or larger than RAM allows");
+
+	std::vector<u8> img(size);
+	image.fread(img.data(), size);
+	install_boot_image(img, image.filename());
 	return std::make_pair(std::error_condition(), std::string());
 }
 

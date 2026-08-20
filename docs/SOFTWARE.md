@@ -164,7 +164,11 @@ find an OS, load it, jump to it. Three ways to get past it:
 
 1. **High-level emulation — skip the ROM.** Implement the loader's *effect* in
    host code: parse the media image, place the OS in memory, set up register
-   state, jump. Standard emulator practice, and the cheapest route.
+   state, jump. Standard emulator practice, and the cheapest route. **This is
+   what the MAME driver now does**, reading the volume header and boot
+   descriptor off whatever discs are in the drive and pulling every byte
+   through the disc controller's own Locate-and-Read path — so the machine
+   boots from its media rather than from an image handed in around the side.
 2. **Reimplement in FOCUS assembly** from Figure 2-17. More faithful; needs an
    assembler first, and still needs the handoff contract below.
 3. **Dump from real hardware.** Definitive. Needs a machine, or someone who has

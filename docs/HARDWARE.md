@@ -464,11 +464,19 @@ volumes — two BASIC boot discs, a BASIC utility disc, a diagnostic and a demo
 | `0x28` | `107` | `6a` | `202` | `202` | `202` | per volume, `= 0x24 + 1` |
 | `0x2c` | **`42285`** | **`42285`** | `0` | `0` | `0` | — |
 
-Two fields separate bootable media from data media exactly: offset `0x1c` is
-`0x400` on the two boot discs and `0x100` on the other three, and offset
-`0x2c` is `0x42285` on the boot discs and zero elsewhere. Both are identical
-across BASIC boot volumes 1 and 2, so they describe the product rather than
-the individual disc — as does `0x14`.
+**Offset `0x1c` is the volume's block size**, not a bootable flag: `0x400`
+= 1024 bytes on boot media, `0x100` = 256 on data media. That resolves what
+looked like two unrelated conventions into one — **block 1 always says what
+is on the volume**, carrying the boot descriptor on boot media and the SDF
+file directory on data media, and block 0 is always the 48-byte header.
+Reading it this way was what let the emulated bootstrap loader take each
+volume's slice length from the medium (below); the load is byte-identical to
+`bootimage.py`'s assembly for both acquired boot sets.
+
+Offset `0x28` is the **first free block**, so a boot volume's image slice
+runs from block 2 to there. Offset `0x2c` is `0x42285` on the boot discs and
+zero elsewhere; it is identical across BASIC boot volumes 1 and 2, so it
+describes the product rather than the individual disc — as does `0x14`.
 
 Offsets `0x24` and `0x28` are consecutive and vary per volume, which fits a
 last-used and first-free block pair.
@@ -493,7 +501,11 @@ at `0x400` and then a raw slice of the boot image.
 
 So **BASIC 2.0 is a single 372,932-byte image split across two discs**:
 volume 1 supplies bytes `0`–`0x413ff` from sector 8, volume 2 the remainder
-from sector 3. [`tools/bootimage.py`](../tools/bootimage.py) reassembles it,
+from sector 3. Each slice's length comes from the volume header — `(first
+free block − 2) × block size`, capped by what is left of the image — which
+gives 267,264 and 105,668 bytes for the BASIC set and 267,264 / 267,264 /
+146,140 for the three-volume diagnostics set, matching the assembled images
+exactly. [`tools/bootimage.py`](../tools/bootimage.py) reassembles it,
 and the result maps to **57 modules** — `SYSTEM POWERUP`, `TRAP HANDLERS`,
 `BASIC COMPILER`, `BASIC`, `SDF`, `CS80`, and the rest of the system.
 
