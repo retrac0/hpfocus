@@ -424,7 +424,18 @@ private:
 		return e.ok();
 	}
 
-	void branch_to(u32 target) { r.p = target; m_branched = true; }
+	void branch_to(u32 target)
+	{
+		// A target outside real memory is always a bug in this emulator,
+		// and the instruction that produced it is the one still in CIR.
+		// Reporting it here names the culprit; by the time the fetch
+		// fails the trail is cold.
+		if (target >= 0x1000000u && std::getenv("FOCUS_FLAGBR"))
+			std::fprintf(stderr, "[core] branch to %08x from P=%08x "
+					"PB=%08x CIR=%08x\n", target, r.p, r.pb, m_cir);
+		r.p = target;
+		m_branched = true;
+	}
 
 	// Condition code, CCA interpretation, on a signed value.
 	void cca(u32 v) { r.set_cca(s32(v)); }
@@ -985,25 +996,33 @@ private:
 			// which is invalid as an EDS reference, so that encoding is
 			// free to mean absolute -- the privileged instructions' own
 			// convention.
-			// The operand is a tagged data pointer or a plain absolute
-			// address, told apart by the tag. The older test -- absolute
-			// only when the external-segment field read zero -- held for
-			// low addresses and broke for high ones: HP-UX's first DOWN
-			// names 0x00ffe6f8, whose top bits read as segment 31, and
-			// resolving that as an external reference was the bounds
-			// violation the kernel panicked on.
+			// How the operand names the semaphore is what CIR(19:1) --
+			// the ",B" flag -- selects, and the kernels' own data settle
+			// it. The plain form takes a DATA SEGMENT POINTER: HP-UX's
+			// unit semaphores arrive as 0x00780008 and 0x00780028, which
+			// are external pointers to segment 15, and segment 15 holds
+			// exactly the three-block structure with handles 0x28000,
+			// 0x38000 and 0x48000 that BASIC's kernel builds, counts
+			// initialised to 1. The ",B" form takes an ABSOLUTE address:
+			// HP-UX's first DOWN of the boot names 0x00ffe6f8, up among
+			// the TCBs and stacks, which as a pointer would be segment
+			// 31 -- a 32-byte segment based at zero -- at offset half a
+			// megabyte.
+			// Reading every operand one way or the other was wrong in
+			// both directions: as pointers the boot panicked on the
+			// first DOWN, and as addresses two tasks parked on words of
+			// untouched memory that no UP would ever signal.
 			const u32 ptr = stk(0);
 			u32 a;
-			const u32 tag = ers32::get(ptr, 0, 2);
-			if (tag == 2 || tag == 3)
+			if (b3)
+				a = ptr;                     // absolute address
+			else
 			{
 				const ea_result e = m_au.resolve_data_pointer(ptr, false, true);
 				m_addr_trap = e.t;
 				if (!e.ok()) return exec_trap::address_error;
 				a = e.addr;
 			}
-			else
-				a = ptr;                     // absolute
 			const u32 head = m_mem.read32(a);
 			if (head == 0xffffffffu)
 			{
@@ -2476,6 +2495,34 @@ private:
 			return exec_trap::none;
 		}
 		case 030: {                                               // BR
+			// ERS sheet 108: a P-relative indirect branch goes through a
+			// SELF-relative pointer, but DB, DL, SB, Q and S-relative
+			// indirect branches go through PROGRAM pointers "like those
+			// stored in the STT", with the uncallable bit ignored -- a
+			// local one is a PB-relative offset, an external one is
+			// evaluated through the CST as PCL does. Running those words
+			// through data-pointer resolution instead is what sent HP-UX
+			// to PB + 0x4000a6c8: the U bit was still in the offset.
+			if (ind && base != BASE_P_PLUS && base != BASE_P_MINUS)
+			{
+				u32 pa;
+				if (!ea(base, off, false, idx, false, pa))
+					return exec_trap::address_error;
+				const u32 ptr = m_mem.read32(pa);
+				u32 target;
+				if (ers32::get(ptr, 0, 1))
+				{
+					exec_trap t;
+					if (!enter_segment(ptr, target, t))
+						return t;
+				}
+				else
+					target = r.pb + ers32::get(ptr, 2, 30);
+				if (!m_au.in_code(target))
+					return exec_trap::code_bounds;
+				branch_to(target);
+				return exec_trap::none;
+			}
 			u32 a;
 			if (!ea(base, off, ind, idx, false, a))
 				return exec_trap::address_error;
@@ -3505,7 +3552,13 @@ private:
 		r.pl = location + len_m1 - 3;
 		r.status = ers32::mask(14, 1);
 		r.put(sf::CSN, 1);
-		branch_to(r.pb + m_mem.read32(r.pl - 4 * 054));
+		// The vector is a program pointer: offset in bits 2:30, flags
+		// above. This entry kept the flags where take_trap masks them,
+		// and HP-UX's message vector carries the uncallable bit -- the
+		// machine jumped to PB + 0x4000a6c8 the first time a floating
+		// point instruction trapped.
+		const u32 vector = m_mem.read32(r.pl - 4 * 054);
+		branch_to(r.pb + ers32::get(vector, 2, 30));
 		return exec_trap::none;
 	}
 
