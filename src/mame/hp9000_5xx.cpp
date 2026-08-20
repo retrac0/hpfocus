@@ -409,6 +409,10 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 			if (line.find_first_not_of(' ') != std::string::npos)
 				std::printf("|%2u %s|\n", r, line.c_str());
 		}
+		// MAME leaves stdout fully buffered, so a run that does not end
+		// -- an interactive session -- would hold every dump until it
+		// did. Flush each one as it is written.
+		std::fflush(stdout);
 	}
 
 	bitmap.fill(rgb_t::black(), cliprect);
