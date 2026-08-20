@@ -682,6 +682,16 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
 	// how the table above was read off the machine.
 	const u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
+	if (getenv("FOCUS_RAWKEYS"))
+	{
+		// FOCUS_KEYOR adds flag bits above the 8-bit host byte, for
+		// probing the holding register's shift/control encoding.
+		u16 flags = 0;
+		if (const char *e = getenv("FOCUS_KEYOR"))
+			flags = u16(strtoul(e, nullptr, 16));
+		m_console6.type(u16(data) | flags);
+		return;
+	}
 	if (code)
 		m_console6.type(code);
 }

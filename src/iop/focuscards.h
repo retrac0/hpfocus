@@ -204,7 +204,7 @@ struct console_card : public iop_interface
 	// Wire this to `fr0 != 0 && !ard` once a task owns the keyboard.
 	bool attention() override { return false; }
 	bool ard = false;      // attention request disable, set by the IOP's poll
-	void type(u8 c)
+	void type(u16 c)
 	{
 		if (keycode)       // the holding register is still full
 		{
