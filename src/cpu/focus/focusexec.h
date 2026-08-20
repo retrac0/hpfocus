@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 
 namespace focus {
 
@@ -265,6 +266,14 @@ public:
 	}
 
 	trap_cause last_trap() const { return m_last_trap; }
+	// A host that wants to see where a fault came from hooks this; it is
+	// called before the trap is routed, with the processor still on the
+	// faulting instruction.
+	std::function<void(trap_cause, u32)> on_trap;
+	// Every ESCP, with the value it escapes with: the driver layers pass
+	// their failures up this way, so this is where an error number that
+	// never reaches the screen can still be caught.
+	std::function<void(u32, u32)> on_escape;
 	trap last_addr_trap() const { return m_addr_trap; }
 	u32 cir() const { return m_cir; }
 
@@ -1203,6 +1212,8 @@ private:
 		}
 
 		case 041: {                                             // ESCP
+			if (on_escape)
+				on_escape(r.p, b3 ? sb_word(3) : stk(0));
 			// Unwinds to the innermost TRY frame by pointing Q at it and
 			// then performing an EXIT 0, which restores STATUS and the
 			// recovery address from the pseudo marker (ERS sheet 127).
@@ -2653,6 +2664,8 @@ private:
 	exec_trap take_trap(trap_cause cause, u32 parameter)
 	{
 		m_last_trap = cause;
+		if (on_trap)
+			on_trap(cause, parameter);
 		if (!m_traps_enabled)
 			return exec_trap::trapped;
 

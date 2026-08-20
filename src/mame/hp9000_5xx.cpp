@@ -111,6 +111,7 @@ private:
 	u32 m_trace_left = 0;
 	u32 m_wpoint = 0, m_wpoint_last = 0;
 	unsigned m_wpoint_hits = 0;
+	unsigned m_traps_seen = 0, m_escapes = 0;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
 	unsigned m_watch_hits = 0, m_watch_max = 12;
 	void trip_watch(u8 c);
@@ -333,7 +334,8 @@ void hp9000_5xx_state::machine_start()
 		if (const char *e = getenv("FOCUS_DISCAFTER"))
 			m_disc.status_after = strtoul(e, nullptr, 0);
 		if (const char *e = getenv("FOCUS_DISCBUSY"))
-			m_disc.busy_reads = strtoul(e, nullptr, 0);
+			m_disc.busy_ms = strtoul(e, nullptr, 0);
+		m_disc.reset_self_test();
 		m_disc.want_service = getenv("FOCUS_DISCSRQ") != nullptr;
 		m_disc.want_irq = getenv("FOCUS_DISCIRQ") != nullptr;
 		m_iop.attach(7, &m_disc);
@@ -379,7 +381,29 @@ void hp9000_5xx_state::machine_start()
 			std::printf("[watch %08x  Q=%08x]\n", core.r.p, core.r.q);
 			std::fflush(stdout);
 		}
-		// FOCUS_WPOINT=<addr> reports every change of one memory word with
+		// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
+	// processor is in, which names the code that faulted.
+	if (getenv("FOCUS_TRAPLOG"))
+		m_cpu->core().on_trap = [this](focus::trap_cause cause, u32 parameter) {
+			if (m_traps_seen++ < 6)
+			{
+				std::printf("\n[trap %u parameter=%08x]\n",
+						unsigned(cause), parameter);
+				report_state("trap");
+			}
+		};
+
+	if (getenv("FOCUS_ESCLOG"))
+		m_cpu->core().on_escape = [this](u32 p, u32 value) {
+			if (m_escapes++ < 400)
+			{
+				std::printf("[escape at %08x value=%08x q=%08x]\n",
+						p, value, m_cpu->core().r.q);
+				std::fflush(stdout);
+			}
+		};
+
+	// FOCUS_WPOINT=<addr> reports every change of one memory word with
 		// the instruction that made it, which is how a table's builder is
 		// found when the table is all there is to go on.
 		if (m_wpoint)
@@ -441,6 +465,7 @@ void hp9000_5xx_state::machine_start()
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
 	m_iop.poll_and_service();
+	m_disc.tick();
 	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
 	// about 35 of them.
 	m_iop.timer_tick(35);

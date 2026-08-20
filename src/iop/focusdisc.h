@@ -74,7 +74,11 @@ struct disc_card : public iop_interface
 	// its STATUS, so those bits are failure codes.
 	u32 status_word = 0x80;
 	u32 status_after = 0xc0;
-	unsigned busy_reads = 20;
+	// The card's self test takes time, not a number of reads: the host
+	// ticks this once a millisecond and the status changes when the time
+	// is up, so what the system sees does not depend on how often it
+	// happens to look.
+	unsigned busy_ms = 50;
 
 	u32 status() override { return 1; }     // status line asserted
 	u32 flag() override { return 1; }       // done
@@ -105,9 +109,7 @@ struct disc_card : public iop_interface
 			}
 			else
 			{
-				v = (busy_reads && m_polls >= busy_reads)
-						? status_after : status_word;
-				m_polls++;
+				v = m_busy_left ? status_word : status_after;
 			}
 			break;
 		default:
@@ -161,6 +163,14 @@ struct disc_card : public iop_interface
 	bool want_service = false;   // assert the service-request line
 	bool want_irq = false;       // and/or raise an interrupt
 	bool service_request() override { return m_service; }
+
+	// One millisecond of the card's own time.
+	void tick()
+	{
+		if (m_busy_left)
+			m_busy_left--;
+	}
+	void reset_self_test() { m_busy_left = busy_ms; }
 	// Data the card hands over, cycled; nothing is a real disc yet.
 	u8 dma_read() override { return 0; }
 	u16 dma_read16() override { return 0; }
@@ -171,7 +181,7 @@ private:
 	bool m_echo_pending = false;
 	bool m_present = false;
 	bool m_service = false;
-	unsigned m_polls = 0;
+	unsigned m_busy_left = 50;
 };
 
 } // namespace focus
