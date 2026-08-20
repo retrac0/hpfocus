@@ -39,6 +39,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 
 namespace focus {
 
@@ -54,6 +55,9 @@ struct dim_card : public iop_interface
 	bool log_fr = false;
 	u32 fr1 = 0x80;         // what the powerup self test reads
 	bool log_cells = false;
+	// A host that wants to know which code put a particular message on
+	// the screen watches every cell going by.
+	std::function<void(u16)> on_cell;
 
 	// The card powers up with a blank buffer; the boot clears it anyway.
 	dim_card()
@@ -129,8 +133,13 @@ private:
 	void put(u16 v)
 	{
 		if (log_cells)
+		{
 			std::printf("[dim %04x <- %04x %c]\n", m_addr, v,
 					(v & 0xff) >= 32 && (v & 0xff) < 127 ? char(v & 0xff) : '.');
+			std::fflush(stdout);   // MAME buffers stdout; keep the log ordered
+		}
+		if (on_cell)
+			on_cell(v);
 		vram[m_addr] = v;
 		m_addr = (m_addr + 1) & (CELLS - 1);
 	}

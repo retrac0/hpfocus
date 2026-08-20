@@ -298,8 +298,15 @@ struct probe_card : public iop_interface
 	// and reads here. The right answer is not known yet, so the shapes
 	// worth trying are selectable.
 	unsigned fr1_mode = 0;
+	// Select code 7's scan asks FR0 for the identity rather than FR3.
+	u32 fr0_answer = 0;
+	unsigned m_fr1_reads = 0;
 	u32 fr1_policy(u32 pattern) const
 	{
+		// Anything from 0x100 up is a constant answer, for finding which
+		// status bit a driver is waiting on.
+		if (fr1_mode >= 0x100)
+			return fr1_mode & 0xffff;
 		switch (fr1_mode)
 		{
 		case 1:  return ~pattern & 0xffff;
@@ -319,8 +326,19 @@ struct probe_card : public iop_interface
 		// --probe 5 9 is the way to get a card registered and watch what
 		// the drivers then do with it.
 		u32 v;
-		if (n == 3)      v = was_reset ? 0 : id;
-		else if (n == 1) v = fr1_policy(fr[0]);
+		// The scan resets a card (WIF1/WIF8) before typing it, and the
+		// real boards keep answering their identity afterwards -- the
+		// console card learned this the hard way -- so a probe must too,
+		// or the device record it produces carries no identity at all.
+		if (n == 3)      v = id;
+		else if (n == 0) v = fr0_answer ? fr0_answer : fr[0];
+		else if (n == 1)
+		{
+			// The presence test wants the pattern it just wrote to FR0
+			// echoed back; only after that does the driver poll this as
+			// a status register, so a constant answer starts there.
+			v = (m_fr1_reads++ == 0) ? fr[0] : fr1_policy(fr[0]);
+		}
 		else             v = fr[n & 15];
 		if (log)
 			std::printf("[probe%u R fr%u = %04x]\n", pa, n, v);
@@ -328,6 +346,8 @@ struct probe_card : public iop_interface
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
+		if (n == 0)
+			m_fr1_reads = 0;
 		if (n == 1 || n == 8)
 			was_reset = true;
 		fr[n & 15] = v & 0xffff;

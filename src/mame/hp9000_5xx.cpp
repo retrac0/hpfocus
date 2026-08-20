@@ -69,6 +69,7 @@ protected:
 private:
 	void mem_map(address_map &map) ATTR_COLD;
 	void kbd_put(u8 data);
+	void attach_probes();
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 
@@ -100,6 +101,16 @@ private:
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
+	std::string m_trip, m_trip_seen;
+	bool m_tripped = false;
+	u32 m_break_at = 0;
+	bool m_broke = false;
+	bool m_traced = false;
+	u32 m_trace_left = 0;
+	u32 m_watch_lo = 0, m_watch_hi = 0;
+	unsigned m_watch_hits = 0, m_watch_max = 12;
+	void trip_watch(u8 c);
+	void report_state(const char *why);
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
 	u32 m_prev_rq = 0;
@@ -127,6 +138,142 @@ void hp9000_5xx_state::mem_map(address_map &map)
 }
 
 
+// Watch the character stream going to the screen for the trip text; when
+// it arrives, report where the processor is and who called it. The stack
+// marker at Q holds delta-Q, STATUS, the PB-relative return address and
+// X in the four words from Q downward (Instruction Set ERS sheet 121),
+// so the chain walks back a frame at a time.
+void hp9000_5xx_state::trip_watch(u8 c)
+{
+	if (m_tripped || m_trip.empty())
+		return;
+	m_trip_seen.push_back(char(c));
+	if (m_trip_seen.size() > m_trip.size())
+		m_trip_seen.erase(0, m_trip_seen.size() - m_trip.size());
+	if (m_trip_seen != m_trip)
+		return;
+
+	m_tripped = true;
+	report_state(m_trip.c_str());
+}
+
+
+void hp9000_5xx_state::report_state(const char *why)
+{
+	focus::cpu_core &core = m_cpu->core();
+	std::printf("[%s: P=%08x PB=%08x (P-PB=%08x) Q=%08x S=%08x DB=%08x "
+			"SB=%08x X=%08x]\n",
+			why, core.r.p, core.r.pb, core.r.p - core.r.pb,
+			core.r.q, core.r.s, core.r.db, core.r.sb, core.r.x);
+	std::printf("  SB+0..+16: %08x %08x %08x %08x %08x\n",
+			core.read_mem32(core.r.sb), core.read_mem32(core.r.sb + 4),
+			core.read_mem32(core.r.sb + 8), core.read_mem32(core.r.sb + 12),
+			core.read_mem32(core.r.sb + 16));
+	std::printf("  DB+208..+228: %08x %08x %08x %08x %08x %08x\n",
+			core.read_mem32(core.r.db + 208), core.read_mem32(core.r.db + 212),
+			core.read_mem32(core.r.db + 216), core.read_mem32(core.r.db + 220),
+			core.read_mem32(core.r.db + 224), core.read_mem32(core.r.db + 228));
+	// FOCUS_DUMP=<hex addr>[:<words>][,...] prints memory windows, for
+	// looking at tables the system built.
+	if (const char *e = getenv("FOCUS_DUMP"))
+		for (const char *p = e; *p; )
+		{
+			const u32 addr = strtoul(p, nullptr, 16) & ~3u;
+			const char *colon = strchr(p, ':');
+			const char *comma = strchr(p, ',');
+			const unsigned n = (colon && (!comma || colon < comma))
+					? strtoul(colon + 1, nullptr, 0) : 16;
+			for (unsigned i = 0; i < n; i += 4)
+			{
+				std::printf("  %08x:", addr + 4 * i);
+				for (unsigned j = 0; j < 4 && i + j < n; j++)
+					std::printf(" %08x", core.read_mem32(addr + 4 * (i + j)));
+				std::printf("\n");
+			}
+			if (!comma)
+				break;
+			p = comma + 1;
+		}
+
+	// FOCUS_FIND=<hex word> scans memory for an instruction pair, which
+	// is how a site found in the image gets located in the loaded copy.
+	if (const char *e = getenv("FOCUS_FIND"))
+	{
+		const u32 want = strtoul(e, nullptr, 16);
+		unsigned found = 0;
+		for (u32 a = 0; a < 0x200000 && found < 8; a += 2)
+			if (core.read_mem32(a) == want)
+			{
+				std::printf("  found %08x at %08x\n", want, a);
+				found++;
+			}
+	}
+
+	// The code segment table says which module each frame is in: entry
+	// zero's first word is sixteen times the entry count, and every entry
+	// carries its length at +4 and its base at +8 (ERS sheets 25-27).
+	const u32 cst = core.read_mem32(0);
+	if (cst)
+	{
+		const u32 count = core.read_mem32(cst) / 16;
+		std::printf("  CST at %08x, %u entries\n", cst, count);
+		for (u32 seg = 1; seg < count && seg < 40; seg++)
+		{
+			const u32 ea = cst + 16 * seg;
+			const u32 len = core.read_mem32(ea + 4);
+			const u32 base = core.read_mem32(ea + 8);
+			if (base || len)
+				std::printf("    seg %2u base=%08x len=%6u\n", seg, base, len);
+		}
+	}
+
+	u32 q = core.r.q;
+	for (int frame = 0; frame < 10 && q >= core.r.sb && q <= core.r.sl; frame++)
+	{
+		const u32 delta  = core.read_mem32(q);
+		const u32 status = core.read_mem32(q - 4);
+		const u32 ret    = core.read_mem32(q - 8);
+		std::printf("  frame %d: Q=%08x delta=%u seg=%u ret=%08x\n",
+				frame, q, delta, focus::ers32::get(status, 20, 12), ret);
+		if (delta == 0 || delta > 0x100000)
+			break;
+		q -= delta;
+	}
+	std::fflush(stdout);
+}
+
+
+// FOCUS_PROBE=<sc>[:<id>][,...] parks a logging card in a slot, which is
+// how what a driver expects of a controller we do not have gets read off
+// a run. It is applied after the real cards so a probe can stand in for
+// one of them -- select code 7 in particular, where the 520's manual puts
+// internal mass storage and this driver puts the System Control Module.
+void hp9000_5xx_state::attach_probes()
+{
+	const char *e = getenv("FOCUS_PROBE");
+	if (!e)
+		return;
+	for (const char *p = e; *p; )
+	{
+		const unsigned sc = strtoul(p, nullptr, 0) & 7;
+		const char *colon = strchr(p, ':');
+		const char *comma = strchr(p, ',');
+		m_probes[sc].id = (colon && (!comma || colon < comma))
+				? strtoul(colon + 1, nullptr, 0) : 0;
+		m_probes[sc].pa = sc;
+		m_probes[sc].log = getenv("FOCUS_PROBELOG") != nullptr;
+		if (const char *m = getenv("FOCUS_PROBEFR0"))
+			m_probes[sc].fr0_answer = strtoul(m, nullptr, 0);
+		if (const char *m = getenv("FOCUS_PROBEFR1"))
+			m_probes[sc].fr1_mode = strtoul(m, nullptr, 0);
+		m_iop.attach(sc, &m_probes[sc]);
+		if (!comma)
+			break;
+		p = comma + 1;
+	}
+}
+
+
 void hp9000_5xx_state::machine_start()
 {
 	// The System Control Module answers select code 7, which is IOP
@@ -142,6 +289,14 @@ void hp9000_5xx_state::machine_start()
 		m_dim.id = strtoul(e, nullptr, 0);
 	m_dim.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
 	m_dim.log_cells = getenv("FOCUS_DIMCELLS") != nullptr;
+	// FOCUS_TRIP=<text> prints the processor state and a walk back up the
+	// stack markers the moment that text reaches the screen, which is how
+	// the code behind a message -- an error report, say -- gets found.
+	if (const char *e = getenv("FOCUS_TRIP"))
+	{
+		m_trip = e;
+		m_dim.on_cell = [this](u16 v) { trip_watch(u8(v)); };
+	}
 	if (const char *e = getenv("FOCUS_SC0FR1"))
 		m_dim.fr1 = strtoul(e, nullptr, 0);
 	m_iop.attach(0, &m_dim);
@@ -160,31 +315,63 @@ void hp9000_5xx_state::machine_start()
 	// FOCUS_PROBE=<select code>[:<identity>] parks a logging card in an
 	// empty slot, which is how what a driver expects of a controller we
 	// do not have gets read off a run.
-	if (const char *e = getenv("FOCUS_PROBE"))
-		for (const char *p = e; *p; )
-		{
-			const unsigned sc = strtoul(p, nullptr, 0) & 7;
-			const char *colon = strchr(p, ':');
-			const char *comma = strchr(p, ',');
-			m_probes[sc].id = (colon && (!comma || colon < comma))
-					? strtoul(colon + 1, nullptr, 0) : 0;
-			m_probes[sc].pa = sc;
-			m_probes[sc].log = getenv("FOCUS_PROBELOG") != nullptr;
-			if (const char *m = getenv("FOCUS_PROBEFR1"))
-				m_probes[sc].fr1_mode = strtoul(m, nullptr, 0);
-			m_iop.attach(sc, &m_probes[sc]);
-			if (!comma)
-				break;
-			p = comma + 1;
-		}
+	attach_probes();
 	m_cpu->set_io(&m_iop);
+
 
 	// The powerup module's final IXIT unwinds a frame whose delta-Q word
 	// is the loader's MPB inventory; the word must be cleared when the
 	// module reaches that IXIT with the handoff stack still current --
 	// what the real loader does to reconcile the two roles is unknown.
 	// Same nudge as the bootrun harness, instruction-precise.
+	// FOCUS_BREAK=<absolute address> reports the same state as the trip
+	// wire the first time the processor reaches that instruction, with a
+	// window of the current stack frame -- enough to read the arguments a
+	// routine was called with.
+	if (const char *e = getenv("FOCUS_BREAK"))
+		m_break_at = strtoul(e, nullptr, 16);
+	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
+	// which is how a call gets followed into whatever it reaches.
+	if (const char *e = getenv("FOCUS_TRACEN"))
+		m_trace_left = strtoul(e, nullptr, 0);
+
+	// FOCUS_WATCH=<lo>:<hi> reports the first instructions executed inside
+	// an address range, which answers whether a driver is ever entered.
+	if (const char *e = getenv("FOCUS_WATCH"))
+	{
+		m_watch_lo = strtoul(e, nullptr, 16);
+		if (const char *colon = strchr(e, ':'))
+			m_watch_hi = strtoul(colon + 1, nullptr, 16);
+		if (const char *n = getenv("FOCUS_WATCHN"))
+			m_watch_max = strtoul(n, nullptr, 0);
+	}
+
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
+		if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
+				&& m_watch_hits < m_watch_max)
+		{
+			m_watch_hits++;
+			std::printf("[watch %08x  Q=%08x]\n", core.r.p, core.r.q);
+			std::fflush(stdout);
+		}
+		if (m_traced && m_trace_left)
+		{
+			m_trace_left--;
+			std::printf("[t %08x pb=%08x q=%08x]\n", core.r.p, core.r.pb, core.r.q);
+			if (!m_trace_left)
+				std::fflush(stdout);
+		}
+		if (m_break_at && core.r.p == m_break_at && !m_broke)
+		{
+			m_traced = true;
+			m_broke = true;
+			std::printf("\n[break %08x]\n", m_break_at);
+			report_state("break");
+			for (int k = -10; k <= 14; k++)
+				std::printf("    Q%+3d (%08x) = %08x\n", k, core.r.q + 4 * k,
+						core.read_mem32(core.r.q + 4 * k));
+			std::fflush(stdout);
+		}
 		// Traps vector through CST entry 1 once the powerup module has
 		// built the tables and pointed dedicated location 0 at them.
 		if (!core.traps_enabled() && core.read_mem32(0) != 0)
@@ -248,6 +435,7 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	m_iop.attach(0, &m_dim);
 	m_iop.attach(6, &m_console6);
+	attach_probes();
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
 
@@ -342,9 +530,13 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 // 256-byte table, and sweeping every keycode from 0x20 to 0x7f through
 // the emulated keyboard -- clearing the input line between each, and
 // reading the character each one put in the display's frame buffer --
-// reproduced the table at diag.bin 0x23614 entry for entry, all
-// thirty-seven characters that the sweep could read unambiguously. The
-// system folds letters to upper case as it echoes them. Four keys are
+// agreed with the table at diag.bin 0x23614 wherever both spoke. The
+// map below is the sweep's own result, not the table's: the table lists
+// characters for keycodes that turn out to be dead keys or softkeys --
+// 0x48 echoes nothing and 0x39 answers UNDEFINED KEY, though the table
+// calls them X and 1 -- so only the seventy-one keycodes that actually
+// put a character on the screen are mapped here. The system folds
+// letters to upper case as it echoes them. Four keys are
 // not characters: 0x58 executes the line -- typing RUN and 0x58 answers
 // LABEL NOT FOUND, where 0x60 answers IMPROPER LINE NUMBER, so 0x60 is
 // the one that stores a line into the program and 0x58 is EXECUTE --
@@ -357,18 +549,18 @@ static const u8 KEYCODES[128] =
 	0x00, 0x00, 0x58, 0x00, 0x00, 0x58, 0x00, 0x00,   // ........
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
 	0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x7f, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x59,   //  !"#$%&'
-	0x22, 0x2b, 0x3d, 0x43, 0x42, 0x27, 0x40, 0x3c,   // ()*+,-./
-	0x2f, 0x39, 0x24, 0x2c, 0x30, 0x3a, 0x2d, 0x25,   // 01234567
-	0x2e, 0x26, 0x00, 0x61, 0x35, 0x29, 0x36, 0x45,   // 89:;<=>?
-	0x00, 0x7c, 0x21, 0x4d, 0x5c, 0x2a, 0x33, 0x5d,   // @ABCDEFG
-	0x66, 0x76, 0x5e, 0x67, 0x3f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
+	0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59,   //  !"#$%&'
+	0x22, 0x2b, 0x5b, 0x43, 0x42, 0x27, 0x40, 0x50,   // ()*+,-./
+	0x2f, 0x52, 0x24, 0x2c, 0x62, 0x5a, 0x2d, 0x25,   // 01234567
+	0x2e, 0x26, 0x00, 0x61, 0x00, 0x29, 0x00, 0x45,   // 89:;<=>?
+	0x00, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // @ABCDEFG
+	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // PQRSTUVW
-	0x48, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0x00,   // XYZ[\]^_
-	0x28, 0x7c, 0x21, 0x4d, 0x5c, 0x2a, 0x33, 0x5d,   // `abcdefg
-	0x66, 0x76, 0x5e, 0x67, 0x3f, 0x4f, 0x57, 0x6f,   // hijklmno
+	0x55, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0x00,   // XYZ[\]^_
+	0x28, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // `abcdefg
+	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // hijklmno
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // pqrstuvw
-	0x48, 0x75, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00,   // xyz{|}~.
+	0x55, 0x75, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00,   // xyz{|}~.
 };
 
 void hp9000_5xx_state::kbd_put(u8 data)
