@@ -959,20 +959,23 @@ private:
 			// Semantics derived from the BASIC kernel's software
 			// implementation of the same structure (routine at 0x45720
 			// of the diagnostics environment, and the dispatcher that
-			// consumes it): the operand is the absolute address of a
-			// semaphore -- word 0 the wait-list head, doubling as the
-			// multiprocessor lock (-1 while held), the count in word 1.
+			// consumes it): the operand names a two-word semaphore --
+			// word 0 the wait-list head, doubling as the multiprocessor
+			// lock (-1 while held), the count in word 1.
 			// Both HP-UX sites confirm the fixed layout ({0, 1} each
 			// time -- an unlocked, one-unit mutex); the X the software
 			// implementation loads before its own DECM is that
 			// routine's business, not an operand of these.
 			//
-			// Only the non-blocking halves are modelled: DOWN with the
-			// count going negative must park the task and enter the
-			// dispatcher, UP with waiters must wake one, and both walks
-			// through TCB conventions better proven before they are
-			// guessed. Those cases restore the count and report
-			// unimplemented so the boot stops visibly on them.
+			// Both halves are modelled, blocking included: the same
+			// software implementation fixes the TCB conventions the
+			// microcode must share, so a DOWN that takes the count
+			// negative parks the task and enters the dispatcher, and an
+			// UP with waiters readies the first of them. What is not
+			// modelled is real multiprocessing -- a semaphore another
+			// processor holds locked is handled by spinning on the
+			// instruction, which on one CPU can only mean the OS left
+			// the word locked itself.
 			if (!r.privileged()) return exec_trap::unimplemented;
 			// The operand is a data segment pointer, like SEML's: the
 			// kernels feed both LRA-built tagged pointers (DB- and
@@ -981,17 +984,25 @@ private:
 			// which is invalid as an EDS reference, so that encoding is
 			// free to mean absolute -- the privileged instructions' own
 			// convention.
+			// The operand is a tagged data pointer or a plain absolute
+			// address, told apart by the tag. The older test -- absolute
+			// only when the external-segment field read zero -- held for
+			// low addresses and broke for high ones: HP-UX's first DOWN
+			// names 0x00ffe6f8, whose top bits read as segment 31, and
+			// resolving that as an external reference was the bounds
+			// violation the kernel panicked on.
 			const u32 ptr = stk(0);
 			u32 a;
-			if (ers32::get(ptr, 0, 1) == 0 && ers32::get(ptr, 2, 11) == 0)
-				a = ptr;                     // absolute
-			else
+			const u32 tag = ers32::get(ptr, 0, 2);
+			if (tag == 2 || tag == 3)
 			{
 				const ea_result e = m_au.resolve_data_pointer(ptr, false, true);
 				m_addr_trap = e.t;
 				if (!e.ok()) return exec_trap::address_error;
 				a = e.addr;
 			}
+			else
+				a = ptr;                     // absolute
 			const u32 head = m_mem.read32(a);
 			if (head == 0xffffffffu)
 			{
@@ -1655,8 +1666,8 @@ private:
 			const int d = b3 ? -1 : 1;
 			const unsigned sdec = operand & 3;
 			const s32 count = s32(stk(0));
-			u32 tba = pmva_address(stk(1));
-			u32 sba = pmva_address(stk(2));
+			u32 tba = absolute_or_pointer(stk(1));
+			u32 sba = absolute_or_pointer(stk(2));
 
 			s32 x = 0;
 			while (count > d * x)
@@ -2677,9 +2688,13 @@ private:
 	//
 	// Step 3 is not modelled: use counts exist for the operating system's
 	// benefit and nothing in the CPU depends on them yet.
-	// A PMVA operand: a stack- or global-tagged pointer resolves against
-	// its base, anything else is already an absolute address.
-	u32 pmva_address(u32 ptr) const
+	// An operand that may be either a tagged pointer or a plain absolute
+	// address. A stack- or global-tagged pointer resolves against its
+	// base; anything else is the address itself. The privileged
+	// instructions use this convention -- PMVA's operands come from LRAS
+	// and are tagged, while HP-UX hands DOWN absolute addresses like
+	// 0x00ffe6f8, which no tag can describe.
+	u32 absolute_or_pointer(u32 ptr) const
 	{
 		switch (ers32::get(ptr, 0, 2))
 		{
@@ -2749,8 +2764,13 @@ private:
 			m_trap_log_len++;
 		}
 
+		// The vector is a program pointer like any other: flags in the
+		// top two bits, byte offset in the low thirty. HP-UX's vectors
+		// carry the flags -- BASIC's happen not to -- and taking the
+		// word whole sent the machine to PB + 0x4000a53c and stopped it
+		// dead on the first trap it ever took.
 		const u32 stt = m_mem.read32(r.pl - 4 * u32(cause));
-		branch_to(r.pb + stt);
+		branch_to(r.pb + ers32::get(stt, 2, 30));
 		return exec_trap::none;
 	}
 
@@ -2913,7 +2933,12 @@ private:
 			out = e.addr;
 			return exec_trap::none;
 		}
-		out = r.pb + ptr;
+		// A local program pointer keeps flags in its top two bits and the
+		// byte offset in the low thirty, the same shape do_call reads out
+		// of an STT entry. HP-UX 5.30 hands MVB a flagged one and the
+		// whole word taken as an offset put the source at PB +
+		// 0x4000a840, which is where the machine stopped for good.
+		out = r.pb + ers32::get(ptr, 2, 30);
 		if (!m_au.in_code(out))
 			return exec_trap::bounds_violation;
 		return exec_trap::none;
@@ -3250,7 +3275,14 @@ private:
 			}
 		}
 
-		const u32 target = r.pb + ret;
+		// The return word is a program pointer, and a program pointer
+		// keeps flags in its top two bits and the byte offset in the
+		// low thirty -- which is how do_call reads the STT entry it
+		// calls through (bits 2:30). A marker the OS builds by hand can
+		// therefore carry a flagged label: HP-UX 5.30's does, and taking
+		// the word whole sent the machine to PB + 0x4000a840 instead of
+		// PB + 0xa840 and left it sitting there.
+		const u32 target = r.pb + ers32::get(ret, 2, 30);
 		if (!m_au.in_code(target))
 			return exec_trap::code_bounds;
 		branch_to(target);
@@ -3384,7 +3416,10 @@ private:
 		}
 		r.status = sta;
 		r.x = qword(-3);
-		const u32 target = r.pb + qword(-2);
+		// The marker's return word is a program pointer: flags in the top
+		// two bits, byte offset in the low thirty, as do_call reads an STT
+		// entry. HP-UX's frames carry a flagged one.
+		const u32 target = r.pb + ers32::get(qword(-2), 2, 30);
 		if (!m_au.in_code(target))
 			return take_trap(trap_cause::instruction_sequencing, target);
 		r.s = r.q + 12;                     // S := Q + 3 words

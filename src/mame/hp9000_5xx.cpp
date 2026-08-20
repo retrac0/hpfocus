@@ -802,7 +802,10 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &img,
 		return;
 	}
 
-	core.r.pb = 0;
+	// FOCUS_BOOTPB=<base> overrides the code base the module runs with,
+	// for testing what the loader really hands over.
+	core.r.pb = getenv("FOCUS_BOOTPB")
+			? u32(strtoul(getenv("FOCUS_BOOTPB"), nullptr, 16)) : 0;
 	core.r.pl = LOAD + beword(8) + 3;
 	core.r.p  = LOAD + entry_off;
 
@@ -893,26 +896,45 @@ bool hp9000_5xx_state::boot_from_disc()
 			osd_printf_error("boot: cannot read the volume header\n");
 			return false;
 		}
-		const u32 blocksize = beword(header, 0x1c);
-		const u32 first_free = beword(header, 0x28);
-		if (blocksize < SECTOR || (blocksize % SECTOR) != 0 || first_free < 3)
-		{
-			osd_printf_error("boot: %.16s has no usable boot area "
-					"(block size %u, first free block %u)\n",
-					reinterpret_cast<const char *>(header.data()) + 4,
-					blocksize, first_free);
-			return false;
-		}
-
+		// Two layouts, told apart by what block 0 begins with. A disc
+		// carries the boot descriptor at offset 0 and its image at
+		// 0x400 -- that is how the 7914 unit save holds HP-UX and how
+		// the BASIC disc backup holds BASIC. A flexible volume puts an
+		// SDF volume header there instead, and the descriptor lives in
+		// block 1 with the image from block 2.
 		std::vector<u8> desc;
-		if (!m_disc.read_blocks(blocksize / SECTOR, SECTOR, desc))
-			return false;
+		u32 slice_start = 0, boot_area = 0;
+		const char *volume_name = reinterpret_cast<const char *>(
+				header.data()) + 4;
+		if (beword(header, 0) == MAGIC)
+		{
+			desc = header;
+			slice_start = 0x400;
+			boot_area = u32(m_media[v].size()) - slice_start;
+			volume_name = reinterpret_cast<const char *>(header.data()) + 0x30;
+		}
+		else
+		{
+			const u32 blocksize = beword(header, 0x1c);
+			const u32 first_free = beword(header, 0x28);
+			if (blocksize < SECTOR || (blocksize % SECTOR) != 0
+					|| first_free < 3)
+			{
+				osd_printf_error("boot: %.16s has no usable boot area "
+						"(block size %u, first free block %u)\n",
+						volume_name, blocksize, first_free);
+				return false;
+			}
+			if (!m_disc.read_blocks(blocksize / SECTOR, SECTOR, desc))
+				return false;
+			slice_start = 2 * blocksize;
+			boot_area = (first_free - 2) * blocksize;
+		}
 		if (beword(desc, 0) != MAGIC)
 		{
-			osd_printf_error("boot: %.16s is not a boot volume -- block 1 "
-					"begins %08x, not the boot magic %08x\n",
-					reinterpret_cast<const char *>(header.data()) + 4,
-					beword(desc, 0), MAGIC);
+			osd_printf_error("boot: %.16s is not a boot volume -- it begins "
+					"%08x, not the boot magic %08x\n",
+					volume_name, beword(desc, 0), MAGIC);
 			return false;
 		}
 
@@ -947,11 +969,8 @@ bool hp9000_5xx_state::boot_from_disc()
 			return false;
 		}
 
-		// The slice runs from block 2 to the first free block, and holds
-		// either the rest of the image or as much of it as the boot area
-		// has room for.
-		const u32 slice_start = 2 * blocksize;
-		const u32 boot_area = (first_free - 2) * blocksize;
+		// The slice holds either the rest of the image or as much of it
+		// as the boot area has room for.
 		const u32 length = std::min(total - offset, boot_area);
 		std::vector<u8> slice;
 		if (!m_disc.read_blocks(slice_start / SECTOR, length, slice))

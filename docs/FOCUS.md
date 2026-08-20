@@ -1513,15 +1513,47 @@ shipped HP-UX assembler, `/bin/as` (Appendix B). The HP-UX kernels execute
 `UP` and `DOWN` heavily (746 and 419 sites in the 5.01 kernel — more often
 than `SSI`); user binaries, BASIC and the diagnostics never do. They are
 kernel-only systems instructions, emitted by HP's internal MODCAL
-compiler. The encodings below are certain; the semantics are this
-document's largest open question — the emulator's disassembler prints the
-names, and its core raises Unimplemented Instruction on execution.
+compiler. The encodings are certain. `UP` and `DOWN` have since been
+deciphered and are emulated; `CTCB` and `GMPY` have not — the
+disassembler prints their names and the core raises Unimplemented
+Instruction on execution.
 
-**`UP` / `DOWN`** — `F4:20` / `F4:21`
-By name, the classic semaphore signal/wait pair — the blocking
-counterpart to the `SEML`/`PSLA` atomic exchange (§10.15). The assembler
-gives them the operand class of `PSHN` and `SRM`, so `b` is meaningful.
-Presumed privileged. Semantics undetermined.
+**`UP` / `DOWN`** — Semaphore Up / Down — `F4:20` / `F4:21`
+The semaphore signal/wait pair — the blocking counterpart to the
+`SEML`/`PSLA` atomic exchange (§10.15). Privileged. The assembler gives
+them the operand class of `PSHN` and `SRM`, so `b` is meaningful: set, the
+pointer is popped.
+
+The semantics below are not read from any HP document. They are recovered
+from the BASIC kernel's *software* implementation of the same structure
+(the routine at 0x45720 of the diagnostics environment, together with the
+dispatcher that consumes its lists), which fixes every convention the
+microcode has to share with the OS around it.
+
+The operand is a pointer to a two-word semaphore: word 0 the wait-list
+head, doubling as the multiprocessor lock (−1 while held), word 1 the
+count. As with the other privileged instructions the pointer may be a
+tagged data segment pointer or a raw absolute address — an absolute reads
+as an external pointer with segment number zero, which is invalid as an
+EDS reference and so is free to carry that meaning. Both HP-UX kernels
+feed both forms; both their call sites use the same `{0, 1}` layout, an
+unlocked one-unit mutex.
+
+`DOWN` decrements the count. If it stays non-negative the instruction is
+done. Otherwise the task blocks: its wait-link node at `CTCBP−8`
+(`{forward, backward}`, the direction `LDEL` expects) is pushed on the
+list head, its state word at `CTCBP−16` takes 2 in the low halfword, and
+the task leaves through the dispatcher exactly as `DISP` enters it. The
+TCB stays spliced into the dispatcher's priority chain — the `LLSH` walk
+skips anything whose state is not 1.
+
+`UP` increments the count. If it is still non-positive there is a waiter:
+the head node is unlinked, its state word set back to 1, and the MSG
+doorbell bit the dispatcher's idle mask always leaves enabled is raised,
+so a processor sitting in `STOP` returns to find it.
+
+A semaphore already locked (−1) by another processor is handled by
+re-executing the instruction. *CC unaffected.*
 
 **`CTCB`** — `F4:24`
 No operand. The name matches the "Current TCB Pointer" dedicated word
@@ -1697,7 +1729,9 @@ the chart, the compiler and the ERS prose all leave blank: **`UP`
 the HP-UX kernels execute `020` and `021` in quantity. So the kernel-only
 instructions were emitted by HP's internal MODCAL compiler (not on the
 tapes) yet sat, named, in the shipped assembler all along. Their
-encodings are folded into §9 and §10.19; their semantics remain
+encodings are folded into §9 and §10.19. `UP` and `DOWN` were
+subsequently deciphered from the BASIC kernel's software implementation of
+the same structure and are emulated; `CTCB` and `GMPY` remain
 undetermined.
 
 (`opcodes.csv` and the generated disassembler tables carried `SRSI` and
@@ -1775,8 +1809,8 @@ sweeps, since a run of `ff ff ff ff` decodes as format 6 op 37.
 **Still open.** CST entry word 0 / word 3 bit positions (mode, uncallable,
 use count); the exact `STAX`/`ADAX` `b` variants; `LIAS`'s 2+6 level/offset
 split is read from the prose and not yet confirmed against real code; and,
-largest of all, the semantics of the four `/bin/as`-recovered opcodes
-(§10.19).
+the semantics of `CTCB` and `GMPY`, the two `/bin/as`-recovered
+opcodes still undeciphered (§10.19).
 
 ## Appendix C — Silicon bugs (ERS Appendix G digest)
 
