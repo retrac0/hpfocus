@@ -1638,15 +1638,25 @@ private:
 			cca(r.x); return exec_trap::none; }
 		case 050: {                                               // PMVA
 			// Privileged Move Bytes using Absolute Addresses (ERS sheet
-			// 101). As MVB, but the pointers are absolute addresses and no
-			// segment resolution or bounds checking applies.
+			// 101). As MVB, but no bounds checking applies.
+			//
+			// "Absolute" describes the addressing, not the operand
+			// encoding: SYSTEM POWERUP builds both operands with LRAS,
+			// which yields a *tagged* relative pointer, and the one PMVA
+			// the boot executes is exactly that -- 0xc0100200 to
+			// 0xc0100114, the stack-tagged forms of Q-3 and Q-239.
+			// Taking those as raw addresses put the copy above the top of
+			// memory, where it was silently lost; the tag resolves them
+			// to the intended words. Operands that carry no tag are
+			// absolute addresses, which is what the sites that compute
+			// their operands arithmetically pass.
 			if (!r.privileged())
 				return exec_trap::unimplemented;
 			const int d = b3 ? -1 : 1;
 			const unsigned sdec = operand & 3;
 			const s32 count = s32(stk(0));
-			u32 tba = stk(1);
-			u32 sba = stk(2);
+			u32 tba = pmva_address(stk(1));
+			u32 sba = pmva_address(stk(2));
 
 			s32 x = 0;
 			while (count > d * x)
@@ -2667,6 +2677,18 @@ private:
 	//
 	// Step 3 is not modelled: use counts exist for the operating system's
 	// benefit and nothing in the CPU depends on them yet.
+	// A PMVA operand: a stack- or global-tagged pointer resolves against
+	// its base, anything else is already an absolute address.
+	u32 pmva_address(u32 ptr) const
+	{
+		switch (ers32::get(ptr, 0, 2))
+		{
+		case 3:  return r.sb + ers32::get(ptr, 2, 30);
+		case 2:  return r.db + ers32::get(ptr, 2, 30);
+		default: return ptr;
+		}
+	}
+
 	exec_trap take_trap(trap_cause cause, u32 parameter)
 	{
 		m_last_trap = cause;

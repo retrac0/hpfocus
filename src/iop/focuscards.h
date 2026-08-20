@@ -88,8 +88,15 @@ struct console_card : public iop_interface
 	// 006,0002 STATUS: 00000001" is select code 6, our identity 2, and
 	// this word); a healthy board has nothing to report.
 	u32 status_reg() override { return st; }
-	u32 st = 1;
-	u32 flag() override { return 1; }     // done
+	// The powerup self test requires this to read EVEN on the keyboard
+	// board (its escape 6). The old value of 1 was chosen when the
+	// "STATUS:" the report prints was thought to be this register; it is
+	// the test's own escape code.
+	u32 st = 0;
+	// RIFG, the interface flag: the board has finished what it was asked
+	// to do. The self test's wait helper polls this, and a card that
+	// never sets it makes that wait time out (escape 2).
+	u32 flag() override { return 1; }
 	u32 latch12 = 0;           // last R12 write: RTC location / NVM address
 	// All-zero powers up as "midnight, clock never set", which the
 	// driver accepts. Control register 10's bit 7 is a busy bit the
@@ -127,6 +134,14 @@ struct console_card : public iop_interface
 	// system expects to find is not known; an erased part reads 0xff.
 	u8 nvm[2048] = {};
 	void fill_nvm(u8 v) { for (u8 &b : nvm) b = v; }
+	// Registers the board implements but whose behaviour is not modelled
+	// individually. The powerup self test walks a bit through R15 and
+	// requires an exact read-back (its escape code 1 is the "Self test
+	// error 1: IO address 006,0002 STATUS: 00000001" the boot has always
+	// reported), so an unmodelled register has to at least remember what
+	// was written to it.
+	static constexpr u32 SELF_TEST_REPLY = 0x47;
+	u32 scratch[16] = {};
 	u32 keycode = 0;           // holding register behind R10
 	// The board holds one keycode at a time; a host that types faster
 	// than the system reads would lose the rest, so the extras wait
@@ -170,7 +185,7 @@ struct console_card : public iop_interface
 			}
 			break;
 		case 13: v = nvm[(~latch12) & 2047]; break;
-		default: break;
+		default: v = scratch[n & 15]; break;
 		}
 		if (log_fr)
 		{
@@ -184,6 +199,10 @@ struct console_card : public iop_interface
 	// the DIM frame buffer is written "in DMA or direct I/O modes", and
 	// the boot starts PA 0 DMA with SDC). The card is always ready.
 	bool service_request() override { return true; }
+	// The interface poll must be quiet on this board: the self test
+	// checks that nothing is requesting service between its steps
+	// (escape 7). Transfers are a separate line, above.
+	bool poll_request() override { return false; }
 	void dma_write(u8 c) override
 	{
 		if (on_char)
@@ -259,6 +278,34 @@ struct console_card : public iop_interface
 		}
 		if (n == 9)
 			return;             // command parameter; acted on silently
+		if (n >= 14)
+		{
+			scratch[n & 15] = v & 0xffff;
+			return;
+		}
+		if (n == 10)
+		{
+			// R10 is the holding register the keyboard microprocessor
+			// answers through, and writing it is how the system talks to
+			// that microprocessor. The powerup self test writes zero and
+			// then waits for the board to report itself: it polls R1 for
+			// the data-available bit and requires the byte that comes
+			// back to be 71 (0x47) in its low seven bits, retrying until
+			// it is and reporting "Self test error 1: IO address
+			// 006,0002" with escape 3 if it never comes.
+			if ((v & 0xffff) == 0)
+			{
+				keycode = SELF_TEST_REPLY;
+				fr0 = SELF_TEST_REPLY;
+				// The board interrupts when its answer is ready: the
+				// test's wait arms the device interrupt (SIL 4, EINT)
+				// and blocks, so a reply that only sat in the register
+				// left it waiting until the timeout (escape 2).
+				if (iop)
+					iop->raise(pa);
+			}
+			return;
+		}
 		
 		switch (n)
 		{

@@ -76,12 +76,15 @@ struct dim_card : public iop_interface
 	u32 read_fr(unsigned n) override
 	{
 		u32 v = 0;
-		// The powerup scan writes a pattern to FR0 and takes a nonzero
-		// FR1 as proof something is in the slot; the self test writes
-		// FR0 and reads it back, which the frame buffer answers from
-		// the cell the write landed in.
+		// The powerup scan takes a nonzero FR1 as proof something is in
+		// the slot. FR1 is also a control register the card reads back:
+		// the self test writes 0x81 and requires 0x81 or 0x83 to come
+		// back (it ORs in bit 1 before comparing), and answering a fixed
+		// 0x80 was the "Self test error 1: IO address 000,0000 STATUS:
+		// 00000003" the boot has always reported -- 3 being the test's
+		// own escape code, not anything the card said.
 		if (n == 1)
-			v = 0x80;
+			v = m_fr1;
 		else if (n == 3)
 			v = id;
 
@@ -108,13 +111,28 @@ struct dim_card : public iop_interface
 		case 7:                     // where the next transfer writes
 			m_addr = v & (CELLS - 1);
 			break;
+		case 1:
+			// Control, and it reads back. Bit 0 arms the interface
+			// poll; the self test sets it, checks the poll answers,
+			// clears the card through FR2 and checks the poll has gone
+			// quiet again.
+			m_fr1 = v & 0xffff;
+			m_poll = (v & 1) != 0;
+			break;
+		case 2:
+			m_poll = false;
+			break;
 		default:
-			break;                  // FR1 mode bits, FR8 reset, ...
+			break;                  // FR8 reset, ...
 		}
 	}
 
-	// Text arrives as halfword output DMA into the same write pointer.
+	// Text arrives as halfword output DMA into the same write pointer:
+	// the card is always ready to take it. What the interface POLL says
+	// is separate, and follows the control register the self test
+	// drives.
 	bool service_request() override { return true; }
+	bool poll_request() override { return m_poll; }
 	void dma_write16(u16 v) override { put(v); }
 	void dma_write(u8 v) override { put(u16(0x2000 | v)); }
 
@@ -145,6 +163,8 @@ private:
 	}
 
 	unsigned m_addr = 0;
+	u32 m_fr1 = 0x80;       // control register, read back by the self test
+	bool m_poll = false;    // what the interface poll reports
 	u8 m_index = 0;
 };
 

@@ -122,6 +122,13 @@ public:
 	// True when the card wants a DMA transfer.
 	virtual bool service_request() { return false; }
 
+	// What the interface poll (IFPL) reports for this card. It defaults
+	// to the transfer request, but the two are not the same thing: the
+	// powerup self test drives the poll bit through the card's control
+	// registers and expects it to follow them, while a display stands
+	// ready to take data whenever the IOP offers it.
+	virtual bool poll_request() { return service_request(); }
+
 	// True when the card is raising the burst-request line: with the
 	// channel's DMA registers programmed, a burst request moves data
 	// without any start command. The internal disc driver relies on this
@@ -233,6 +240,23 @@ public:
 	u8 channel_number() const { return m_channel; }
 	bool led() const { return m_led; }
 
+	// Which of a card's sixteen registers an operation names. There are
+	// two ways to say it and the system uses both. The opcode form is
+	// 8n+1 / 8n+2 (I/O ERS sheet 33). The other is the ADDRESS: the four
+	// NIC lines the 520 manual describes ("one of 16 input/output
+	// registers can be selected by the four NIC lines", 2-47) are the
+	// IC field of the interface address, and the kernel's own register
+	// primitives build their operand as `select code | register << 6`
+	// and then use plain read/write -- opcodes 001 and 002. Reading the
+	// register from the opcode alone sent every one of those accesses to
+	// register 0, which is why the keyboard board's self test wrote a
+	// walking bit at register 15 and read back nothing like it.
+	static unsigned register_of(const target &t)
+	{
+		const unsigned from_opcode = t.opcode >> 3;
+		return from_opcode ? from_opcode : t.ic;
+	}
+
 	// Where the processor is, for I/O logs: log lines that carry the P
 	// register name the code that issued the operation, which is what a
 	// protocol log is for. The host wires it to the CPU.
@@ -286,7 +310,7 @@ public:
 			if ((t.opcode & 7) == 2 && t.opcode <= 0172)
 			{
 				if (c.iface)
-					c.iface->write_fr(t.opcode >> 3, data & 0xffff);
+					c.iface->write_fr(register_of(t), data & 0xffff);
 				return true;
 			}
 			if (std::getenv("FOCUS_IOPLOG"))
@@ -297,11 +321,19 @@ public:
 
 	bool io_read(const target &t, u32 &data) override
 	{
+		const bool logging = std::getenv("FOCUS_IOALL") != nullptr;
+		const bool ok = io_read_inner(t, data);
+		if (logging)
+			std::printf("[iop R op=%03o pa=%u -> %08x%s p=%08x]\n",
+					t.opcode, t.pa, data, ok ? "" : " REFUSED", tpc());
+		return ok;
+	}
+
+	bool io_read_inner(const target &t, u32 &data)
+	{
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
-		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop R op=%03o pa=%u p=%08x]\n", t.opcode, t.pa, tpc());
 
 		switch (t.opcode)
 		{
@@ -351,7 +383,7 @@ public:
 			// empty slot reads as an idle bus. RISF keeps 011.
 			if ((t.opcode & 7) == 1 && t.opcode <= 0171 && t.opcode != CMD_RIF1)
 			{
-				data = c.iface ? (c.iface->read_fr(t.opcode >> 3) & 0xffff) : 0;
+				data = c.iface ? (c.iface->read_fr(register_of(t)) & 0xffff) : 0;
 				return true;
 			}
 			return false;
@@ -468,7 +500,7 @@ public:
 			if ((t.opcode & 7) == 0 && t.opcode <= 0170)
 			{
 				if (c.iface)
-					c.iface->control_fr(t.opcode >> 3);
+					c.iface->control_fr(register_of(t));
 				return true;
 			}
 			if (std::getenv("FOCUS_IOPLOG"))
@@ -804,7 +836,7 @@ private:
 	{
 		u32 v = 0;
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
-			if (m_chan[pa].iface && m_chan[pa].iface->service_request())
+			if (m_chan[pa].iface && m_chan[pa].iface->poll_request())
 				v |= (1u << pa);
 		return v;
 	}

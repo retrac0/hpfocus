@@ -592,8 +592,15 @@ void hp9000_5xx_state::machine_start()
 			if (now != m_wpoint_last)
 			{
 				if (m_wpoint_hits++ < 20)
+				{
 					std::printf("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
 							m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
+					// FOCUS_WPSTACK adds the call chain, which is how the
+					// code that asked for a write gets named when the
+					// writer itself is a shared helper.
+					if (getenv("FOCUS_WPSTACK"))
+						report_state("wp");
+				}
 				m_wpoint_last = now;
 				std::fflush(stdout);
 			}
