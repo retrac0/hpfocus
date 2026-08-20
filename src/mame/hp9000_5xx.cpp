@@ -546,6 +546,26 @@ void hp9000_5xx_state::machine_start()
 		};
 	}
 
+	// FOCUS_EAWATCH=<lo>:<hi> logs every data address the processor
+	// computes inside a range, with the instruction that did it -- the
+	// definitive record of which words of a structure are actually read
+	// or written, where a static scan of the code can misjudge.
+	if (const char *e = getenv("FOCUS_EAWATCH"))
+	{
+		static u32 lo = strtoul(e, nullptr, 16);
+		static u32 hi = strchr(e, ':')
+				? strtoul(strchr(e, ':') + 1, nullptr, 16) : lo + 4;
+		static unsigned hits = 0;
+		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
+			if (addr >= lo && addr <= hi && hits++ < 400)
+			{
+				std::printf("[ea p=%08x addr=%08x = %08x]\n", pc, addr,
+						m_cpu->core().read_mem32(addr & ~3u));
+				std::fflush(stdout);
+			}
+		};
+	}
+
 	// FOCUS_SEMLOG traces the hardware semaphores: which one a task blocks
 	// on and which one wakes it. An idle kernel that has stopped short
 	// says so here -- the semaphore it parked on names what it is waiting
