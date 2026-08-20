@@ -87,6 +87,7 @@ private:
 
 	TIMER_CALLBACK_MEMBER(iop_tick);
 	TIMER_CALLBACK_MEMBER(rtc_tick);
+	TIMER_CALLBACK_MEMBER(type_tick);
 
 	QUICKLOAD_LOAD_MEMBER(quickload_cb);
 
@@ -121,6 +122,9 @@ private:
 	void report_state(const char *why);
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
+	emu_timer *m_type_timer = nullptr;
+	std::string m_type_text;
+	size_t m_type_pos = 0;
 	u32 m_prev_rq = 0;
 	bool m_nudged = false;
 	u32 m_handoff_q = 0;
@@ -335,36 +339,41 @@ void hp9000_5xx_state::machine_start()
 	{
 		m_disc.iop = &m_iop;
 		m_disc.log = getenv("FOCUS_DISCLOG") != nullptr;
+		// FOCUS_DISCID: the halfword the identify transaction answers;
+		// 1..6 map to internal device types, anything else types the
+		// slot 29 (the kernel's default).
 		if (const char *e = getenv("FOCUS_DISCID"))
-			m_disc.identity = strtoul(e, nullptr, 0);
+			m_disc.identity = u16(strtoul(e, nullptr, 0));
 		if (const char *e = getenv("FOCUS_DISCFR3"))
-			m_disc.id_fr3 = strtoul(e, nullptr, 0);
-		if (const char *e = getenv("FOCUS_DISCSTATUS"))
-			m_disc.status_word = strtoul(e, nullptr, 0);
-		if (const char *e = getenv("FOCUS_DISCAFTER"))
-			m_disc.status_after = strtoul(e, nullptr, 0);
+			m_disc.id_fr3 = u16(strtoul(e, nullptr, 0));
+		if (const char *e = getenv("FOCUS_DISCFR3B"))
+			m_disc.id_fr3_alt = u16(strtoul(e, nullptr, 0));
 		if (const char *e = getenv("FOCUS_DISCBUSY"))
 			m_disc.busy_ms = strtoul(e, nullptr, 0);
-		m_disc.reset_self_test();
-		if (const char *e = getenv("FOCUS_DISCRESULT"))
-			m_disc.result = strtoul(e, nullptr, 0);
-		if (const char *e = getenv("FOCUS_DISCRLEN"))
-			m_disc.response_len = strtoul(e, nullptr, 0);
-		// FOCUS_DISCRESP=aa,bb,... an explicit response byte string.
-		if (const char *e = getenv("FOCUS_DISCRESP"))
-			for (const char *p2 = e; *p2; )
+		// FOCUS_FLOPPY=<raw image>: the medium in the flexible disc
+		// drive, one byte per byte (35 cyl x 2 heads x 16 sectors of
+		// 256 bytes = 286,720 for the discs the system shipped on).
+		if (const char *e = getenv("FOCUS_FLOPPY"))
+		{
+			if (FILE *f = fopen(e, "rb"))
 			{
-				m_disc.response.push_back(u8(strtoul(p2, nullptr, 16)));
-				const char *comma = strchr(p2, ',');
-				if (!comma) break;
-				p2 = comma + 1;
+				fseek(f, 0, SEEK_END);
+				const long n = ftell(f);
+				fseek(f, 0, SEEK_SET);
+				m_disc.m_image.resize(size_t(n));
+				if (fread(m_disc.m_image.data(), 1, size_t(n), f) != size_t(n))
+					m_disc.m_image.clear();
+				fclose(f);
 			}
-		m_disc.want_service = getenv("FOCUS_DISCSRQ") != nullptr;
-		m_disc.want_irq = getenv("FOCUS_DISCIRQ") != nullptr;
+			else
+				osd_printf_error("FOCUS_FLOPPY: cannot open %s\n", e);
+		}
+		m_disc.reset_self_test();
 		m_iop.attach(7, &m_disc);
 	}
 	attach_probes();
 	m_cpu->set_io(&m_iop);
+	m_iop.trace_pc = [this]() { return m_cpu->core().r.p; };
 
 
 	// The powerup module's final IXIT unwinds a frame whose delta-Q word
@@ -440,6 +449,18 @@ void hp9000_5xx_state::machine_start()
 
 	if (getenv("FOCUS_ESCLOG"))
 		m_cpu->core().on_escape = [this](u32 p, u32 value) {
+			// FOCUS_ESCVAL=<hex> logs only that escape value, uncapped;
+			// otherwise the first 400.
+			if (const char *e = getenv("FOCUS_ESCVAL"))
+			{
+				if (value == strtoul(e, nullptr, 16) && m_escapes++ < 40)
+				{
+					std::printf("[escape at %08x value=%08x q=%08x]\n",
+							p, value, m_cpu->core().r.q);
+					report_state("escval");
+				}
+				return;
+			}
 			if (m_escapes++ < 400)
 			{
 				std::printf("[escape at %08x value=%08x q=%08x]\n",
@@ -478,9 +499,12 @@ void hp9000_5xx_state::machine_start()
 			m_break_hits++;
 			std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
 			report_state("break");
-			for (int k = -10; k <= 14; k++)
-				std::printf("    Q%+3d (%08x) = %08x\n", k, core.r.q + 4 * k,
-						core.read_mem32(core.r.q + 4 * k));
+			// Stack words sit on the q-3 grid: operand (Q-k) is the word
+			// at byte q-k-3, so the window walks word slots from there.
+			for (int k = -24; k <= 14; k++)
+				std::printf("    Q%+3d (%08x) = %08x\n", 4 * k,
+						core.r.q + 4 * k - 3,
+						core.read_mem32(core.r.q + 4 * k - 3));
 			std::fflush(stdout);
 		}
 		// Traps vector through CST entry 1 once the powerup module has
@@ -506,6 +530,32 @@ void hp9000_5xx_state::machine_start()
 	m_iop_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
 	m_rtc_timer = timer_alloc(FUNC(hp9000_5xx_state::rtc_tick), this);
 	m_rtc_timer->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
+
+	// FOCUS_TYPE=<text> feeds keystrokes through the keyboard board once
+	// the boot has settled -- the headless way to drive the command line.
+	// \n becomes EXECUTE. FOCUS_TYPEAT=<emulated seconds> delays the
+	// first keystroke (default 15).
+	if (const char *e = getenv("FOCUS_TYPE"))
+	{
+		for (const char *pc = e; *pc; pc++)
+		{
+			if (pc[0] == '\\' && pc[1] == 'n') { m_type_text.push_back('\n'); pc++; }
+			else m_type_text.push_back(*pc);
+		}
+		const double at = getenv("FOCUS_TYPEAT")
+				? strtod(getenv("FOCUS_TYPEAT"), nullptr) : 15.0;
+		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
+		m_type_timer->adjust(attotime::from_double(at), 0,
+				attotime::from_msec(150));
+	}
+}
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
+{
+	if (m_type_pos < m_type_text.size())
+		kbd_put(u8(m_type_text[m_type_pos++]));
+	else
+		m_type_timer->adjust(attotime::never);
 }
 
 

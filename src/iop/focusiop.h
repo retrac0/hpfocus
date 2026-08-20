@@ -26,6 +26,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 
 namespace focus {
 
@@ -68,6 +69,9 @@ enum iop_cmd : u8
 	CMD_WTMC  = 043,   // W  write timer count
 	CMD_RTM   = 044,   // R  read timer count
 	CMD_ETMI  = 045,   // C  enable timer interrupt
+
+	// Command lists (channel programs)
+	CMD_ICEI  = 070,   // C  initialize command execution from interrupt
 
 	// Interfaces
 	CMD_IFPL  = 047,   // R  interface poll
@@ -117,6 +121,17 @@ public:
 
 	// True when the card wants a DMA transfer.
 	virtual bool service_request() { return false; }
+
+	// True when the card is raising the burst-request line: with the
+	// channel's DMA registers programmed, a burst request moves data
+	// without any start command. The internal disc driver relies on this
+	// -- it programs WDS/WDC/WDA, commands the card through FR1, and
+	// waits for the completion interrupt without ever issuing SD.
+	virtual bool burst_request() { return false; }
+
+	// The transfer the channel was counting is complete (the count
+	// reached zero). Lets a card interpret a command block it was sent.
+	virtual void dma_complete(bool output) { }
 
 	// True while the card is asserting ASYNC outside a transfer -- an
 	// attention request, e.g. a keystroke waiting (I/O ERS section 4.4).
@@ -218,6 +233,12 @@ public:
 	u8 channel_number() const { return m_channel; }
 	bool led() const { return m_led; }
 
+	// Where the processor is, for I/O logs: log lines that carry the P
+	// register name the code that issued the operation, which is what a
+	// protocol log is for. The host wires it to the CPU.
+	std::function<u32()> trace_pc;
+	u32 tpc() const { return trace_pc ? trace_pc() : 0; }
+
 	//----------------------------------------------------------------
 	//  MPB command entry points
 	//----------------------------------------------------------------
@@ -228,11 +249,11 @@ public:
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
 		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop W op=%03o pa=%u d=%08x]\n", t.opcode, t.pa, data);
+			std::printf("[iop W op=%03o pa=%u d=%08x p=%08x]\n", t.opcode, t.pa, data, tpc());
 
 		switch (t.opcode)
 		{
-		case CMD_WDS:  c.dma_status = data; return true;
+		case CMD_WDS:  c.dma_status = data; c.term = 0; return true;
 		case CMD_WDC:  c.dma_count = data & 0xffff; return true;
 		case CMD_WDA:  c.dma_addr = data; c.dma_current = data; return true;
 		case CMD_WDTF: c.termination = data; return true;
@@ -280,13 +301,18 @@ public:
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
 		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop R op=%03o pa=%u]\n", t.opcode, t.pa);
+			std::printf("[iop R op=%03o pa=%u p=%08x]\n", t.opcode, t.pa, tpc());
 
 		switch (t.opcode)
 		{
 		case CMD_RDCS:
-			// Current count in the low half, status in the high half.
-			data = (c.dma_status & 0xffff0000u) | (c.dma_count & 0xffff);
+			// Remaining count in the HIGH half, termination status in the
+			// low: the kernel's transfer classifier indexes a class table
+			// with bits 13:15 of this word plus bit 0, and accepts only
+			// class 4 -- bits 13:15 = 1, "terminated on count" -- while
+			// its ISR treats bits 15, 14 and 0 as errors. The old
+			// status-high/count-low reading came from a poor scan.
+			data = ((c.dma_count & 0xffff) << 16) | c.term;
 			return true;
 		case CMD_RDMK: data = m_dma_mask; return true;
 		case CMD_RIMK: data = m_int_mask; return true;
@@ -338,7 +364,7 @@ public:
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
 		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop C op=%03o pa=%u]\n", t.opcode, t.pa);
+			std::printf("[iop C op=%03o pa=%u p=%08x]\n", t.opcode, t.pa, tpc());
 
 		switch (t.opcode)
 		{
@@ -405,6 +431,15 @@ public:
 			}
 			return true;
 		case CMD_DINT: c.int_enabled = false; update_interrupt(); return true;
+		case CMD_ICEI:
+			// Initialize Command Execution from Interrupt: the IOP fetches
+			// a command list and executes it against the addressed channel.
+			// The kernel's transaction layer builds the list in the device
+			// record (a WIF8 command byte for the card, then SIL, DDMA,
+			// WDS, WDA, WDC, SDEC to set up and start the DMA leg), points
+			// the device's DRT entry word 3 at it, and issues this command.
+			run_command_list(t.pa);
+			return true;
 		case CMD_RIOB:
 			// Reset I/O Bus: drop every channel's DMA and clear pending
 			// requests, as a power-up sequence expects.
@@ -499,9 +534,13 @@ public:
 	void run_dma(unsigned pa)
 	{
 		channel_state &c = m_chan[pa];
-		if (!c.dma_active || !c.iface)
+		if (!c.iface)
 			return;
-		if (!(m_dma_mask & (1u << pa)))
+		// A burst request moves data on a programmed channel without a
+		// start command; otherwise a transfer needs the start command's
+		// active state and the DMA mask bit.
+		const bool burst = c.dma_count != 0 && c.iface->burst_request();
+		if (!burst && (!c.dma_active || !(m_dma_mask & (1u << pa))))
 			return;
 
 		memory_interface &mem = m_host.iop_memory();
@@ -511,8 +550,9 @@ public:
 		// length of the DMA block transfer in transfers".
 		const bool output = ers32::get(c.dma_status, 27, 1) != 0;
 		const bool bytes  = ers32::get(c.dma_status, 29, 1) != 0;
-		u32 burst = c.dma_count ? c.dma_count : 1;
-		while (burst-- && c.dma_active && c.iface->service_request())
+		u32 left = c.dma_count ? c.dma_count : 1;
+		while (left-- && (c.dma_active ? c.iface->service_request()
+				: (c.dma_count != 0 && c.iface->burst_request())))
 		{
 			if (bytes)
 			{
@@ -534,10 +574,84 @@ public:
 			if (c.dma_count && --c.dma_count == 0)
 			{
 				c.dma_active = false;
+				c.term = 0x2000;    // terminated on count, no error
 				if (std::getenv("FOCUS_IOPLOG"))
 					std::printf("[iop DMA-done pa=%u en=%d]\n", pa, c.int_enabled);
+				c.iface->dma_complete(output);
 				raise(pa);
 			}
+		}
+	}
+
+	// Execute a command list (ICEI, opcode 070). The list is found through
+	// the device's DRT entry: word 3 points at (command, operand) pairs of
+	// words, the command in the low bits -- the kernel packs the select
+	// code into bits 3:6 of the first word as well -- and the operand in
+	// the word after. Everything here is read off the running system: the
+	// kernel's transaction builder emits
+	//
+	//     WIF8 <command byte for the card>
+	//     SIL  <level>          DDMA
+	//     WDS  <dma status>     WDA <buffer>       WDC <count>
+	//     SDEC                  0115 <link>        074
+	//
+	// and waits for the DMA completion interrupt. Opcodes 0115 and 074 end
+	// the list -- 0115 carries a pointer whose meaning is not yet
+	// established (a continuation block the kernel allocates right after
+	// the list), 074 nothing. Both stop execution here.
+	void run_command_list(unsigned pa)
+	{
+		memory_interface &mem = m_host.iop_memory();
+		const u32 drt = 128u * m_channel + 16u * (pa & 7);
+		u32 ptr = mem.read32(drt + 12);
+		const bool log = std::getenv("FOCUS_IOPLOG") || std::getenv("FOCUS_ICEILOG");
+		if (log)
+			std::printf("[iop ICEI pa=%u list=%08x]\n", pa, ptr);
+		for (unsigned step = 0; step < 32; step++, ptr += 8)
+		{
+			const u32 word = mem.read32(ptr);
+			const u32 operand = mem.read32(ptr + 4);
+			const u8 op = u8(word & 0x1ff);
+			if (log)
+				std::printf("[iop ICEI+%02u op=%03o operand=%08x]\n",
+						step, op, operand);
+			target t{};
+			t.opcode = op;
+			t.channel = m_channel;
+			t.pa = u8(pa & 7);
+			bool ok = false;
+			switch (op)
+			{
+			case CMD_WDS: case CMD_WDC: case CMD_WDA: case CMD_WDTF:
+			case CMD_WDCA: case CMD_WDPA: case CMD_WDB: case CMD_WIMK:
+			case CMD_WIMG: case CMD_SIL: case CMD_WAMK:
+				ok = io_write(t, operand);
+				break;
+			case CMD_CDMK: case CMD_EDMA: case CMD_DDMA: case CMD_SD:
+			case CMD_SDC: case CMD_SDEC: case CMD_SRC: case CMD_CIRQ:
+			case CMD_CAAK: case CMD_EINT: case CMD_DINT:
+				ok = io_control(t);
+				break;
+			case 0115:
+				// A pointer operand; the kernel stores the address of the
+				// words just after the list. Treated as end-of-list until
+				// its meaning is established.
+				m_chan[pa & 7].chain = operand;
+				return;
+			case 074:
+				return;
+			default:
+				// WIF n delivers the operand to the card's register n --
+				// the first list entry is the card's command byte on FR8.
+				if ((op & 7) == 2 && op <= 0172)
+					ok = io_write(t, operand);
+				if (!ok && log)
+					std::printf("[iop ICEI STOP op=%03o]\n", op);
+				if (!ok)
+					return;
+				break;
+			}
+			(void)ok;
 		}
 	}
 
@@ -670,9 +784,11 @@ private:
 		u32 dma_count = 0;
 		u32 dma_status = 0;
 		u32 termination = 0;
+		u32 term = 0;       // RDCS low half: how the last transfer ended
 		u32 data_buffer = 0;
 		u8 dma_pa = 0;
 		u8 int_level = 0;
+		u32 chain = 0;      // the 0115 list terminator's pointer operand
 		// Devices power up with interrupt requests disabled: the CPU
 		// arms each one with EINT after it has installed the device's
 		// DRT entry -- vectoring through an empty entry lands at
