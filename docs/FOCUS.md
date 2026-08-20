@@ -340,8 +340,29 @@ pointer** otherwise. For an external data segment pointer, a post-index is
 added to the pointer's *offset field* (checked against that segment's
 bounds), not to the resolved absolute address.
 
-The ten worked examples of ERS Figure 2.1 exercise every path and are
-reproduced bit-exactly by `src/test/addrtest.cpp`.
+The ten worked examples of ERS Figure 2.1 *(sheet 19)* exercise every path:
+HP supplied the memory contents of a program, stack, global data and external
+data segment, an index register of 20, and the resulting top-of-stack for ten
+`LOAD` instructions. They are reproduced bit-exactly by
+`src/test/addrtest.cpp`.
+
+| Instruction | Result | Path exercised |
+|---|---|---|
+| `LOAD P+20` | −60 | direct |
+| `LOAD P+20,I` | 10 | self-relative pointer |
+| `LOAD P+20,X` | 100 | indexed |
+| `LOAD P+20,I,X` | 5 | **post**-indexing after indirection |
+| `LOAD Q+12,I` | 300 | stack segment pointer |
+| `LOAD Q+32,I` | 27 | global data segment pointer |
+| `LOAD Q−20,I` | −63 | external data segment pointer |
+| `LOAD Q−20,I,X` | 31 | index applied to the EDS *offset* |
+| `LOAD DB+60,I` | 18 | global pointer from global data |
+| `LOAD DB+72,I` | 52 | EDS pointer from global data |
+
+This figure is what pins down the two rules the prose leaves implicit:
+indirection resolves **before** indexing, and for an external data segment
+the index is added to the offset within the segment rather than to the
+resolved absolute address.
 
 ### 5.2 Data segment pointers
 
@@ -527,6 +548,20 @@ Octal byte addresses:
 | `200`–`1774` | Device Reference Table (device number = its DRT address = `128·channel + 16·PA`) |
 | `2000`–`2174` | interrupt head/tail pointers (priority N: head at decimal `1028+8N`, tail at `1024+8N`) |
 | `2200`– | system DST |
+
+The CPU dedicated blocks serve MPB channels 1–6. All three CST pointers and
+the TCB pointer are absolute addresses ending in `00`; `QI` and `SLI` must
+end in `11`.
+
+The head/tail pointers are maintained by the CPU and I/O hardware and must
+not be touched by the OS. Each holds the absolute address of the DRT entry
+for the first (last) device queued at that priority; a zero tail pointer
+means the list is empty.
+
+A Device Reference Table entry is four words; a device on MPB channel *N* at
+peripheral address *P* has device number `128N + 16P` (decimal), which is
+also the absolute address of its DRT entry. The entry format is in ERS
+§5.1.3.
 
 ---
 
@@ -1020,6 +1055,14 @@ extended format, no hardware sqrt/rem/integer-part. Rounding follows
 Operand (033/034 group) and FP Result. Doubles occupy two stack words, high
 word deeper. FP condition codes: `CCL` <, `CCE` =, `CCG` > (or sign class
 for the monadic ops).
+
+Conformance *(ERS Appendix F, sheet 145)* is against Draft 5.11 of the
+proposed IEEE standard as published in the October 1979 ACM SIGNUM
+Newsletter — not the ratified 754-1985. The fast binary↔BCD conversion
+instructions (§10.9) use algorithms that differ from the standard's; full
+conformance is left to system software. ERS Appendix E (sheet 144) gives the
+exact instruction sequences for decimal↔binary floating-point conversion —
+useful as simulator test vectors.
 
 **`FADD`, `FSUB`, `FMPY`, `FDIV`** — Floating Add/Subtract/Multiply/Divide
 — `F3:51 / 52 / 53 / 54`
@@ -1659,6 +1702,48 @@ undetermined.
 
 (`opcodes.csv` and the generated disassembler tables carried `SRSI` and
 `RPC` until then.)
+
+**Empirical validation of the opcode map.** The transcription and the format
+decoding were checked against real FOCUS code — the HP-UX 5.01 kernel and
+the BASIC 2.0 boot disc — using
+[`tools/focusdis.py`](../tools/focusdis.py). The decisive evidence is
+structural. At offset `0x100` in `os.req`:
+
+```
+LDH    Q-3,X
+BCCS.GE  +26   -> 0x11e
+DUP / ANDI #255 / DUP
+CMPI #4  / BCCS.E +20 -> 0x122      case 4
+DUP
+CMPI #2  / BCCS.E +60 -> 0x150      case 2
+CMPI #1  / BCCS.E +80 -> 0x168      case 1
+DEL
+BCCS.ALW +92 -> 0x178               default
+```
+
+A switch dispatch whose three case targets hold structurally parallel bodies
+(`0x122` and `0x150` both open `DEL / INCM Q-n`), and whose two fall-through
+paths converge on the same default. That cannot arise from a mis-decoded
+opcode table.
+
+Bulk statistics, over the HP-UX kernel and BASIC, against a control region
+of English manual text from `SHPUX_MAN`:
+
+| Region | Branch density | Targets on an instruction boundary |
+|---|---|---|
+| HP-UX kernel `0x100`–`0x8000` | 7.0% | 99.9% (chance 89.9%) |
+| BASIC `500BT1` `0x900`–`0x2400` | 9.7% | 99.7% (chance 91.2%) |
+| **Control: manual text** | **0.1%** | — (chance 100%, no signal) |
+
+A raw "fraction of bytes that decode to a known opcode" figure is worthless
+here — 254 of 256 encodings are assigned, so English text scores 99.3%.
+Branch density is the discriminator, and it differs by a factor of 70–97×.
+Zero branch targets landed on an odd address in any region, as required
+since `P`'s LSB must be 0.
+
+The same sweep confirmed two opcode-number errors in the §6.2 prose (both
+already right in the chart): `LRA` is format 6 opcode **36** (not 35), and
+`STB` is format 6 opcode **34**, with **35** being `STD` and **25** `STH`.
 
 **Encoding questions resolved empirically** (against the HP-UX kernels and
 BASIC 2.0):

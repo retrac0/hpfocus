@@ -583,7 +583,7 @@ files that are 100% printable, AT&T-copyright source, troff manual input,
 FORTRAN, `ar` archives and NLS message catalogs — and a complete Series 500
 `/usr/include`, whose `a.out.h` documents the HPOFF object format and confirms
 the EDSP/GDSP/SSP pointer encodings that
-[`docs/HARDWARE.md`](../docs/HARDWARE.md) §3.1.1 derives from the ERS.
+[`docs/FOCUS.md`](../docs/FOCUS.md) §5.2 derives from the ERS.
 
 `/new.kernel` extracts to a 565,522-byte boot image that `tools/modmap.py`
 reads as **54 modules opening with `SYSTEM POWERUP` at `0x20`** — an

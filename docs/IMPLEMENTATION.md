@@ -24,8 +24,7 @@ MAME supplies all of it:
 
 There is also a substantial body of adjacent HP work by **F. Ulivi** — accurate
 HP 9845B/C, HP 9825A, HP 9831 and HP-85 drivers, plus an HP-IB *remotizer* that
-bridges emulated HP-IB to real hardware over TCP. That is the closest existing
-work to this project and the natural person to consult.
+bridges emulated HP-IB to real hardware over TCP. 
 
 The debugger deserves particular weight. The dominant early activity is
 disassembling `SYSTEM POWERUP` against an unknown loader handoff contract.
@@ -67,14 +66,14 @@ but the machine itself should not be built there.
 
 **Result: the opcode transcription and format decoding are confirmed correct
 against real FOCUS code.** Full evidence in
-[HARDWARE.md §5.2](HARDWARE.md#52-empirical-validation); the short version is a
+[FOCUS.md Appendix B](FOCUS.md#appendix-b--adjudicated-readings); the short version is a
 cleanly decoded switch dispatch in the HP-UX kernel at `0x100`, with parallel
 case bodies and converging default paths, plus branch density 70–97× higher in
 code than in a text control region.
 
 Two encoding questions were resolved in the process and folded back into the
 spec: format 6's `BASE` is 3 bits (not 4), and the `BCCS`/`BCC` condition-mask
-and sign fields are now pinned down (HARDWARE.md §5.1.1).
+and sign fields are now pinned down (FOCUS.md §8.3).
 
 ```sh
 python3 tools/focusdis.py os.req --start 0x100 --count 40
@@ -128,7 +127,7 @@ Debugger integration is wired up: `STEP_OVER` on `PCL`/`PCLS`, `STEP_OUT` on
 
 **1.2 — Register model and state** ✅ **done**.
 [`src/cpu/focus/focusstate.h`](../src/cpu/focus/focusstate.h) holds the 18
-machine-visible registers (HARDWARE.md §2), the `STATUS` fields, and the
+machine-visible registers (FOCUS.md §3), the `STATUS` fields, and the
 A/B/C/D top-of-stack cache using the SIMH `hp3000` renaming approach — pushing
 rotates an index rather than copying four values, and returns the word
 displaced off the bottom so the caller can spill it.
@@ -139,7 +138,7 @@ CPU device can simply embed it.
 Resolving this step required settling the `STATUS` layout, which had been an
 open question since the OCR of the ERS field diagram is unusable. Read from
 the page image at 400 dpi, and the reading is *forced*: all seventeen named
-fields tile the register with only bits 15 and 18 left over (HARDWARE.md §2.5).
+fields tile the register with only bits 15 and 18 left over (FOCUS.md §3.1).
 
 The `ers_field` helper converts ERS bit numbering (bit 0 = MSB) exactly once,
 so nothing else has to think about it — the single most likely source of
@@ -157,7 +156,7 @@ cd src/test && make test
 [`src/cpu/focus/focusaddr.h`](../src/cpu/focus/focusaddr.h): effective address
 computation for every base register, all four indirect pointer formats,
 post-indexing, and the segment bounds checks the microcode applies to every
-reference (HARDWARE.md §3.1.1–3.1.3).
+reference (FOCUS.md §5).
 
 Verified against **ERS Figure 2.1** (sheet 19), a worked example HP supplied
 with the memory contents and the expected top-of-stack for ten `LOAD`
@@ -169,7 +168,7 @@ tests against a flat array and the CPU device will plug in an `address_space`.
 
 The external data segment path is complete in
 [`src/cpu/focus/focusdst.h`](../src/cpu/focus/focusdst.h): the DST entry and
-page table entry layouts (now transcribed, HARDWARE.md §4.1), the unpaged
+page table entry layouts (now transcribed, FOCUS.md §6.2), the unpaged
 path, both chaining modes, the paged path, and every protection trap.
 78 further assertions.
 
@@ -486,7 +485,7 @@ is suggestive rather than settled.
 **Following the media paid off.** The two fields that mark a boot disc lead
 to a descriptor at offset `0x400` giving the product identifier, the total
 image size, the volume count and number, and where each volume's slice sits
-within the image (HARDWARE.md §9.2).
+within the image (HARDWARE.md §3.2).
 
 BASIC 2.0 turns out to be **one 372,932-byte image split across two discs**,
 which [`tools/bootimage.py`](../tools/bootimage.py) now reassembles into all
@@ -501,7 +500,7 @@ work on, and the rest of the system to follow references into.
 
 The descriptor has no entry field because the loader does not need one: the
 entry follows from the module layout. **The entry point is now determined**
-— see HARDWARE.md §9.3. It is the first instruction after the preamble, at
+— see HARDWARE.md §3.3. It is the first instruction after the preamble, at
 `00c4` terminator + `0x1e`, which is image offset `0x54` for BASIC and `0x5c`
 for HP-UX. Both systems begin with the same nine instructions.
 
@@ -618,7 +617,7 @@ independent samples cross-check each other.
 and diagnostic discs.
 
 **2.5 — Memory map.** MPB layout and the dedicated locations of
-HARDWARE.md §6 — the Device Reference Table, the interrupt priority head and
+FOCUS.md §7.4 — the Device Reference Table, the interrupt priority head and
 tail pointers, and the per-CPU blocks.
 
 ### Phase 3 — the device roadmap
@@ -710,7 +709,7 @@ halfword.
 
 **Unimplemented-instruction traps.** Format 4 opcode 75, format 5 opcode 30 and
 format 6 opcode 37 *should* trap but do not on CPU 4.0 and earlier
-(HARDWARE.md §9). Decide early whether to be bug-compatible; contemporary
+(FOCUS.md Appendix C). Decide early whether to be bug-compatible; contemporary
 software was written to avoid these.
 
 **Condition codes** have three interpretations (CCA, CCB, CCC) selected per
@@ -721,8 +720,8 @@ applies.
 
 ## Resolved: format 6 field widths
 
-HARDWARE.md §5 listed the format 6 `BASE` width as an open question — 3 or 4
-bits. **It is 3 bits.** The tick marks under the ERS field diagram read
+The format 6 `BASE` width was long an open question — 3 or 4 bits (now
+settled in FOCUS.md §8.1). **It is 3 bits.** The tick marks under the ERS field diagram read
 `0 3 8 9 10 13 31`, and Appendix B shows a combined `I X Bas` field spanning
 bits 8–12. Offset therefore runs bits 13–31, which is exactly the 19 bits the
 text specifies.

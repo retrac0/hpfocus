@@ -5,7 +5,7 @@
 This is an ongoing quest to attempt to emulate the HP 9000 Series Model 520
 with the HP FOCUS microprocessor.
 
-FOCUS, introduced in 1982, was the first commercial 32-bit microprocessor —
+FOCUS, introduced in 1982, was the first commercial 32-bit microprocessor --
 a microcoded, segmented, stack-oriented machine with no programmer-visible 
 general-purpose registers, implementing something similar to the HP 3000
 architecture widened to 32 bits.
@@ -14,9 +14,13 @@ The goal is to run HP-UX and BASIC.
 
 ## Current state
 
+### Emulator
+
 There's a sample factorial program in section 7 of the Instruction Set ERS
 which runs correctly on the emulated CPU for n = 0 to 12 which means
-procedure calls, stack markers, twelve-deep recursion, doubleword multiply.
+procedure calls, stack markers, twelve-deep recursion, doubleword multiply
+are working correctly.
+
 From the listing on ERS sheet 129 (addresses in octal, as printed):
 
 ```
@@ -44,17 +48,10 @@ factorial procedure:
   20032  EXIT 1         Exit this Recursion
 ```
 
-Disassembler, register model, addressing, DST walk and an execution core that
-covers **98.3% of the instructions in the real HP-UX 5.30 kernel**, weighted
-by frequency. Internal traps vector correctly through code segment 1. Still to
-come: the string and decimal groups, external interrupts, then the machine
-around the CPU.
-
-That kernel is now a *complete, undamaged* 5.30 image recovered from the 7914
-unit-save tapes, along with its entire userland — see
-[software/README.md](software/README.md). It replaces the truncated 5.01 tape
-as the coverage target, and it raises the stretch goal from "bring up a
-kernel" to **boot this system**.
+That kernel is now an 5.30 image recovered from the 7914
+unit-save tapes, along with its userland -- see [software/README.md](software/README.md). 
+It replaces the truncated 5.01 tape as the target, and it raises the 
+stretch goal from "bring up a kernel" to boot this system.
 
 Recent steps closed two groups. First the system group the kernel needs and
 the earlier corpora barely exercised: `LPP`/`LPPS` and `LIA`/`LIAS` (program
@@ -130,21 +127,31 @@ walk runs off the end and checksums garbage for ninety million
 instructions. Truncating at the chain end and appending `ffffffff` makes it
 bootable:
 
-```sh
-python3 tools/lifdir.py software/97089C.hpi --extract S97080C --out s.cpio
-python3 tools/cpiolist.py s.cpio --extract system/97080C/os.req --out os.req
-python3 -c "d=open('os.req','rb').read(); open('hpux501.bin','wb').write(d[:0x58c2c]+b'\xff\xff\xff\xff')"
-src/test/bootrun hpux501.bin --p64 0x1000000
-```
+### Recovered software
 
-**Both HP-UX versions then stop on the same thing**: format 4 opcodes
-**020 and 021**, which the Dec-82 Appendix B leaves unassigned — and so,
+Digital archaeology results: very little survives for this machine!  There's
+a few disk images preserved by hpmuseum.net but that's it.  This repository
+includes copies of: 
+ * BASIC Language System 2.0
+ * 9020 factory diagnostics,
+ * BASIC demo suite (all undamaged), 
+ * an HP-UX 5.01 system tape (preliminary analysis suggests this tape image is
+   truncated) and most of the length is lost but there does seem to be a complete
+   kernel!
+ * An HP-UX 5.3 disk image from a 9714 maybe? wrote a tool to dump the filesystem
+   appears to contain a live image from early 1991 of HP-UX 5.3 for FOCUS
+
+
+### Current holds
+
+Both HP-UX versions then stop on the same thing: format 4 opcodes
+020 and 021, which the Dec-82 Appendix B leaves unassigned — and so,
 it turns out, does HP's own toolchain. 5.01 uses
 them 1,192 times and 5.30 1,514 times; BASIC and the diagnostics never
 execute either. 5.01 reaches its first `021` after 1.26M instructions, in
 the `CORE SYSTEM` segment.
 
-**What the recovered toolchain says.** The 5.30 tapes carry HP's own
+What the recovered toolchain says: The 5.30 tapes carry HP's own
 assembler (`/bin/as`) and Pascal compiler (`/usr/lib/pascomp`), and the
 compiler holds the instruction set as a table of 16-byte records — mnemonic,
 opcode bits in place, operand class, flags. [`tools/hptable.py`](tools/hptable.py)
@@ -154,7 +161,7 @@ reads it. Two results:
   none disagree**, and it settles two glyphs the chart had damaged —
   `SRSI` is really `BRSI`, `RPC` is really `RFC` (both now fixed in
   `docs/opcodes.csv`).
-- It leaves **exactly the same fourteen format 4 slots empty** as the 1982
+- It leaves the same fourteen format 4 slots empty as the 1982
   chart — `020`-`024`, `032`-`036`, `045`, `046`, `061`, `075` — while
   listing every documented privileged instruction. So `020` and `021` are
   implemented in silicon but were never exposed through the shipped tools:
@@ -196,24 +203,12 @@ running task when the wait blocks. **They are deliberately still
 unimplemented**: a guessed P/V that quietly schedules wrong is worse than
 one that stops.
 
-Digital archaeology results: very little survives for this machine!  There's
-a few disk images preserved by hpmuseum.net but that's it.  This repository
-includes copies of: 
- * BASIC Language System 2.0
- * 9020 factory diagnostics,
- * BASIC demo suite (all undamaged), 
- * an HP-UX 5.01 system tape (preliminary analysis suggests this tape image is
-   truncated) and most of the length is lost but there does seem to be a complete
-   kernel!
- * An HP-UX 5.3 disk image from a 9714 maybe? wrote a tool to dump the filesystem
-   appears to contain a live image from early 1991 of HP-UX 5.3 for FOCUS
-
 ## Layout
 
 ```
 docs/
-  FOCUS.md             modern CPU architecture description + full opcode spec
-  HARDWARE.md          consolidated 520/540 hardware spec  <- start here
+  FOCUS.md             CPU architecture + full opcode spec  <- start here
+  HARDWARE.md          520/540 machine hardware: MPB, I/O, boot media
   SOFTWARE.md          target media, HP-UX versions, boot ordering
   opcodes.csv          full FOCUS opcode map, from ERS Appendix B
   bitsavers/           11 primary PDFs (~46 MB)
@@ -295,14 +290,11 @@ from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
 Both have usable OCR text layers, extracted into [docs/notes/](docs/notes/).
 
 Because that OCR is poor, the CPU is now specified afresh in
-**[docs/FOCUS.md](docs/FOCUS.md)** — a modern architecture description and
-complete opcode reference reconstructed from the Appendix B chart, the
-tested emulator, and the legible parts of the prose, with every contested
-reading adjudicated and listed.
+[docs/FOCUS.md](docs/FOCUS.md)
 
 ## The opcode map
 
-[docs/opcodes.csv](docs/opcodes.csv) is a hand transcription of **Appendix B**,
+[docs/opcodes.csv](docs/opcodes.csv) is a hand transcription of Appendix B,
 the fold-out chart on sheet 137 that gives bit patterns for all six instruction
 formats. The chart is authoritative — the OCR of the prose descriptions
 disagrees with it in several places.
@@ -315,7 +307,7 @@ The transcription is validated against a second, independent derivation:
 [tools/extract_opcodes.py](tools/extract_opcodes.py) scrapes opcode
 assignments out of the section 6.2 prose, and
 [tools/check_opcodes.py](tools/check_opcodes.py) diffs the two. Current result
-is 25 conflicts, **all** of them OCR damage in the prose (`S8IT` for `SBIT`,
+is 25 conflicts, all of them OCR damage in the prose (`S8IT` for `SBIT`,
 `IXTT` for `IXIT`, `LOB` for `LDB`, `TOR` for `IOR`, `DR` for `BR`, and so on).
 No conflict pointed at an error in the chart transcription.
 
@@ -332,13 +324,13 @@ python3 tools/check_opcodes.py
    memory, trap, or IOP work depends on it.
 2. **The HP-UX tape is 77% lost.** The kernel survived; the entire userland
    (`SCOMMANDS`) did not. Full HP-UX needs a better image. BASIC and the
-   diagnostics are undamaged, so this is **not on the critical path**.
+   diagnostics are undamaged, so this is not on the critical path.
 3. **Memory Controller ERS is missing** from bitsavers. Less of a hole than
    the references to it imply: the software-visible MPB semantics — slave
    registers, message bits, semaphores, the interrupt lists, all 46 MPB
    commands — are in the I/O ERS and the Instruction Set ERS. What the MC ERS
    withholds is bus-protocol detail and the memory controller's own channel-0
-   command set (HARDWARE.md §10.2).
+   command set (HARDWARE.md §4).
 
 ## Boot order
 

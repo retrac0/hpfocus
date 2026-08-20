@@ -146,8 +146,13 @@ struct console_card : public iop_interface
 			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
 			break;
 		case 10:
+			// Taking the keycode clears the board's pending flag, which
+			// is bit 0 of the status register: leaving it set reads as a
+			// keyboard still holding a key down, and the system stops
+			// treating what arrives afterwards as typed characters.
 			v = keycode;
 			keycode = 0;
+			fr0 = 0;
 			if (!pending.empty())
 			{
 				const u8 next = pending.front();

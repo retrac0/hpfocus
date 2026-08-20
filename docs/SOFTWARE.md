@@ -157,7 +157,7 @@ This is **less of a blocker than it first appears**, because the service manual
 documents the mechanism completely — the select-code scan, the `84` hex reset
 to `R1`, the DMA from `R4`/`R6` with auto-decrementing address, and the full
 loader flowchart. See
-[HARDWARE.md §8.5](HARDWARE.md#85-bootstrap-protocol-530540-service-sheet-2-302-31).
+[HARDWARE.md §2.5](HARDWARE.md#25-bootstrap-protocol-530540-service-sheet-2-302-31).
 
 What the ROM *does* is also modest: scan IOP 1–3 at peripheral addresses 0–7,
 find an OS, load it, jump to it. Three ways to get past it:
@@ -241,6 +241,6 @@ written for.
 1. **SCM loader ROM** — see above. Soft blocker, late in the schedule.
 2. **Memory Controller ERS.** Referenced by both ERSes but not on bitsavers.
    Narrow in practice: the software-visible MPB semantics are covered by the
-   I/O ERS and the Instruction Set ERS (HARDWARE.md §10.2); what is lost is
+   I/O ERS and the Instruction Set ERS (HARDWARE.md §4); what is lost is
    bus-protocol detail and the MC's own channel-0 command set.
 3. **A clean HP-UX 5.0 image.**
