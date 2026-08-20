@@ -81,6 +81,11 @@ struct console_card : public iop_interface
 	// hooks this.
 	std::function<void(u8)> on_char;
 	u32 status() override { return 1; }   // status line asserted
+	// The interface status register the self test prints ("IO address
+	// 006,0002 STATUS: 00000001" is select code 6, our identity 2, and
+	// this word); a healthy board has nothing to report.
+	u32 status_reg() override { return st; }
+	u32 st = 1;
 	u32 flag() override { return 1; }     // done
 	u32 latch12 = 0;           // last R12 write: RTC location / NVM address
 	// All-zero powers up as "midnight, clock never set", which the
@@ -88,7 +93,7 @@ struct console_card : public iop_interface
 	// driver polls until CLEAR before each rollover-consistent read
 	// burst (trap seg 0x484f8: it spins on FR12=0x0a / ~FR9 while bit 7
 	// is set), so it must stay 0 here.
-	u8 rtc[16] = {};
+	u8 rtc[64] = {};
 	// The clock must actually run: the boot synchronises its software
 	// clock to the next second boundary by polling the seconds location
 	// between 100 ms sleeps (trap seg 0x476ec..0x47798), and a frozen
@@ -130,8 +135,8 @@ struct console_card : public iop_interface
 		// location (manual 2-34). The rollover triple-read never relies
 		// on the increment because it re-latches every field.
 		case 9:
-			v = u32(~rtc[latch12 & 15]) & 0xff;
-			latch12 = (latch12 & ~15u) | ((latch12 + 1) & 15);
+			v = u32(~rtc[latch12 & 63]) & 0xff;
+			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
 			break;
 		case 10: v = keycode; keycode = 0; break;
 		case 13: v = nvm[(~latch12) & 2047]; break;
@@ -139,7 +144,7 @@ struct console_card : public iop_interface
 		}
 		if (log_fr)
 		{
-			std::printf("[kbd R fr%u=%04x]", n, v & 0xffff);
+			std::printf("[sc%u R fr%u=%04x]\n", pa, n, v & 0xffff);
 			std::fflush(stdout);
 		}
 		return v;
@@ -186,7 +191,7 @@ struct console_card : public iop_interface
 	{
 		if (log_fr)
 		{
-			std::printf("[kbd W fr%u=%04x]", n, v & 0xffff);
+			std::printf("[sc%u W fr%u=%04x]\n", pa, n, v & 0xffff);
 			std::fflush(stdout);
 		}
 		if (n == 1 || n == 8)   // the scan's reset pair, and the ARD
@@ -224,8 +229,8 @@ struct console_card : public iop_interface
 		case 9:            // RTC data write to the latched location,
 			// complemented like the reads (the OS's clock-set sweep at
 			// trap seg ~0x480fc writes every location through here).
-			rtc[latch12 & 15] = u8(~v);
-			latch12 = (latch12 & ~15u) | ((latch12 + 1) & 15);
+			rtc[latch12 & 63] = u8(~v);
+			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
 			return;
 		case 12:           // RTC location / complemented NVM address.
 			// Just an address latch: it does NOT interrupt. (A legacy

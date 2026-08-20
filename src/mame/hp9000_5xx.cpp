@@ -115,17 +115,24 @@ void hp9000_5xx_state::machine_start()
 {
 	// The System Control Module answers select code 7, which is IOP
 	// channel 1, peripheral address 7. The consoles: select code 0 is
-	// where the panic reporter writes, select code 6 the console the
-	// drivers open. ID 9 lets the powerup scan register the console;
-	// select code 0 answers 4 and stays out of the device bitmap.
+	// the display -- the panic reporter writes there, and so does the
+	// alphanumeric driver, which binds only when the card answers 1 or
+	// 6 and then writes the screen with halfword DMA. 6 is the identity
+	// that also drives the frame buffer directly (2400 halfwords of
+	// blanks, one per character cell) the way the 520 manual describes,
+	// so it is the default. Select code 6 is the keyboard board.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_console0.id = 4;
+	m_console0.id = 6;
 	if (const char *e = getenv("FOCUS_SC0ID"))
 		m_console0.id = strtoul(e, nullptr, 0);
 	m_console0.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
+	if (const char *e = getenv("FOCUS_SC0ST"))
+		m_console0.st = strtoul(e, nullptr, 0);
 	m_iop.attach(0, &m_console0);
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
+	if (const char *e = getenv("FOCUS_KBDST"))
+		m_console6.st = strtoul(e, nullptr, 0);
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	m_iop.attach(6, &m_console6);
@@ -306,14 +313,44 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 
 
 // A keystroke from the terminal becomes a keycode in the keyboard
-// board's holding register (R10), with the service-request latch set --
-// the attention poll then tells the CPU on message 14. The real board
-// sends 7-bit keycodes from the keyswitch matrix, not ASCII; until the
-// OS's KEYBOARD LANGUAG tables are mapped, ASCII goes through untouched
-// so the translation can be read off the OS's own handling.
+// board's holding register (R10), with the service-request latch set.
+// The real board sends keycodes from the keyswitch matrix, not ASCII,
+// and the system translates them through a 256-byte table -- the same
+// one in the diagnostic and BASIC images (diag.bin 0x23694), whose
+// entries the emulated keyboard was read against: sweeping every
+// keycode from 0x20 to 0x7e and reading the screen echo reproduced the
+// table exactly -- 0x54 an S, 0x5c a D, 0x74 an R -- and 0x70 cleared
+// the line, so that is Return. This is that half of the table
+// inverted, with a lowercase letter arriving as its uppercase key.
+// Keycodes below 0x20 index it through a modifier not yet identified
+// (they echoed nothing of what the table promised), which is why the
+// five characters reachable only there (, - . ; =) map to zero, along
+// with the keys that are not characters at all.
+static const u8 KEYCODES[128] =
+{
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
+	0x00, 0x00, 0x70, 0x00, 0x00, 0x70, 0x00, 0x00,   // ........
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
+	0x7f, 0x79, 0x59, 0x2c, 0x7d, 0x20, 0x25, 0x3f,   //  !"#$%&'
+	0x26, 0x2f, 0x2e, 0x29, 0x00, 0x00, 0x00, 0x3c,   // ()*+,-./
+	0x41, 0x52, 0x4a, 0x53, 0x62, 0x5a, 0x63, 0x6a,   // 01234567
+	0x72, 0x6b, 0x61, 0x00, 0x51, 0x00, 0x49, 0x45,   // 89:;<=>?
+	0x24, 0x7c, 0x21, 0x4d, 0x5c, 0x60, 0x65, 0x36,   // @ABCDEFG
+	0x35, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
+	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x3e,   // PQRSTUVW
+	0x48, 0x75, 0x4c, 0x22, 0x73, 0x2b, 0x2d, 0x27,   // XYZ[\]^_
+	0x5b, 0x7c, 0x21, 0x4d, 0x5c, 0x60, 0x65, 0x37,   // `abcdefg
+	0x39, 0x31, 0x38, 0x30, 0x3a, 0x32, 0x3b, 0x6f,   // hijklmno
+	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x33, 0x3e,   // pqrstuvw
+	0x48, 0x75, 0x4c, 0x2a, 0x42, 0x23, 0x28, 0x00,   // xyz{|}~.
+};
+
 void hp9000_5xx_state::kbd_put(u8 data)
 {
-	m_console6.type(data);
+	const u8 code = KEYCODES[data & 0x7f];
+	if (code)
+		m_console6.type(code);
 }
 
 

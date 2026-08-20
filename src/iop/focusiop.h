@@ -136,6 +136,11 @@ public:
 
 	// Direct I/O: the interface's sixteen FR registers, reached with the
 	// RIF n / WIF n commands (I/O ERS sheet 33: opcodes 8n+1 and 8n+2).
+	// The interface status register, read with RIST -- a full word the
+	// card composes, distinct from the one-bit STATUS line RISF and the
+	// poll report. The self test prints it verbatim ("Self test error 1:
+	// IO address 006,0002 STATUS: 00000001"), so zero is healthy.
+	virtual u32 status_reg() { return 0; }
 	virtual u32 read_fr(unsigned) { return 0; }
 	virtual void write_fr(unsigned, u32) { }
 };
@@ -287,7 +292,7 @@ public:
 						| ((m_attn_log & 0xff) << 8);
 			return true;
 		case CMD_RIRV: data = REVISION; return true;
-		case CMD_RIST: data = c.iface ? c.iface->status() : 0; return true;
+		case CMD_RIST: data = c.iface ? c.iface->status_reg() : 0; return true;
 		case CMD_RIFG: data = c.iface ? c.iface->flag() : 0; return true;
 		case CMD_IFPL: data = poll(); return true;
 		case CMD_RISF:
