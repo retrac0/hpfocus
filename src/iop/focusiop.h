@@ -135,6 +135,12 @@ public:
 
 	// Direct I/O: the interface's sixteen FR registers, reached with the
 	// RIF n / WIF n commands (I/O ERS sheet 33: opcodes 8n+1 and 8n+2).
+	// A control strobe on one of the interface's registers. The read and
+	// write forms of a register are opcodes 8n+1 and 8n+2 (I/O ERS sheet
+	// 33), and the internal disc driver issues 8n as well -- FR9 written,
+	// then control 070 -- so this reads as the third form. The meaning is
+	// inferred from that pattern, not from the ERS.
+	virtual void control_fr(unsigned) { }
 	// The interface status register, read with RIST -- a full word the
 	// card composes, distinct from the one-bit STATUS line RISF and the
 	// poll report. The self test prints it verbatim ("Self test error 1:
@@ -423,6 +429,13 @@ public:
 			update_interrupt();
 			return true;
 		default:
+			// CIF n, the control strobe on interface register n.
+			if ((t.opcode & 7) == 0 && t.opcode <= 0170)
+			{
+				if (c.iface)
+					c.iface->control_fr(t.opcode >> 3);
+				return true;
+			}
 			if (std::getenv("FOCUS_IOPLOG"))
 				std::printf("[iop REFUSED C op=%03o pa=%u]\n", t.opcode, t.pa);
 			return false;

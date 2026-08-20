@@ -35,6 +35,7 @@
 #include "iop/focusscm.h"
 #include "iop/focuscards.h"
 #include "iop/focusdim.h"
+#include "iop/focusdisc.h"
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -100,6 +101,7 @@ private:
 	focus::dim_card m_dim;            // select code 0: the display
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
+	focus::disc_card m_disc;          // select code 7: the internal disc
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
@@ -107,6 +109,8 @@ private:
 	bool m_broke = false;
 	bool m_traced = false;
 	u32 m_trace_left = 0;
+	u32 m_wpoint = 0, m_wpoint_last = 0;
+	unsigned m_wpoint_hits = 0;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
 	unsigned m_watch_hits = 0, m_watch_max = 12;
 	void trip_watch(u8 c);
@@ -315,6 +319,25 @@ void hp9000_5xx_state::machine_start()
 	// FOCUS_PROBE=<select code>[:<identity>] parks a logging card in an
 	// empty slot, which is how what a driver expects of a controller we
 	// do not have gets read off a run.
+	// The internal disc sits where the System Control Module answers the
+	// boot handoff; FOCUS_DISC puts it in, while what it should say to
+	// the driver is still being established.
+	if (getenv("FOCUS_DISC"))
+	{
+		m_disc.iop = &m_iop;
+		m_disc.log = getenv("FOCUS_DISCLOG") != nullptr;
+		if (const char *e = getenv("FOCUS_DISCID"))
+			m_disc.identity = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_DISCSTATUS"))
+			m_disc.status_word = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_DISCAFTER"))
+			m_disc.status_after = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_DISCBUSY"))
+			m_disc.busy_reads = strtoul(e, nullptr, 0);
+		m_disc.want_service = getenv("FOCUS_DISCSRQ") != nullptr;
+		m_disc.want_irq = getenv("FOCUS_DISCIRQ") != nullptr;
+		m_iop.attach(7, &m_disc);
+	}
 	attach_probes();
 	m_cpu->set_io(&m_iop);
 
@@ -332,6 +355,8 @@ void hp9000_5xx_state::machine_start()
 		m_break_at = strtoul(e, nullptr, 16);
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
+	if (const char *e = getenv("FOCUS_WPOINT"))
+		m_wpoint = strtoul(e, nullptr, 16);
 	if (const char *e = getenv("FOCUS_TRACEN"))
 		m_trace_left = strtoul(e, nullptr, 0);
 
@@ -353,6 +378,21 @@ void hp9000_5xx_state::machine_start()
 			m_watch_hits++;
 			std::printf("[watch %08x  Q=%08x]\n", core.r.p, core.r.q);
 			std::fflush(stdout);
+		}
+		// FOCUS_WPOINT=<addr> reports every change of one memory word with
+		// the instruction that made it, which is how a table's builder is
+		// found when the table is all there is to go on.
+		if (m_wpoint)
+		{
+			const u32 now = core.read_mem32(m_wpoint);
+			if (now != m_wpoint_last)
+			{
+				if (m_wpoint_hits++ < 20)
+					std::printf("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
+							m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
+				m_wpoint_last = now;
+				std::fflush(stdout);
+			}
 		}
 		if (m_traced && m_trace_left)
 		{
@@ -435,6 +475,8 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	m_iop.attach(0, &m_dim);
 	m_iop.attach(6, &m_console6);
+	if (getenv("FOCUS_DISC"))
+		m_iop.attach(7, &m_disc);
 	attach_probes();
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
