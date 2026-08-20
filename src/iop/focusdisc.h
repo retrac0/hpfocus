@@ -218,7 +218,7 @@ struct disc_card : public iop_interface
 		{
 			if (log)
 			{
-				std::printf("[disc block mode=%x:", m_go_mode);
+				std::printf("[%u disc block mode=%x:", m_seq++, m_go_mode);
 				for (u8 b : m_in)
 					std::printf(" %02x", b);
 				std::printf("]\n");
@@ -542,6 +542,9 @@ private:
 	unsigned m_device = 0;
 	bool m_want_burst = false;
 	unsigned m_go_mode = 0;
+public:
+	unsigned m_seq = 0;         // command-block counter, for ordering logs
+private:
 	u32 m_status = 2;           // QSTAT; power-on state until reported
 	unsigned m_unit = 0;
 	unsigned m_volume = 0;

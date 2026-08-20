@@ -76,6 +76,7 @@ struct console_card : public iop_interface
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
 	bool log_fr = false;       // trace every register access
+	unsigned writes = 0;       // register writes so far, for ordering logs
 	u32 fr1_base = 0x80;       // the status bits above the pending flag
 	// Where display characters go: the panic reporter (and, on the
 	// same evidence so far, the console output path) writes them to
@@ -223,6 +224,7 @@ struct console_card : public iop_interface
 	}
 	void write_fr(unsigned n, u32 v) override
 	{
+		writes++;
 		if (log_fr)
 		{
 			std::printf("[sc%u W fr%u=%04x]\n", pa, n, v & 0xffff);

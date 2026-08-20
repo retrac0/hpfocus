@@ -118,6 +118,8 @@ private:
 	bool m_ea_armed = false;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
 	unsigned m_watch_hits = 0, m_watch_max = 12;
+	double m_watch_from = 0.0;
+	double m_break_from = 0.0;
 	void trip_watch(u8 c);
 	void report_state(const char *why);
 	emu_timer *m_iop_timer = nullptr;
@@ -390,6 +392,10 @@ void hp9000_5xx_state::machine_start()
 		m_break_at = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
 			m_break_max = strtoul(colon + 1, nullptr, 0);
+		// FOCUS_BREAKFROM=<emulated seconds>, as for the watch: ignore
+		// the boot's own visits to the address.
+		if (const char *n = getenv("FOCUS_BREAKFROM"))
+			m_break_from = strtod(n, nullptr);
 	}
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
@@ -407,14 +413,21 @@ void hp9000_5xx_state::machine_start()
 			m_watch_hi = strtoul(colon + 1, nullptr, 16);
 		if (const char *n = getenv("FOCUS_WATCHN"))
 			m_watch_max = strtoul(n, nullptr, 0);
+		// FOCUS_WATCHFROM=<emulated seconds> ignores everything before that
+		// moment, which is how activity from a typed command gets separated
+		// from the boot's own.
+		if (const char *n = getenv("FOCUS_WATCHFROM"))
+			m_watch_from = strtod(n, nullptr);
 	}
 
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
 		if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
-				&& m_watch_hits < m_watch_max)
+				&& m_watch_hits < m_watch_max
+				&& machine().time().as_double() >= m_watch_from)
 		{
 			m_watch_hits++;
-			std::printf("[watch %08x  Q=%08x]\n", core.r.p, core.r.q);
+			std::printf("[%.2fs watch %08x  Q=%08x]\n",
+					machine().time().as_double(), core.r.p, core.r.q);
 			std::fflush(stdout);
 		}
 		// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
@@ -455,8 +468,9 @@ void hp9000_5xx_state::machine_start()
 			{
 				if (*e == '*')      // log everything, uncapped
 				{
-					std::printf("[escape at %08x value=%08x q=%08x]\n",
-							p, value, m_cpu->core().r.q);
+					std::printf("[%.2fs escape at %08x value=%08x q=%08x]\n",
+							machine().time().as_double(), p, value,
+							m_cpu->core().r.q);
 					std::fflush(stdout);
 					return;
 				}
@@ -500,7 +514,8 @@ void hp9000_5xx_state::machine_start()
 			if (!m_trace_left)
 				std::fflush(stdout);
 		}
-		if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max)
+		if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max
+				&& machine().time().as_double() >= m_break_from)
 		{
 			m_traced = true;
 			m_break_hits++;
@@ -559,6 +574,9 @@ void hp9000_5xx_state::machine_start()
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 {
+	if (m_type_pos == 0)
+		std::printf("[typing starts, disc blocks %u, sc6 writes %u]\n",
+				m_disc.m_seq, m_console6.writes);
 	if (m_type_pos < m_type_text.size())
 		kbd_put(u8(m_type_text[m_type_pos++]));
 	else
@@ -717,21 +735,21 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 static const u8 KEYCODES[128] =
 {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x00, 0x00, 0x58, 0x00, 0x00, 0x58, 0x00, 0x00,   // ........
+	0x00, 0x00, 0x48, 0x00, 0x00, 0x60, 0x00, 0x00,   // ........
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // ........
 	0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00,   // ........
-	0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59,   //  !"#$%&'
+	0x7f, 0xf9, 0xd9, 0xac, 0xfd, 0xa0, 0xa5, 0x59,   //  !"#$%&'
 	0x22, 0x2b, 0x5b, 0x43, 0x42, 0x27, 0x40, 0x50,   // ()*+,-./
 	0x2f, 0x52, 0x24, 0x2c, 0x62, 0x5a, 0x2d, 0x25,   // 01234567
-	0x2e, 0x26, 0x00, 0x61, 0x00, 0x29, 0x00, 0x45,   // 89:;<=>?
-	0x00, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // @ABCDEFG
+	0x2e, 0x26, 0xe1, 0x61, 0x89, 0x29, 0x88, 0x45,   // 89:;<=>?
+	0xa4, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // @ABCDEFG
 	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // PQRSTUVW
-	0x55, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0x00,   // XYZ[\]^_
+	0x55, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0xa7,   // XYZ[\]^_
 	0x28, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // `abcdefg
 	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // hijklmno
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // pqrstuvw
-	0x55, 0x75, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00,   // xyz{|}~.
+	0x55, 0x75, 0x4c, 0xaa, 0xc2, 0xa3, 0xa8, 0x00,   // xyz{|}~.
 };
 
 void hp9000_5xx_state::kbd_put(u8 data)
