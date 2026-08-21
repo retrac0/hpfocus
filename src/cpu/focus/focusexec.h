@@ -1288,7 +1288,20 @@ private:
 			// The frame must lie between the marker and the stack limit.
 			// The upper bound is SL, not S: the trap plumbing deletes a
 			// frame after popping operands from above it, leaving S a few
-			// words below the frame's top.
+			// words below the frame's top. (The ERS's own bound is
+			// Q+4 < TEMP < S -- strictly below S -- which would refuse
+			// even the boot frame the statement tail eats; see the
+			// statement-lifecycle notes before tightening this.)
+			// FOCUS_TRYNOP is an experiment, not an emulation claim: an
+			// empty chain makes the delete a no-op instead of a fault,
+			// to learn whether BASIC's statement loop is sustainable
+			// with the tail delete simply absorbed.
+			static const bool try_nop = std::getenv("FOCUS_TRYNOP") != nullptr;
+			if (try_nop && sb_word(2) == 0)
+			{
+				set_sb_word(4, 0);
+				return exec_trap::none;
+			}
 			const u32 temp = r.sb + sb_word(2);
 			if (!(r.q + 16 <= temp && temp <= r.sl))
 				return exec_trap::bounds_violation;
