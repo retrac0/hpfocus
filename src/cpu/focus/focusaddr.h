@@ -23,6 +23,8 @@
 
 #include "focusstate.h"
 
+#include <functional>
+
 #include <cstdint>
 
 namespace focus {
@@ -252,6 +254,28 @@ public:
 			if (indexed)
 				out.addr += m_r.x;
 			check(segment::global, out.addr, out.t);
+			// HYPOTHESIS UNDER TEST (BASIC's console output path). The
+			// word can also be an external program label -- bit 0 set,
+			// STT byte offset in (1:19), code segment in (20:12) -- and
+			// BASIC's DISP path builds exactly that with LPP and then
+			// increments through it (user seg 4 offset 0x140: LPP
+			// STT[11]; INCM S-3,I). Read as DB-relative it is far out of
+			// bounds, so when the DB reading fails its bounds check the
+			// label reading is tried: the address is the referenced
+			// PL-relative SLOT itself in the named code segment --
+			// per-segment static storage addressed through PL, the way
+			// the STT is. If this is wrong the bounds trap stands.
+			if (out.t != trap::none && ers32::get(ptr, 0, 1) == 1 && m_cst)
+			{
+				u32 base = 0, len = 0;
+				if (m_cst(ers32::get(ptr, 20, 12), base, len))
+				{
+					out.t = trap::none;
+					out.addr = base + len - ers32::get(ptr, 1, 19) - 3;
+					if (indexed)
+						out.addr += m_r.x;
+				}
+			}
 			return out;
 		}
 
@@ -310,6 +334,11 @@ private:
 	registers &m_r;
 	memory_interface &m_mem;
 	eds_resolver &m_eds;
+public:
+	// CST lookup for the label-as-data fallback above: (segment) ->
+	// (base, LENGTH-1), false if no such segment. Supplied by the core,
+	// which owns the three-table CST walk.
+	std::function<bool(u32, u32 &, u32 &)> m_cst;
 };
 
 } // namespace focus

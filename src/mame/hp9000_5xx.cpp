@@ -810,8 +810,13 @@ void hp9000_5xx_state::machine_start()
 		const double at = getenv("FOCUS_TYPEAT")
 				? strtod(getenv("FOCUS_TYPEAT"), nullptr) : 15.0;
 		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
+		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
+		// mimics fast human typing; the display driver drops or reorders
+		// characters pushed faster than it redraws the input line.
+		const unsigned ms = getenv("FOCUS_TYPERATE")
+				? strtoul(getenv("FOCUS_TYPERATE"), nullptr, 0) : 350;
 		m_type_timer->adjust(attotime::from_double(at), 0,
-				attotime::from_msec(150));
+				attotime::from_msec(ms));
 	}
 }
 

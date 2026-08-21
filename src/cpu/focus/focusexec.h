@@ -108,7 +108,19 @@ class cpu_core
 {
 public:
 	cpu_core(memory_interface &mem)
-		: m_mem(mem), m_dst(r, mem), m_au(r, mem, m_dst), m_io(&m_null_io) { }
+		: m_mem(mem), m_dst(r, mem), m_au(r, mem, m_dst), m_io(&m_null_io)
+	{
+		// The addressing unit's label-as-data fallback needs the CST walk,
+		// which lives here.
+		m_au.m_cst = [this](u32 seg, u32 &base, u32 &len) {
+			u32 ea;
+			if (!cst_entry_addr(seg, ea))
+				return false;
+			len = m_mem.read32(ea + 4);
+			base = m_mem.read32(ea + 8);
+			return base != 0;
+		};
+	}
 
 	// Attach an IOP. Without one the I/O instructions report an illegal
 	// opcode, which is what a machine with no IOP would do.
