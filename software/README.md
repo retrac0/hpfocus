@@ -647,3 +647,73 @@ python3 tools/cpiolist.py /tmp/S97080C
 python3 tools/cpiolist.py /tmp/S97080C --extract system/97080C/os.req --out /tmp/os.req
 python3 tools/modmap.py   /tmp/os.req --min-gap 256
 ```
+
+---
+
+## How the system is meant to be set up
+
+The seven BASIC discs are not seven copies of one thing. They divide into a
+bootable system, a set of options, and a set of utilities, and the difference
+matters: **booting the two BT discs gives you the bare language system, which
+is not how a configured machine runs.**
+
+| Disc | Volume | What it is |
+|---|---|---|
+| `500BT1`, `500BT2` | 97050-11024/5 | The boot set. 1 KB blocks, a large boot area, no filesystem — a 372,932-byte image of 13 segments split across the two. |
+| `500OPT1` | 97050-11026 | Option binaries: `IO`, `MS`, `SERIAL`, `HPIB_FLEX`, `HP27110`, `HP27112`, `LIF_DISC`, `9845_DISC`, `HP9885`, `HP7970`, `CIPERLP`, `MEMORY_VOL`, `XREF`, **`ERRORS_ENG`** (error message text), plus `BUILD_BOOT`, `CAT_BOOT`, `FIND_PASSWORD`. |
+| `500OPT2` | 97050-11034 | More options: `HP268X`, `HP7974`, `CERTIFY_TAPE`. |
+| `500UT1` | 97050-11027 | `DISC_COPY`, `DISC_BACKUP`, `DEGAUSS`, `CONVERGE`. |
+| `500UT2` | 97050-11028 | `MAG_TAPE_COPY`, `BANNER`. |
+| `500UT3` | 97050-11029 | `TRANSLATOR`, `CHANGE_SYS`, `MARK_BOOT`, `BOOT_TO_FILE`, `SET_NON_VOL_MEM`. |
+
+### What HP intended
+
+`BUILD_BOOT` on the option disc says it plainly:
+
+> This is the BUILD BOOT utility. It will copy the BASIC boot from the source
+> device (usually `:INTERNAL`) to the destination device (usually `:CS80,7`).
+> BUILD_BOOT will either initialize the destination disc with a boot area, or
+> it will use the existing boot area on the destination disc. After copying
+> the boot, it will allow **any number of option binaries to be added to the
+> boot area**. The binaries are read from the source device, and may be on any
+> number of volumes.
+
+So a working installation is: boot copied onto a hard disc, with the options
+that machine needs spliced into its boot area. The option files are chain
+modules in exactly the boot image's format — length at `+4`, 16-byte name at
+`+28`, byte-sum checksum at `length+8` — verified against every binary on the
+disc. They are not loaded at run time; they are part of the boot.
+
+### What this emulator does about it
+
+The emulated media is read-only, so `BUILD_BOOT` cannot write a destination
+disc. **`FOCUS_BOOTOPT=<file>[,<file>...]`** stands in for it: the driver walks
+the assembled chain to its end, splices the named option modules in before the
+terminator, and boots the result. Appending them *after* the terminator instead
+— the obvious thing, and the first thing tried — loads them into memory and
+leaves them unregistered, with the code segment table unchanged.
+
+```
+FOCUS_BOOTOPT=/path/ERRORS_ENG,/path/IO,/path/MS tools/runbasic.sh
+```
+
+The chain walk reports what it found (`chain of 13 segments ends at 0x5b0c0`,
+matching `tools/bootimage.py`), and the added modules show up as new code
+segments — `MS` arrives as a 15,367-byte segment 21.
+
+### Installing to a hard disc is not possible yet
+
+A real 520 could carry an internal Winchester; the service manual notes that
+when one is fitted the boot loader circuitry lives on the Winchester
+controller rather than the bootstrap loader card. **The emulated 520
+(`hp9020`) has three flexible drives and no fixed disc**, so there is nowhere
+to install to; only the 540 (`hp9040`) has a hard disc, and the 540 does not
+run BASIC. Modelling the 520's fixed disc — a second unit behind select code
+7 answering identity 5 — is what a real installation would need.
+
+### Does the bare configuration explain anything?
+
+It explains why errors print as bare numbers (`ERROR 56` rather than its
+text) — that is `ERRORS_ENG` missing. It does **not** explain the RUN failure:
+booting with `ERRORS_ENG`, `IO` and `MS` installed reproduces the same
+transfer-table trap, byte for byte.

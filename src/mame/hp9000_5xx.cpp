@@ -30,6 +30,8 @@
 ***************************************************************************/
 
 #include "emu.h"
+
+#include <fstream>
 #include "cpu/focus/focus.h"
 #include "iop/focusiop.h"
 #include "iop/focusscm.h"
@@ -1349,10 +1351,89 @@ bool hp9000_5xx_state::boot_from_cs80()
 // place with PB = 0, and the loader's parameter block sits at Q: the
 // MPB inventory doubling as the final IXIT's frame, the load address at
 // Q+52, the top-of-memory word at Q+64.
-void hp9000_5xx_state::install_boot_image(const std::vector<u8> &img,
+void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 		const char *whence)
 {
 	constexpr u32 LOAD = 0x100000;
+
+	// FOCUS_BOOTOPT=<file>[,<file>...] appends option binaries to the
+	// boot image, which is what a configured machine actually runs.
+	// HP's BUILD_BOOT utility (on the option disc) copies the boot to a
+	// destination disc and then "allows any number of option binaries to
+	// be added to the boot area"; the option files are chain modules in
+	// exactly the boot image's format -- length at +4, name at +28, and
+	// the byte-sum checksum at length+8, verified against every binary on
+	// the disc -- so appending one through its checksum word extends the
+	// chain the powerup walk follows. This stands in for BUILD_BOOT while
+	// the emulated media is read-only.
+	std::vector<u8> extended;
+	if (const char *e = getenv("FOCUS_BOOTOPT"))
+	{
+		// The modules go INTO the chain, not after it. The powerup walk
+		// stops at the terminator that follows the last segment, so an
+		// option appended past it is loaded into memory and then ignored
+		// -- the code segment table comes back unchanged, which is
+		// exactly what happened the first time this was tried. Walk the
+		// chain the way tools/bootimage.py verifies it (length at +4,
+		// checksum at length+8 for every segment after the first) to
+		// find where it ends, and splice the options in there.
+		auto word = [&base](size_t off) {
+			return (u32(base[off]) << 24) | (u32(base[off + 1]) << 16)
+					| (u32(base[off + 2]) << 8) | base[off + 3];
+		};
+		size_t hdr = 4, seg = 0;
+		while (hdr + 8 <= base.size())
+		{
+			const u32 ln = word(hdr + 4);
+			const size_t ckpos = (seg == 0) ? size_t(ln) : hdr + ln + 8;
+			if (ckpos + 4 > base.size())
+				break;
+			hdr = ckpos + 4;
+			seg++;
+			if (hdr + 4 > base.size() || s32(word(hdr)) < 0
+					|| (base[hdr] == 0 && base[hdr + 1] == 0))
+				break;
+		}
+		osd_printf_info("bootopt: chain of %u segments ends at %#x\n",
+				unsigned(seg), unsigned(hdr));
+		extended.assign(base.begin(), base.begin() + hdr);
+		for (std::string list(e); !list.empty(); )
+		{
+			const size_t comma = list.find(',');
+			const std::string path = list.substr(0, comma);
+			list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+			std::ifstream f(path, std::ios::binary);
+			if (!f)
+			{
+				osd_printf_error("bootopt: cannot open %s\n", path.c_str());
+				continue;
+			}
+			const std::vector<u8> mod((std::istreambuf_iterator<char>(f)),
+					std::istreambuf_iterator<char>());
+			if (mod.size() < 12)
+			{
+				osd_printf_error("bootopt: %s is too short\n", path.c_str());
+				continue;
+			}
+			const u32 ln = (u32(mod[4]) << 24) | (u32(mod[5]) << 16)
+					| (u32(mod[6]) << 8) | mod[7];
+			const size_t take = size_t(ln) + 12;   // through the checksum
+			if (take > mod.size())
+			{
+				osd_printf_error("bootopt: %s claims %u bytes, has %u\n",
+						path.c_str(), unsigned(take), unsigned(mod.size()));
+				continue;
+			}
+			const std::string name(
+					reinterpret_cast<const char *>(&mod[28]), 16);
+			osd_printf_info("bootopt: adding %s (%u bytes) from %s\n",
+					name.c_str(), unsigned(take), path.c_str());
+			extended.insert(extended.end(), mod.begin(), mod.begin() + take);
+		}
+		// then the terminator and whatever else trailed the chain
+		extended.insert(extended.end(), base.begin() + hdr, base.end());
+	}
+	const std::vector<u8> &img = extended.empty() ? base : extended;
 	const u32 size = u32(img.size());
 
 	auto &core = m_cpu->core();
