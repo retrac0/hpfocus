@@ -754,7 +754,15 @@ void hp9000_5xx_state::machine_start()
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
 	if (const char *e = getenv("FOCUS_WPOINT"))
+	{
 		m_wpoint = strtoul(e, nullptr, 16);
+		// FOCUS_WPFROM=<emulated seconds> arms the watch late, as for the
+		// execution watch: heap memory is recycled, and a write seen
+		// before the interesting object exists at the address belongs to
+		// some earlier tenant, not to the code being hunted.
+		if (const char *n = getenv("FOCUS_WPFROM"))
+			m_wp_from = strtod(n, nullptr);
+	}
 	if (const char *e = getenv("FOCUS_TRACEN"))
 		m_trace_left = strtoul(e, nullptr, 0);
 

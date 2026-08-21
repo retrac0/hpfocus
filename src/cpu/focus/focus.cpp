@@ -46,8 +46,50 @@ focus::u32 focus_device::read32(focus::u32 addr)
 	return m_program.read_dword(addr & ~3u);
 }
 
+// FOCUS_WWATCH=<lo>:<hi>[ FOCUS_WWFROM=<seconds>] reports every store into
+// a byte-address range, unlike the driver's FOCUS_WPOINT change-poller,
+// which cannot see a value overwritten with itself. The report names P, so
+// a store from DMA or another non-CPU agent shows P of whatever the CPU was
+// doing at the time -- attribution still needs the caller to check that P's
+// neighbourhood really contains a store instruction.
+static struct
+{
+	bool checked = false, on = false;
+	focus::u32 lo = 0, hi = 0;
+	double from = 0.0;
+	unsigned left = 400;
+} s_wwatch;
+
+void focus_device::check_wwatch(focus::u32 addr, focus::u32 data, unsigned bytes)
+{
+	auto &w = s_wwatch;
+	if (!w.checked)
+	{
+		w.checked = true;
+		if (const char *e = getenv("FOCUS_WWATCH"))
+		{
+			w.lo = strtoul(e, nullptr, 16);
+			if (const char *colon = strchr(e, ':'))
+				w.hi = strtoul(colon + 1, nullptr, 16);
+			if (const char *n = getenv("FOCUS_WWFROM"))
+				w.from = strtod(n, nullptr);
+			w.on = w.hi >= w.lo && w.hi != 0;
+		}
+	}
+	if (!w.on || addr + bytes <= w.lo || addr > w.hi || !w.left
+			|| machine().time().as_double() < w.from)
+		return;
+	w.left--;
+	std::printf("[wwatch %08x <- %0*x (%u) P=%08x PB=%08x t=%.3f]%s\n",
+			addr, int(bytes * 2), data, bytes, m_core.r.p, m_core.r.pb,
+			machine().time().as_double(),
+			w.left ? "" : " (cap reached)");
+	std::fflush(stdout);
+}
+
 void focus_device::write32(focus::u32 addr, focus::u32 data)
 {
+	check_wwatch(addr & ~3u, data, 4);
 	m_program.write_dword(addr & ~3u, data);
 }
 
@@ -59,6 +101,7 @@ focus::u8 focus_device::read8(focus::u32 addr)
 
 void focus_device::write8(focus::u32 addr, focus::u8 data)
 {
+	check_wwatch(addr, data, 1);
 	const unsigned sh = 8 * (3 - (addr & 3));
 	m_program.write_dword(addr & ~3u, u32(data) << sh, u32(0xff) << sh);
 }
@@ -71,6 +114,7 @@ focus::u16 focus_device::read16(focus::u32 addr)
 
 void focus_device::write16(focus::u32 addr, focus::u16 data)
 {
+	check_wwatch(addr & ~1u, data, 2);
 	if (addr & 2)
 		m_program.write_dword(addr & ~3u, data, 0x0000ffffu);
 	else

@@ -27,7 +27,7 @@ if [ ! -x mame/focus ]; then
 fi
 
 EXTRA=()
-if [ -n "${1:-}" ]; then
+if [ -n "${1:-}" ] && [ "${1#-}" = "$1" ]; then
     EXTRA=(-flop3 "$BASIC/$1.TD0")
     shift
 fi

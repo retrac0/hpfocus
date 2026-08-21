@@ -84,6 +84,9 @@ protected:
 	virtual focus::u16 read16(focus::u32 addr) override;
 	virtual void write16(focus::u32 addr, focus::u16 data) override;
 
+	// The FOCUS_WWATCH store report; see focus.cpp.
+	void check_wwatch(focus::u32 addr, focus::u32 data, unsigned bytes);
+
 private:
 	// The three MSBs of every absolute address must be zero (ERS sheet 54),
 	// so the space is 29 bits of byte address over 32-bit big-endian words.

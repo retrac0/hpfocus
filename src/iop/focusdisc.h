@@ -89,6 +89,17 @@ struct disc_card : public iop_interface
 	u32 read_fr(unsigned n) override
 	{
 		u32 v = 0;
+		// The bootstrap loader card is unit 1 behind this select code, and
+		// its ROM carries the machine ID "for protection of software
+		// rights". Whether the running system ever reads it is an open
+		// question (HARDWARE.md §2.5.1) -- report any access while unit 1
+		// is selected, so a licence check would show itself.
+		if (m_device && getenv("FOCUS_UNIT1"))
+		{
+			std::printf("[disc UNIT1 R fr%u p=%08x]\n", n,
+					iop ? iop->tpc() : 0);
+			std::fflush(stdout);
+		}
 		switch (n)
 		{
 		case 3:
@@ -172,6 +183,12 @@ struct disc_card : public iop_interface
 			// The driver writes the complement of the device number in
 			// the high byte: 0xff00 selects device 0, 0xfe00 device 1.
 			m_device = (~v >> 8) & 1;
+			if (m_device && getenv("FOCUS_UNIT1"))
+			{
+				std::printf("[disc UNIT1 selected p=%08x]\n",
+						iop ? iop->tpc() : 0);
+				std::fflush(stdout);
+			}
 			break;
 		case 9:
 			m_config = v & 0xffff;
