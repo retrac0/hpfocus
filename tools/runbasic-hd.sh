@@ -53,5 +53,19 @@ case "$DISC" in
     *)  DISC="$PWD/$DISC" ;;
 esac
 
+# Throttling. A batch run wants to go as fast as it can; an interactive
+# one wants the window to keep up. Unthrottled, a machine that idles in
+# STOP races its emulated clock to thousands of percent, and MAME spends
+# so long emulating between presentations that the window never draws and
+# the event pump never sees a close or a signal -- a blank window you have
+# to kill by hand. So -nothrottle is added only for a run that ends by
+# itself, which is what -seconds_to_run means.
+THROTTLE=()
+for arg in "$@"; do
+    case "$arg" in
+        -seconds_to_run|-str) THROTTLE=(-nothrottle); break ;;
+    esac
+done
+
 cd mame
-exec ./focus hp9020 -hard1 "$DISC" -nothrottle -sound none "$@"
+exec ./focus hp9020 -hard1 "$DISC" "${THROTTLE[@]}" -sound none "$@"
