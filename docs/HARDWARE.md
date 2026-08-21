@@ -54,14 +54,23 @@ Population rules *(530/540 Service, same section)*:
 - A second IOP goes in slot 3; a third in slots 3 and 4.
 - No empty slot is permitted between two finstrates.
 - 1 MB RAM boards must be installed in pairs (2, 4, 6, 8, or 10).
-- Memory came on cards: HP's own 512 KB and 1 MB boards, and "commercial"
-  boards that accepted third-party DRAM. So the real range is 1 MB (two
-  512 KB boards) to 10 MB, and **no 520 ever had 16 MB**. The emulator's
-  size is set with `FOCUS_RAM=<kilobytes>`, default 2048; it is clamped to
-  the architectural 512 KB-10 MB and reported to the boot as the top of
-  memory, which the language system sizes itself from -- with 2 MB fitted
-  BASIC reports 1,625,476 bytes free and puts its per-task control block at
-  0x1fd500, where 16 MB put it at 0xffd500.
+- Memory shares this stack with the processors: "CPU, IOP, and memory
+  boards reside in the stack and communicate via the common memory
+  processor bus" *(520 Service, Theory of Operation)*. Boards came as
+  **256K finstrates, 512K polystrates, or 1M polystrates**, in "any
+  combination of 256K, 512K, and pairs of 1M" *(CE Handbook)*; HP's own
+  boards (the 512K is part 97047-69805) were joined by "commercial" boards
+  taking third-party DRAM in the same capacities. So the real range is
+  well under 1 MB up to 10 MB, and **no 520 ever had 16 MB**.
+- The emulator models the boards as MPB slot cards: `-mpb3` .. `-mpb12`
+  each take `256k`, `512k` or `1m`, defaulting to a pair of 1 MB boards.
+  The stack's total is reported to the boot as the top of memory, which
+  the language system sizes everything from -- with 2 MB fitted BASIC
+  reports 1,625,476 bytes free and puts its per-task control block at
+  0x1fd500, where the old fixed 16 MB put it at 0xffd500. The pairing
+  rule for 1 MB boards is warned about rather than enforced, and a stack
+  under 2 MB warns that the emulator's reconstructed boot handoff (image
+  at 1 MB) cannot boot it even though a real 520 could run in it.
 - A *load board* occupies the top used slot when the stack is (a) one CPU +
   one IOP + one 512K RAM, or (b) all-1 MB RAM with fewer than six RAM boards.
 

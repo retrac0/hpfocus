@@ -230,6 +230,123 @@ bool hp_focus_media_device::decode_td0(const std::vector<u8> &in,
 }
 
 
+class mpb_ram256k_device;
+class mpb_ram512k_device;
+class mpb_ram1m_device;
+class mpb_slot_device;
+DECLARE_DEVICE_TYPE(MPB_RAM256K, mpb_ram256k_device)
+DECLARE_DEVICE_TYPE(MPB_RAM512K, mpb_ram512k_device)
+DECLARE_DEVICE_TYPE(MPB_RAM1M, mpb_ram1m_device)
+DECLARE_DEVICE_TYPE(MPB_SLOT, mpb_slot_device)
+
+// RAM boards. The service manual is explicit that memory shares the
+// processor stack: "CPU, IOP, and memory boards reside in the stack and
+// communicate via the common memory processor bus" -- the same twelve
+// finstrate slots that hold the CPU (slot 1) and IOP (slot 2). Boards
+// came as 256K finstrates, 512K polystrates or 1M polystrates, in "any
+// combination of 256K, 512K, and pairs of 1M" (CE Handbook; the 1 MB
+// pairing rule is also the service manual's), and third-party
+// "commercial" boards of the same capacities existed alongside HP's own.
+// So the boards are slot cards here too: -mpb3 .. -mpb12 each take
+// "256k", "512k" or "1m", the default being a pair of 1 MB boards -- a
+// plain mid-range 520. Sizing this honestly matters beyond appearances:
+// the boot is handed the top of memory and the language system sizes
+// everything from it, so the 16 MB this driver used to claim -- a
+// machine HP never built -- put BASIC's control blocks at addresses no
+// real 520 has.
+class mpb_ram_device : public device_t
+{
+public:
+	mpb_ram_device(const machine_config &mconfig, device_type type,
+			const char *tag, device_t *owner, u32 clock, u32 size)
+		: device_t(mconfig, type, tag, owner, clock)
+		, m_size(size)
+	{
+	}
+
+	u32 size() const { return m_size; }
+	u8 *base() { return m_ram.data(); }
+
+protected:
+	virtual void device_start() override
+	{
+		m_ram.resize(m_size, 0);
+		save_item(NAME(m_ram));
+	}
+
+private:
+	const u32 m_size;
+	std::vector<u8> m_ram;
+};
+
+class mpb_ram256k_device : public mpb_ram_device
+{
+public:
+	mpb_ram256k_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: mpb_ram_device(mconfig, MPB_RAM256K, tag, owner, clock, 0x40000) {}
+};
+
+class mpb_ram512k_device : public mpb_ram_device
+{
+public:
+	mpb_ram512k_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: mpb_ram_device(mconfig, MPB_RAM512K, tag, owner, clock, 0x80000) {}
+};
+
+class mpb_ram1m_device : public mpb_ram_device
+{
+public:
+	mpb_ram1m_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: mpb_ram_device(mconfig, MPB_RAM1M, tag, owner, clock, 0x100000) {}
+};
+
+DEFINE_DEVICE_TYPE(MPB_RAM256K, mpb_ram256k_device, "mpb_ram256k",
+		"HP 97047 256K RAM board")
+DEFINE_DEVICE_TYPE(MPB_RAM512K, mpb_ram512k_device, "mpb_ram512k",
+		"HP 97047 512K RAM board")
+DEFINE_DEVICE_TYPE(MPB_RAM1M, mpb_ram1m_device, "mpb_ram1m",
+		"HP 1M RAM board")
+
+class mpb_slot_device : public device_t, public device_slot_interface
+{
+public:
+	template <typename T>
+	mpb_slot_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, T &&opts, const char *dflt)
+		: mpb_slot_device(mconfig, tag, owner, u32(0))
+	{
+		option_reset();
+		opts(*this);
+		set_default_option(dflt);
+		set_fixed(false);
+	}
+
+	mpb_slot_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, MPB_SLOT, tag, owner, clock)
+		, device_slot_interface(mconfig, *this)
+	{
+	}
+
+	mpb_ram_device *card() { return dynamic_cast<mpb_ram_device *>(get_card_device()); }
+
+protected:
+	virtual void device_start() override {}
+};
+
+DEFINE_DEVICE_TYPE(MPB_SLOT, mpb_slot_device, "mpb_slot", "MPB stack slot")
+
+static void mpb_ram_cards(device_slot_interface &device)
+{
+	device.option_add("256k", MPB_RAM256K);
+	device.option_add("512k", MPB_RAM512K);
+	device.option_add("1m", MPB_RAM1M);
+}
+
+
 namespace {
 
 class hp9000_5xx_state : public driver_device, public focus::iop_core::host
@@ -239,12 +356,12 @@ public:
 			const char *tag)
 		: driver_device(mconfig, type, tag)
 		, m_cpu(*this, "cpu")
-		, m_ram(*this, "ram")
 		, m_terminal(*this, "terminal")
 		, m_keyboard(*this, "keyboard")
 		, m_screen(*this, "screen")
 		, m_floppy(*this, "floppy%u", 1U)
 		, m_hard(*this, "harddisc")
+		, m_mpb(*this, "mpb%u", 3U)
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -286,12 +403,13 @@ private:
 	QUICKLOAD_LOAD_MEMBER(quickload_cb);
 
 	required_device<focus_device> m_cpu;
-	required_shared_ptr<u32> m_ram;
 	optional_device<generic_terminal_device> m_terminal;
 	optional_device<generic_keyboard_device> m_keyboard;
 	optional_device<screen_device> m_screen;
 	optional_device_array<hp_focus_media_device, 3> m_floppy;
 	optional_device<hp_focus_media_device> m_hard;
+	optional_device_array<mpb_slot_device, 10> m_mpb;
+	u32 m_ram_total = 0;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -352,35 +470,6 @@ private:
 };
 
 
-// The FOCUS address space is 29 bits of byte address. 16 MB matches the
-// boot handoff this driver performs: the powerup module sizes memory from
-// the top-of-memory word at Q+64, and the loader's stack lives just below
-// the top (SB 0xe00000, Q 0xf00203).
-// How much RAM the machine has. No 520 had 16 MB: memory came on cards
-// carrying 512 KB or 1 MB each -- HP's own boards, and the "commercial"
-// ones that took third-party DRAM -- with two to ten of them on the
-// backplane, so 1 MB at the bottom and 10 MB at the very top, and the
-// 1 MB boards had to be fitted in pairs (HARDWARE.md 1.2). Claiming
-// more than the architecture allows is not a harmless over-provision:
-// the boot is handed the top of memory and the language system sizes
-// itself from it, so an impossible machine gets impossible answers --
-// BASIC was reporting 16,305,540 bytes free on a machine whose largest
-// real configuration is 10 MB.
-//
-// FOCUS_RAM=<kilobytes> sets it; the default is two 1 MB boards, a
-// plain mid-range 520.
-static u32 ram_size()
-{
-	static const u32 size = [] {
-		u32 kb = 2048;
-		if (const char *e = getenv("FOCUS_RAM"))
-			kb = u32(strtoul(e, nullptr, 0));
-		if (kb < 512) kb = 512;
-		if (kb > 10 * 1024) kb = 10 * 1024;
-		return kb * 1024;
-	}();
-	return size;
-}
 
 // The character cell the display's CRTC asks for: 15 scan lines tall, and
 // eight pixels wide for the font this build draws with.
@@ -390,8 +479,9 @@ static constexpr unsigned SCREEN_ROWS = 26;
 
 void hp9000_5xx_state::mem_map(address_map &map)
 {
+	// RAM comes from the boards in the MPB slots, installed at
+	// machine_start; the map itself carries nothing.
 	map.unmap_value_high();
-	map(0x0000000, 0x0000000 + ram_size() - 1).ram().share("ram");
 }
 
 
@@ -440,7 +530,7 @@ void hp9000_5xx_state::memory_find()
 				want.push_back(u8(strtoul(pair, nullptr, 16)));
 			}
 		unsigned found = 0;
-		for (u32 a = 0; a + want.size() <= ram_size() && found < 12; a++)
+		for (u32 a = 0; a + want.size() <= m_ram_total && found < 12; a++)
 		{
 			size_t k = 0;
 			while (k < want.size() && core.read_mem8(a + u32(k)) == want[k])
@@ -583,6 +673,36 @@ void hp9000_5xx_state::machine_start()
 {
 	machine().add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&hp9000_5xx_state::machine_stop, this));
+
+	// Wire the RAM boards into the address space, bottom of the stack
+	// first, each at the next free address -- and apply the manuals'
+	// population rules as warnings, since a wrong stack on the real
+	// machine simply fails self-test.
+	{
+		auto &space = m_cpu->space(AS_PROGRAM);
+		unsigned onemeg = 0, boards = 0;
+		for (auto &slot : m_mpb)
+		{
+			mpb_ram_device *card = slot ? slot->card() : nullptr;
+			if (!card)
+				continue;
+			space.install_ram(m_ram_total, m_ram_total + card->size() - 1,
+					card->base());
+			m_ram_total += card->size();
+			boards++;
+			if (card->size() == 0x100000)
+				onemeg++;
+		}
+		osd_printf_info("mpb: %u RAM board%s, %u KB\n", boards,
+				boards == 1 ? "" : "s", m_ram_total / 1024);
+		if (onemeg & 1)
+			osd_printf_warning("mpb: 1M RAM boards must be installed in "
+					"pairs (service manual 2-1); this stack has %u\n", onemeg);
+		if (m_ram_total < 0x200000)
+			osd_printf_warning("mpb: the boot handoff loads the image at "
+					"1 MB, so a stack under 2 MB will not boot here even "
+					"though a real 520 could run in it\n");
+	}
 	// The System Control Module answers select code 7, which is IOP
 	// channel 1, peripheral address 7. The consoles: select code 0 is
 	// the display -- the panic reporter writes there, and so does the
@@ -851,7 +971,7 @@ void hp9000_5xx_state::machine_start()
 		}
 		if (m_runaway)
 		{
-			if (!m_ran_away && (core.r.p >= ram_size() || core.r.pb >= ram_size()))
+			if (!m_ran_away && (core.r.p >= m_ram_total || core.r.pb >= m_ram_total))
 			{
 				m_ran_away = true;
 				std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
@@ -1394,7 +1514,7 @@ bool hp9000_5xx_state::boot_from_cs80()
 		return false;
 	}
 	const u32 total = beword(4);
-	if (total > ram_size() - 0x100000)
+	if (total > m_ram_total - 0x100000)
 	{
 		osd_printf_error("boot: image of %u bytes will not fit\n", total);
 		return false;
@@ -1536,7 +1656,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	// memory actually fitted. Keep the shape the boot expects -- a base
 	// below the marker, half a megabyte of room above it -- and hang it
 	// off the top of installed memory instead.
-	const u32 top = ram_size();
+	const u32 top = m_ram_total;
 	core.r.sb = top - 0x80000;
 	core.r.sl = (top - 4) | 3;
 	core.r.q  = core.r.sb + 0x203;
@@ -1561,7 +1681,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	mem.write32(q + 2 * 4 - 3, 0);        // (Q+2): previous mask
 	mem.write32(q + 3 * 4 - 3, 0);        // (Q+3): device number
 	mem.write32(q + 52 - 3, LOAD);        // where the image was loaded
-	mem.write32(q + 64 - 3, ram_size());    // top of memory
+	mem.write32(q + 64 - 3, m_ram_total);    // top of memory
 	for (u32 i = 0; i < 20; i++)          // boot device record
 		mem.write8(q + 65 + i, 0);
 	mem.write32(q + 88 - 3, 0);
@@ -1702,7 +1822,7 @@ bool hp9000_5xx_state::boot_from_disc_source(bool from_fixed)
 		{
 			total = this_total;
 			volumes = nvols;
-			if (total > ram_size() - 0x100000)
+			if (total > m_ram_total - 0x100000)
 			{
 				osd_printf_error("boot: image of %u bytes will not fit\n", total);
 				return false;
@@ -1772,7 +1892,7 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 {
 	constexpr u32 LOAD = 0x100000;
 	const u64 size = image.length();
-	if (size < 0x100 || LOAD + size > ram_size())
+	if (size < 0x100 || LOAD + size > m_ram_total)
 		return std::make_pair(image_error::INVALIDLENGTH,
 				"image empty or larger than RAM allows");
 
@@ -1936,6 +2056,15 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
 
+	// The MPB stack's RAM slots. Slot 1 is the CPU and slot 2 the IOP;
+	// boards go in the ten remaining slots as -mpb3 .. -mpb12, each
+	// "256k", "512k" or "1m" (1 MB boards in pairs). Two 1 MB boards is
+	// the default machine.
+	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "1m");
+	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "1m");
+	for (unsigned k = 2; k < 10; k++)
+		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
+
 	// The 520's integrated display, as its own CRTC programs it: 80
 	// columns by 26 rows of 15-scanline characters.
 	SCREEN(config, m_screen);
@@ -1978,6 +2107,15 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 	FOCUS(config, m_cpu, 18_MHz_XTAL);
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
+
+	// The MPB stack's RAM slots. Slot 1 is the CPU and slot 2 the IOP;
+	// boards go in the ten remaining slots as -mpb3 .. -mpb12, each
+	// "256k", "512k" or "1m" (1 MB boards in pairs). Two 1 MB boards is
+	// the default machine.
+	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "1m");
+	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "1m");
+	for (unsigned k = 2; k < 10; k++)
+		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
 	m_console_is_asi = true;
 
 	GENERIC_TERMINAL(config, m_terminal, 0);
