@@ -63,6 +63,32 @@ public:
 		m_service_word = 0;
 		m_addr_latch = 0;
 		m_bytes_read = 0;
+		// The RTC and NVM keep their contents across a reset -- that is
+		// what the battery is for.
+	}
+
+	// One second of wall time for the RTC. Locations follow the layout the
+	// HP-UX 5.30 clock driver writes when it initializes an unset clock --
+	// the same one the 520's keyboard-board RTC uses: 0 second, 2 minute,
+	// 4 hour, 7 day of month, 8 month, 9 year (the driver sets 1 Jan 1970,
+	// 00:00:00), with 1/5/0xb as check/century/day-of-week style extras.
+	// Values count in binary, as the 520 driver required.
+	void rtc_second_tick()
+	{
+		auto bump = [this](unsigned loc, u8 wrap) -> bool {
+			m_rtc[loc] = u8(m_rtc[loc] + 1);
+			if (m_rtc[loc] < wrap)
+				return false;
+			m_rtc[loc] = 0;
+			return true;
+		};
+		if (!bump(0, 60)) return;         // second
+		if (!bump(2, 60)) return;         // minute
+		if (!bump(4, 24)) return;         // hour
+		m_rtc[0xb] = u8((m_rtc[0xb] + 1) % 7);
+		if (!bump(7, 31)) return;         // day of month (approximate)
+		if (!bump(8, 12)) return;         // month
+		bump(9, 100);                     // year
 	}
 
 	// Supply a loader ROM image if one is ever dumped.
@@ -98,9 +124,12 @@ public:
 					| (m_battery_fail ? (1u << 5) : 0);
 
 		case 3:
-			// Bit 14 announces that a loader lives here. The CPU's
-			// bootstrap scans select codes downward looking for it.
-			return 1u << 14;
+			// The self-identity code, 4007 hex (Service Manual 2-29). Bit
+			// 14 set is what the CPU's bootstrap scans select codes
+			// downward looking for; the low bits keep the powerup device
+			// scan from registering the SCM as an I/O card (its gate wants
+			// the low byte zero).
+			return 0x4007;
 
 		case 4:
 			// ROM data, address auto-decrementing after each read.
@@ -166,6 +195,69 @@ public:
 	u32 read_data() override { return read_register(4); }
 	void write_data(u32 v) override { write_register(1, v); }
 
+	// The RTC and NVM behind the register file, as the HP-UX 5.30 clock
+	// driver actually drives them (read off the running system; the shapes
+	// match the Service Manual's register allocations, 2-29/2-30):
+	//
+	//   W R12   RTC/NVM address latch, written as a plain location number
+	//           for the RTC (0, 2, 4, 7, 8, 9 ... in the clock-set sweep)
+	//   W R9    RTC data for the latched location, COMPLEMENTED on the bus
+	//           -- the unset-clock path writes ~0, ~0, ~0, ~1, ~1, ~70:
+	//           midnight, 1 January 1970
+	//   R R9    RTC data back, complemented likewise
+	//   R R1    polled before every exchange; bit 7 = ready, as on the
+	//           520's keyboard-board RTC (R1 has no documented read side)
+	//   R/W R11 the boot's 2 KB configuration readout -- NVM data for the
+	//           latched address (the manual assigns NVM to R13; the driver
+	//           reads its bulk configuration through R11, so both answer)
+	//   R/W R13 NVM data byte (Service Manual: address in complemented
+	//           form -- but the driver latches plain ascending addresses,
+	//           so the latch is taken as written)
+	u32 read_fr(unsigned n) override
+	{
+		switch (n)
+		{
+		case 1:  return 0x80;                  // ready
+		case 2:  return read_register(2);
+		case 3:  return read_register(3);
+		case 4:  return read_register(4);
+		case 6:  return read_register(6);
+		case 9:
+		{
+			const u32 v = u32(~m_rtc[m_addr_latch & 63]) & 0xff;
+			m_addr_latch = (m_addr_latch & ~63u) | ((m_addr_latch + 1) & 63);
+			return v;
+		}
+		case 10: return m_service_word;
+		// "Writing a 16-bit address to R12 in complemented form loads the
+		// address of the NVM location" (Service Manual 2-30). The boot
+		// bears it out: it sweeps R12 from ffff down through fff800, which
+		// complemented is 0 through 07ff -- the whole 2 KB part, in order.
+		case 11:
+		case 13: return m_nvm[(~m_addr_latch) & (NVM_SIZE - 1)];
+		case 12: return m_addr_latch;          // data-bus test: echo
+		default: return m_scratch[n & 15];
+		}
+	}
+
+	void write_fr(unsigned n, u32 v) override
+	{
+		v &= 0xffff;
+		switch (n)
+		{
+		case 1:  write_register(1, v); break;
+		case 9:
+			m_rtc[m_addr_latch & 63] = u8(~v);
+			m_addr_latch = (m_addr_latch & ~63u) | ((m_addr_latch + 1) & 63);
+			break;
+		case 10: m_service_word = v; break;
+		case 11:
+		case 13: m_nvm[(~m_addr_latch) & (NVM_SIZE - 1)] = u8(v); break;
+		case 12: m_addr_latch = v; break;
+		default: m_scratch[n & 15] = v; break;
+		}
+	}
+
 private:
 	u8 rom_byte()
 	{
@@ -182,6 +274,12 @@ private:
 
 	u8 m_rom[ROM_SIZE] = {};
 	u8 m_nvm[NVM_SIZE] = {};
+	// The battery-backed clock. All-zero is "midnight, clock never set",
+	// which the unset-clock path detects and initializes.
+	u8 m_rtc[64] = {};
+	// Registers with no modelled behaviour remember what was written, as
+	// the keyboard board's self test taught.
+	u32 m_scratch[16] = {};
 	u32 m_rom_addr = 0xffff;
 	u32 m_service_word = 0;
 	u32 m_addr_latch = 0;

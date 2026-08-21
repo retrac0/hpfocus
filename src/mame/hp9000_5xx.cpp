@@ -36,6 +36,7 @@
 #include "iop/focuscards.h"
 #include "iop/focusdim.h"
 #include "iop/focusdisc.h"
+#include "iop/focusasi.h"
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -105,6 +106,7 @@ private:
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
+	focus::asi_card m_asi;            // select code 0 on the 530/540: the console
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
@@ -141,6 +143,11 @@ private:
 	// boot image is a set, and the operator feeds the volumes one by one.
 	std::vector<std::vector<u8>> m_media;
 	unsigned m_boot_volumes = 0;   // how many of them the image needed
+	// The 530/540 have no integrated display: select code 0 carries a
+	// serial interface card and the console is a terminal on the end of
+	// it. The 520 puts its display alphanumeric there instead.
+	bool m_console_is_asi = false;
+	void term_put(u8 data);
 };
 
 
@@ -240,6 +247,15 @@ void hp9000_5xx_state::report_state(const char *why)
 	std::printf("  DL=%08x SL=%08x PL=%08x DST=%08x STATUS=%08x M=%d\n",
 			core.r.dl, core.r.sl, core.r.pl, core.r.dst, core.r.status,
 			core.r.test(focus::sf::M) ? 1 : 0);
+	{
+		// The message state, for asking why a raised message never traps:
+		// delivery wants STATUS.I, an unmasked bit, and a zero PSDB count
+		// in the ICS marker.
+		const u32 qi = core.read_mem32(16 * focus::ers32::get(core.r.mask, 3, 3) + 8);
+		std::printf("  MSG=%08x MASK=%08x I=%d QI=%08x psdb=%08x\n",
+				core.r.msg, core.r.mask, core.r.test(focus::sf::I) ? 1 : 0,
+				qi, qi ? core.read_mem32(qi - 3 - 16) : 0);
+	}
 	std::printf("  SB+0..+16: %08x %08x %08x %08x %08x\n",
 			core.read_mem32(core.r.sb), core.read_mem32(core.r.sb + 4),
 			core.read_mem32(core.r.sb + 8), core.read_mem32(core.r.sb + 12),
@@ -363,7 +379,36 @@ void hp9000_5xx_state::machine_start()
 	}
 	if (const char *e = getenv("FOCUS_SC0FR1"))
 		m_dim.fr1 = strtoul(e, nullptr, 0);
-	m_iop.attach(0, &m_dim);
+	// Select code 0 is the display alphanumeric on the 520 and the
+	// console serial card on the 530/540 (9030/40 CE Handbook 2-3: the
+	// System Terminal interface card goes in slot 0).
+	if (m_console_is_asi)
+	{
+		m_asi.iop = &m_iop;
+		m_asi.pa = 0;
+		m_asi.log = getenv("FOCUS_ASILOG") != nullptr;
+		// FOCUS_ASIID answers a different card identity -- 5 is the
+		// 27130A eight-channel multiplexer, which HP-UX drives with the
+		// same module (HP27128/30).
+		if (const char *e = getenv("FOCUS_ASIID"))
+			m_asi.card_id = u8(strtoul(e, nullptr, 0));
+		if (const char *e = getenv("FOCUS_ASIFR1"))
+			m_asi.fr1_force = strtoul(e, nullptr, 0);
+		if (const char *e = getenv("FOCUS_ASIIDENT"))
+			m_asi.identity = u16(strtoul(e, nullptr, 0));
+		if (const char *e = getenv("FOCUS_ASIEVENT"))
+			m_asi.event_done = u8(strtoul(e, nullptr, 0));
+		m_asi.on_char = [this](u8 c) {
+			trip_watch(c);
+			if (m_terminal)
+				m_terminal->write(c);
+			std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+			std::fflush(stdout);
+		};
+		m_iop.attach(0, &m_asi);
+	}
+	else
+		m_iop.attach(0, &m_dim);
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
 	if (const char *e = getenv("FOCUS_NVMFILL"))
@@ -722,7 +767,15 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 		std::printf("[typing starts, disc blocks %u, sc6 writes %u]\n",
 				m_disc.m_seq, m_console6.writes);
 	if (m_type_pos < m_type_text.size())
-		kbd_put(u8(m_type_text[m_type_pos++]));
+	{
+		const u8 c = u8(m_type_text[m_type_pos++]);
+		// The 540's console is a terminal on the serial card, and a
+		// terminal sends ASCII -- no keycode translation.
+		if (m_console_is_asi)
+			m_asi.type(c == '\n' ? u8('\r') : c);
+		else
+			kbd_put(c);
+	}
 	else
 		m_type_timer->adjust(attotime::never);
 }
@@ -732,11 +785,30 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
 	m_iop.poll_and_service();
 	m_disc.tick();
+	if (m_console_is_asi)
+		m_asi.tick();
 	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
 	// about 35 of them.
 	m_iop.timer_tick(35);
 	if (m_iop.take_timer_event())
 		m_cpu->core().raise_message(13);
+	// FOCUS_FORCETICK=<period ms>[:<start s>] raises the interval-timer
+	// message on a fixed beat whether or not the OS armed the timer -- the
+	// experiment for a kernel whose clock service waits on a tick it never
+	// asked the IOP for. bootrun's --tick taught that injecting during
+	// powerup panics a machine that is not ready, hence the start delay.
+	if (const char *e = getenv("FOCUS_FORCETICK"))
+	{
+		static const unsigned period = std::max(1L, strtol(e, nullptr, 0));
+		static const double from = strchr(e, ':')
+				? strtod(strchr(e, ':') + 1, nullptr) : 2.0;
+		static unsigned phase = 0;
+		if (machine().time().as_double() >= from && ++phase >= period)
+		{
+			phase = 0;
+			m_cpu->core().raise_message(13);
+		}
+	}
 
 	// Every accepted device raise is one message at 16 + its level (the
 	// microcode handler maps it back and pulls the device from the
@@ -754,6 +826,17 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::rtc_tick)
 {
 	m_console6.rtc_second_tick();
+	m_scm.rtc_second_tick();
+}
+
+
+// A key typed at the 540's console terminal. The serial card's firmware
+// assembles characters into records and hands the host a whole one, so a
+// keystroke goes into its receive buffer and the card decides when the
+// record is complete.
+void hp9000_5xx_state::term_put(u8 data)
+{
+	m_asi.type(data);
 }
 
 
@@ -764,7 +847,9 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.reset();
 	m_scm.reset();
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_iop.attach(0, &m_dim);
+	m_iop.attach(0, m_console_is_asi
+			? static_cast<focus::iop_interface *>(&m_asi)
+			: static_cast<focus::iop_interface *>(&m_dim));
 	m_iop.attach(6, &m_console6);
 	if (getenv("FOCUS_DISC"))
 		m_iop.attach(7, &m_disc);
@@ -1193,11 +1278,18 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 
 void hp9000_5xx_state::hp9040(machine_config &config)
 {
-	// The 540 is the same processor stack in a free-standing cabinet, with
-	// no integrated display; the console is an external terminal.
+	// The 540 is the same processor stack in a free-standing cabinet with
+	// no integrated display. Its console is an RS-232 terminal on a
+	// serial interface card in slot 0 -- the CE handbook's installation
+	// procedure names the card and sets the terminal to 9600 baud, 8
+	// bits, no parity, ENQ/ACK and XON/XOFF (9030/40 CE Handbook, 2-3).
 	FOCUS(config, m_cpu, 18_MHz_XTAL);
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
+	m_console_is_asi = true;
+
+	GENERIC_TERMINAL(config, m_terminal, 0);
+	m_terminal->set_keyboard_callback(FUNC(hp9000_5xx_state::term_put));
 
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));
