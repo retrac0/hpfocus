@@ -196,7 +196,16 @@ public:
 		// message-trap router reports an un-routable doorbell as system
 		// error 054 and soft-halts. It wakes a STOPped CPU (raise_message
 		// does that) but is never delivered as a trap.
-		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u & ~ers32::mask(10, 1);
+		//
+		// That reading came from BASIC, whose task mask (0x08A00000)
+		// covers bit 10 anyway. HP-UX leaves it UNMASKED (0x08000000)
+		// and parks a task on the doorbell semaphore at absolute 920, so
+		// on that system the bit is set once and stands forever with
+		// nothing to consume it. FOCUS_MSG10TRAP lets the mask alone
+		// decide, which is what the machine documents.
+		static const bool msg10_trap = std::getenv("FOCUS_MSG10TRAP") != nullptr;
+		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u
+				& (msg10_trap ? ~0u : ~ers32::mask(10, 1));
 		if (sysmsg != 0)
 		{
 			// PSDB holds this trap off: "Pseudo Interrupt Disable" is
@@ -208,7 +217,8 @@ public:
 			// vectors through garbage and panics -- the gate is not an
 			// optimisation but the machine's advertised behaviour.
 			const u32 qi = m_mem.read32(ded_base() + 8);
-			if (qi != 0 && m_mem.read32(qi - 3 - 16) == 0)
+			if (qi != 0 && m_mem.read32(qi - 3 - 16) == 0
+					&& message_handler_installed())
 			{
 				r.msg &= ~sysmsg;
 				m_halted = false;
@@ -3500,6 +3510,30 @@ private:
 	// ICS, previous mask at Q+2, parameter at Q+3 -- but vectored through
 	// code segment 1's Segment Transfer Table entry 054 rather than a
 	// DRT entry. IXIT's CSN==1 path restores the mask on the way out.
+	// Is there anywhere to deliver a message trap to? The vector lives in
+	// CS1's STT at entry 054, and until the powerup module has built the
+	// code segment table and relocated CS1 there is no table to read --
+	// delivering then vectors through whatever happens to be in memory.
+	// Beyond that, an OS can decline the trap entirely: BASIC leaves the
+	// sentinel 0x00020001 in the entry, which the trap machinery treats
+	// as "unhandled" (a garbage vector faults to cause 055, whose handler
+	// reports the original cause). HP-UX installs a real handler for every
+	// cause, so the same test tells the two systems apart without either
+	// being special-cased.
+	bool message_handler_installed()
+	{
+		const u32 cst = m_mem.read32(0);
+		if (cst == 0)
+			return false;
+		const u32 entry = cst + 16;
+		const u32 location = m_mem.read32(entry + 8);
+		if (location == 0)
+			return false;
+		const u32 pl = location + m_mem.read32(entry + 4) - 3;
+		const u32 vector = m_mem.read32(pl - 4 * 054);
+		return vector != 0 && vector != 0x00020001u;
+	}
+
 	exec_trap message_trap(u32 bits)
 	{
 		const u32 ret = r.p - r.pb;
