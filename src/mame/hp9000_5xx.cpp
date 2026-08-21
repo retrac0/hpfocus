@@ -263,6 +263,7 @@ private:
 	void attach_probes();
 	void install_boot_image(const std::vector<u8> &img, const char *whence);
 	bool boot_from_disc();
+	bool boot_from_disc_source(bool from_fixed);
 	bool boot_from_cs80();
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
@@ -1564,21 +1565,30 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 // slice, and the first free block ends it. Taking the length from the
 // medium rather than from the file's size is what keeps a volume from
 // over-reading into whatever follows its boot area.
+// A fitted fixed disc is tried first, because that is where a machine
+// with one keeps its system -- but a fixed disc is not always a system
+// disc. A data disc has no boot area at all, and the machine should then
+// come up off the flexible drive exactly as it did before there was
+// anywhere else to look.
 bool hp9000_5xx_state::boot_from_disc()
+{
+	if (m_disc.fixed_loaded() && boot_from_disc_source(true))
+		return true;
+	if (!m_media.empty())
+		return boot_from_disc_source(false);
+	return false;
+}
+
+
+bool hp9000_5xx_state::boot_from_disc_source(bool from_fixed)
 {
 	constexpr u32 SECTOR = focus::disc_card::BLOCK;
 	constexpr u32 MAGIC = 0xe9c28206;
 
-	// A fitted fixed disc boots in preference to the flexible drive, as
-	// on real hardware: with a Winchester present the bootstrap loader
-	// circuitry sits on ITS controller, so the fixed disc is what the
-	// machine comes up from. Selecting device 1 points every read below
-	// at that medium; the flexible drive is still there for the running
-	// system to mount volumes from.
-	const bool from_fixed = m_disc.fixed_loaded();
-	if (from_fixed)
-		m_disc.select_device(1);
-	else if (m_media.empty())
+	// Selecting device 1 points every read below at the fixed medium;
+	// the flexible drive is still there for the running system.
+	m_disc.select_device(from_fixed ? 1 : 0);
+	if (!from_fixed && m_media.empty())
 		return false;
 
 	auto beword = [](const std::vector<u8> &v, u32 off) {
@@ -1627,6 +1637,7 @@ bool hp9000_5xx_state::boot_from_disc()
 				osd_printf_error("boot: %.16s has no usable boot area "
 						"(block size %u, first free block %u)\n",
 						volume_name, blocksize, first_free);
+				m_disc.select_device(0);
 				return false;
 			}
 			if (!m_disc.read_blocks(blocksize / SECTOR, SECTOR, desc))

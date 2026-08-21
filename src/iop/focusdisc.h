@@ -49,6 +49,7 @@
 
 #include "focusiop.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -477,6 +478,42 @@ private:
 			case 0x3b:      // set release (1 byte)
 				i += 1;
 				break;
+			case 0x3e:      // set status mask, eight parameter bytes
+				// (Instruction Set manual 2-20). Nothing here reports
+				// unsolicited status, so the mask is accepted and the
+				// bytes stepped over.
+				i += 8;
+				break;
+			case 0x37:      // initialize media
+			{
+				// <00110111> <00000CWZ> <interleave> (manual 2-26). The
+				// options choose which spares survive and the second
+				// byte is the block interleave; neither means anything
+				// to a file-backed medium. What the command does mean is
+				// that "no previously defined information in the data
+				// fields is retained", so the medium is cleared -- and
+				// the volume it was addressed to really is destroyed,
+				// including any boot area, exactly as the manual's
+				// caution says. Reinstall with tools/installbasic.py.
+				const u8 options = (i < cmd.size()) ? cmd[i] : 0;
+				const u8 interleave = (i + 1 < cmd.size()) ? cmd[i + 1] : 0;
+				i += 2;
+				if (medium().empty())
+				{
+					set_flag(35);   // not ready: no medium
+					break;
+				}
+				std::fill(medium().begin(), medium().end(), u8(0));
+				if (log)
+				{
+					std::printf("[disc initialize media: options %02x, "
+							"interleave %u, %u blocks cleared]\n",
+							options, interleave,
+							unsigned(medium().size() / BLOCK));
+					std::fflush(stdout);
+				}
+				break;
+			}
 			case 0x34:      // no op
 			case 0x0e:      // release
 			case 0x0f:      // release denied

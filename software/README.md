@@ -701,15 +701,34 @@ The chain walk reports what it found (`chain of 13 segments ends at 0x5b0c0`,
 matching `tools/bootimage.py`), and the added modules show up as new code
 segments — `MS` arrives as a 15,367-byte segment 21.
 
-### Installing to a hard disc is not possible yet
+### Installing to a hard disc (previously not possible)
 
-A real 520 could carry an internal Winchester; the service manual notes that
-when one is fitted the boot loader circuitry lives on the Winchester
-controller rather than the bootstrap loader card. **The emulated 520
-(`hp9020`) has three flexible drives and no fixed disc**, so there is nowhere
-to install to; only the 540 (`hp9040`) has a hard disc, and the 540 does not
-run BASIC. Modelling the 520's fixed disc — a second unit behind select code
-7 answering identity 5 — is what a real installation would need.
+A real 520 could carry an internal Winchester, and the emulated one now can
+too: `-hard1` fits a fixed disc as device 1 of select code 7, answering
+identity 5 instead of the bare loader card's 8. With one fitted the machine
+boots from it, as real hardware does — the loader circuitry lives on the
+Winchester's own controller — and falls back to the flexible drive when the
+fixed disc has no boot area.
+
+```
+tools/mkharddisc.py software/hd/basic.img
+tools/installbasic.py software/hd/basic.img \
+    --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
+    --option /path/ERRORS_ENG /path/IO /path/MS
+tools/runbasic-hd.sh
+```
+
+BASIC comes up from the fixed disc with the options installed. What is **not**
+finished is the file area: the disc has a working boot area but no filesystem,
+which BASIC reports accurately at startup as *"ERROR 455: Possible corrupt
+directory"*. Creating one from inside BASIC needs `INITIALIZE`, and the
+command reaches the disc — the CS/80 Initialize Media (0x37) and Set Status
+Mask (0x3e) commands are implemented — but answers *"ERROR 458: Unsupported
+directory format"* whichever way the directory format has been spelled so far.
+HP's own utilities carry `SDF` as a string literal, so the format is a
+parameter; the exact syntax has not been established, and no BASIC 2.0
+language manual has been found. Until then a fixed disc is a system disc, and
+files live on flexible volumes.
 
 ### Does the bare configuration explain anything?
 
