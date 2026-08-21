@@ -193,6 +193,30 @@ public:
 	// Returns true when an interrupt was taken. The host calls this
 	// between instructions; conditions 1-4 of section 5.1.3 are exactly
 	// the checks made here.
+	// Instruction timing. The Hardware Technical Data sheet gives four
+	// measured figures for the Series 500 and no instruction table:
+	//
+	//     load register from memory     550 ns
+	//     64-bit floating point add    1.17 us
+	//     64-bit floating point mpy    1.28 us
+	//     32-bit integer multiply      2.92 us
+	//
+	// At the 18 MHz clock those are 10, 21, 23 and 53 cycles. Charging
+	// one cycle per instruction -- as this core used to -- makes emulated
+	// time run about ten times faster than the hardware could, so every
+	// emulated second demands ten times the instructions the real machine
+	// executed. On a workload that idles in STOP, like BASIC at its
+	// prompt, that is invisible. On one that spins, like HP-UX, it is the
+	// difference between a machine that keeps up and one that crawls.
+	//
+	// A real per-opcode table would need timings nobody documented; these
+	// four anchor points and one typical cost for everything else are what
+	// the manuals actually support.
+	static constexpr unsigned CYCLES_TYPICAL = 10;   // 550 ns
+	static constexpr unsigned CYCLES_FADD    = 21;   // 1.17 us
+	static constexpr unsigned CYCLES_FMPY    = 23;   // 1.28 us
+	static constexpr unsigned CYCLES_MPY     = 53;   // 2.92 us
+
 	bool service_interrupts()
 	{
 		if (!r.test(sf::I))
@@ -336,6 +360,9 @@ public:
 	//  execution
 	//----------------------------------------------------------------
 
+	// What the last instruction cost in 18 MHz clocks; see CYCLES_TYPICAL.
+	unsigned cycles = CYCLES_TYPICAL;
+
 	exec_trap step()
 	{
 		if (m_halted)
@@ -343,6 +370,7 @@ public:
 
 		m_addr_trap = trap::none;
 		m_branched = false;
+		cycles = CYCLES_TYPICAL;
 
 		if (!m_au.in_code(r.p))
 			return exec_trap::code_bounds;
@@ -717,7 +745,7 @@ private:
 			cca(u32(diff));
 			return exec_trap::none;
 		}
-		case 022: {                                            // MPY
+		case 022: { cycles = CYCLES_MPY;                       // MPY
 			const s32 a = s32(pop()), b = s32(pop());
 			const s64 prod = s64(a) * s64(b);
 			// The doubleword product: high half at (S-1), low at (S).
@@ -858,16 +886,20 @@ private:
 			if (b3) r.s -= 8;
 			return exec_trap::none;
 		}
-		case 051: { const double y = pop_double(), x = pop_double();
+		case 051: { cycles = CYCLES_FADD;
+			const double y = pop_double(), x = pop_double();
 			push_double(x + y); set_fp_cc(x + y);
 			return exec_trap::none; }                          // FADD
-		case 052: { const double y = pop_double(), x = pop_double();
+		case 052: { cycles = CYCLES_FADD;
+			const double y = pop_double(), x = pop_double();
 			push_double(x - y); set_fp_cc(x - y);
 			return exec_trap::none; }                          // FSUB
-		case 053: { const double y = pop_double(), x = pop_double();
+		case 053: { cycles = CYCLES_FMPY;
+			const double y = pop_double(), x = pop_double();
 			push_double(x * y); set_fp_cc(x * y);
 			return exec_trap::none; }                          // FMPY
-		case 054: { const double y = pop_double(), x = pop_double();
+		case 054: { cycles = CYCLES_FMPY;   // undocumented; nearest measured
+			const double y = pop_double(), x = pop_double();
 			push_double(x / y); set_fp_cc(x / y);
 			return exec_trap::none; }                          // FDIV
 		case 055: { const double x = pop_double(); push_double(-x);
@@ -917,7 +949,7 @@ private:
 			push(u32(diff)); cca(u32(diff));
 			return exec_trap::none;
 		}
-		case 062: {                                            // LMPY
+		case 062: { cycles = CYCLES_MPY;                       // LMPY
 			const u64 prod = u64(pop()) * u64(pop());
 			push(u32(prod >> 32)); push(u32(prod));
 			return exec_trap::none;

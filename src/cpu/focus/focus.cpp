@@ -318,11 +318,13 @@ void focus_device::execute_run()
 			return;
 		}
 
-		// The ERS gives no per-instruction timings beyond a handful of
-		// examples (Hardware Technical Data lists a 32-bit integer multiply
-		// at 2.92 us). One cycle per instruction until something needs
-		// better.
-		m_icount--;
+		// Charge what the instruction cost. The Hardware Technical Data
+		// sheet's four measured figures (a 550 ns load, a 1.17 us FP add,
+		// a 1.28 us FP multiply and a 2.92 us integer multiply) are 10,
+		// 21, 23 and 53 cycles at 18 MHz; the core sets them and every
+		// other instruction costs the typical 10. This used to charge one
+		// cycle flat, which ran emulated time about ten times too fast.
+		m_icount -= int(m_core.cycles);
 	} while (m_icount > 0);
 }
 
