@@ -974,6 +974,13 @@ void hp9000_5xx_state::machine_start()
 				std::printf("    Q%+3d (%08x) = %08x\n", 4 * k,
 						core.r.q + 4 * k - 3,
 						core.read_mem32(core.r.q + 4 * k - 3));
+			// The stack top, where an instruction's operands actually
+			// sit: (S) is the top word, (S-1) beneath it. A block move
+			// takes its count, target and source from exactly here.
+			for (int k = 0; k <= 5; k++)
+				std::printf("    S-%d (%08x) = %08x\n", k,
+						core.r.s - 4 * k - 3,
+						core.read_mem32(core.r.s - 4 * k - 3));
 			std::fflush(stdout);
 		}
 		// Traps vector through CST entry 1 once the powerup module has
