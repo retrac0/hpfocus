@@ -3337,7 +3337,21 @@ private:
 		if (offset == 0)
 			ptr = pop();
 		else
+		{
+			// The entry must lie within the STT, whose byte length is in
+			// the word at PL -- the same check LPP makes. This is not
+			// defensive tidiness but a load-bearing OS interface: BASIC
+			// compiles a program into a heap code segment with a SHORT
+			// transfer table and emits calls to entries beyond it; the
+			// STT-violation trap is how the OS learns it must link the
+			// entry before the call can proceed. Reading past the table
+			// instead found a zero, and the call landed at the segment's
+			// own constant pool -- RUN executed floats until an 0xffff.
+			const u32 limit = ers32::get(m_mem.read32(r.pl), 13, 19);
+			if (offset > limit)
+				return take_trap(trap_cause::stt_violation, offset);
 			ptr = m_mem.read32(r.pl - offset);
+		}
 
 		const u32 ret = m_next - r.pb;      // PB-relative return address
 		const u32 old_q = r.q;
