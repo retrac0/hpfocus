@@ -234,10 +234,16 @@ class mpb_ram256k_device;
 class mpb_ram512k_device;
 class mpb_ram1m_device;
 class mpb_slot_device;
+class hp27128_asi_device;
+class hp27110_hpib_device;
+class focus_cio_slot_device;
 DECLARE_DEVICE_TYPE(MPB_RAM256K, mpb_ram256k_device)
 DECLARE_DEVICE_TYPE(MPB_RAM512K, mpb_ram512k_device)
 DECLARE_DEVICE_TYPE(MPB_RAM1M, mpb_ram1m_device)
 DECLARE_DEVICE_TYPE(MPB_SLOT, mpb_slot_device)
+DECLARE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device)
+DECLARE_DEVICE_TYPE(HP27110_HPIB, hp27110_hpib_device)
+DECLARE_DEVICE_TYPE(FOCUS_CIO_SLOT, focus_cio_slot_device)
 
 // RAM boards. The service manual is explicit that memory shares the
 // processor stack: "CPU, IOP, and memory boards reside in the stack and
@@ -346,6 +352,127 @@ static void mpb_ram_cards(device_slot_interface &device)
 	device.option_add("1m", MPB_RAM1M);
 }
 
+//**************************************************************************
+//  SHARED CIO BACKPLANE SLOT
+//**************************************************************************
+
+// The 27128A ASI and 27110A HP-IB cards are the same physical CIO card
+// family on both machines -- the 530/540 CE Handbook fits the ASI as the
+// console at slot 0 and the HP-IB at slot 5, and the 520 service manual
+// gives its own four backplane slots (SC 2-5) to "the only four available
+// to the user" -- and this is that one slot: -cio2 through -cio5 on the
+// 520, in either machine sharing the same card devices and the same
+// option list, so a card proven correct in one machine's slot is the
+// identical device in the other's.
+//
+// focus::asi_card and focus::hpib_card already implement iop_interface
+// on their own account (they were written before there was a slot to plug
+// them into); the wrappers here are just enough MAME device to make them
+// selectable -findslots/-cio2 options, exposing the interface pointer the
+// driver attaches to the IOP channel.
+class device_focus_cio_interface : public device_interface
+{
+public:
+	device_focus_cio_interface(const machine_config &mconfig, device_t &device)
+		: device_interface(device, "focuscio")
+	{
+	}
+	virtual focus::iop_interface &focus_iface() = 0;
+};
+
+class hp27128_asi_device : public device_t, public device_focus_cio_interface
+{
+public:
+	hp27128_asi_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, HP27128_ASI, tag, owner, clock)
+		, device_focus_cio_interface(mconfig, *this)
+	{
+	}
+
+	focus::asi_card card;
+
+protected:
+	virtual void device_start() override {}
+
+public:
+	virtual focus::iop_interface &focus_iface() override { return card; }
+};
+
+class hp27110_hpib_device : public device_t, public device_focus_cio_interface
+{
+public:
+	hp27110_hpib_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, HP27110_HPIB, tag, owner, clock)
+		, device_focus_cio_interface(mconfig, *this)
+	{
+	}
+
+	focus::hpib_card card;
+
+protected:
+	virtual void device_start() override {}
+
+public:
+	virtual focus::iop_interface &focus_iface() override { return card; }
+};
+
+DEFINE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device, "hp27128_asi",
+		"HP 27128A Async Serial Interface")
+DEFINE_DEVICE_TYPE(HP27110_HPIB, hp27110_hpib_device, "hp27110_hpib",
+		"HP 27110A HP-IB Interface")
+
+class focus_cio_slot_device : public device_t, public device_slot_interface
+{
+public:
+	template <typename T>
+	focus_cio_slot_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, T &&opts, const char *dflt)
+		: focus_cio_slot_device(mconfig, tag, owner, u32(0))
+	{
+		option_reset();
+		opts(*this);
+		set_default_option(dflt);
+		set_fixed(false);
+	}
+
+	focus_cio_slot_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, FOCUS_CIO_SLOT, tag, owner, clock)
+		, device_slot_interface(mconfig, *this)
+	{
+	}
+
+	// null when the slot is empty -- an unpopulated backplane slot, which
+	// the 520 manual's "only four available to the user" makes a normal,
+	// expected state, not an error.
+	focus::iop_interface *iface()
+	{
+		device_focus_cio_interface *const c =
+				dynamic_cast<device_focus_cio_interface *>(get_card_device());
+		return c ? &c->focus_iface() : nullptr;
+	}
+
+protected:
+	virtual void device_start() override {}
+};
+
+DEFINE_DEVICE_TYPE(FOCUS_CIO_SLOT, focus_cio_slot_device, "focus_cio_slot",
+		"CIO backplane slot")
+
+// Shared between both machines' slot lists, so the option a 520 -cio3 and
+// a 540 console slot offer is the same function, not a parallel copy of
+// one. GPIO (27112A) and the multiplexer (27130A) are documented in
+// HARDWARE.md but have no card model yet, so they are not listed --
+// adding one here is what plugs it into both machines at once.
+static void focus_cio_cards(device_slot_interface &device)
+{
+	device.option_add("asi", HP27128_ASI);
+	device.option_add("hpib", HP27110_HPIB);
+}
+
+
 
 namespace {
 
@@ -362,6 +489,7 @@ public:
 		, m_floppy(*this, "floppy%u", 1U)
 		, m_hard(*this, "harddisc")
 		, m_mpb(*this, "mpb%u", 3U)
+		, m_cio(*this, "cio%u", 2U)
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -410,6 +538,12 @@ private:
 	optional_device<hp_focus_media_device> m_hard;
 	optional_device_array<mpb_slot_device, 10> m_mpb;
 	u32 m_ram_total = 0;
+	std::array<u64, 0x4000> m_pcprof{};
+	u64 m_pcprof_n = 0;
+	// The 520's user-expansion backplane (520 Service 2-29: select codes
+	// 2-5, "the only four available to the user"). Empty by default --
+	// nothing occupied these before this slot existed either.
+	optional_device_array<focus_cio_slot_device, 4> m_cio;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -881,6 +1015,73 @@ void hp9000_5xx_state::machine_start()
 		m_iop.attach(7, &m_disc);
 	}
 
+	// The 520's user backplane, select codes 2-5, whatever is plugged
+	// into -cio2 .. -cio5 -- the same HP27128_ASI / HP27110_HPIB devices
+	// the 530/540 use below, so a card is one MAME device family reused
+	// in either machine's slot, not a parallel implementation.
+	if (!m_console_is_asi)
+		for (unsigned k = 0; k < 4; k++)
+		{
+			if (!m_cio[k])
+				continue;
+			focus::iop_interface *const iface = m_cio[k]->iface();
+			if (!iface)
+				continue;
+			const unsigned sc = 2 + k;
+			// The existing FOCUS_ASI*/FOCUS_HPIB* debug knobs apply to
+			// whichever concrete card ended up in the slot, so the
+			// tooling built for the 530/540's console and system-disc
+			// cards works unchanged on a 520 wearing the same card.
+			if (auto *asi = dynamic_cast<hp27128_asi_device *>(
+					m_cio[k]->get_card_device()))
+			{
+				asi->card.iop = &m_iop;
+				asi->card.pa = sc;
+				asi->card.log = getenv("FOCUS_ASILOG") != nullptr;
+				if (const char *e = getenv("FOCUS_ASIID"))
+					asi->card.card_id = u8(strtoul(e, nullptr, 0));
+				if (const char *e = getenv("FOCUS_ASIFR1"))
+					asi->card.fr1_force = strtoul(e, nullptr, 0);
+				if (const char *e = getenv("FOCUS_ASIIDENT"))
+					asi->card.identity = u16(strtoul(e, nullptr, 0));
+				if (const char *e = getenv("FOCUS_ASIEVENT"))
+					asi->card.event_done = u8(strtoul(e, nullptr, 0));
+				asi->card.on_char = [this](u8 c) { trip_watch(c); };
+			}
+			else if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
+					m_cio[k]->get_card_device()))
+			{
+				hpib->card.iop = &m_iop;
+				hpib->card.pa = sc;
+				hpib->card.log = getenv("FOCUS_HPIBLOG") != nullptr;
+				if (const char *v = getenv("FOCUS_HPIBIDENT"))
+					hpib->card.identity = u16(strtoul(v, nullptr, 0));
+				if (const char *v = getenv("FOCUS_HPIBADDR"))
+					hpib->card.device_address = u8(strtoul(v, nullptr, 0));
+				if (const char *v = getenv("FOCUS_HPIBDISC"))
+				{
+					if (FILE *f = fopen(v, "rb"))
+					{
+						fseek(f, 0, SEEK_END);
+						const long n = ftell(f);
+						fseek(f, 0, SEEK_SET);
+						hpib->card.disc.image.assign(size_t(n), 0);
+						if (fread(hpib->card.disc.image.data(), 1, size_t(n), f)
+								!= size_t(n))
+							osd_printf_error(
+									"FOCUS_HPIBDISC: short read on %s\n", v);
+						fclose(f);
+					}
+					else
+						osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
+				}
+				m_iop.enable_interrupt(sc);
+			}
+			m_iop.attach(sc, iface);
+			osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
+					m_cio[k]->get_card_device()->name(), sc);
+		}
+
 	// The 540's system disc: the HP-IB card in slot 5 (9030/40 CE
 	// Handbook 2-3), unless FOCUS_HPIB placed it elsewhere above.
 	if (m_console_is_asi && !getenv("FOCUS_HPIB"))
@@ -947,6 +1148,34 @@ void hp9000_5xx_state::machine_start()
 	// stack marker is usually gone too, so the trail has to be kept.
 	m_runaway = getenv("FOCUS_RUNAWAY") != nullptr;
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
+		// FOCUS_PCPROF buckets the program counter by 4 KB and prints the
+		// busiest buckets every 40M instructions, so "where is the
+		// emulated machine spending its time" is answered by measurement
+		// rather than by reading code. It found the cycle-accounting bug
+		// this comment sits above the fix for: the counts were far larger
+		// than any real workload, which is what pointed at emulated time
+		// running too fast rather than at any one routine.
+		static const bool pcprof = getenv("FOCUS_PCPROF") != nullptr;
+		if (pcprof)
+		{
+			m_pcprof[(core.r.p >> 12) & 0x3fff]++;
+			if (++m_pcprof_n == 40000000u)
+			{
+				std::printf("[pcprof: top buckets by instruction count]\n");
+				std::vector<std::pair<u64, unsigned>> v;
+				for (unsigned k = 0; k < 0x4000; k++)
+					if (m_pcprof[k])
+						v.push_back({m_pcprof[k], k});
+				std::sort(v.rbegin(), v.rend());
+				for (unsigned k = 0; k < 12 && k < v.size(); k++)
+					std::printf("  P=%08x..%08x  %llu\n", v[k].second << 12,
+							(v[k].second << 12) + 0xfff,
+							(unsigned long long)v[k].first);
+				std::fflush(stdout);
+				m_pcprof_n = 0;
+				for (auto &c : m_pcprof) c = 0;
+			}
+		}
 		// A short trail of Q changes: which instruction moved Q last is
 		// the question every corrupted-marker hunt ends at.
 		if (core.r.q != m_qtrail_last)
@@ -2089,6 +2318,13 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	// The internal Winchester was an option on a real 520, and the
 	// system reaches it as device 1 of select code 7; -hard1 fits one.
 	HP_FOCUS_MEDIA(config, m_hard).set_hard();
+
+	// The user-expansion backplane: select codes 2-5, empty by default
+	// (520 Service 2-29). -cio2 through -cio5 take "asi" or "hpib" -- the
+	// same card devices, and the same option list, the 530/540 use for
+	// its console and system-disc slots below.
+	for (unsigned k = 0; k < 4; k++)
+		FOCUS_CIO_SLOT(config, m_cio[k], focus_cio_cards, nullptr);
 
 	// The quickload remains as a debug side door for images that exist
 	// only as files; the supported path is booting from the discs.
