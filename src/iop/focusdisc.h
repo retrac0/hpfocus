@@ -444,13 +444,17 @@ private:
 			{
 				m_unit = op & 15;
 				// Unit 0 is the flexible drive and unit 15 the
-				// controller. A fitted fixed disc is unit 1 -- the two
-				// drives share a select code and the system tells them
-				// apart by unit number, which is why refusing unit 1
-				// left a machine with a Winchester able to boot from it
-				// and unable to address it afterwards. Anything else
-				// raises status bit 15, the "no such unit" the driver
-				// tolerates.
+				// controller. Unit 1 reaches a fitted fixed disc, which
+				// is PROVISIONAL: HP's own (15)WINCHESTER diagnostic
+				// addresses the internal Winchester as ":CS80,7, 0" --
+				// unit ZERO -- so on real hardware the two drives are
+				// told apart by the FR8 device select, each controller
+				// having its own unit 0, and not by unit number. Until
+				// the system can be made to bind the fixed disc as its
+				// own device, unit 1 is the only way to name it from
+				// BASIC; it costs nothing, since unit 1 was refused
+				// outright before. Anything else raises status bit 15,
+				// the "no such unit" the driver tolerates.
 				if (m_unit != 0 && m_unit != 15
 						&& !(m_unit == 1 && !m_fixed.empty()))
 					set_flag(15);
