@@ -329,7 +329,7 @@ struct disc_card : public iop_interface
 		// Device 1 is the fixed disc when one is fitted. A machine with a
 		// fixed disc and nothing in the flexible drive reads the fixed
 		// disc either way -- there is no other medium to mean.
-		if (!m_fixed.empty() && (m_device || m_image.empty()))
+		if (!m_fixed.empty() && (m_unit == 1 || m_device || m_image.empty()))
 			return m_fixed;
 		return m_image;
 	}
@@ -379,7 +379,13 @@ private:
 			m_want_burst = true;
 			m_announce = false;     // a transaction begins
 			break;
-		case 1:
+		case 1: case 5:
+			// The data leg. 1 announces the leg that carries data OUT of
+			// the card (the read case) and 5 the leg that carries data
+			// IN to it -- the write. Knowing only 1, the card never
+			// invited the data after a Locate and Write, so the driver
+			// waited, reset the card and reported a device timeout:
+			// INITIALIZE died on its very first directory write.
 			m_phase = 2;
 			m_want_burst = true;
 			break;
@@ -437,11 +443,16 @@ private:
 			if (op >= 0x20 && op <= 0x2f)
 			{
 				m_unit = op & 15;
-				// Only unit 0 (the drive) and unit 15 (the controller)
-				// exist; addressing any other raises status bit 15,
-				// which the driver maps to its tolerated "no such
-				// unit" escape.
-				if (m_unit != 0 && m_unit != 15)
+				// Unit 0 is the flexible drive and unit 15 the
+				// controller. A fitted fixed disc is unit 1 -- the two
+				// drives share a select code and the system tells them
+				// apart by unit number, which is why refusing unit 1
+				// left a machine with a Winchester able to boot from it
+				// and unable to address it afterwards. Anything else
+				// raises status bit 15, the "no such unit" the driver
+				// tolerates.
+				if (m_unit != 0 && m_unit != 15
+						&& !(m_unit == 1 && !m_fixed.empty()))
 					set_flag(15);
 				continue;
 			}
@@ -472,7 +483,19 @@ private:
 				request_status();
 				m_status = 0;
 				break;
-			case 0x33:      // set retry time (2 bytes) -- assumed
+			case 0x33:      // initiate diagnostic, THREE parameter bytes
+				// (manual 2-31: <00110011> <P1> <P2> <P3>, one
+				// internally defined diagnostic routine). Reading it as
+				// a two-byte command -- which is what Set Retry Time,
+				// opcode 0x3a, actually is -- left the third byte to be
+				// executed as opcode 0x00, a Locate and Read, which
+				// failed and put an error in QSTAT. The driver then
+				// abandoned the transaction it was in the middle of:
+				// INITIALIZE got as far as its first directory write and
+				// was never invited to send the data.
+				i += 3;
+				break;
+			case 0x3a:      // set retry time, two bytes (manual 2-19)
 				i += 2;
 				break;
 			case 0x3b:      // set release (1 byte)
@@ -583,7 +606,7 @@ private:
 		auto b = [this](u8 v) { m_out.push_back(v); };
 		// controller: installed units (bit 15 = the controller itself),
 		// transfer rate in kB/s, controller type
-		b(0x80); b(0x01);
+		b(0x80); b(m_fixed.empty() ? 0x01 : 0x03);   // units installed
 		b(0x00); b(0x1e);
 		b(0x05);
 		if (m_unit == 15)
@@ -591,9 +614,19 @@ private:
 		// unit: type 1 = flexible disc, device number 009130, bytes per
 		// block, blocks buffered, burst size, block time, rate, retry
 		// time, access time, max interleave, fixed/removable volumes
-		const bool fixed = m_device && !m_fixed.empty();
+		const bool fixed = !m_fixed.empty() && (m_unit == 1 || m_device);
 		if (fixed)
-		{ b(0); b(0x00); b(0x79); b(0x08); }   // type 0, device 007908
+		{
+			// Device type 0 is a fixed disc. The device NUMBER is the
+			// model, in the packed decimal CS/80 uses: 007908 by default.
+			// The system may well map the number to what it will support
+			// on the volume, so FOCUS_FIXEDDEV=<6 digits> makes it
+			// something to test rather than something to guess at.
+			u32 dev = 0x007908;
+			if (const char *e = getenv("FOCUS_FIXEDDEV"))
+				dev = u32(strtoul(e, nullptr, 16));
+			b(0); b(u8(dev >> 16)); b(u8(dev >> 8)); b(u8(dev));
+		}
 		else
 		{ b(1); b(0x00); b(0x91); b(0x30); }   // type 1, device 009130
 		b(BLOCK >> 8); b(BLOCK & 0xff);
