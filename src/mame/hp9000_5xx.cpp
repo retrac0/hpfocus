@@ -1649,6 +1649,16 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// need shift on the real keyboard therefore map to code | 0x80.
 	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
 	// how the table above was read off the machine.
+	// LOWER CASE IS NOT REACHABLE YET, and it costs something real: a
+	// file whose name is lower case -- most of the demo discs -- cannot
+	// be named to LOAD, which answers ERROR 56, file name is undefined.
+	// Unshifted letters arrive upper case, and setting the shift bit
+	// (code | 0x80, which is how the punctuation in the map above reaches
+	// its shifted half) does NOT give the lower-case letter: it types
+	// unrelated characters. So the case key is not the shift bit. It is
+	// probably a CAPS toggle held in the keyboard board's own state, or a
+	// modifier reported outside the keycode; identifying it needs another
+	// sweep of the board's registers. Upper-case-named files load fine.
 	const u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
 	if (getenv("FOCUS_RAWKEYS"))
 	{
