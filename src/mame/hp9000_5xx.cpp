@@ -973,6 +973,46 @@ void hp9000_5xx_state::machine_start()
 		// different questions.
 		static const double ea_from = getenv("FOCUS_EATRACEFROM")
 				? strtod(getenv("FOCUS_EATRACEFROM"), nullptr) : 0.0;
+		// FOCUS_POKEPC=<pc>:<addr>:<hex value>[,...] writes a word the
+		// first time the processor reaches an instruction, which is the
+		// only way to reach a moment two events share -- the compiler's
+		// copy and the copied code's first execution land in the same
+		// emulated millisecond, so a timed poke cannot sit between them.
+		{
+			static bool parsed = false;
+			static std::vector<std::pair<u32, std::pair<u32, u32>>> pcpokes;
+			if (!parsed)
+			{
+				parsed = true;
+				if (const char *e = getenv("FOCUS_POKEPC"))
+					for (std::string list(e); !list.empty(); )
+					{
+						const size_t comma = list.find(',');
+						const std::string one = list.substr(0, comma);
+						list = (comma == std::string::npos)
+								? "" : list.substr(comma + 1);
+						const char *c1 = strchr(one.c_str(), ':');
+						if (!c1) continue;
+						const char *c2 = strchr(c1 + 1, ':');
+						if (!c2) continue;
+						pcpokes.push_back(std::make_pair(
+								u32(strtoul(one.c_str(), nullptr, 16)),
+								std::make_pair(u32(strtoul(c1 + 1, nullptr, 16)),
+										u32(strtoul(c2 + 1, nullptr, 16)))));
+					}
+			}
+			for (auto &pk : pcpokes)
+				if (pk.first && core.r.p == pk.first)
+				{
+					const u32 before = core.read_mem32(pk.second.first);
+					m_cpu->memory().write32(pk.second.first, pk.second.second);
+					std::printf("[pokepc P=%08x: %08x: %08x -> %08x at %.4fs]\n",
+							pk.first, pk.second.first, before, pk.second.second,
+							machine().time().as_double());
+					std::fflush(stdout);
+					pk.first = 0;
+				}
+		}
 		if (m_ea_at && core.r.p == m_ea_at
 				&& machine().time().as_double() >= ea_from)
 			m_ea_armed = true;
