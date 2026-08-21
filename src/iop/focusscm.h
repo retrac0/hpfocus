@@ -33,6 +33,8 @@
 
 #include "focusiop.h"
 
+#include <cstdio>
+
 namespace focus {
 
 class scm_device : public iop_interface
@@ -67,28 +69,57 @@ public:
 		// what the battery is for.
 	}
 
-	// One second of wall time for the RTC. Locations follow the layout the
-	// HP-UX 5.30 clock driver writes when it initializes an unset clock --
-	// the same one the 520's keyboard-board RTC uses: 0 second, 2 minute,
-	// 4 hour, 7 day of month, 8 month, 9 year (the driver sets 1 Jan 1970,
-	// 00:00:00), with 1/5/0xb as check/century/day-of-week style extras.
-	// Values count in binary, as the 520 driver required.
+	// One second of wall time for the RTC. The cell layout is the one the
+	// HP-UX 5.30 clock driver defines by its own writes, read under the
+	// uniform complemented address decode below: initializing an unset
+	// clock it stores second, minute, hour, day, month, year at cells
+	// 15, 13, 11, 8, 7, 6 -- 0, 0, 0, 1, 1, 70: midnight, 1 January
+	// 1970 -- and its date validator (CORE SYSTEM +0x7b7c, the Julian
+	// arithmetic with the 1461 and 153 constants) rejects anything
+	// outside day 1-31 and month 1-12 with escape 254.
 	void rtc_second_tick()
 	{
-		auto bump = [this](unsigned loc, u8 wrap) -> bool {
+		auto bump = [this](unsigned loc, u8 wrap, u8 floor = 0) -> bool {
 			m_rtc[loc] = u8(m_rtc[loc] + 1);
 			if (m_rtc[loc] < wrap)
 				return false;
-			m_rtc[loc] = 0;
+			m_rtc[loc] = floor;
 			return true;
 		};
-		if (!bump(0, 60)) return;         // second
-		if (!bump(2, 60)) return;         // minute
-		if (!bump(4, 24)) return;         // hour
-		m_rtc[0xb] = u8((m_rtc[0xb] + 1) % 7);
-		if (!bump(7, 31)) return;         // day of month (approximate)
-		if (!bump(8, 12)) return;         // month
-		bump(9, 100);                     // year
+		if (!bump(15, 60)) return;        // second
+		if (!bump(13, 60)) return;        // minute
+		if (!bump(11, 24)) return;        // hour
+		if (!bump(8, 32, 1)) return;      // day of month (approximate)
+		if (!bump(7, 13, 1)) return;      // month
+		bump(6, 100);                     // year
+	}
+
+	// The RTC and NVM are battery-backed: their contents survive power
+	// off, for ten days at least, and that persistence is load-bearing --
+	// the first boot's clock-not-set path SETS the clock and writes a
+	// default configuration into the NVM, and only a later boot, finding
+	// them already valid, takes the configured paths. A file stands in
+	// for the battery.
+	bool load_nv(const char *path)
+	{
+		FILE *f = std::fopen(path, "rb");
+		if (!f)
+			return false;
+		const bool ok = std::fread(m_rtc, 1, sizeof m_rtc, f) == sizeof m_rtc
+				&& std::fread(m_nvm, 1, sizeof m_nvm, f) == sizeof m_nvm;
+		std::fclose(f);
+		return ok;
+	}
+
+	bool save_nv(const char *path) const
+	{
+		FILE *f = std::fopen(path, "wb");
+		if (!f)
+			return false;
+		const bool ok = std::fwrite(m_rtc, 1, sizeof m_rtc, f) == sizeof m_rtc
+				&& std::fwrite(m_nvm, 1, sizeof m_nvm, f) == sizeof m_nvm;
+		std::fclose(f);
+		return ok;
 	}
 
 	// Supply a loader ROM image if one is ever dumped.
@@ -199,8 +230,12 @@ public:
 	// driver actually drives them (read off the running system; the shapes
 	// match the Service Manual's register allocations, 2-29/2-30):
 	//
-	//   W R12   RTC/NVM address latch, written as a plain location number
-	//           for the RTC (0, 2, 4, 7, 8, 9 ... in the clock-set sweep)
+	//   W R12   RTC/NVM address latch. The address travels COMPLEMENTED
+	//           (Service Manual 2-30), and uniformly: the clock-set
+	//           sweep writes what look like plain 0, 2, 4... and the
+	//           clock-check path writes ffff, fff1... -- only one
+	//           inversion applied to both makes the reader find the
+	//           writer's cells, and the date validator agrees
 	//   W R9    RTC data for the latched location, COMPLEMENTED on the bus
 	//           -- the unset-clock path writes ~0, ~0, ~0, ~1, ~1, ~70:
 	//           midnight, 1 January 1970
@@ -224,8 +259,11 @@ public:
 		case 6:  return read_register(6);
 		case 9:
 		{
-			const u32 v = u32(~m_rtc[m_addr_latch & 63]) & 0xff;
-			m_addr_latch = (m_addr_latch & ~63u) | ((m_addr_latch + 1) & 63);
+			const u32 v = u32(~m_rtc[(~m_addr_latch) & 15]) & 0xff;
+			// "Succeeding reads or writes cause automatic increments of
+			// the address (address is complemented)" -- the complemented
+			// value counts down so the decoded location counts up.
+			m_addr_latch = (m_addr_latch & ~15u) | ((m_addr_latch - 1) & 15);
 			return v;
 		}
 		case 10: return m_service_word;
@@ -247,8 +285,8 @@ public:
 		{
 		case 1:  write_register(1, v); break;
 		case 9:
-			m_rtc[m_addr_latch & 63] = u8(~v);
-			m_addr_latch = (m_addr_latch & ~63u) | ((m_addr_latch + 1) & 63);
+			m_rtc[(~m_addr_latch) & 15] = u8(~v);
+			m_addr_latch = (m_addr_latch & ~15u) | ((m_addr_latch - 1) & 15);
 			break;
 		case 10: m_service_word = v; break;
 		case 11:

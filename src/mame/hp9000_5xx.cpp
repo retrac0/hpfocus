@@ -152,6 +152,7 @@ private:
 	// it. The 520 puts its display alphanumeric there instead.
 	bool m_console_is_asi = false;
 	void term_put(u8 data);
+	void save_nv();
 };
 
 
@@ -369,6 +370,17 @@ void hp9000_5xx_state::machine_start()
 	// blanks, one per character cell) the way the 520 manual describes,
 	// so it is the default. Select code 6 is the keyboard board.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
+	// FOCUS_SCMNV=<file> is the battery behind the SCM's clock and
+	// configuration memory: loaded here, written back at exit. Without
+	// it every boot is a first boot, and HP-UX treats an unset clock as
+	// reason to abandon its device bring-up.
+	if (const char *e = getenv("FOCUS_SCMNV"))
+	{
+		if (m_scm.load_nv(e))
+			osd_printf_info("SCM RTC/NVM restored from %s\n", e);
+		machine().add_notifier(MACHINE_NOTIFY_EXIT,
+				machine_notify_delegate(&hp9000_5xx_state::save_nv, this));
+	}
 	if (const char *e = getenv("FOCUS_SC0ID"))
 		m_dim.id = strtoul(e, nullptr, 0);
 	m_dim.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
@@ -897,6 +909,14 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::rtc_tick)
 {
 	m_console6.rtc_second_tick();
 	m_scm.rtc_second_tick();
+}
+
+
+void hp9000_5xx_state::save_nv()
+{
+	if (const char *e = getenv("FOCUS_SCMNV"))
+		if (m_scm.save_nv(e))
+			std::printf("[SCM RTC/NVM saved to %s]\n", e);
 }
 
 
