@@ -183,6 +183,22 @@ struct cs80_device
 
 	bool writing() const { return m_writing; }
 
+	// Read `count` bytes from block `block` through the device's own
+	// Locate-and-Read path -- the bootstrap loader reads the system disc
+	// the same way the driver later will, bounds checks and status flags
+	// included, rather than reaching around the device into the file.
+	bool read_blocks(u32 block, u32 count, std::vector<u8> &out)
+	{
+		std::deque<u8> data;
+		m_address = block;
+		m_length = count;
+		locate_read(data);
+		if (data.size() != count)
+			return false;
+		out.assign(data.begin(), data.end());
+		return true;
+	}
+
 private:
 	void locate_read(std::deque<u8> &out)
 	{

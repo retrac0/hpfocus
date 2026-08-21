@@ -16,3 +16,5 @@ __pycache__/
 # Scratch
 /scratch/
 *.img
+software/cct/*.bin
+software/cct/scm.nv

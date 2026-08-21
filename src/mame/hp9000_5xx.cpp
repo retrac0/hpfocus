@@ -43,7 +43,190 @@
 #include "machine/terminal.h"
 #include "sound/beep.h"  // terminal.cpp needs it linked; the scanner follows driver includes
 #include "emupal.h"
+
+#include <map>
+#include <tuple>
 #include "screen.h"
+
+//**************************************************************************
+//  MEDIA
+//**************************************************************************
+
+// A disc for the Series 500's drives, as a MAME image device: the 520's
+// flexible discs mount as -flop1/-flop2/-flop3 (the stack of volumes the
+// operator will feed the internal drive, in order), and the 540's CS/80
+// system disc as -hard1. Accepts the raw sector images the tools produce
+// and Teledisk .TD0 -- the format the BASIC distribution survives in --
+// decoded here so the shipped files mount directly.
+//
+// The Teledisk layout (normal compression only, which is all the Series
+// 500 images use): a 12-byte header, an optional comment block, then per
+// track a 4-byte header (sector count, cylinder, head, crc; count 0xFF
+// ends the image) and per sector a 6-byte header plus, unless flags say
+// otherwise, a data block of {length u16le, encoding u8, payload}:
+// encoding 0 = literal, 1 = a two-byte pattern repeated, 2 = RLE chunks.
+// Sectors are emitted in (cylinder, head, sector) order, matching
+// tools/td0.py, whose output these images were validated against.
+class hp_focus_media_device : public device_t, public device_image_interface
+{
+public:
+	hp_focus_media_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, uint32_t clock = 0);
+
+	virtual std::pair<std::error_condition, std::string> call_load() override;
+	virtual void call_unload() override { m_data.clear(); }
+
+	virtual bool is_readable() const noexcept override { return true; }
+	virtual bool is_writeable() const noexcept override { return false; }
+	virtual bool is_creatable() const noexcept override { return false; }
+	virtual bool is_reset_on_load() const noexcept override { return false; }
+	virtual const char *file_extensions() const noexcept override { return "img,td0"; }
+	virtual const char *image_type_name() const noexcept override
+	{ return m_hard ? "harddisk" : "floppydisk"; }
+	virtual const char *image_brief_type_name() const noexcept override
+	{ return m_hard ? "hard" : "flop"; }
+
+	hp_focus_media_device &set_hard() { m_hard = true; return *this; }
+	const std::vector<u8> &data() const { return m_data; }
+	bool has_media() const { return !m_data.empty(); }
+
+protected:
+	virtual void device_start() override ATTR_COLD { }
+
+private:
+	static bool decode_td0(const std::vector<u8> &in, std::vector<u8> &out);
+
+	std::vector<u8> m_data;
+	bool m_hard = false;
+};
+
+DEFINE_DEVICE_TYPE(HP_FOCUS_MEDIA, hp_focus_media_device, "hpfocus_media",
+		"HP 9000 Series 500 disc image")
+
+hp_focus_media_device::hp_focus_media_device(const machine_config &mconfig,
+		const char *tag, device_t *owner, uint32_t clock)
+	: device_t(mconfig, HP_FOCUS_MEDIA, tag, owner, clock)
+	, device_image_interface(mconfig, *this)
+{
+}
+
+std::pair<std::error_condition, std::string> hp_focus_media_device::call_load()
+{
+	std::vector<u8> raw(length());
+	if (fread(raw.data(), raw.size()) != raw.size())
+		return std::make_pair(image_error::UNSPECIFIED, "short read");
+
+	if (raw.size() >= 12 && raw[0] == 'T' && raw[1] == 'D')
+	{
+		if (!decode_td0(raw, m_data))
+			return std::make_pair(image_error::INVALIDIMAGE,
+					"Teledisk image did not decode");
+	}
+	else if (raw.size() >= 12 && raw[0] == 't' && raw[1] == 'd')
+		return std::make_pair(image_error::UNSUPPORTED,
+				"Teledisk advanced (LZH) compression is not supported");
+	else
+		m_data = std::move(raw);
+
+	if (m_data.empty() || (m_data.size() % 256) != 0)
+		return std::make_pair(image_error::INVALIDIMAGE,
+				"not a whole number of 256-byte sectors");
+	return std::make_pair(std::error_condition(), std::string());
+}
+
+bool hp_focus_media_device::decode_td0(const std::vector<u8> &in,
+		std::vector<u8> &out)
+{
+	static constexpr unsigned SIZES[7] =
+			{ 128, 256, 512, 1024, 2048, 4096, 8192 };
+	auto u16le = [&in](size_t p) -> unsigned
+	{ return in[p] | (unsigned(in[p + 1]) << 8); };
+
+	// (cylinder, head, sector) -> payload; emitted in key order.
+	std::map<std::tuple<u8, u8, u8>, std::vector<u8>> sectors;
+
+	size_t p = 12;
+	if (in[7] & 0x80)                       // comment block
+	{
+		if (p + 10 > in.size())
+			return false;
+		p = 22 + u16le(14);
+	}
+	while (p + 4 <= in.size())
+	{
+		const u8 nsec = in[p], cyl = in[p + 1], head = in[p + 2];
+		p += 4;
+		if (nsec == 0xff)
+			break;
+		for (unsigned k = 0; k < nsec; k++)
+		{
+			if (p + 6 > in.size())
+				return false;
+			const u8 scyl = in[p], shead = in[p + 1], snum = in[p + 2];
+			const u8 scode = in[p + 3], flags = in[p + 4];
+			p += 6;
+			(void)cyl; (void)head;
+			const unsigned size = scode < 7 ? SIZES[scode] : 0;
+			if (flags & 0x30)               // no data block follows
+				continue;
+			if (p + 2 > in.size())
+				return false;
+			const unsigned blen = u16le(p);
+			p += 2;
+			if (p + blen > in.size() || blen < 1)
+				return false;
+
+			std::vector<u8> sec(size, 0);
+			const u8 enc = in[p];
+			const size_t body = p + 1, bend = p + blen;
+			if (enc == 0)
+			{
+				const size_t n = std::min<size_t>(size, bend - body);
+				std::copy(in.begin() + body, in.begin() + body + n, sec.begin());
+			}
+			else if (enc == 1)
+			{
+				if (body + 4 <= bend)
+					for (size_t k2 = 0; k2 < size; k2++)
+						sec[k2] = in[body + 2 + (k2 & 1)];
+			}
+			else if (enc == 2)
+			{
+				size_t q = body, o = 0;
+				while (q + 1 < bend && o < size)
+				{
+					const u8 kind = in[q], n = in[q + 1];
+					q += 2;
+					if (kind == 0)
+					{
+						for (unsigned k2 = 0; k2 < n && q < bend && o < size; k2++)
+							sec[o++] = in[q++];
+					}
+					else
+					{
+						const unsigned width = 2 * kind;
+						if (q + width > bend)
+							break;
+						for (unsigned r = 0; r < n && o < size; r++)
+							for (unsigned k2 = 0; k2 < width && o < size; k2++)
+								sec[o++] = in[q + k2];
+						q += width;
+					}
+				}
+			}
+			else
+				return false;
+			p += blen;
+			sectors[{ scyl, shead, snum }] = std::move(sec);
+		}
+	}
+
+	out.clear();
+	for (auto &kv : sectors)
+		out.insert(out.end(), kv.second.begin(), kv.second.end());
+	return !out.empty();
+}
+
 
 namespace {
 
@@ -58,6 +241,8 @@ public:
 		, m_terminal(*this, "terminal")
 		, m_keyboard(*this, "keyboard")
 		, m_screen(*this, "screen")
+		, m_floppy(*this, "floppy%u", 1U)
+		, m_hard(*this, "harddisc")
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -75,6 +260,7 @@ private:
 	void attach_probes();
 	void install_boot_image(const std::vector<u8> &img, const char *whence);
 	bool boot_from_disc();
+	bool boot_from_cs80();
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 
@@ -100,6 +286,8 @@ private:
 	optional_device<generic_terminal_device> m_terminal;
 	optional_device<generic_keyboard_device> m_keyboard;
 	optional_device<screen_device> m_screen;
+	optional_device_array<hp_focus_media_device, 3> m_floppy;
+	optional_device<hp_focus_media_device> m_hard;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -472,16 +660,13 @@ void hp9000_5xx_state::machine_start()
 	// SC6 keyboard interrupts are enabled by the hardware itself; the
 	// internal disc's select code is armed the same way when present.
 	m_iop.enable_interrupt(6);
-	if (getenv("FOCUS_DISC"))
+	// The 520's internal disc is built-in hardware, always present, at
+	// select code 7 -- where the 530/540 put the SCM instead.
+	if (!m_console_is_asi)
 		m_iop.enable_interrupt(7);
 
-	// FOCUS_PROBE=<select code>[:<identity>] parks a logging card in an
-	// empty slot, which is how what a driver expects of a controller we
-	// do not have gets read off a run.
-	// The internal disc sits where the System Control Module answers the
-	// boot handoff; FOCUS_DISC puts it in, while what it should say to
-	// the driver is still being established.
-	if (getenv("FOCUS_DISC"))
+	// The 520's internal disc.
+	if (!m_console_is_asi)
 	{
 		m_disc.iop = &m_iop;
 		m_disc.log = getenv("FOCUS_DISCLOG") != nullptr;
@@ -531,6 +716,17 @@ void hp9000_5xx_state::machine_start()
 			m_disc.mount(m_media.front());
 		m_disc.reset_self_test();
 		m_iop.attach(7, &m_disc);
+	}
+
+	// The 540's system disc: the HP-IB card in slot 5 (9030/40 CE
+	// Handbook 2-3), unless FOCUS_HPIB placed it elsewhere above.
+	if (m_console_is_asi && !getenv("FOCUS_HPIB"))
+	{
+		m_hpib.iop = &m_iop;
+		m_hpib.pa = 5;
+		m_hpib.log = getenv("FOCUS_HPIBLOG") != nullptr;
+		m_iop.attach(5, &m_hpib);
+		m_iop.enable_interrupt(5);
 	}
 	attach_probes();
 	m_cpu->set_io(&m_iop);
@@ -946,10 +1142,12 @@ void hp9000_5xx_state::machine_reset()
 			? static_cast<focus::iop_interface *>(&m_asi)
 			: static_cast<focus::iop_interface *>(&m_dim));
 	m_iop.attach(6, &m_console6);
-	if (getenv("FOCUS_DISC"))
+	if (!m_console_is_asi)
 		m_iop.attach(7, &m_disc);
 	if (const char *e = getenv("FOCUS_HPIB"))
 		m_iop.attach(strtoul(e, nullptr, 0) & 7, &m_hpib);
+	else if (m_console_is_asi)
+		m_iop.attach(5, &m_hpib);
 	attach_probes();
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
@@ -962,8 +1160,76 @@ void hp9000_5xx_state::machine_reset()
 	const u8 *rom = memregion("loader") ? memregion("loader")->base() : nullptr;
 	m_scm.set_rom(rom, focus::scm_device::ROM_SIZE);
 
-	if (!m_media.empty())
+	// The volumes in the drive come from the mounted image devices, in
+	// slot order; FOCUS_FLOPPY's list (loaded at start) stands only when
+	// nothing is mounted, as compatibility for old scripts. Re-reading
+	// them each reset means a disc mounted through the UI boots on the
+	// next soft reset.
+	{
+		std::vector<std::vector<u8>> media;
+		for (auto &f : m_floppy)
+			if (f && f->has_media())
+				media.push_back(f->data());
+		if (!media.empty())
+			m_media = std::move(media);
+	}
+
+	if (m_console_is_asi)
+	{
+		// The 540 boots from its CS/80 system disc on the HP-IB card.
+		if (m_hard && m_hard->has_media())
+		{
+			m_hpib.disc.image = m_hard->data();
+			boot_from_cs80();
+		}
+	}
+	else if (!m_media.empty())
 		boot_from_disc();
+}
+
+
+// Boot the 540 from the CS/80 disc on its HP-IB card, the way the loader
+// ROM does ("CS80 DEVICE: SELECT CODE NN" is its own error vocabulary).
+// A hard disc carries the boot descriptor at block 0 and the image from
+// byte 0x400 -- the layout the 7914 unit save uses -- and every byte is
+// read through the device's Locate-and-Read path, bounds checks and all.
+bool hp9000_5xx_state::boot_from_cs80()
+{
+	constexpr u32 MAGIC = 0xe9c28206;
+	constexpr u32 SECTOR = focus::cs80_device::BLOCK;
+
+	std::vector<u8> desc;
+	if (!m_hpib.disc.read_blocks(0, SECTOR, desc))
+	{
+		osd_printf_error("boot: cannot read the system disc\n");
+		return false;
+	}
+	auto beword = [&desc](u32 off) {
+		return (u32(desc[off]) << 24) | (u32(desc[off + 1]) << 16)
+				| (u32(desc[off + 2]) << 8) | desc[off + 3];
+	};
+	if (beword(0) != MAGIC)
+	{
+		osd_printf_error("boot: the system disc is not bootable -- block 0 "
+				"begins %08x, not the boot magic %08x\n", beword(0), MAGIC);
+		return false;
+	}
+	const u32 total = beword(4);
+	if (total > RAM_SIZE - 0x100000)
+	{
+		osd_printf_error("boot: image of %u bytes will not fit\n", total);
+		return false;
+	}
+
+	std::vector<u8> image;
+	if (!m_hpib.disc.read_blocks(0x400 / SECTOR, total, image))
+	{
+		osd_printf_error("boot: the system disc is short\n");
+		return false;
+	}
+	logerror("boot: %u bytes from the CS/80 system disc\n", total);
+	install_boot_image(image, "the system disc");
+	return true;
 }
 
 
@@ -1368,6 +1634,16 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	GENERIC_KEYBOARD(config, m_keyboard, 0);
 	m_keyboard->set_keyboard_callback(FUNC(hp9000_5xx_state::kbd_put));
 
+	// The internal flexible drive's media: a boot image is a SET of
+	// volumes (BASIC is two, the diagnostics three), so three mounts
+	// stand for the stack of discs the operator will feed the one drive,
+	// in order. Raw sector images or Teledisk .TD0 both mount.
+	HP_FOCUS_MEDIA(config, m_floppy[0]);
+	HP_FOCUS_MEDIA(config, m_floppy[1]);
+	HP_FOCUS_MEDIA(config, m_floppy[2]);
+
+	// The quickload remains as a debug side door for images that exist
+	// only as files; the supported path is booting from the discs.
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));
 }
@@ -1387,6 +1663,11 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 
 	GENERIC_TERMINAL(config, m_terminal, 0);
 	m_terminal->set_keyboard_callback(FUNC(hp9000_5xx_state::term_put));
+
+	// The system disc: a CS/80 drive on the HP-IB card in slot 5, where
+	// the install procedure puts it. The 7914 unit-save image mounts
+	// here and the machine boots HP-UX from it.
+	HP_FOCUS_MEDIA(config, m_hard).set_hard();
 
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));
