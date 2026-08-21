@@ -1263,6 +1263,18 @@ private:
 			// four-word shape as a real stack marker, but its first slot
 			// chains to the previous frame instead of holding X. The chain
 			// head lives at (SB+2) as an SB-relative byte offset.
+			static const bool try_log = std::getenv("FOCUS_TRYLOG") != nullptr;
+			if (try_log)
+			{
+				static unsigned n = 0;
+				if (n++ < 20000)
+				{
+					std::printf("[TRY%s p=%08x sb=%08x s=%08x q=%08x head=%08x]\n",
+							b3 ? ",B" : "", r.p, r.sb, r.s, r.q,
+							m_mem.read32(r.sb + 8));
+					std::fflush(stdout);
+				}
+			}
 			if (b3)
 			{
 				r.s += 12;                          // three more words
@@ -1287,6 +1299,18 @@ private:
 		}
 
 		case 041: {                                             // ESCP
+			static const bool escp_log = std::getenv("FOCUS_TRYLOG") != nullptr;
+			if (escp_log)
+			{
+				static unsigned n = 0;
+				if (n++ < 4000)
+				{
+					std::printf("[ESCP%s p=%08x sb=%08x head=%08x val=%08x]\n",
+							b3 ? ",B" : "", r.p, r.sb, m_mem.read32(r.sb + 8),
+							b3 ? sb_word(3) : stk(0));
+					std::fflush(stdout);
+				}
+			}
 			if (on_escape)
 				on_escape(r.p, b3 ? sb_word(3) : stk(0));
 			// Unwinds to the innermost TRY frame by pointing Q at it and
@@ -3005,14 +3029,43 @@ private:
 		if (!te.ok()) return exec_trap::address_error;
 		u32 tba = te.addr;
 
+		// The move must behave like memmove, not memcpy: BASIC's line
+		// editor slides a stack frame sixteen bytes upward over itself
+		// (SETR 2 points Q at the new spot, then MVB 7 with count 0x108
+		// moves the frame -- source SB+0xb0, target SB+0xc0 -- so the
+		// stack marker lands at the new Q for the EXIT that follows). A
+		// naive ascending copy smears the first sixteen bytes across the
+		// whole region, the EXIT restores a marker made of the smear, and
+		// the machine dies two statements into any stored program. When
+		// the regions overlap so that a straight copy would read bytes
+		// already written, the copy runs from the far end instead.
 		s32 x = 0;
-		while (count > d * x)
+		static const bool no_memmove = std::getenv("FOCUS_NOMEMMOVE") != nullptr;
+		const bool overlap = !no_memmove && (d > 0)
+				? (tba > sba && tba < sba + u32(count))
+				: (tba < sba && sba < tba + u32(-count));
+		if (overlap)
 		{
-			m_mem.write8(tba, m_mem.read8(sba));
-			tba = u32(s32(tba) + d);
-			sba = u32(s32(sba) + d);
-			x += d;
+			// Same bytes, opposite order: start at the last element and
+			// walk back toward the first.
+			u32 tb2 = u32(s32(tba) + d * (count - d));
+			u32 sb2 = u32(s32(sba) + d * (count - d));
+			while (count > d * x)
+			{
+				m_mem.write8(tb2, m_mem.read8(sb2));
+				tb2 = u32(s32(tb2) - d);
+				sb2 = u32(s32(sb2) - d);
+				x += d;
+			}
 		}
+		else
+			while (count > d * x)
+			{
+				m_mem.write8(tba, m_mem.read8(sba));
+				tba = u32(s32(tba) + d);
+				sba = u32(s32(sba) + d);
+				x += d;
+			}
 		r.x = u32(x);
 		set_stk(0, u32(count - d * x));
 		r.s -= 4 * sdec;

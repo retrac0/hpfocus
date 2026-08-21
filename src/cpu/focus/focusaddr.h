@@ -23,6 +23,7 @@
 
 #include "focusstate.h"
 
+#include <cstdlib>
 #include <functional>
 
 #include <cstdint>
@@ -265,7 +266,8 @@ public:
 			// PL-relative SLOT itself in the named code segment --
 			// per-segment static storage addressed through PL, the way
 			// the STT is. If this is wrong the bounds trap stands.
-			if (out.t != trap::none && ers32::get(ptr, 0, 1) == 1 && m_cst)
+			static const bool no_fb = getenv("FOCUS_NOLABELDATA") != nullptr;
+			if (!no_fb && out.t != trap::none && ers32::get(ptr, 0, 1) == 1 && m_cst)
 			{
 				u32 base = 0, len = 0;
 				if (m_cst(ers32::get(ptr, 20, 12), base, len))

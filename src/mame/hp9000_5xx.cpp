@@ -300,6 +300,10 @@ private:
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
+	bool m_qcheck_hit = false;
+	std::array<std::pair<u32, u32>, 10> m_qtrail{};
+	size_t m_qtrail_at = 0;
+	u32 m_qtrail_last = 0, m_qtrail_prev_p = 0;
 	u32 m_break_at = 0;
 	unsigned m_break_hits = 0, m_break_max = 1;
 	bool m_traced = false;
@@ -776,6 +780,28 @@ void hp9000_5xx_state::machine_start()
 	// stack marker is usually gone too, so the trail has to be kept.
 	m_runaway = getenv("FOCUS_RUNAWAY") != nullptr;
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
+		// A short trail of Q changes: which instruction moved Q last is
+		// the question every corrupted-marker hunt ends at.
+		if (core.r.q != m_qtrail_last)
+		{
+			m_qtrail[m_qtrail_at] = std::make_pair(m_qtrail_prev_p, core.r.q);
+			m_qtrail_at = (m_qtrail_at + 1) % m_qtrail.size();
+			m_qtrail_last = core.r.q;
+		}
+		m_qtrail_prev_p = core.r.p;
+		// FOCUS_QCHECK reports the first instruction that runs with a
+		// misaligned Q or a STATUS whose CSN field is impossible -- the
+		// wreckage of a corrupted stack marker, caught at the moment of
+		// restoration rather than at the crash it causes later.
+		static const bool qcheck = getenv("FOCUS_QCHECK") != nullptr;
+		if (qcheck && !m_qcheck_hit && core.r.q != 0
+				&& ((core.r.q & 3) != 3 || core.r.status == 0xfffffffcu))
+		{
+			m_qcheck_hit = true;
+			std::printf("[qcheck: Q=%08x STATUS=%08x]\n",
+					core.r.q, core.r.status);
+			report_state("qcheck");
+		}
 		if (m_runaway)
 		{
 			if (!m_ran_away && (core.r.p >= RAM_SIZE || core.r.pb >= RAM_SIZE))
@@ -934,6 +960,13 @@ void hp9000_5xx_state::machine_start()
 			m_traced = true;
 			m_break_hits++;
 			std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
+			std::printf("  last Q changes (instruction that moved it -> new Q):\n");
+			for (size_t i = 0; i < m_qtrail.size(); i++)
+			{
+				const auto &e = m_qtrail[(m_qtrail_at + i) % m_qtrail.size()];
+				if (e.second)
+					std::printf("    P=%08x -> Q=%08x\n", e.first, e.second);
+			}
 			report_state("break");
 			// Stack words sit on the q-3 grid: operand (Q-k) is the word
 			// at byte q-k-3, so the window walks word slots from there.
@@ -1001,6 +1034,7 @@ void hp9000_5xx_state::machine_start()
 		for (const char *pc = e; *pc; pc++)
 		{
 			if (pc[0] == '\\' && pc[1] == 'n') { m_type_text.push_back('\n'); pc++; }
+			else if (pc[0] == '\\' && pc[1] == 'r') { m_type_text.push_back('\r'); pc++; }
 			else m_type_text.push_back(*pc);
 		}
 		const double at = getenv("FOCUS_TYPEAT")
