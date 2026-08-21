@@ -43,5 +43,13 @@ for arg in "$@"; do
     esac
 done
 
+# Video backend. MAME defaults to opengl, and a driver that cannot present
+# through it leaves a window that renders the blinking cursor and never
+# updates the text -- the machine running perfectly behind a screen that
+# looks dead. This display is 640x390 of character cells, so the software
+# renderer costs nothing and always works. A -video on the command line
+# comes after this one and wins, so any backend can still be asked for.
+VIDEO=(-video soft)
+
 exec env FOCUS_SCMNV="$CCT/scm.nv" FOCUS_ASIID=0 \
-    ./focus hp9040 -hard1 "$DISC" "${THROTTLE[@]}" -sound none "$@"
+    ./focus hp9040 -hard1 "$DISC" "${THROTTLE[@]}" "${VIDEO[@]}" -sound none "$@"
