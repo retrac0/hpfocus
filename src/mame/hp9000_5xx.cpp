@@ -134,6 +134,7 @@ private:
 	void report_state(const char *why);
 	void memory_find();
 	TIMER_CALLBACK_MEMBER(find_tick);
+	TIMER_CALLBACK_MEMBER(poke_tick);
 	TIMER_CALLBACK_MEMBER(state_tick);
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
@@ -145,6 +146,7 @@ private:
 	// boot image is a set, and the operator feeds the volumes one by one.
 	std::vector<std::vector<u8>> m_media;
 	unsigned m_boot_volumes = 0;   // how many of them the image needed
+	std::vector<std::pair<u32, u32>> m_pokes;   // FOCUS_POKE requests
 	// The 530/540 have no integrated display: select code 0 carries a
 	// serial interface card and the console is a terminal on the end of
 	// it. The 520 puts its display alphanumeric there instead.
@@ -756,6 +758,26 @@ void hp9000_5xx_state::machine_start()
 		emu_timer *const t = timer_alloc(FUNC(hp9000_5xx_state::find_tick), this);
 		t->adjust(attotime::from_double(strtod(e, nullptr)));
 	}
+	// FOCUS_POKE=<hex addr>:<hex value>[:<seconds>][,...] writes a word at
+	// a chosen moment -- the fake-V experiment: hand a waiting task the
+	// event nobody produces and watch whether the machine sails on, which
+	// confirms a blocker and shows the downstream in one run.
+	if (const char *e = getenv("FOCUS_POKE"))
+		for (std::string list(e); !list.empty(); )
+		{
+			const size_t comma = list.find(',');
+			const std::string one = list.substr(0, comma);
+			list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+			const u32 addr = strtoul(one.c_str(), nullptr, 16);
+			const char *colon = strchr(one.c_str(), ':');
+			const u32 val = colon ? strtoul(colon + 1, nullptr, 16) : 1;
+			const char *colon2 = colon ? strchr(colon + 1, ':') : nullptr;
+			const double at = colon2 ? strtod(colon2 + 1, nullptr) : 3.0;
+			m_pokes.push_back(std::make_pair(addr, val));
+			emu_timer *const t =
+					timer_alloc(FUNC(hp9000_5xx_state::poke_tick), this);
+			t->adjust(attotime::from_double(at), int(m_pokes.size() - 1));
+		}
 	if (const char *e = getenv("FOCUS_STATEAT"))
 		for (std::string list(e); !list.empty(); )
 		{
@@ -784,6 +806,17 @@ void hp9000_5xx_state::machine_start()
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
 {
 	memory_find();
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::poke_tick)
+{
+	const auto &req = m_pokes[size_t(param)];
+	const u32 before = m_cpu->core().read_mem32(req.first);
+	m_cpu->memory().write32(req.first, req.second);
+	std::printf("[poke %08x: %08x -> %08x at %.2fs]\n",
+			req.first, before, req.second, machine().time().as_double());
+	std::fflush(stdout);
 }
 
 

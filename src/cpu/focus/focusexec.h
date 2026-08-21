@@ -1033,6 +1033,22 @@ private:
 				if (!e.ok()) return exec_trap::address_error;
 				a = e.addr;
 			}
+			// FOCUS_SEMALL logs EVERY UP and DOWN with its raw operand
+			// and resolved address -- the census that catches a wake
+			// landing on the wrong word, which the block/wake hook
+			// cannot see (an UP with no waiter is silent there).
+			static const bool sem_all = std::getenv("FOCUS_SEMALL") != nullptr;
+			if (sem_all)
+			{
+				static unsigned census = 0;
+				if (census++ < 400)
+				{
+					std::printf("[%s%s ptr=%08x -> %08x count=%d p=%08x]\n",
+							op3 == 021 ? "DOWN" : "UP", b3 ? ",B" : "",
+							ptr, a, s32(m_mem.read32(a + 4)), r.p);
+					std::fflush(stdout);
+				}
+			}
 			const u32 head = m_mem.read32(a);
 			if (head == 0xffffffffu)
 			{
