@@ -30,7 +30,7 @@ stack; they differ in packaging, display, and I/O expansion.
 | Introduced | 1982 |
 | CPU | 1–3 × FOCUS, 32-bit, 18 MHz — see [FOCUS.md](FOCUS.md) |
 | Cache | 16 KB, off-chip **[secondary]** |
-| RAM | up to 10 MB |
+| RAM | up to 10 MB, on 512 KB or 1 MB cards (see §1.2) |
 | Internal disc | 9.896 MB formatted, 85 ms avg access, 205 ms max *(530/540 Service, 4849)* |
 | OS | HP-UX 1.0–5.3. **The 540 does not run BASIC** — that is 520-only. |
 
@@ -54,6 +54,14 @@ Population rules *(530/540 Service, same section)*:
 - A second IOP goes in slot 3; a third in slots 3 and 4.
 - No empty slot is permitted between two finstrates.
 - 1 MB RAM boards must be installed in pairs (2, 4, 6, 8, or 10).
+- Memory came on cards: HP's own 512 KB and 1 MB boards, and "commercial"
+  boards that accepted third-party DRAM. So the real range is 1 MB (two
+  512 KB boards) to 10 MB, and **no 520 ever had 16 MB**. The emulator's
+  size is set with `FOCUS_RAM=<kilobytes>`, default 2048; it is clamped to
+  the architectural 512 KB-10 MB and reported to the boot as the top of
+  memory, which the language system sizes itself from -- with 2 MB fitted
+  BASIC reports 1,625,476 bytes free and puts its per-task control block at
+  0x1fd500, where 16 MB put it at 0xffd500.
 - A *load board* occupies the top used slot when the stack is (a) one CPU +
   one IOP + one 512K RAM, or (b) all-1 MB RAM with fewer than six RAM boards.
 
@@ -275,6 +283,15 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 > **Simulator note.** The device-scan and DMA handshake above can be implemented
 > exactly. What the documents do *not* give is the on-media format the loader
 > recognises as "an OS", the load address, or the machine state at *Jump to OS*.
+> This emulator therefore *reconstructs* that state: the image is placed at
+> 1 MB and the loader's own stack hangs off the top of installed memory, with
+> the shape the powerup module expects (a base below the marker and half a
+> megabyte above it). Both are inventions that work, not documented values.
+> They had been absolute addresses at 14-15 MB, which only existed because the
+> driver claimed 16 MB of RAM; a real machine has at most 10, so the stack now
+> scales with what is fitted. One consequence of the 1 MB load address: the
+> smallest machine this emulator can boot is 2 MB, though a real 520 could be
+> built with 1 MB (two 512 KB boards).
 > Those are recoverable by disassembling the HP-UX boot image once the CPU core
 > exists — see [SOFTWARE.md](SOFTWARE.md#the-loader-rom-question), and §3.3
 > below for what has already been recovered.

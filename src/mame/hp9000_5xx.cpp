@@ -356,7 +356,31 @@ private:
 // boot handoff this driver performs: the powerup module sizes memory from
 // the top-of-memory word at Q+64, and the loader's stack lives just below
 // the top (SB 0xe00000, Q 0xf00203).
-static constexpr u32 RAM_SIZE = 16 * 1024 * 1024;
+// How much RAM the machine has. No 520 had 16 MB: memory came on cards
+// carrying 512 KB or 1 MB each -- HP's own boards, and the "commercial"
+// ones that took third-party DRAM -- with two to ten of them on the
+// backplane, so 1 MB at the bottom and 10 MB at the very top, and the
+// 1 MB boards had to be fitted in pairs (HARDWARE.md 1.2). Claiming
+// more than the architecture allows is not a harmless over-provision:
+// the boot is handed the top of memory and the language system sizes
+// itself from it, so an impossible machine gets impossible answers --
+// BASIC was reporting 16,305,540 bytes free on a machine whose largest
+// real configuration is 10 MB.
+//
+// FOCUS_RAM=<kilobytes> sets it; the default is two 1 MB boards, a
+// plain mid-range 520.
+static u32 ram_size()
+{
+	static const u32 size = [] {
+		u32 kb = 2048;
+		if (const char *e = getenv("FOCUS_RAM"))
+			kb = u32(strtoul(e, nullptr, 0));
+		if (kb < 512) kb = 512;
+		if (kb > 10 * 1024) kb = 10 * 1024;
+		return kb * 1024;
+	}();
+	return size;
+}
 
 // The character cell the display's CRTC asks for: 15 scan lines tall, and
 // eight pixels wide for the font this build draws with.
@@ -367,7 +391,7 @@ static constexpr unsigned SCREEN_ROWS = 26;
 void hp9000_5xx_state::mem_map(address_map &map)
 {
 	map.unmap_value_high();
-	map(0x0000000, 0x0000000 + RAM_SIZE - 1).ram().share("ram");
+	map(0x0000000, 0x0000000 + ram_size() - 1).ram().share("ram");
 }
 
 
@@ -416,7 +440,7 @@ void hp9000_5xx_state::memory_find()
 				want.push_back(u8(strtoul(pair, nullptr, 16)));
 			}
 		unsigned found = 0;
-		for (u32 a = 0; a + want.size() <= RAM_SIZE && found < 12; a++)
+		for (u32 a = 0; a + want.size() <= ram_size() && found < 12; a++)
 		{
 			size_t k = 0;
 			while (k < want.size() && core.read_mem8(a + u32(k)) == want[k])
@@ -827,7 +851,7 @@ void hp9000_5xx_state::machine_start()
 		}
 		if (m_runaway)
 		{
-			if (!m_ran_away && (core.r.p >= RAM_SIZE || core.r.pb >= RAM_SIZE))
+			if (!m_ran_away && (core.r.p >= ram_size() || core.r.pb >= ram_size()))
 			{
 				m_ran_away = true;
 				std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
@@ -1370,7 +1394,7 @@ bool hp9000_5xx_state::boot_from_cs80()
 		return false;
 	}
 	const u32 total = beword(4);
-	if (total > RAM_SIZE - 0x100000)
+	if (total > ram_size() - 0x100000)
 	{
 		osd_printf_error("boot: image of %u bytes will not fit\n", total);
 		return false;
@@ -1505,9 +1529,17 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	core.r.pl = LOAD + beword(8) + 3;
 	core.r.p  = LOAD + entry_off;
 
-	core.r.sb = 0xe00000;
-	core.r.sl = 0xf7ffff | 3;
-	core.r.q  = 0xf00203;
+	// The loader's own stack, which the system replaces with per-task
+	// stacks in low memory as soon as it is up. These were absolute
+	// addresses up at 14-15 MB, which only existed because this driver
+	// claimed 16 MB of RAM; on a real machine they have to be inside the
+	// memory actually fitted. Keep the shape the boot expects -- a base
+	// below the marker, half a megabyte of room above it -- and hang it
+	// off the top of installed memory instead.
+	const u32 top = ram_size();
+	core.r.sb = top - 0x80000;
+	core.r.sl = (top - 4) | 3;
+	core.r.q  = core.r.sb + 0x203;
 	core.r.s  = core.r.q + 0x200;
 	core.r.db = 0;
 	core.r.dl = 0xffffff | 3;
@@ -1529,7 +1561,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	mem.write32(q + 2 * 4 - 3, 0);        // (Q+2): previous mask
 	mem.write32(q + 3 * 4 - 3, 0);        // (Q+3): device number
 	mem.write32(q + 52 - 3, LOAD);        // where the image was loaded
-	mem.write32(q + 64 - 3, RAM_SIZE);    // top of memory
+	mem.write32(q + 64 - 3, ram_size());    // top of memory
 	for (u32 i = 0; i < 20; i++)          // boot device record
 		mem.write8(q + 65 + i, 0);
 	mem.write32(q + 88 - 3, 0);
@@ -1670,7 +1702,7 @@ bool hp9000_5xx_state::boot_from_disc_source(bool from_fixed)
 		{
 			total = this_total;
 			volumes = nvols;
-			if (total > RAM_SIZE - 0x100000)
+			if (total > ram_size() - 0x100000)
 			{
 				osd_printf_error("boot: image of %u bytes will not fit\n", total);
 				return false;
@@ -1740,7 +1772,7 @@ QUICKLOAD_LOAD_MEMBER(hp9000_5xx_state::quickload_cb)
 {
 	constexpr u32 LOAD = 0x100000;
 	const u64 size = image.length();
-	if (size < 0x100 || LOAD + size > RAM_SIZE)
+	if (size < 0x100 || LOAD + size > ram_size())
 		return std::make_pair(image_error::INVALIDLENGTH,
 				"image empty or larger than RAM allows");
 
