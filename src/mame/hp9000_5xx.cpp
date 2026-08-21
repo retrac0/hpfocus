@@ -967,7 +967,14 @@ void hp9000_5xx_state::machine_start()
 				std::fflush(stdout);
 			}
 		}
-		if (m_ea_at && core.r.p == m_ea_at)
+		// FOCUS_EATRACEFROM=<emulated seconds> delays the arming, so a
+		// shared routine can be traced on a chosen later visit -- the
+		// compile-time call and the run-time call of the same helper are
+		// different questions.
+		static const double ea_from = getenv("FOCUS_EATRACEFROM")
+				? strtod(getenv("FOCUS_EATRACEFROM"), nullptr) : 0.0;
+		if (m_ea_at && core.r.p == m_ea_at
+				&& machine().time().as_double() >= ea_from)
 			m_ea_armed = true;
 		if (m_traced && m_trace_left)
 		{
