@@ -1659,7 +1659,19 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// probably a CAPS toggle held in the keyboard board's own state, or a
 	// modifier reported outside the keycode; identifying it needs another
 	// sweep of the board's registers. Upper-case-named files load fine.
-	const u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
+	// Case. The holding register is a 7-bit keycode plus Shift and
+	// Control bits (520 Service, "Theory of Operation" 2-33), so bit 7
+	// of the translation index is Shift -- and on this machine the
+	// unshifted letter is the UPPER case one, with shift giving lower
+	// case, the opposite of a modern keyboard. `DISP "abcABC"` types
+	// back exactly abcABC once the host's lower-case letters are the
+	// ones that carry the bit. Getting this backwards costs more than
+	// appearance: most of the demo disc's file names are lower case,
+	// and LOAD answers ERROR 56, file name is undefined, for a name
+	// whose case does not match.
+	u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
+	if (!getenv("FOCUS_RAWKEYS") && data >= 'a' && data <= 'z')
+		code |= 0x80;
 	if (getenv("FOCUS_RAWKEYS"))
 	{
 		// FOCUS_KEYOR adds flag bits above the 8-bit host byte, for
