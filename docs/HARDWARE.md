@@ -186,16 +186,35 @@ The SCM is on select code 7 and provides:
 - **the loader ROM for the power-up routines**
 - 2 KB of battery-backed memory
 
-Register detail is in the service manual around sheets 2255–2340 — notably
-`R2` bit 3 (self-test enabled) and bit 5 (RTC/NVM battery fail, latched at
-power-up and **valid only if read within four seconds of power-up**), and `R12`
-which loads a 16-bit address in complemented form.
+The full register allocation *(530/540 Service, 2-29/2-30)*:
 
-Other SCM registers: `R10` of SC7 is reserved for communication between the
-service processor and main system software (bidirectional via the IOP). Power
-Fail Warning sets bit 1 of `R2` and responds to an I/O poll on SC7; as little
-as **1 ms** may elapse before shutdown, and the bit self-clears if power is
-restored.
+| Register | Direction | Contents |
+|---|---|---|
+| `R1` | write | bit 1 clear fan-high, 2 enable self-test, 3 clear UPS warning, 4 clear key-input interrupt, 5 initiate stack self-test, **7 ROM DMA enable** (sets the address counters to all ones and the continuous poll response) |
+| `R2` | read | bit 0 RESET pressed, 1 power-fail warning, 2 fan high, 3 self-test enabled, 5 **RTC/NVM battery fail** (latched at power-up, valid only within four seconds of it), 12 START pressed, 13 continuous self-test latched, 14 NMI, 15 MEM DUMP pressed |
+| `R3` | read | self-identity code **4007 hex** — bit 14 is what the bootstrap scans select codes downward for |
+| `R4` / `R6` | read | loader ROM data |
+| `R8` / `R12` | write | RTC / NVM / ROM address; **readable too**, so a bit pattern written and read back tests the data bus |
+| `R9` | read/write | RTC data, low four bits |
+| `R10` | read/write | I/O to the service processor and service panel |
+| `R13` | read/write | NVM data byte |
+
+The **RTC** is sixteen four-bit locations behind a 32.768 kHz crystal: `R12`
+latches a location, then reads or writes of `R9` move data, and the address
+**auto-increments** afterwards so a block moves without re-latching. The
+**NVM** is 2048 eight-bit bytes of CMOS RAM holding configuration and service
+data; its address goes to `R12` **in complemented form**. Both run off a
+NiCad battery for at least ten days with the machine off. Power-fail sets `R2`
+bit 1 and answers an I/O poll on SC7; as little as **1 ms** may elapse before
+shutdown, and the bit self-clears if power returns.
+
+> **Observed.** HP-UX 5.30 drives exactly this: it polls a ready bit in `R1`,
+> then sweeps `R12` from `ffff` downward through `fff800` writing `R13` —
+> complemented, that is NVM 0 through 0x7ff, the whole part in order —
+> restoring the configuration the manual says the OS should restore after a
+> battery failure. Answering the `R1` poll (bit 7) is what lets the sweep
+> start; before that the kernel spun on it 200,000 times in three emulated
+> seconds. `R11` answers NVM data alongside `R13` in the running system.
 
 ### 2.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 
@@ -260,16 +279,221 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 > exists — see [SOFTWARE.md](SOFTWARE.md#the-loader-rom-question), and §3.3
 > below for what has already been recovered.
 
-### 2.6 Peripherals
+### 2.6 I/O cards (HP-CIO)
 
-| Card | Function |
+The plug-in I/O cards are standard **HP-CIO** cards shared with HP's other
+computer lines. Their technical references — HP's "27132A MP-CIO Technical
+Reference Package" (27132A is the *documentation product's* number, not a
+card; an earlier revision of this table mistook it for one) — are now in
+[bitsavers/](bitsavers/) with text extractions in [notes/](notes/), and
+everything below cites them.
+
+| Card | CIO ID | Function |
+|---|---|---|
+| 27112A | 1 | GPIO, 16-bit parallel *(27132-90003)* |
+| 27110A | 2 | HP-IB, IEEE-488-1978, up to 14 devices, controller or slave, hardware self-test *(27132-90002)* |
+| 27128A | 3 | single-channel asynchronous serial (ASI), RS-232C / V.24 / V.28 *(27132-90001)* |
+| 27130A | 5 | 8-channel asynchronous multiplexer, two 512-byte buffers per channel *(27132-90006)* |
+| 27122A | — | PSI programmable serial (bisync / HDLC / SDLC, RJE); identity set by downloaded firmware *(27132-90005)* |
+| 98760 | — | 520 built-in colour graphics display — see §2.7 |
+| 97060A | — | external graphics processor, with built-in HP-IB — see §2.7.5 |
+
+The **CIO ID** column is the card identity byte "per the CHANNEL I/O standard
+assignment" *(27112A Tech Ref, 3-25)*, returned as the first byte of the
+response to the IDY order. The powerup device scans observed in BASIC and
+HP-UX read the same value with `RIF3` — matching the 520's internal
+interfaces, which answer 4 (flexible disc), 5 (fixed disc) and 8 (bootstrap
+loader) there. FR3 as the identity register is consistent across every card
+observed so far.
+
+#### 2.6.0 How the CIO protocol reaches the FR registers *(observed)*
+
+The card references describe a channel vocabulary — write_control,
+write_command, write_order, read/write_data, read_status — and the I/O ERS
+describes sixteen FR registers per interface (§2.3). **No document in hand
+joins the two.** What follows was read off HP-UX 5.30 driving a card in slot
+0 of a 540, and it matches the internal disc controller's protocol closely
+enough that the two are evidently one house design:
+
+| | |
 |---|---|
-| 27110A | HP-IB, IEEE-488-1978, up to 14 devices, DMA with two performance modes, controller or slave, hardware self-test |
-| 27128A | single-channel asynchronous serial, RS-232C / V.24 / V.28 |
-| 27130A | 8-channel asynchronous multiplexer, two 512-byte buffers per channel |
-| 27132A | MP-CIO, 8/16-bit parallel with DMA; clocked and transparent modes |
-| 98760 | 520 built-in colour graphics display — see §2.7 |
-| 97060A | external graphics processor, with built-in HP-IB — see §2.7.5 |
+| `FR1` read | card status: **bit 7 configured / self test passed, bit 6 self test complete, bit 0 an event code is waiting**. A driver polls here and will not proceed until bits 7 and 6 are both set — answering `0x80` alone leaves it polling forever (200,000 reads in three emulated seconds); `0xc0` sets it going. |
+| `FR1` write | commands: 1 is the attention-request disable the IOP's own poll issues (I/O ERS 4.4, and the CIO write_control byte's bit 0), 2 acknowledges the event standing in FR9. |
+| `FR3` read | the presence/registration identity. The powerup scan registers a slot only when this reads **0**; the CIO card-ID byte (§2.6) is a different thing, carried in the identify *response*. |
+| `FR8` write | the transaction command byte. **0 = identify.** |
+| `FR9` write | a configuration word, `(2 << 4) | pa` — `0x20` in slot 0. LCS80 sends the disc controller the identical word; the high nibble's meaning is unestablished on either card. |
+| `FR9` read | the event code being announced. Dispatched by high nibble: 1, 2 and 4 are completion classes, 3 and anything above `0x4f` an error. |
+
+A transaction is an **ICEI command list** (§2.2, opcode 070), exactly as for
+the disc: the driver writes the configuration word, then builds a list of
+`WIF8 <command>`, `SIL <level>`, `DDMA`, `WDS`, `WDA`, `WDC`, `SDEC` and
+points the device's DRT entry at it. For identify the list's `WDC` is **2** —
+the answer is one halfword, and that halfword types the slot. When the leg
+completes the card posts an event, asserts ASYNC, and the driver reads the
+code from FR9.
+
+Observed in full on a 540 boot, in order: powerup presence test (FR1, FR3 ×3,
+`WIF0 1<<pa`, FR1 echo) → driver polls FR1 for `0xc0` → `WIF9 0x20` → ICEI
+with `WIF8 0` and a 2-byte input leg → completion event → `RIF9`. The driver
+then returns to its wait; what it does with the event code, and what the
+identify halfword must be for it to bind, are the next things to find out
+(the value makes no difference to the flow so far, and neither does the event
+class).
+
+#### 2.6.1 Common channel protocol
+
+All four documented cards implement the same CIO card-level protocol, each
+supporting a subset (a card **accepts and discards** any control, command or
+order it does not support — *27110A Tech Ref, 4-1/4-2*):
+
+- **write_control** — a bit-per-function byte: bit 0 `ARD` attention-request
+  disable, 1 `ARE` attention-request enable, 2 `RQA` request attention,
+  3 NMI acknowledge, 4 `DEN` device enable, 5 `DCL` device clear. (The
+  I/O ERS's attention mechanism — §4.4 there — has the IOP writing 1 to a
+  card's FR1 on an attention poll response; that write is this register,
+  bit 0 = ARD. Kernel drivers observed writing FR1 during resets are using
+  the same register.)
+- **write_command** (opcode in bits 7:4): 0 `DSC[subch]` disconnect
+  subchannel + abort, 1 `AEK[n]` asynchronous event acknowledge, 2
+  `CSC[subch]` connect subchannel, 4 `RSC[subch]` resume subchannel.
+- **write_order** (opcode in bits 7:4): 0 `IDY` identify, 1 `DLD` download,
+  2 `PAU` pause, 3 `DIS` disconnect, 4 `RS` read status, 5 `WC` write
+  control, 6 `RD` read data, 7 `WD` write data, 8 `RTS` / 9 `WTC`
+  transparent status/control.
+- **Attention Request (ARQ)**: the card posts **one Level-2 status byte at a
+  time**; every ARQ must be acknowledged by a host read_status before the
+  next ARQ-raising event can be reported. `RQA` from the host is answered
+  with an `RFC` (ready-for-command) status byte; spontaneous events post
+  `AES` (asynchronous event sensed) *(27110A Tech Ref, 4-3/4-4)*.
+- **IDY** returns an identity block: byte 0 = card ID, then
+  firmware ID, a 16-bit firmware revision, a multiplexing-capability byte,
+  ports−1, max-requests-per-port−1, and the maximum guaranteed data
+  blocking size *(27128A Tech Ref, 4-67)*.
+- **Reset lattice** *(27110A Tech Ref, 4-6)*: `PPON` resets everything;
+  `RST` resets the channel interface and the card (self-test runs, LED
+  lights then clears); `DCL` = RST but preserves the device address; `DSCn`
+  aborts only the transaction in flight, losing up to the card's buffered
+  bytes (14 on the HP-IB card).
+
+The ASI and MUX layer a **transaction protocol** above this: each read or
+write is opened by a Connect Logical Channel (CLC) request block —
+
+```
+byte 0   S | BLK | -- | -- | request code (4 bits)      + high logical channel no.
+byte 1-2 logical channel number (host-assigned, kept for the transaction)
+byte 3   subfunction code (request-specific)
+byte 4   port ID (ASI: always 0; MUX: logical port, remappable via WCC SF 34)
+byte 5-6 data length, 16-bit
+```
+
+with request codes 1 read device data, 2 write device data, 3 control device
+(ASI only), 4 read card information, 5 write card configuration, 6 control
+card *(27128A Tech Ref, 4-3/4-4; 27130A Tech Ref, 4-3)*.
+
+#### 2.6.2 27110A HP-IB — the mass-storage path
+
+The card that matters most for emulation: external CS/80 discs and tapes hang
+off it, and its firmware **speaks CS/80 natively**. Host requests are
+"transactions" of up to three Level-2 parts — Control block, Data block,
+Status block *(Tech Ref, 4-8)*. The control block's first byte routes on bits
+7:6: `00` = general card control (opcode in 5:0), `10` = **CS/80** (bit 5
+clear) or mag tape (bit 5 set), `11` = raw HP-IB data transfer; bits 3:0 are
+data-present, read/write and CRC flags *(Tech Ref, 4-9)*.
+
+General opcodes (hex) *(Tech Ref, table 4-1)*: 1/2 set/clear REN, 3 send
+IFC, 4/5 configure/read PPOLL response, 6 configure SRQ, 7 read reason for
+interrupt, 8/9 write/read interrupt mask, A wait for interrupt, **B go
+online** (the card powers up offline and inert), C go offline, D/E
+assert/deassert ATN, F PPOLL sense, 10 conduct PPOLL, 11/12 configure/read
+HP-IB address, 13 AMIGO identify configuration, 14 last secondary address,
+15/16 freeze on parity fail on/off.
+
+A **CS/80 transaction** *(Tech Ref, 4-30/4-31)* carries: byte 1 don't-wait +
+SPD/UNT/UNL flags, bytes 2–5 unused, byte 6+ the device's HP-IB address
+(0–7) and a secondary (F2 = control, E5 = transparent), then the CS/80
+command message itself; the card runs the whole bus dialogue (talk address,
+UNL, listen address, secondary, data, PPOLL wait) and returns a status block
+of TSTAT, then QSTAT, then — if QSTAT ≠ 0 — the 20-byte CS/80 Request
+Status report it fetched automatically. TSTAT 0 = no exceptional condition;
+1–8 encode read-termination causes (EOI / count / IF / MSA, with odd-count
+variants) *(Tech Ref, table 4-2)*. AMIGO identify is not a distinct
+transaction — it is composed from raw data transfers *(Tech Ref, 4-35)*.
+
+Reset behaviour and the ARQ freeze rules are §2.6.1's. IFC is **not**
+asserted at power-up; nothing touches the bus until "go online".
+
+#### 2.6.2a The 530/540 console is a serial card
+
+Worth stating plainly, because it changes what "bring up the console" means
+on those machines: **the 530 and 540 have no console hardware of their own.**
+The CE handbook's installation procedure says to put the "System Terminal
+(console) Interface Card in slot 0" — select code 0 — and the System Disc
+HP-IB in slot 5, then sets the terminal to 9600 baud, 8 bits, no parity,
+ENQ/ACK, XON/XOFF pacing *(9030/40 CE Handbook, 2-3)*. Both the ASI and the
+MUX are listed as the card for that slot.
+
+HP-UX's own module directory confirms it. The 5.30 boot image (the 7914 unit
+save) carries these segments among others:
+
+| Segment | Module | |
+|---|---|---|
+| 11 | `TTY SUBSYSTEM` | standard |
+| 32 | **`HP27128/30`** | one driver for *both* the ASI and the MUX |
+| 43 | `INTERNAL_HP-IB` | the built-in HP-IB the internal 9.9 MB disc hangs off |
+| 51 | **`HP27110`** | the plug-in HP-IB card |
+| 10 | `SDF_DISC` | the filesystem |
+
+So on a 540 the whole console path is documented hardware (§2.6.3), and the
+whole mass-storage path is CS/80 over HP-IB (§2.6.2, §2.8) — including the
+internal disc, which the service manual reaches through an "Internal HP-IB
+interface" *(530/540 Service, 3-13)* rather than the 520's LCS80 controller.
+The loader ROM's error codes name the same protocol: `CS80 DEVICE: SELECT
+CODE NN`, `HPIB CARD: SELECT CODE NN` *(same sheet)*.
+
+#### 2.6.3 27128A ASI
+
+Z-80A-based, one RS-232 port to 19,200 baud full-duplex. Its identity block:
+ID 3, firmware ID 0, MPX = 1 (in-channel multiplexing), 1 port, 3 requests
+per port, guaranteed blocking size 200 *(Tech Ref, 4-67)*. The firmware owns
+the byte stream: received characters run a fixed pipeline — error
+conditions, signal-character detect, software handshake (host/device
+ENQ-ACK and X-ON/X-OFF, all four programmable), edit mode
+(backspace/line-delete with quoting), character stripping, single/double
+text terminators, prompt sequence, end-on-count — and are delivered as
+**terminated records** whose termination code reports which condition ended
+them (codes > 16 = the same code + an error flag) *(Tech Ref, 4-5/4-66)*.
+Configuration is all through write-card-configuration subfunctions (baud,
+format, handshake characters, timeouts).
+
+#### 2.6.4 27130A 8-channel MUX
+
+The same firmware family as the ASI (Z-80A, identical CLC model and receive
+pipeline) with eight ports behind one select code: identity ID 5, port ID
+meaningful (logical→physical mapping configurable via WCC SF 34), request
+codes 1/2/4/5/6 *(Tech Ref, 4-3)*. This is the terminal fan-out card for
+multi-user HP-UX on the 530/540.
+
+#### 2.6.5 27112A GPIO
+
+The only fully register-level card — no microprocessor between the channel
+and the wires. Two write registers and three read registers, selected by the
+last order *(Tech Ref, 3-21..3-25)*:
+
+| Order | Register | Content |
+|---|---|---|
+| `WD` | Data Output (16 bit) | drives DOUT[15:0] |
+| `WC` | Control Output | CTL[1:0] drive lines + status-interrupt enables |
+| `RD` | Data Input (16 bit) | DIN[15:0] as of last input clock |
+| `RS` | Status Input | bit 7:5 INT enables echo, 3:2 CTL echo, 1:0 STS[1:0] |
+| `IDY` | Identity | constant **1** |
+
+Identity, status and control interactions force a data-part length of one
+(DEND on the first byte); data interactions handshake with the peripheral
+(PEND → DEND) and may repeat without re-issuing the order. Subchannel
+connection comes first via write_adapter_command (STT), after which the card
+raises SRQ whenever ready *(Tech Ref, 3-25/3-26)*. Word or byte transfers,
+switch-selected handshake modes. This is the card the 97060A graphics
+processor connects through (§2.7.5).
 
 ### 2.7 Display subsystem *(Model 520 only)*
 
@@ -442,6 +666,103 @@ register), `CLEAR` 60, `DRAW` 61, `ARC` 62, `FFILL` 65, `AFILL1/2` 68/69, `CHAR`
 a useful model of how HP structured graphics commands of this era, but the
 built-in display shares none of it.
 
+### 2.8 CS/80 — the mass-storage command set
+
+Every Series 500-era HP disc and tape speaks **CS/80** (Command Set '80),
+whether reached through the 27110A card (§2.6.2) or through the 520's
+internal disc interface — the BASIC kernel's internal-disc driver module is
+literally named `LCS80`. The full specification is now in hand:
+`5955-3442_CS80_Instruction_Set_Programming_Manual.pdf` (118 pages, no text
+layer in the original — OCR'd into [notes/](notes/)). Citations below are
+its section-page numbers.
+
+**Transaction model** *(1-7..1-10)*: every operation is a *transaction* of
+up to three phases — a **command message** (host→device: one or more
+complementary opcodes plus at most one real-time / general-purpose /
+diagnostic opcode, each with parameters), an optional **execution message**
+(the data), and a mandatory one-byte **reporting message**:
+
+```
+QSTAT = 0  normal completion
+        1  hard error — issue Request Status to learn what
+        2  power-on — device reset / media changed / operator intervention
+```
+
+*(3-13)* — exactly the semantics the running BASIC driver was observed to
+enforce (a cold device must answer 2 until a Request Status collects it).
+
+**Key opcodes** (full table: manual appendix B, table B-1):
+
+| op | command | class |
+|---|---|---|
+| `0x00` | Locate and Read | real time |
+| `0x02` | Locate and Write | real time |
+| `0x04` | Locate and Verify | real time |
+| `0x06` | Spare Block (param bit S: skip/jump spare) | real time |
+| `0x08` | Copy Data | real time |
+| `0x0A` | Cold Load Read | real time — bootstrap: read without prior addressing |
+| `0x0D` | Request Status (20-byte report) | diagnostic |
+| `0x0E` / `0x0F` | Release / Release Denied | general purpose |
+| `0x10`/`0x11` | Set Address, single-vector / 3-vector (6-byte parameter) | complementary |
+| `0x12` | Set Block Displacement (6-byte signed) | complementary |
+| `0x18` | Set Length (4-byte; all-ones = "whole volume") | complementary |
+| `0x20`+u | Set Unit (u = 0–14; 15 = device controller) | complementary |
+| `0x30`–`0x33` | Initiate Utility (up to 8-byte parameter) | diagnostic |
+| `0x34` | No Op | complementary |
+| `0x35` | Describe | general purpose |
+| `0x38` | Set Options | complementary |
+| `0x39` / `0x3A` | Set RPS / Set Retry Time | complementary |
+| `0x3B` | Set Release (param: T = suppress 2 s timeout, Z = auto-release) | complementary |
+| `0x3C`/`0x3D` | Set Burst (off/on, 1-byte parameter) | complementary |
+| `0x3E` | Set Status Mask (8-byte parameter) | complementary |
+| `0x40`+v | Set Volume (v = 0–7) | complementary |
+| `0x48`+t | Set Return Addressing Mode (single / 3-vector) | complementary |
+
+**Describe** *(2-25/2-26)* returns up to 256 bytes: a 5-byte controller
+field, then per unit a 19-byte unit field and 13-byte volume field(s) —
+addressed to unit 15 it enumerates everything, addressed to a unit it
+returns `[controller][unit][current volume]`. Field layout: controller =
+installed-unit mask (2), max burst rate kB/s (2), controller type (1);
+unit = generic type (0 fixed disc / 1 removable / 2 tape), 6-digit BCD
+product number, bytes-per-block, blocks-bufferable, burst size, block time
+µs, continuous transfer rate, optimal retry time, access time, max
+interleave, fixed/removable volume masks; volume = max cylinder (3), max
+head (1), max sector (2), **max single-vector address (6)**, current
+interleave (1). A block-addressed (single-vector) volume reports max
+cylinder/head/sector as zero — precisely the shape the 520's driver
+requires before it will take the single-vector path. Real Describe
+responses captured from a 7908, 7914, 7935 and 9133H are in
+[bitsavers/cs80describes/](bitsavers/cs80describes/) as reference data.
+
+**Request Status** *(2-35, table 2-5)* returns 20 bytes: 2 identification
+(volume/unit, lowest unit with status pending), 8 of error flags in four
+2-byte fields — reject (bit 2 channel parity, 5 illegal opcode, 6 module
+addressing, 7 address bounds, 8 parameter bounds, 9 illegal parameter, 10
+message sequence, 12 message length), fault (17 cross-unit, 19 controller
+fault, 22 unit fault, 24 diagnostic result, 26–28 release required, 30
+power fail, 31 retransmit; all unmaskable), access (32 illegal parallel
+operation, 33 uninitialized media, 34 no spares available, 35 not ready,
+36 write protect, 41 unrecoverable data, 43 end of file, 44 end of
+volume), information (48–50 request release, 51 media wear, 52 latency
+induced, 55 auto sparing, 57 recoverable data, 58 marginal data, 61
+maintenance track overflow) — then 10 parameter bytes bound to the
+highest-priority reported error. Reading the
+report clears it. The **Clear** transparent command aborts the current
+operation, resets all complementary parameters to power-on values and
+resets status except a pending diagnostic result *(3-3)*.
+
+**Internal drives.** The 520's flexible drive is the **9130K**; its service
+manual (`09130-90030`, also now in [bitsavers/](bitsavers/)) covers the raw
+mechanism and its ribbon interface, not the 520's controller card: 3.5"
+media, 70 tracks over two heads, 16 sectors × 256 data bytes (362 with
+overhead) per track, 286,720 formatted bytes, logical track addresses
+written in sector ID fields for defect stepping *(9130K Service, 1-5/3-9)*.
+This confirms the geometry recovered from the TD0 boot images. The
+CS/80-level behaviour of the internal interface (identity 4/5 at FR3, the
+FR1 command/reset register, FR0/FR6 data latch, QSTAT semantics) was
+recovered from the running system and is recorded in the emulator source
+(`src/iop/focusdisc.h`), not any manual in hand.
+
 ---
 
 ## 3. Boot media
@@ -595,8 +916,15 @@ bugs to avoid.
    role as an MPB processor hardwired to channel 0 (see
    [hpjournal/](hpjournal/)), and the probing code itself is the fallback —
    the route that already recovered `WTC`'s leave-operands-on-stack behaviour.
-3. **Disc interface** — the internal 9.9 MB drive's controller and protocol are
-   not yet pinned down.
+3. **Disc interface** — largely closed: the CS/80 instruction set is fully
+   documented (§2.8) and the internal interface's register behaviour has been
+   recovered from the running system (`src/iop/focusdisc.h`). Still open: the
+   register-level controller documentation for the 520's internal disc
+   interface card itself (the 9130K service manual covers only the raw
+   flexible-drive mechanism), and the fixed 9.9 MB drive's mechanism. One
+   protocol residue: the driver's request wrapper sends CS/80 opcode `0x09`,
+   which does not exist in the CS/80 standard (table B-1) — its meaning is
+   still unestablished.
 4. **Display register map** — nothing in hand assigns meaning to FR0–FR15 on
    select codes 0 and 1: how the 6845 ports, the µPD7220 command/parameter FIFO
    and the colour map are reached from the CPU is unknown (§2.7.4). The BASIC
@@ -632,6 +960,14 @@ Primary, in [bitsavers/](bitsavers/):
 | `98760-90039_HP_98760_CE_Handbook_Mar84.pdf` | graphics |
 | `97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf` | graphics processor |
 | `MODCAL_6.3_ERS.pdf` | Modular Pascal — the Series 500 systems language. **No text layer; scanned images only.** |
+| `27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.pdf` | ASI card — §2.6.3 |
+| `27132-90002_27110A_HP-IB_Interface_Tech_Jun83.pdf` | HP-IB card — §2.6.2 |
+| `27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.pdf` | GPIO card — §2.6.5 |
+| `27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.pdf` | PSI card hardware |
+| `27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.pdf` | 8-channel MUX — §2.6.4 |
+| `5955-3442_CS80_Instruction_Set_Programming_Manual.pdf` | **the CS/80 specification** — §2.8. Original has no text layer; OCR'd to notes/ (118 pp) |
+| `09130-90030_9130K_Service_Jul81.pdf` | 9130K flexible drive mechanism — §2.8 |
+| `cs80describes/` | Describe responses captured from real drives (7908, 7914 ×2, 7935, 9133H) — reference data for §2.8 |
 
 Also in [hpjournal/](hpjournal/), three issues of the *HP Journal* devoted to
 the Series 500, retrieved from [hparchive.com](http://www.hparchive.com/):
