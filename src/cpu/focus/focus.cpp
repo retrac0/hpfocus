@@ -41,9 +41,51 @@ std::unique_ptr<util::disasm_interface> focus_device::create_disassembler()
 //  MEMORY
 //**************************************************************************
 
+// FOCUS_RWATCH=<lo>:<hi>[ FOCUS_RWFROM=<seconds>] reports every read of a
+// byte-address range. The write side has FOCUS_WWATCH; this is the other
+// half, and it exists because the driver's on_ea hook only sees addresses
+// the standard effective-address path computes -- a table reached through
+// PLDA/PSTA, as the per-task handler table is, is invisible to it.
+// Instruction fetches come through here too, so keep the range to data.
+static struct
+{
+	bool checked = false, on = false;
+	focus::u32 lo = 0, hi = 0;
+	double from = 0.0;
+	unsigned left = 200;
+} s_rwatch;
+
+void focus_device::check_rwatch(focus::u32 addr, focus::u32 data)
+{
+	auto &w = s_rwatch;
+	if (!w.checked)
+	{
+		w.checked = true;
+		if (const char *e = getenv("FOCUS_RWATCH"))
+		{
+			w.lo = strtoul(e, nullptr, 16);
+			if (const char *colon = strchr(e, ':'))
+				w.hi = strtoul(colon + 1, nullptr, 16);
+			if (const char *n = getenv("FOCUS_RWFROM"))
+				w.from = strtod(n, nullptr);
+			w.on = w.hi >= w.lo && w.hi != 0;
+		}
+	}
+	if (!w.on || addr + 4 <= w.lo || addr > w.hi || !w.left
+			|| machine().time().as_double() < w.from)
+		return;
+	w.left--;
+	std::printf("[rwatch %08x -> %08x P=%08x PB=%08x t=%.3f]%s\n",
+			addr, data, m_core.r.p, m_core.r.pb,
+			machine().time().as_double(), w.left ? "" : " (cap reached)");
+	std::fflush(stdout);
+}
+
 focus::u32 focus_device::read32(focus::u32 addr)
 {
-	return m_program.read_dword(addr & ~3u);
+	const focus::u32 v = m_program.read_dword(addr & ~3u);
+	check_rwatch(addr & ~3u, v);
+	return v;
 }
 
 // FOCUS_WWATCH=<lo>:<hi>[ FOCUS_WWFROM=<seconds>] reports every store into
