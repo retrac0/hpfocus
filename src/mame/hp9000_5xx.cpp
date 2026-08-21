@@ -255,6 +255,7 @@ public:
 protected:
 	virtual void machine_start() override ATTR_COLD;
 	virtual void machine_reset() override ATTR_COLD;
+	virtual void machine_stop() ATTR_COLD;
 
 private:
 	void mem_map(address_map &map) ATTR_COLD;
@@ -555,6 +556,8 @@ void hp9000_5xx_state::attach_probes()
 
 void hp9000_5xx_state::machine_start()
 {
+	machine().add_notifier(MACHINE_NOTIFY_EXIT,
+			machine_notify_delegate(&hp9000_5xx_state::machine_stop, this));
 	// The System Control Module answers select code 7, which is IOP
 	// channel 1, peripheral address 7. The consoles: select code 0 is
 	// the display -- the panic reporter writes there, and so does the
@@ -720,6 +723,15 @@ void hp9000_5xx_state::machine_start()
 			}
 		if (!m_media.empty())
 			m_disc.mount(m_media.front());
+		// The internal fixed disc, when one is fitted: device 1 behind the
+		// same select code, which then answers identity 5, a Winchester,
+		// instead of 8, a bare bootstrap loader card. -hard1 mounts it.
+		if (m_hard && m_hard->has_media())
+		{
+			m_disc.mount_fixed(m_hard->data());
+			osd_printf_info("disc: fixed disc fitted, %u blocks\n",
+					m_disc.fixed_blocks());
+		}
 		m_disc.reset_self_test();
 		m_iop.attach(7, &m_disc);
 	}
@@ -1243,6 +1255,36 @@ void hp9000_5xx_state::term_put(u8 data)
 }
 
 
+// A fixed disc is not a shipped medium: it is a disc this machine owns and
+// writes to, so what the running system does to it has to survive the run.
+// The card holds the medium, so the image goes back to the file it came
+// from at the end -- which is what makes INITIALIZE, STORE and the rest
+// mean anything, and what lets HP's own utilities build the file system
+// rather than this emulator pretending to.
+void hp9000_5xx_state::machine_stop()
+{
+	if (!m_hard || !m_hard->has_media() || !m_disc.fixed_loaded())
+		return;
+	if (getenv("FOCUS_HDNOSAVE"))
+		return;
+	m_disc.select_device(1);
+	const std::vector<u8> &now = m_disc.medium();
+	if (now == m_hard->data())
+		return;
+	const std::string path = m_hard->filename() ? m_hard->filename() : "";
+	if (path.empty())
+		return;
+	if (FILE *f = fopen(path.c_str(), "r+b"))
+	{
+		fwrite(now.data(), 1, now.size(), f);
+		fclose(f);
+		osd_printf_info("disc: fixed disc written back to %s\n", path.c_str());
+	}
+	else
+		osd_printf_error("disc: cannot write %s back\n", path.c_str());
+}
+
+
 void hp9000_5xx_state::machine_reset()
 {
 	// iop_core::reset() rebuilds every channel_state, which drops the
@@ -1295,8 +1337,8 @@ void hp9000_5xx_state::machine_reset()
 			boot_from_cs80();
 		}
 	}
-	else if (!m_media.empty())
-		boot_from_disc();
+	else if (!m_media.empty() || m_disc.fixed_loaded())
+		boot_from_disc();   // the fixed disc boots on its own
 }
 
 
@@ -1527,7 +1569,16 @@ bool hp9000_5xx_state::boot_from_disc()
 	constexpr u32 SECTOR = focus::disc_card::BLOCK;
 	constexpr u32 MAGIC = 0xe9c28206;
 
-	if (m_media.empty())
+	// A fitted fixed disc boots in preference to the flexible drive, as
+	// on real hardware: with a Winchester present the bootstrap loader
+	// circuitry sits on ITS controller, so the fixed disc is what the
+	// machine comes up from. Selecting device 1 points every read below
+	// at that medium; the flexible drive is still there for the running
+	// system to mount volumes from.
+	const bool from_fixed = m_disc.fixed_loaded();
+	if (from_fixed)
+		m_disc.select_device(1);
+	else if (m_media.empty())
 		return false;
 
 	auto beword = [](const std::vector<u8> &v, u32 off) {
@@ -1537,9 +1588,11 @@ bool hp9000_5xx_state::boot_from_disc()
 
 	std::vector<u8> image;
 	u32 total = 0, volumes = 0, placed = 0;
-	for (unsigned v = 0; v < m_media.size(); v++)
+	const unsigned sources = from_fixed ? 1 : unsigned(m_media.size());
+	for (unsigned v = 0; v < sources; v++)
 	{
-		m_disc.mount(m_media[v]);
+		if (!from_fixed)
+			m_disc.mount(m_media[v]);
 
 		std::vector<u8> header;
 		if (!m_disc.read_blocks(0, SECTOR, header))
@@ -1638,28 +1691,35 @@ bool hp9000_5xx_state::boot_from_disc()
 		{
 			// Anything mounted past the volumes the image needed is the
 			// disc the operator puts in once the machine is up.
-			if (v + 1 < m_media.size())
+			if (v + 1 < sources)
 				m_boot_volumes = v + 1;
 			break;
 		}
-		if (v + 1 >= m_media.size())
+		if (v + 1 >= sources)
 		{
 			osd_printf_error("boot: the image needs %u volumes and %u "
 					"%s mounted; %u of %u bytes loaded\n", volumes,
-					unsigned(m_media.size()),
-					m_media.size() == 1 ? "is" : "are", placed, total);
+					sources, sources == 1 ? "is" : "are", placed, total);
 			return false;
 		}
 	}
 
-	install_boot_image(image, "the internal disc");
+	install_boot_image(image, from_fixed ? "the fixed disc"
+			: "the internal disc");
+	if (from_fixed)
+		m_disc.select_device(0);   // leave the flexible drive selected
 
 	// Put a disc back in the drive for the running system: the one after
-	// the boot set if the operator mounted a spare, else volume 1.
-	const unsigned after = (m_boot_volumes && m_boot_volumes < m_media.size())
-			? m_boot_volumes : 0;
-	logerror("boot: leaving volume %u in the drive\n", after + 1);
-	m_disc.mount(m_media[after]);
+	// the boot set if the operator mounted a spare, else volume 1. A
+	// machine booted from its fixed disc may have no flexible volume at
+	// all, and there is then nothing to put back.
+	if (!m_media.empty())
+	{
+		const unsigned after = (m_boot_volumes && m_boot_volumes < m_media.size())
+				? m_boot_volumes : 0;
+		logerror("boot: leaving volume %u in the drive\n", after + 1);
+		m_disc.mount(m_media[after]);
+	}
 	m_disc.reset_self_test();
 	return true;
 }
@@ -1854,6 +1914,9 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	HP_FOCUS_MEDIA(config, m_floppy[0]);
 	HP_FOCUS_MEDIA(config, m_floppy[1]);
 	HP_FOCUS_MEDIA(config, m_floppy[2]);
+	// The internal Winchester was an option on a real 520, and the
+	// system reaches it as device 1 of select code 7; -hard1 fits one.
+	HP_FOCUS_MEDIA(config, m_hard).set_hard();
 
 	// The quickload remains as a debug side door for images that exist
 	// only as files; the supported path is booting from the discs.

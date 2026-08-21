@@ -76,6 +76,7 @@ struct disc_card : public iop_interface
 	// card (520 service manual 2-47).
 	u16 id_fr3 = 4;
 	u16 id_fr3_alt = 8;
+	u16 id_fr3_fixed = 5;
 
 	// The card's self test takes time, not a number of reads: the host
 	// ticks this once a millisecond and the status changes when the time
@@ -103,7 +104,8 @@ struct disc_card : public iop_interface
 		switch (n)
 		{
 		case 3:
-			v = m_device ? id_fr3_alt : id_fr3;
+			v = m_device ? (m_fixed.empty() ? id_fr3_alt : id_fr3_fixed)
+					: id_fr3;
 			break;
 		case 1:
 			// Before the presence test this register reads zero -- the
@@ -301,6 +303,36 @@ struct disc_card : public iop_interface
 	bool loaded() const { return !m_image.empty(); }
 	u32 blocks() const { return u32(m_image.size() / BLOCK); }
 
+	// The 520's fixed disc. Select code 7 is shared: the flexible
+	// controller is device 0 and the Winchester is device 1, switched by
+	// the FR8 write, and when a Winchester is fitted the bootstrap loader
+	// circuitry lives on ITS controller rather than on a separate loader
+	// card (520 service manual). So mounting a fixed disc changes what
+	// device 1 is: identity 5, a Winchester, instead of identity 8, a
+	// bare loader card.
+	void mount_fixed(std::vector<u8> medium)
+	{
+		m_fixed = std::move(medium);
+		m_poweron = true;
+	}
+	bool fixed_loaded() const { return !m_fixed.empty(); }
+	// The loader selects the device it boots from; the driver writes the
+	// same selection the system later makes through FR8.
+	void select_device(unsigned d) { m_device = d & 1; }
+	u32 fixed_blocks() const { return u32(m_fixed.size() / BLOCK); }
+
+	// Which medium the selected device is reading. Everything below goes
+	// through this so one command path serves both drives.
+	std::vector<u8> &medium()
+	{
+		// Device 1 is the fixed disc when one is fitted. A machine with a
+		// fixed disc and nothing in the flexible drive reads the fixed
+		// disc either way -- there is no other medium to mean.
+		if (!m_fixed.empty() && (m_device || m_image.empty()))
+			return m_fixed;
+		return m_image;
+	}
+
 	// Read `count` bytes from block `block`, through the controller's own
 	// Locate-and-Read path -- the bootstrap loader gets its data the same
 	// way the driver does, bounds checks and status flags included, rather
@@ -467,22 +499,28 @@ private:
 
 	void locate_read()
 	{
-		if (m_image.empty())
+		if (medium().empty())
 		{
-			set_flag(36);   // not ready
+			// CS/80 status bit 35 is NOT READY -- "the selected unit is
+			// not ready for access at this time"; 36 is WRITE PROTECT
+			// (Instruction Set manual, status bit list). An empty drive
+			// is the former, and reporting the latter made every access
+			// to a machine with no flexible volume mounted come back
+			// "ERROR 83: Write protected".
+			set_flag(35);   // not ready: no medium
 			return;
 		}
 		u64 off = u64(m_address) * BLOCK;
 		u32 len = m_length;
 		if (len == 0xffffffffu)
 			len = BLOCK;
-		if (off + len > m_image.size())
+		if (off + len > medium().size())
 		{
 			set_flag(8);    // address bounds
 			return;
 		}
 		for (u32 k = 0; k < len; k++)
-			m_out.push_back(m_image[off + k]);
+			m_out.push_back(medium()[off + k]);
 	}
 
 	void commit_write()
@@ -490,14 +528,14 @@ private:
 		if (!m_writing)
 			return;
 		m_writing = false;
-		if (m_image.empty())
+		if (medium().empty())
 		{
-			set_flag(36);
+			set_flag(35);   // not ready: no medium
 			return;
 		}
 		u64 off = u64(m_write_addr) * BLOCK;
-		for (size_t k = 0; k < m_in.size() && off + k < m_image.size(); k++)
-			m_image[off + k] = m_in[k];
+		for (size_t k = 0; k < m_in.size() && off + k < medium().size(); k++)
+			medium()[off + k] = m_in[k];
 	}
 
 	// The CS/80 describe reply for a 9130K flexible disc drive: 5 bytes
@@ -516,7 +554,11 @@ private:
 		// unit: type 1 = flexible disc, device number 009130, bytes per
 		// block, blocks buffered, burst size, block time, rate, retry
 		// time, access time, max interleave, fixed/removable volumes
-		b(1); b(0x00); b(0x91); b(0x30);
+		const bool fixed = m_device && !m_fixed.empty();
+		if (fixed)
+		{ b(0); b(0x00); b(0x79); b(0x08); }   // type 0, device 007908
+		else
+		{ b(1); b(0x00); b(0x91); b(0x30); }   // type 1, device 009130
 		b(BLOCK >> 8); b(BLOCK & 0xff);
 		b(1); b(0);
 		b(0x20); b(0x00);
@@ -524,8 +566,8 @@ private:
 		b(0x00); b(0x64);
 		b(0x00); b(0x64);
 		b(2);
-		b(0x00);            // fixed volumes: none
-		b(0x01);            // removable volumes: volume 0
+		b(fixed ? 0x01 : 0x00);   // fixed volumes
+		b(fixed ? 0x00 : 0x01);   // removable volumes
 		// volume: the driver's post-describe checks read max head and max
 		// sector and take the cylinder-addressed path when they are set,
 		// so the flexible disc describes itself block-addressed: max
@@ -534,7 +576,8 @@ private:
 		b(0); b(0); b(0);
 		b(0);
 		b(0); b(0);
-		const u32 maxblk = u32(m_image.empty() ? 1119 : m_image.size() / BLOCK - 1);
+		const u32 maxblk = u32(medium().empty()
+				? 1119 : medium().size() / BLOCK - 1);
 		b(0); b(0); b(0);
 		b(u8(maxblk >> 16)); b(u8(maxblk >> 8)); b(u8(maxblk));
 		b(1);
@@ -602,7 +645,8 @@ private:
 	unsigned m_phase = 0;       // 1 = command block expected, 2 = data leg
 public:
 	static constexpr u32 BLOCK = 256;
-	std::vector<u8> m_image;    // the mounted medium, one byte per byte
+	std::vector<u8> m_image;    // the flexible medium, one byte per byte
+	std::vector<u8> m_fixed;    // the fixed disc, when one is fitted
 private:
 	u32 m_last_fr0 = 0;
 	u32 m_config = 0;

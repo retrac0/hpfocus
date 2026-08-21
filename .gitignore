@@ -18,3 +18,7 @@ __pycache__/
 *.img
 software/cct/*.bin
 software/cct/scm.nv
+
+# Built fixed-disc images -- tools/mkharddisc.py + tools/installbasic.py
+# reproduce them from the shipped discs in two commands
+software/hd/*.img
