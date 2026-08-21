@@ -840,17 +840,31 @@ void hp9000_5xx_state::machine_start()
 					machine().time().as_double(), core.r.p, core.r.q);
 			std::fflush(stdout);
 		}
-		// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
-	// processor is in, which names the code that faulted.
-	if (getenv("FOCUS_TRAPLOG"))
-		m_cpu->core().on_trap = [this](focus::trap_cause cause, u32 parameter) {
-			if (m_traps_seen++ < 6)
+	// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
+	// processor is in, which names the code that faulted. A number sets
+	// how many reports to print (default 6); FOCUS_TRAPFROM=<seconds>
+	// skips the boot's own faults, which otherwise eat the whole budget
+	// before the interesting one arrives.
+	if (const char *e = getenv("FOCUS_TRAPLOG"))
+	{
+		// "1" is the historical on-switch, not a budget of one.
+		const unsigned long n = strtoul(e, nullptr, 0);
+		const unsigned cap = n > 1 ? unsigned(n) : 6;
+		const double from = getenv("FOCUS_TRAPFROM")
+				? strtod(getenv("FOCUS_TRAPFROM"), nullptr) : 0.0;
+		m_cpu->core().on_trap =
+				[this, cap, from](focus::trap_cause cause, u32 parameter) {
+			if (machine().time().as_double() < from)
+				return;
+			if (m_traps_seen++ < cap)
 			{
-				std::printf("\n[trap %u parameter=%08x]\n",
-						unsigned(cause), parameter);
+				std::printf("\n[trap %u parameter=%08x t=%.3f]\n",
+						unsigned(cause), parameter,
+						machine().time().as_double());
 				report_state("trap");
 			}
 		};
+	}
 
 	// FOCUS_EATRACE=<addr>[:<n>] prints the next n data addresses the
 	// processor computes once it reaches that instruction, with what it
