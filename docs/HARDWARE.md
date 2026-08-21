@@ -279,6 +279,44 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 > exists — see [SOFTWARE.md](SOFTWARE.md#the-loader-rom-question), and §3.3
 > below for what has already been recovered.
 
+#### 2.5.1 Every ROM in a 520, and what is *not* in one
+
+HP's smaller machines keep BASIC in ROM, so it is worth stating plainly what
+this family does instead. **No part of the Series 500's language system is in
+ROM.** BASIC 2.0 is a 372,932-byte image of **thirteen segments** living
+entirely on its two discs — `SYSTEM POWERUP`, `TRAP HANDLERS`, `BASIC IO/MM
+RTS`, `BASIC COMPILER`, `BASIC`, `HUMAN INTERFACE`, `BASIC INIT`, `IOS and
+DDMs`, `SDF_DISC`, `PWP SELF TEST`, `BASIC PARSER/RTS`, `SUN OS KERNEL` and
+`AP` — every one of which checksums and is placed in the code segment table
+at boot. The only firmware in the machine is:
+
+| ROM | Where | What it holds |
+|---|---|---|
+| **09020-80000 / -80001** | bootstrap loader card at SC7 unit 1, *or* the Winchester controller when a fixed disc is fitted | 8 KB: loader code **and the machine ID** |
+| 1818-1989 | fixed disc controller | that controller's own program |
+| 1818-1897 | 9130K flexible disc controller | the 8039's firmware |
+| — | thermal printer | 8 KB: 4 KB firmware + 4 KB characters |
+| — | keyboard board | the keyboard microprocessor's program (with 64 bytes of RAM) |
+| — | graphics/digital video board | character and attribute ROMs |
+
+*(520 Service, 2-52/2-53 and the CE Handbook's parts lists. The "ignore
+references to ROMs" note in the 520 manual applies to the 98770A/98780A
+**display** service manuals, not to the machine's own firmware.)*
+
+The bootstrap loader card shares select code 7 with the flexible disc
+controller — controller is unit 0, loader card unit 1, switched by FR8 — and
+its ROM is byte-addressed through a 16-bit counter that **resets to zero on
+interface clear or on a read of FR3**, incrementing after every byte read.
+
+> **The ID ROM is the one real gap.** That 8 KB holds "loader code and machine
+> ID information **for protection of software rights**", and the serial number
+> is programmed into each replacement part — when ordering one, HP required the
+> machine's serial number. No dump of either revision is known to exist, so the
+> emulator presents the loader card's identity (8) but serves no ROM bytes
+> behind it, and the boot itself is performed at a high level instead (§2.5).
+> Any check BASIC makes against the machine ID therefore reads nothing. That is
+> the only part of a 520's firmware the emulation cannot reproduce.
+
 ### 2.6 I/O cards (HP-CIO)
 
 The plug-in I/O cards are standard **HP-CIO** cards shared with HP's other
@@ -922,9 +960,15 @@ bugs to avoid.
 
 ## 4. Open questions
 
-1. **SCM loader ROM** — no dump located. The protocol is documented (§2.5) and
-   both acquired systems supply the `SYSTEM POWERUP` entry point, so this is a
-   soft blocker.
+1. **Loader / ID ROM** — no dump located, of either revision. The fetch
+   protocol is documented (§2.5) and both acquired systems supply the
+   `SYSTEM POWERUP` entry point, so booting is a soft blocker and is done at
+   a high level instead. What cannot be substituted is the other half of that
+   part: it carries the **machine ID used "for protection of software
+   rights"**, serial-numbered per machine (§2.5.1). Any check the language
+   system makes against it reads nothing in emulation. Whether BASIC 2.0
+   makes such a check, and what it does when it fails, is untested — it is
+   the one firmware-shaped hole left in a 520.
 2. **Memory Controller ERS** — referenced by both ERSes and still not located,
    but the gap is narrower than the references suggest. The software-visible
    MPB semantics are documented in the material in hand: I/O ERS §2.1 covers
