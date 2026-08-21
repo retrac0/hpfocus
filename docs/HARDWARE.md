@@ -333,12 +333,38 @@ completes the card posts an event, asserts ASYNC, and the driver reads the
 code from FR9.
 
 Observed in full on a 540 boot, in order: powerup presence test (FR1, FR3 ×3,
-`WIF0 1<<pa`, FR1 echo) → driver polls FR1 for `0xc0` → `WIF9 0x20` → ICEI
-with `WIF8 0` and a 2-byte input leg → completion event → `RIF9`. The driver
-then returns to its wait; what it does with the event code, and what the
-identify halfword must be for it to bind, are the next things to find out
-(the value makes no difference to the flow so far, and neither does the event
-class).
+`WIF0 1<<pa`, FR1 echo) → driver polls FR1 for `0xc0` → `WIF9 (2<<4)|pa` →
+ICEI with `WIF8 0` and a 2-byte input leg → completion event → `RIF9`. The
+kernel walks **every** registered slot this way; put cards in select codes 0
+through 4 and each gets the identical dialogue with its own configuration
+word.
+
+Two rules the handler enforces, both found by getting them wrong:
+
+- **A completion must not arrive before the driver is waiting for it.** The
+  handler's completion path (CORE SYSTEM `0x26050`) tests a byte at the
+  device record's **+201** — "a transfer is outstanding" — and returns
+  silently when it is clear. An event posted synchronously inside the DMA is
+  therefore discarded and the driver waits forever. Real hardware needs
+  microseconds to move the data and is always beaten by the driver's setup;
+  the emulated cards take a millisecond or two of host tick instead.
+- **Reading FR9 consumes the event.** This kernel writes no acknowledgement
+  back, so a code left standing is read forever. (The 520's BASIC driver
+  *does* acknowledge, with a write of 2 to FR1.)
+
+The event handler itself, read from the code at CORE SYSTEM `0x26000`: poll
+FR1 → index the device table at `DB+240` by select code → lock the record's
+`+204` → re-read FR1 → `RIF9` → mask the code with `0xf0` → computed branch.
+Class `0x00` and `0x30` do nothing, `0x10`, `0x20` and `0x40` are completion
+classes reached through the `+201` gate, and anything above `0x40` is the
+error path.
+
+**The identify answer is discarded.** Watching the buffer the driver DMAs it
+into (`WDA 0x00ffe90e`, `WDC 2`) shows nothing ever reads those bytes, which
+is why sweeping the value changes nothing. So this transaction is a presence
+and liveness check, not the slot typing the 520's LCS80 performs — whatever
+binds `HP27128/30` or `HP27110` to a slot happens elsewhere, and finding it
+is the next step for HP-UX device bring-up.
 
 #### 2.6.1 Common channel protocol
 

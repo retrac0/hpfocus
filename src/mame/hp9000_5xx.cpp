@@ -37,6 +37,7 @@
 #include "iop/focusdim.h"
 #include "iop/focusdisc.h"
 #include "iop/focusasi.h"
+#include "iop/focushpib.h"
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -107,6 +108,7 @@ private:
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
 	focus::asi_card m_asi;            // select code 0 on the 530/540: the console
+	focus::hpib_card m_hpib;          // the system disc's HP-IB card
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
@@ -409,6 +411,39 @@ void hp9000_5xx_state::machine_start()
 	}
 	else
 		m_iop.attach(0, &m_dim);
+
+	// FOCUS_HPIB=<select code> puts the system disc's HP-IB card in a
+	// slot -- 5 is where the install procedure says it goes (9030/40 CE
+	// Handbook, 2-3), with the drive at HP-IB address 0.
+	if (const char *e = getenv("FOCUS_HPIB"))
+	{
+		const unsigned sc = strtoul(e, nullptr, 0) & 7;
+		m_hpib.iop = &m_iop;
+		m_hpib.pa = sc;
+		m_hpib.log = getenv("FOCUS_HPIBLOG") != nullptr;
+		if (const char *v = getenv("FOCUS_HPIBIDENT"))
+			m_hpib.identity = u16(strtoul(v, nullptr, 0));
+		if (const char *v = getenv("FOCUS_HPIBADDR"))
+			m_hpib.device_address = u8(strtoul(v, nullptr, 0));
+		// FOCUS_HPIBDISC=<raw image> mounts a medium on the drive.
+		if (const char *v = getenv("FOCUS_HPIBDISC"))
+		{
+			if (FILE *f = fopen(v, "rb"))
+			{
+				fseek(f, 0, SEEK_END);
+				const long n = ftell(f);
+				fseek(f, 0, SEEK_SET);
+				m_hpib.disc.image.assign(size_t(n), 0);
+				if (fread(m_hpib.disc.image.data(), 1, size_t(n), f) != size_t(n))
+					osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
+				fclose(f);
+			}
+			else
+				osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
+		}
+		m_iop.attach(sc, &m_hpib);
+		m_iop.enable_interrupt(sc);
+	}
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
 	if (const char *e = getenv("FOCUS_NVMFILL"))
@@ -787,6 +822,8 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 	m_disc.tick();
 	if (m_console_is_asi)
 		m_asi.tick();
+	if (getenv("FOCUS_HPIB"))
+		m_hpib.tick();
 	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
 	// about 35 of them.
 	m_iop.timer_tick(35);
@@ -853,6 +890,8 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.attach(6, &m_console6);
 	if (getenv("FOCUS_DISC"))
 		m_iop.attach(7, &m_disc);
+	if (const char *e = getenv("FOCUS_HPIB"))
+		m_iop.attach(strtoul(e, nullptr, 0) & 7, &m_hpib);
 	attach_probes();
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;

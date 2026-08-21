@@ -150,6 +150,7 @@ struct asi_card : public iop_interface
 	// FOCUS_ASIEVENT overrides the completion event code, for finding
 	// which class the driver acts on.
 	u8 event_done = EVENT_DONE;
+	unsigned event_delay_ms = 2;
 
 	// The halfword the identify transaction answers, which is what types
 	// the slot. Which value binds HP-UX's HP27128/30 driver is not yet
@@ -279,12 +280,19 @@ struct asi_card : public iop_interface
 			v = card_id;
 			break;
 		case 9:
-			// The event code the card is announcing. Same mechanism as
-			// the internal disc controller: FR1 bit 0 says one is
-			// waiting, this hands it over, and a write of 2 to FR1 pops
-			// it. Codes are dispatched by their high nibble -- 1, 2 and 4
-			// are completion classes, 3 and anything above 0x4f an error.
-			v = m_events.empty() ? 0 : m_events.front();
+			// The event code the card is announcing. FR1 bit 0 says one
+			// is waiting and this hands it over; codes are dispatched by
+			// their high nibble -- 1, 2 and 4 completion classes, 3 and
+			// anything above 0x4f an error (kernel handler at CORE
+			// SYSTEM 0x26020). Handing the code over CONSUMES it: this
+			// kernel writes no acknowledgement, and a code left standing
+			// is read forever.
+			if (!m_events.empty())
+			{
+				v = m_events.front();
+				m_events.pop_front();
+				m_ard = false;
+			}
 			break;
 		case 12:
 			// read_status: taking the byte frees the card to post
@@ -363,10 +371,7 @@ struct asi_card : public iop_interface
 		// The transfer the command asked for is done, so the card
 		// announces the completion the driver is waiting for.
 		if (m_pending_event)
-		{
-			m_events.push_back(m_pending_event);
-			m_pending_event = 0;
-		}
+			m_event_timer = event_delay_ms ? event_delay_ms : 1;
 		post(STAT_DONE);
 	}
 
@@ -379,6 +384,16 @@ struct asi_card : public iop_interface
 	// line reaches a driver that is not already reading.
 	void tick()
 	{
+		// A completion the driver is not yet waiting for is discarded by
+		// the kernel's handler (see focushpib.h), so the card takes a
+		// tick or two to announce one, as real hardware does.
+		if (m_event_timer && --m_event_timer == 0 && m_pending_event)
+		{
+			m_events.push_back(m_pending_event);
+			m_pending_event = 0;
+			if (iop)
+				iop->raise(pa);
+		}
 		if (!m_rx.empty() && !m_status_posted && m_arq_enabled)
 		{
 			// "If no read request is pending, and the card has a record
@@ -609,6 +624,7 @@ private:
 
 	std::deque<u8> m_events;    // event codes waiting to be read from FR9
 	u8 m_pending_event = 0;     // posted when the command's transfer ends
+	unsigned m_event_timer = 0;
 	std::deque<u8> m_rx;        // characters typed at the terminal
 	std::deque<u8> m_out;       // what the host reads next
 	std::vector<u8> m_in;       // what the host has written
