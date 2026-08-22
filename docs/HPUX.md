@@ -199,11 +199,33 @@ All addresses runtime for this configuration.
   disc, the 9020 diagnostics environment and the printed panic are all
   unaffected. It is off by default because it buys no win on its own and
   the immediate-DMA path has a documented reason (§`run_dma`).
+- **Tried, and reverted: tying the report to its interrupt.** Holding
+  the owed report until `tick()` actually raises the attention — so the
+  driver's polling list cannot consume a report meant for the interrupt
+  handler — is a fair model, and combined with `FOCUS_IOPDEFER` it made
+  the driver issue **`RD` and `RS` for the first time**, the correct
+  order sequence. It still aborted, and it **broke the panic printer**:
+  that printer polls FR1/FR6 and never takes an interrupt, so a report
+  held for one never reaches it. **Any model here has to serve both
+  readers** — the interrupt-driven console driver and the polling
+  printer — which is a real constraint on the design, and the reason the
+  simple version is wrong.
 - **The combination worth trying next** follows from those three rows:
   deferred DMA *plus* a **state-dependent** report — SWI only while a
   transfer is actually pending, EDD once the data phase has run — so
   that the handler never re-dispatches a stale opcode and the driver
   still gets told to run the transfer. Both axes now have knobs.
+- **What the handler's loop really demands.** Its terminating condition
+  is the report buffer reading **IDL**: `0x274d0` re-dispatches `DB+52`,
+  and arm 0 is the clean exit while arm 1 against a closed channel is
+  the abort. `DB+52` is the RTS block in memory, refreshed only by an
+  RTS transaction, and the handler issues none between completing the
+  transfer and looping. So either the completion must not close the
+  channel when it does (the close at `0x2749c` is gated on `DB+48`,
+  which the SWI arm itself sets), or the transfer must still be
+  outstanding at the loop. That points at the data phase ending too
+  early — `RD` moved one byte and `RS` five — rather than at the report
+  vocabulary, which is where the next look should go.
 - **NEXT.** The per-LCN channel state the arm reads — the table based at
   `DB+236` with the state word at each entry's `+0` — **is never
   populated**. Find its writer with `FOCUS_WWATCH` over the table (read
