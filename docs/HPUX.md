@@ -296,13 +296,56 @@ All addresses runtime for this configuration.
   outstanding at the loop. That points at the data phase ending too
   early — `RD` moved one byte and `RS` five — rather than at the report
   vocabulary, which is where the next look should go.
-- **NEXT.** The per-LCN channel state the arm reads — the table based at
-  `DB+236` with the state word at each entry's `+0` — **is never
-  populated**. Find its writer with `FOCUS_WWATCH` over the table (read
-  `DB+236` and `DB+12` live first to size it), then find that writer's
-  guard. Either the kernel opens the channel through a path we have not
-  triggered, or it expects the card to have said something else before
-  SWI.
+- **Corrected: the channel state IS populated, and the 66 is a timeout.**
+  The table is based at `DB+232` (not 236): eight-byte entries of
+  (pointer, DB-relative offset), indexed by the LCN byte at block+12
+  — `LDIS #12; PLDA,B; LSL 3; ADXI #232` at CORE SYSTEM +0x4148. For
+  this boot `DB=0x1e97d4` and the three channel structs are `0x1e9910`,
+  `0x1e9a94`, `0x1e9c18`, 388 bytes each. Watching the first one's state
+  word (`FOCUS_WWATCH=1e9910:1e9913`) shows the documented lifecycle
+  running **correctly**:
+
+  | t | P | state | |
+  |---|---|---|---|
+  | 1.269 | +0x3546 | 0 | init |
+  | 2.268 | +0x3db0 | −1 | claimed |
+  | 2.268 | +0x3e62 | 4 | CLC issued |
+  | 2.270 | +0x3c3e | 24 | the SWI arm — it *does* run |
+  | 2.271 | +0x3b68 | 0 | the completion closes the channel |
+
+  The transaction blocks in the struct are right too: CLC (0x834), `RD`
+  (0x824 to 0x1e9dd4) and `RS` (0x824 to 0x1e9de1) are all built, with
+  the struct pointing back at `DB` at +68. The card dialogue is not
+  what is broken.
+- **The 66 is a completion status, not a raise.** Block+32 is the
+  completion status: 55 is success. `FOCUS_WWATCH=1e9930:1e9933` catches
+  exactly two writes — **55 at +0x41e0** when the transaction is set up,
+  then **66 at +0x4160**, which overwrites it. The reader at +0x4330
+  (`LDIS #32; PLDA,B; CMPI #55; BCCS.GL; EXIT N=6; ESCP`) returns
+  normally on 55 and otherwise **raises the status itself** — so the
+  first escape 66 of the boot is this field, not one of escmap's
+  constant sites. The stamping site at +0x4160 is the tail of a timeout
+  handler: `LDIS #5; WAIT` at +0x410e, then four abort orders
+  (`IOC 0x3b/0x0e/0x1f/0x18`), block+36 and block+52 set to −1, and
+  finally state→0 / status→66 through the `DB+232` walk.
+- **THE MISSING WAKEUP.** `FOCUS_SEMLOG` names it. Every other semaphore
+  in the boot pairs `DOWN-block` at +0x4446 with `UP-wake` at +0x469e
+  inside a millisecond. The console open blocks on **`0xbd798`** at
+  t=2.269 from a different site, CORE SYSTEM **+0x59ba** (tcb
+  `0x1e8f48`) — and that semaphore **is never upped again for the rest
+  of the boot**. It is the last semaphore event in the run. The transfer
+  completes and closes the channel at +0x3b68 two milliseconds later
+  without waking the waiter, the `WAIT #5` expires, and everything above
+  follows.
+  So the frontier is not the report vocabulary, the stale re-dispatch or
+  the channel table: **the completion path closes the channel without
+  posting the semaphore the opener is parked on.**
+- **NEXT.** Find who owes `0xbd798` the `UP`. It is not in the channel
+  struct (dumped 97 words at the raise; the value does not appear), so
+  it is held by the waiting task's TCB `0x1e8f48` or by the request
+  block. Read it out of the frame at CORE SYSTEM +0x59ba, then
+  `FOCUS_RWATCH` that cell to find which completion-path code loads it
+  and what guard skips the post.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
