@@ -417,7 +417,8 @@ public:
 		case CMD_SD:
 			c.dma_active = true;
 			m_dma_mask |= (1u << t.pa);
-			run_dma(t.pa);
+			if (!defer_dma())
+				run_dma(t.pa);
 			return true;
 		case CMD_SDC:
 		case CMD_SRC:
@@ -430,7 +431,8 @@ public:
 				std::printf("[iop SDC pa=%u addr=%08x cnt=%u st=%08x en=%d]\n",
 						t.pa, c.dma_addr, c.dma_count, c.dma_status,
 						c.int_enabled);
-			run_dma(t.pa);
+			if (!defer_dma())
+				run_dma(t.pa);
 			return true;
 		case CMD_SDEC:
 			c.dma_active = true;
@@ -439,7 +441,8 @@ public:
 			m_int_request &= ~(1u << t.pa);
 			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
-			run_dma(t.pa);
+			if (!defer_dma())
+				run_dma(t.pa);
 			return true;
 		case CMD_EDMA: m_dma_mask |= (1u << t.pa); return true;
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
@@ -631,6 +634,18 @@ public:
 	// timeout error if the completion is a poll period late). An
 	// uncounted transfer moves one unit per call so the loop cannot
 	// spin forever.
+	// FOCUS_IOPDEFER makes a start command ARM the transfer and leave it
+	// to the next poll round instead of moving the data inside the
+	// command itself. Real hardware needs microseconds for a leg and the
+	// interrupt lands later; here a leg issued from inside an interrupt
+	// handler completes before that handler has finished, so its
+	// completion path runs against state the handler is still using.
+	static bool defer_dma()
+	{
+		static const bool on = std::getenv("FOCUS_IOPDEFER") != nullptr;
+		return on;
+	}
+
 	void run_dma(unsigned pa)
 	{
 		channel_state &c = m_chan[pa];

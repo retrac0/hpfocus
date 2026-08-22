@@ -185,6 +185,25 @@ All addresses runtime for this configuration.
   panic is a real capability. But it localises the answer: the card's
   post-CLC report is the lever, and the right one is probably
   state-dependent rather than constant.
+- **Three axes, each measured alone, each trading one failure for
+  another.** The sequencing of report / transfer / completion is what is
+  wrong, and no single axis fixes it:
+
+  | change | result |
+  |---|---|
+  | default (SWI, synchronous DMA) | abort 66; **panic prints** |
+  | constant EDD or ERT after a CLC (`FOCUS_ASICLCRTS=2` or `5`) | no abort, but a busy loop in 0x27000–0x27fff and the panic stops printing |
+  | deferred DMA (`FOCUS_IOPDEFER`) | no abort — SWI lands on a LATER RTS read, so the completion no longer runs inside the handler — but the driver then never issues `RD`/`RS`, and a later timeout (56) follows at ~4.4s |
+
+  Deferring is measured **safe**: BASIC on floppy, BASIC on the installed
+  disc, the 9020 diagnostics environment and the printed panic are all
+  unaffected. It is off by default because it buys no win on its own and
+  the immediate-DMA path has a documented reason (§`run_dma`).
+- **The combination worth trying next** follows from those three rows:
+  deferred DMA *plus* a **state-dependent** report — SWI only while a
+  transfer is actually pending, EDD once the data phase has run — so
+  that the handler never re-dispatches a stale opcode and the driver
+  still gets told to run the transfer. Both axes now have knobs.
 - **NEXT.** The per-LCN channel state the arm reads — the table based at
   `DB+236` with the state word at each entry's `+0` — **is never
   populated**. Find its writer with `FOCUS_WWATCH` over the table (read
