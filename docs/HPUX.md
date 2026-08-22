@@ -215,6 +215,21 @@ All addresses runtime for this configuration.
   transfer is actually pending, EDD once the data phase has run — so
   that the handler never re-dispatches a stale opcode and the driver
   still gets told to run the transfer. Both axes now have knobs.
+- **Tried and negative**: padding the read-status block out to the seven
+  bytes the host asks for, so the leg ends on COUNT rather than Device
+  End (in case the driver keys off the termination). No change, with or
+  without deferred DMA. The short block is not the problem.
+- **The work queue, watched.** `DB+40` is the handler's pending-work
+  queue: run 0x2787a pushes the transaction (0x1e9948) onto it, run
+  0x274c4 pops it, and the handler dispatches what it popped. The loop
+  at 0x274a8 re-reads it, and only when it is EMPTY falls through to the
+  stale re-dispatch. So the design is "drain the queue, then confirm the
+  card has nothing left" — and the confirmation reads a buffer that only
+  an RTS transaction refreshes. Whatever refreshes it between the
+  completion and the loop is the missing piece; the handler issues RTS
+  itself elsewhere (orders appear at TRAP HANDLERS +0x162, run
+  0x182f2), so finding *that* call and why it is skipped here is the
+  most direct remaining thread.
 - **What the handler's loop really demands.** Its terminating condition
   is the report buffer reading **IDL**: `0x274d0` re-dispatches `DB+52`,
   and arm 0 is the clean exit while arm 1 against a closed channel is
