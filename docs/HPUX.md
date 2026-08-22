@@ -162,7 +162,33 @@ All addresses runtime for this configuration.
   report (`FOCUS_ASILCN` 0..3) and the completion-event delay
   (`FOCUS_ASIEVDELAY` 2..60 ms). The kernel sees channel state 0
   whatever we report and whenever we report it.
-- **The handler's loop, and why the abort happens.** Traced end to end:
+- **CORRECTION (2026-08-22, second pass): the arm does NOT loop.**
+  Tracing the SWI arm from its first hit shows `0x27530 … 0x27584` →
+  `0x276a8 … 0x276be` → **IXIT**, straight back to the dispatcher's
+  `STOP` at run 0x182f0. The stale re-dispatch that aborts happens on a
+  **later interrupt**, not by falling through. (Related correction:
+  orders logged with `p=0x182f2` are the IOP executing a command list
+  while the CPU idles at that STOP — they are list-driven, not issued by
+  the handler.)
+- **The list after a CLC, fully mapped**, and it is exactly right:
+  `0x1e9950` runs the CLC (`WIF8 0xb8`, `WDS 0x834` out, 7 bytes) then
+  suspends; the poll resumes into the RTS entry, which reports SWI; the
+  handler arms the transfer and IXITs; `0x1e998c` runs **`RD`** (1 byte
+  to 0x1e9dd4) and suspends; `0x1e99c8` runs **`RS`** (7 bytes to
+  0x1e9de1) and suspends **with `resume=0x1e9874` — the RTS entry**.
+  So after the status block the list is parked exactly where it would
+  refresh the report buffer.
+- **THE RACE.** The `RS` leg's completion interrupt reaches the CPU
+  *before* that suspended RTS runs, so the handler dispatches the stale
+  SWI still sitting in `DB+52` against a channel the completion has just
+  closed — and that is the abort. The fix has to make the parked RTS run
+  before the completion interrupt is taken. `FOCUS_IOPDEFER` gets that
+  ordering right in principle (the DMA completes and the list resumes
+  inside the same `poll_and_service`, before the CPU runs again) but
+  breaks the `RD`/`RS` issuance for a separate reason, so neither
+  setting is yet a whole answer.
+- **The older (partly superseded) reading of the loop.** Traced end to
+  end:
   a CLC opens the transaction (state −1 → **4**); the card reports SWI
   and the SWI arm sets state **24**; `RD` and `RS` run the data and
   status phases; the kernel completes, and at run **0x2749c** (guarded
