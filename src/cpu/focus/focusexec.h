@@ -301,6 +301,19 @@ public:
 				m_mem.write32(la + 4, link);
 
 			m_halted = false;
+			// FOCUS_INTLOG reports each message bit the I/O service
+			// vectors through, with the DRT entry it took and how many
+			// times -- the count is the point. A device that is being
+			// serviced thousands of times a second is not being
+			// serviced: it is stuck at the head of its level's list.
+			if (std::getenv("FOCUS_INTLOG"))
+			{
+				static unsigned n[32] = {};
+				if ((++n[bit] % 2000) == 1)
+					std::printf("[int bit %u serviced %u times, head=%08x "
+							"pgm=%08x]\n", bit, n[bit], head,
+							m_mem.read32(head + 8));
+			}
 			external_interrupt(head);
 
 			// "Mask current & lower int. levels" -- the service routine

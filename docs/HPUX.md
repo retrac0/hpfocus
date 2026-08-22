@@ -195,8 +195,18 @@ All addresses runtime for this configuration.
   a fourteen-second boot the escape log drops from `7×66` to nothing but
   the five benign `941`s. No timeout, no abort, no 116. That is the
   console open no longer failing.
-  It is not committed, because it exposes a second defect that has to be
-  solved with it: the machine then falls into an **interrupt storm**.
+  **Resolved, and the result is a negative one.** The storm it exposed
+  was two real IOP defects — a device being linked onto its level list
+  while already the tail, so the list self-referenced and never emptied,
+  and an interrupt line re-asserted rather than edged, re-setting the
+  message bit the service had just cleared. Both are fixed. With them
+  fixed the card change is **neutral**: 28 transactions and `7×66` with
+  or without it, exactly the committed behaviour. So the clean escape
+  log it produced was **the storm masking the failure**, not the failure
+  being fixed — the machine was looping in the handler and never got far
+  enough to fail. The change is not kept.
+  The original text follows for the record: the machine then fell into
+  an **interrupt storm**.
   The handler dispatches, finds IDL, takes the clean arm at run 0x276d6
   (release the lock, `IXIT`), the CPU reaches the dispatcher's `STOP` —
   and an interrupt fires again immediately, 10,000+ times a second

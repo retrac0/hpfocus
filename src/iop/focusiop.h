@@ -930,6 +930,12 @@ public:
 	void raise(unsigned pa)
 	{
 		channel_state &c = m_chan[pa];
+		// FOCUS_IRQLOG: every raise, with the device's enable and both
+		// latches, for telling "the card keeps interrupting" apart from
+		// "the line never fell".
+		if (std::getenv("FOCUS_IRQLOG"))
+			std::printf("[iop raise pa=%u en=%d req=%02x posted=%02x]\n",
+					pa, c.int_enabled, m_int_request, m_int_posted);
 		if (std::getenv("FOCUS_IOPLOG"))
 			std::printf("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
 		// The Interrupt REQUEST register records the event whatever the
@@ -983,7 +989,15 @@ public:
 		memory_interface &mem = m_host.iop_memory();
 		const u32 ta = 1024 + 8u * c.int_level;
 		const u32 tail = mem.read32(ta);
-		if (tail != 0xffffffffu)                // -1 = locked by the CPU
+		// A device already on the list must not be linked onto it again.
+		// The append writes the new entry's address into the old tail's
+		// link field, so appending a device that IS the tail links it to
+		// itself -- and the CPU's walk (take the head, follow the link,
+		// clear the message bit when the link is zero) then never
+		// terminates. The level's bit stays set, every IXIT re-enters
+		// the service routine, and the machine services the same
+		// interrupt tens of thousands of times a second.
+		if (tail != 0xffffffffu && tail != device)   // -1 = locked by CPU
 		{
 			// The new last entry's own link must read zero.
 			mem.write32(device,
@@ -1078,8 +1092,19 @@ private:
 	// against it and a driver is free to poll.
 	void update_interrupt()
 	{
-		m_host.iop_interrupt(m_int_enable
-				&& (m_int_posted & ~m_int_mask) != 0);
+		// Only on a CHANGE. The host wires this to a CPU input line, and
+		// that line sets a bit in the Message register; asserting it
+		// again re-sets the bit the interrupt service has just cleared,
+		// so a level that never falls becomes a storm -- the handler
+		// exits, the CPU reaches its dispatcher STOP, the same interrupt
+		// fires immediately, ten thousand times a second. A line is a
+		// level, and it is the transitions that are events.
+		const bool level = m_int_enable
+				&& (m_int_posted & ~m_int_mask) != 0;
+		if (level == m_int_line)
+			return;
+		m_int_line = level;
+		m_host.iop_interrupt(level);
 	}
 
 	host &m_host;
@@ -1089,6 +1114,7 @@ private:
 	u32 m_int_mask = 0;
 	u32 m_int_request = 0;
 	u32 m_int_posted = 0;   // the requests the IOP posted to the CPU
+	bool m_int_line = false;    // the level currently on the host line
 	unsigned m_dbg_ticks = 0;   // FOCUS_IOPDBG heartbeat
 	bool m_int_event = false;
 	u32 m_int_message = 0;

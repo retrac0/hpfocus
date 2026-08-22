@@ -228,6 +228,18 @@ miss:
   second, arms its real transaction in the command list, and issues `DCE`
   to stop the polling list — and the whole IOP stopped servicing every
   channel, including the suspended list it had just been asked to run.
+- **A device already queued on its level's list must not be queued
+  again.** The append writes the new entry's address into the old tail's
+  link field, so appending a device that *is* the tail links it to
+  itself — and the CPU's walk (take the head, follow the link, clear the
+  message bit when the link is zero) never terminates. The level's bit
+  stays set, every `IXIT` re-enters the service routine, and the machine
+  services one interrupt tens of thousands of times a second while the
+  card raises a hundred.
+- **The host's interrupt line is a level, and only its transitions are
+  events.** Re-asserting it re-sets the message-register bit the
+  interrupt service has just cleared, which is the same storm by another
+  route. Assert only on a change.
 - **The Interrupt Request register is set by the termination, not by the
   mask**: "DMA termination or a non-DMA service request will cause a bit in
   the Interrupt Request register corresponding to the proper PA to be set"
