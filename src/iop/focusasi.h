@@ -22,10 +22,8 @@
     read_data, write_data, read_status -- map onto the sixteen FR
     registers the FOCUS IOP addresses. The I/O ERS gives the FR
     mechanism, the card references give the protocol, and no document in
-    hand joins them. The mapping below is therefore a MODEL, chosen to
-    match the shapes the Series 500 boot code already uses on other
-    cards, and it will need correcting against a driver that really
-    drives it:
+    hand joins them. The mapping below has since been driven by HP-UX
+    5.30 itself (HARDWARE.md sec 2.6.3) and is confirmed, not a guess:
 
       FR0   read/write data          (read_data / write_data)
       FR1   read: status / control-register write, as everywhere else on
@@ -35,8 +33,11 @@
             is the one place the two vocabularies visibly agree
       FR3   read: card identity, 3 for the ASI and 5 for the MUX
             ("card ID = 3", 27128A 4-67; "card 10 = 5", 27130A 4-46)
-      FR8   write: command byte  (write_command, opcode in bits 7:4)
-      FR9   write: order byte    (write_order, opcode in bits 7:4)
+      FR8   write: the ORDER byte  (write_order, opcode in bits 7:4 --
+            IDY/PAU/WC/RTS are the values HP-UX actually writes here;
+            see transaction()/write_order() below)
+      FR9   write: a configuration/command word, mode<<4|pa, that the
+            card answers with an event (see the case 9 handler below)
       FR12  read: the posted Level 2 status byte (read_status), whose
             removal frees the card to post another
 
@@ -285,15 +286,6 @@ struct asi_card : public iop_interface
 		RTS_LCD = 3,        // logical channel destroyed
 		RTS_AES = 4,        // asynchronous event sensed; block replaces LCN
 		RTS_ERT = 5         // error trap in that transaction
-	};
-
-	// Write Command opcodes, in bits 7:4 of the command byte.
-	enum : u8
-	{
-		CMD_DSC = 0,        // disconnect subchannel, aborting any work
-		CMD_AEK = 1,        // asynchronous event acknowledge
-		CMD_CSC = 2,        // connect subchannel
-		CMD_RSC = 4         // resume subchannel
 	};
 
 	//----------------------------------------------------------------
@@ -623,31 +615,6 @@ private:
 		write_order(c);
 	}
 
-	void write_command(u8 c)
-	{
-		// "The card will accept and discard (thus effectively
-		// terminating) commands which are not supported" (27110A 4-2).
-		switch (c >> 4)
-		{
-		case CMD_DSC:
-			m_out.clear();
-			m_order = 0xff;
-			break;
-		case CMD_AEK:
-			m_status_posted = false;
-			m_ard = false;
-			break;
-		case CMD_CSC:
-			m_subchannel = c & 0x0f;
-			m_connected = true;
-			break;
-		case CMD_RSC:
-			break;
-		default:
-			break;
-		}
-	}
-
 	void write_order(u8 o)
 	{
 		m_order = u8(o >> 4);
@@ -707,6 +674,9 @@ private:
 			// swept default, and is consumed by the read.
 			const u8 op = m_rts_report ? m_rts_report : rts_opcode;
 			m_rts_report = 0;
+			if (dbg())
+				std::printf("[asi%u RTS reports %u lcn=%u]\n", pa, op,
+						op == RTS_AES ? 0u : unsigned(rts_lcn));
 			m_out.push_back(op);
 			if (op == RTS_AES)
 			{
@@ -721,7 +691,6 @@ private:
 			}
 			answer();
 			break;		case ORD_DIS:
-			m_connected = false;
 			break;
 		case ORD_WC:
 			// The request block arrives on the next OUTBOUND leg;
@@ -829,7 +798,7 @@ private:
 		// a transaction on a logical channel; SWI is how the card tells
 		// the host that transaction is ready to run, and the host will
 		// keep re-issuing the CLC until it hears it.
-		m_rts_report = RTS_SWI;
+		m_rts_report = clc_report ? clc_report : RTS_SWI;
 		rts_lcn = lcn_force ? lcn_force : m_channel;
 		switch (m_request)
 		{
@@ -897,10 +866,14 @@ private:
 		}
 		m_status_posted = false;
 		answer();
-		// "the logical channel is automatically disconnected and the LCN
-		// is released."
-		m_connected = false;
+		// "Following the status block, the logical channel is
+		// automatically disconnected and the LCN is released." With the
+		// transaction over the card wants its next order, and saying so
+		// is what lets the host's suspended command list run again and
+		// refresh the report buffer -- its interrupt handler loops back
+		// and re-dispatches whatever that buffer still holds.
 		m_request = 0;
+		m_want_order = true;
 	}
 
 	// Read Card Information (request code 4, 27128A 4-38..4-41). The
@@ -996,7 +969,6 @@ private:
 		m_out.clear();
 		m_status_posted = false;
 		m_order = 0xff;
-		m_connected = false;
 	}
 
 	u8 pop_out()
@@ -1049,6 +1021,8 @@ public:
 	// FOCUS_ASILCN overrides the logical channel number the card echoes
 	// in its SWI report, for identifying what the kernel expects there.
 	u16 lcn_force = 0;
+	// FOCUS_ASICLCRTS overrides what the card reports after a CLC.
+	u8 clc_report = 0;
 private:
 	u8 m_command = 0xff;
 	u32 m_config = 0;
@@ -1056,8 +1030,6 @@ private:
 	bool m_status_posted = false;
 	bool m_arq_enabled = true;
 	bool m_ard = false;
-	bool m_connected = false;
-	u8 m_subchannel = 0;
 
 	// The current request block's fields.
 	u8 m_request = 0;

@@ -1084,6 +1084,8 @@ void hp9000_5xx_state::machine_start()
 			// pass before a completion event is announced.
 			if (const char *e = getenv("FOCUS_ASIEVDELAY"))
 				asi->card.event_delay_ms = unsigned(strtoul(e, nullptr, 0));
+			if (const char *e = getenv("FOCUS_ASICLCRTS"))
+				asi->card.clc_report = u8(strtoul(e, nullptr, 0));
 			if (const char *e = getenv("FOCUS_ASILCN"))
 				asi->card.lcn_force = u16(strtoul(e, nullptr, 0));
 			if (const char *e = getenv("FOCUS_ASIRTS"))

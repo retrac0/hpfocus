@@ -162,6 +162,29 @@ All addresses runtime for this configuration.
   report (`FOCUS_ASILCN` 0..3) and the completion-event delay
   (`FOCUS_ASIEVDELAY` 2..60 ms). The kernel sees channel state 0
   whatever we report and whenever we report it.
+- **The handler's loop, and why the abort happens.** Traced end to end:
+  a CLC opens the transaction (state −1 → **4**); the card reports SWI
+  and the SWI arm sets state **24**; `RD` and `RS` run the data and
+  status phases; the kernel completes, and at run **0x2749c** (guarded
+  by `LDX DB+48`, which the SWI arm set) it **closes the channel**,
+  state → 0. The handler then loops back to run 0x274a8, takes `DB+0`'s
+  lock, finds its pending-work queue at `DB+40` **empty**, falls through
+  to run 0x274d0 and **re-dispatches the stale report buffer `DB+52`**
+  — still SWI — against the now-closed channel. State 0 → abort.
+  `DB+52` is the RTS block itself (`DB+56` is where the LCN is read
+  from, and the block DMAs to 0x1e980b), so "refreshing" it needs
+  another RTS transaction, which cannot happen inside the same
+  interrupt.
+- **Measured**: what the card reports after a CLC decides everything.
+  Sweeping it (`FOCUS_ASICLCRTS`) over a 10-second boot, counting the
+  66 cascade: SWI(1) 7, EDD(2) **0**, LCD(3) 7, AES(4) 6, ERT(5) **0**.
+  **EDD and ERT eliminate the abort completely.** EDD is not yet a win
+  overall — it trades the abort for a busy loop in the same handler
+  region (34M instructions in 0x27000–0x27fff) and the panic no longer
+  reaches the terminal — so SWI remains the default, since the printed
+  panic is a real capability. But it localises the answer: the card's
+  post-CLC report is the lever, and the right one is probably
+  state-dependent rather than constant.
 - **NEXT.** The per-LCN channel state the arm reads — the table based at
   `DB+236` with the state word at each entry's `+0` — **is never
   populated**. Find its writer with `FOCUS_WWATCH` over the table (read

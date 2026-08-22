@@ -136,38 +136,48 @@ through a 97098A I/O Expander.
 
 ### 2.2 MPB command set *(IO ERS §5, sheets 29–42)*
 
-Forty-eight commands, each opcode indexing one of 128 words of IOP control
+Fifty-three commands, each opcode indexing one of 128 words of IOP control
 store that form a jump table to the command routines. The ERS quotes them in
 octal. `(R)`, `(W)` and `(C)` mark reads, writes and controls.
 
 ```
-003 WDS  W  write DMA status          057 RIRV R  read revision
-004 WDC  W  write DMA count           060 RIOB C  reset I/O bus
-005 WDA  W  write DMA start address   063 CALM C  clear address lockout
-006 WDTF W  write DMA termination     064 SALM C  set address lockout
-010 RDCS R  read DMA count/status     070 ICEI C  init cmd exec from interrupt
-013 RDMK R  read DMA mask             073 DCE  C  disable IOP cmd execution
-014 CDMK C  clear DMA mask            075 LON  C  turn LED on
-015 EDMA C  enable DMA                076 LOFF C  turn LED off
-016 DDMA C  disable DMA              0103 RIST R  read interface status
-023 SD   C  start DMA                0104 RIFG R  read interface flag
-025 WIMK W  write interrupt mask     0105 RDTF R  read DMA termination field
-026 RIMK R  read interrupt mask      0106 WAMK W  write attention poll mask
-030 CIRQ C  clear interrupt request  0107 CAAK C  clear attention acknowledge
-033 WIMG W  write interrupt message  0110 RIRS R  read IOP registers, suspend
-034 RIRQ R  read interrupt request   0113 WIRR W  write IOP registers, resume
-035 SIL  W  set interrupt level      0114 WRIF W  write RIF result to memory
-036 EINT C  enable interrupt         0115 WCSM W  write count/status to memory
-037 DINT C  disable interrupt        0116 RDEB R  read device end/burst request
-040 WTMS W  write timer start        0117 WDB  W  write DMA data buffer
-043 WTMC W  write timer count        0120 WDCA W  write DMA current address
-044 RTM  R  read timer count         0123 RIMG R  read interrupt message
-045 ETMI C  enable timer interrupt   0172 WIF  W  write interface
-047 IFPL R  interface poll
-054 WDPA W  write DMA peripheral address
-055 RDPA R  read DMA peripheral address
-056 RDB  R  read data buffer
+003 WDS  W  write DMA status          053 RIOP C  reset the IOP itself
+004 WDC  W  write DMA count           054 WDPA W  write DMA peripheral address
+005 WDA  W  write DMA start address   055 RDPA R  read DMA peripheral address
+006 WDTF W  write DMA termination     056 RDB  R  read data buffer
+010 RDCS R  read DMA count/status     057 RIRV R  read revision
+011 RIF n R  read interface FRn       060 WMCN W  write MPB channel number
+013 RDMK R  read DMA mask             063 CALM C  clear address lockout
+014 CDMK C  clear DMA mask            064 SALM C  set address lockout
+015 EDMA C  enable DMA                070 ICEI C  init cmd exec from interrupt
+016 DDMA C  disable DMA               073 DCE  C  disable IOP cmd execution
+023 SD   C  start DMA                 075 LON  C  turn LED on
+025 WIMK W  write interrupt mask      076 LOFF C  turn LED off
+026 RIMK R  read interrupt mask      0103 RIST R  read interface status
+027 RINT C  request interrupt        0104 RIFG R  read interface flag
+030 CIRQ C  clear interrupt request  0105 RDTF R  read DMA termination field
+033 WIMG W  write interrupt message  0106 WAMK W  write attention poll mask
+034 RIRQ R  read interrupt request   0107 CAAK C  clear attention acknowledge
+035 SIL  W  set interrupt level      0110 RIRS R  read IOP registers, suspend
+036 EINT C  enable interrupt         0113 WIRR W  write IOP registers, resume
+037 DINT C  disable interrupt        0114 WRIF W  write RIF result to memory
+040 WTMS W  write timer start        0115 WCSM W  write count/status to memory
+043 WTMC W  write timer count        0116 RDEB R  read device end/burst request
+044 RTM  R  read timer count         0117 WDB  W  write DMA data buffer
+045 ETMI C  enable timer interrupt   0120 WDCA W  write DMA current address
+046 DTMI C  disable timer interrupt  0123 RIMG R  read interrupt message
+047 IFPL R  interface poll           0172 WIF  W  write interface
+050 RIOB C  reset I/O bus
 ```
+
+`RIF n` (read) and `WIF n` (write) are each a **family** of sixteen opcodes,
+one per FR register: `RIF n = 8n+1`, `WIF n = 8n+2` octal — so `011` is
+`RIF 1` (read FR1) and `0172` is `WIF 15` (write FR15) *(sheet 34)*. Every
+other entry above is a single fixed opcode.
+
+> **`DTMI` and `RINT` are ERS-documented (sheets 33/31) but not modelled.**
+> Nothing in the emulator implements Disable Timer Interrupt or Request
+> Interrupt; real boot code has not been observed to need either yet.
 
 **Five more are list-only.** The ERS's command table has a final group headed
 `IOP COMMAND EXECUTION` — opcodes legal only *inside* an ICEI command list,
@@ -225,8 +235,11 @@ miss:
   goes on to *post* an interrupt. A driver is free to mask everything off and
   poll `RIRQ` instead — and HP-UX's panic printer does exactly that.
 
-> Opcodes **000, 011, 050 and 053** are still unnamed anywhere in hand, and
-> the IOP refuses them rather than guessing.
+> Opcode **000** is still unnamed anywhere in hand, and the IOP refuses it
+> rather than guessing. (An earlier reading of this section also listed
+> 011, 050 and 053 as unnamed; all three are documented — `RIF 1`, `RIOB`
+> and `RIOP` above — and the emulator already implements them under those
+> names.)
 
 ### 2.3 IOP functional areas *(IO ERS, table of contents)*
 
