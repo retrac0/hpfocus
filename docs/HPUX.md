@@ -187,6 +187,25 @@ All addresses runtime for this configuration.
   inside the same `poll_and_service`, before the CPU runs again) but
   breaks the `RD`/`RS` issuance for a separate reason, so neither
   setting is yet a whole answer.
+- **THE FIX, FOUND AND NOT YET SHIPPABLE.** `take_request_block()` sets
+  `m_want_order` (the SRQ) only for write-family requests. Setting it
+  for **every** request — the card drives the whole transaction, and the
+  same SRQ asks for the `RD`, `WD` and `RS` legs that follow the CLC,
+  not just the CLC — **removes the entire failure chain**: measured over
+  a fourteen-second boot the escape log drops from `7×66` to nothing but
+  the five benign `941`s. No timeout, no abort, no 116. That is the
+  console open no longer failing.
+  It is not committed, because it exposes a second defect that has to be
+  solved with it: the machine then falls into an **interrupt storm**.
+  The handler dispatches, finds IDL, takes the clean arm at run 0x276d6
+  (release the lock, `IXIT`), the CPU reaches the dispatcher's `STOP` —
+  and an interrupt fires again immediately, 10,000+ times a second
+  against ~100 RTS transactions a second. So the interrupt line is
+  staying asserted rather than being re-raised: look at what clears
+  `m_int_posted` when the handler consumes a report but issues no
+  `CIRQ`, and at whether `074`/`DCEI` should be clearing the request as
+  `ICEI` does. Fixing that is the whole remaining distance on the
+  console.
 - **The older (partly superseded) reading of the loop.** Traced end to
   end:
   a CLC opens the transaction (state −1 → **4**); the card reports SWI
