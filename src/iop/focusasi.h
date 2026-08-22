@@ -525,6 +525,16 @@ struct asi_card : public iop_interface
 			m_out.clear();
 			m_answering = false;
 		}
+		// A data phase that has just finished owes the host an EDD:
+		// "End of the data transfer for the transaction given in the LCN
+		// field" (27128A 4-60). SWI told it to switch to this logical
+		// channel and run the transfer; EDD tells it the transfer is
+		// over and the status block is next. Reporting IDL there says
+		// "nothing to do" about a transaction the host believes is
+		// running, and its interrupt handler aborts the channel --
+		// DCE, DDMA, DINT, CIRQ, and 66 into every outstanding request.
+		if ((m_order == ORD_RD || m_order == ORD_WD) && m_request)
+			m_rts_report = RTS_EDD;
 		// The transfer the command asked for is done, so the card
 		// announces the completion the driver is waiting for.
 		if (m_pending_event)
@@ -820,7 +830,7 @@ private:
 		// the host that transaction is ready to run, and the host will
 		// keep re-issuing the CLC until it hears it.
 		m_rts_report = RTS_SWI;
-		rts_lcn = m_channel;
+		rts_lcn = lcn_force ? lcn_force : m_channel;
 		switch (m_request)
 		{
 		case REQ_READ_DATA:
@@ -1036,6 +1046,9 @@ public:
 	u8 rts_opcode = RTS_IDL;
 	u8 rts_event = 0;
 	u16 rts_lcn = 0;
+	// FOCUS_ASILCN overrides the logical channel number the card echoes
+	// in its SWI report, for identifying what the kernel expects there.
+	u16 lcn_force = 0;
 private:
 	u8 m_command = 0xff;
 	u32 m_config = 0;

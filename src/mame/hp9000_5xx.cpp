@@ -1080,6 +1080,12 @@ void hp9000_5xx_state::machine_start()
 			// FOCUS_ASIRTS / FOCUS_ASIEVENT2 sweep what the card reports
 			// through Read Transparent Status -- the opcode, and the
 			// event code it carries under AES.
+			// FOCUS_ASIEVDELAY sets how many milliseconds of card time
+			// pass before a completion event is announced.
+			if (const char *e = getenv("FOCUS_ASIEVDELAY"))
+				asi->card.event_delay_ms = unsigned(strtoul(e, nullptr, 0));
+			if (const char *e = getenv("FOCUS_ASILCN"))
+				asi->card.lcn_force = u16(strtoul(e, nullptr, 0));
 			if (const char *e = getenv("FOCUS_ASIRTS"))
 				asi->card.rts_opcode = u8(strtoul(e, nullptr, 0));
 			if (const char *e = getenv("FOCUS_ASIEVENT2"))

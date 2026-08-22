@@ -145,6 +145,30 @@ All addresses runtime for this configuration.
   call this transaction failed — the state machine at run 0x27918
   compares +32 against 66 explicitly, so 66 is a known state there, not
   a generic error.
+- **The abort, exactly.** The interrupt handler's RTS dispatch arm for
+  **SWI** (run **0x27530**) does two checks before it acts:
+  `LDS DB+56; LSR 16` takes the LCN out of the report, compares it with
+  the limit at `DB+12`, and branches to the abort on greater; then
+  `LSXL 3; LDS DB+236,X; STAX; LDX DB+0,X; BR P+8,I,X` dispatches on
+  that channel's **state**, and **state 0 lands on the abort as well**
+  (table at 0x2754c, base 0x27550, entry 0 = +0x178 = 0x276c8).
+  The abort at run **0x27a60** issues `DCE`, `DDMA`, `DINT`, `CIRQ`,
+  writes −1 to the record's +36 and +52, and walks the outstanding list
+  storing **66** into each entry's +32, +12 and +4. That is where the
+  66 the console open dies on comes from — and note the record's +32
+  held **55, success**, three milliseconds earlier: the transaction
+  worked and was then torn down.
+- **Ruled out** (both swept, no effect): the LCN echoed in the SWI
+  report (`FOCUS_ASILCN` 0..3) and the completion-event delay
+  (`FOCUS_ASIEVDELAY` 2..60 ms). The kernel sees channel state 0
+  whatever we report and whenever we report it.
+- **NEXT.** The per-LCN channel state the arm reads — the table based at
+  `DB+236` with the state word at each entry's `+0` — **is never
+  populated**. Find its writer with `FOCUS_WWATCH` over the table (read
+  `DB+236` and `DB+12` live first to size it), then find that writer's
+  guard. Either the kernel opens the channel through a path we have not
+  triggered, or it expects the card to have said something else before
+  SWI.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
