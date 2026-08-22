@@ -92,17 +92,65 @@ where the earlier notes had been looking:
   "one TRY frame consumed per statement" note was really seeing. BASIC's
   own cause-024 handler grows the stack and returns through `IXIT`.
 
-**What still fails: a program typed at the keyboard.** `10 A=1` then `RUN`
-traps 021, STT Violation, in the program scaffold. The scaffold is fixed
-code the boot builds into a user segment (`PCLS STT[4]`, then twice
-`LDIS #9; PCLS STT[9]`, then `BR S-3,I` into the statement) — byte-identical
-whatever statement is typed, which corrects an earlier reading of it as
-compiler output. Its segment's transfer table has six entries and the
-scaffold needs nine. Stamping slots 7/8/9 from `MAIN`'s table does get the
-call through, and the failure moves on to a trap 030 two instructions
-later, so the program's slots 7-9 are *not* simply `MAIN`'s: the table has
-to be built for the program, by the seg5 builder call that the boot never
-reaches. That chain is mapped in the `hpux-boot-frontier` notes.
+**HP's own factory diagnostics boot, load and run.** The 9020 System
+Functional Tests come with their own environment -- `500ENV1-3` are a
+three-volume boot image, not a filesystem, and they carry a `GRAPHICS`
+binary that appears on no option disc -- so `tools/mkdiagdisc.sh` installs
+that instead of BASIC 2.0, and the 31,652-byte `TEST` driver then loads off
+the test disc and runs. It stops in its first subprogram with `ERROR 702,
+No graphics driver/CRT graphics hw failure`, which is HP's program working
+correctly on a machine that has no graphics display modelled (HARDWARE.md
+2.7). Five emulator defects had to go first, none of which anything else in
+the project exercised -- a loader stack that sat inside any boot image over
+half a megabyte, `PSHN` running past `SL` instead of trapping at it, the
+variable forms of `ADDS`/`SUBS` being silent no-ops, a byte lost in
+`PSHR`/`SETR`'s S form, and `IXIT` mistaking the bottom of the interrupt
+stack for an empty one. See [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
+
+**What still fails: a program typed at the keyboard.** `10 DISP 5` /
+`20 END` / `RUN` traps 021, STT Violation, in the program scaffold. A
+statement typed *without* a line number is a useful control: `DISP 5` and
+EXECUTE prints ` 5`, so compiling and running one statement works — it is
+specifically the stored-program scaffold that fails. (Note which key ends
+the line: in `FOCUS_TYPE`, `\n` is EXECUTE and `\r` STORE, and a numbered
+line needs `\r` or BASIC answers `IMPROPER COMMAND`.)
+
+Every trap used to return past the instruction that caused it. The ERS
+splits its causes into two groups (sheet 52, notes 1 and 2): note 1 is
+detected "at the end of an instruction and the offset in the stack marker
+points to the next instruction", note 2 "during an instruction ... points
+to this instruction", and only the debug and arithmetic traps are note 1.
+`take_trap` used `m_next` for all of them, so no note-2 trap was ever
+resumable. That is fixed; it is a prerequisite for the scaffold rather than
+a cure for it, and the trap is still fatal.
+
+What the scaffold path actually does, read off a run:
+
+- The boot builds **two** scaffold code segments from one ten-word image on
+  the stack. Segment 3076 gets all ten words — nine STT entries plus the
+  length word `0x24` — by a 40-byte `MVB`; segment 3077 gets only the top
+  seven (six entries, length `0x18`) by a 28-byte one from a source twelve
+  bytes higher. Both counts are literal immediates in BASIC's own code.
+- At `RUN` the compiler *composes* the 40-byte scaffold into a buffer at
+  `DB+4564` — it is not stored in the boot image — emitting `LDIS #9;
+  PCLS STT[9]` twice, then copies it into segment **3077** and sets that
+  segment's `STT[1]` to `0x80`. Six entries, and the code calls the ninth.
+- The trap is not a linking mechanism here: BASIC's CS1 sends causes
+  021, 022 and 023 to one common internal-error reporter (the vector stub
+  pushes the cause and branches to the routine the panic printer sits in),
+  so it halts.
+- Segment 3077 is 208 bytes and its code sits at `0x7c`, which leaves room
+  for a nine-entry table with four bytes to spare — it is sized for nine.
+  Segment 3076's entries 7/8/9 are `80340006`, `802f4006`, `80360006`
+  (segment 6, entries 208/189/216).
+
+Stamping those three into 3077 and raising its length word to `0x24` does
+get the call through, and the failure moves on to a trap 030 two
+instructions later — the same place the earlier attempt with `MAIN`'s
+table reached, now from a second, independent source. So slots 7-9 have to
+be linked *for this program*, and the open question is which of the two
+segments the composed scaffold belongs in: the destination comes from field
+`+60` of the object at `DB+384`.
 
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:

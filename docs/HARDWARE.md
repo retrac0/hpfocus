@@ -169,12 +169,64 @@ octal. `(R)`, `(W)` and `(C)` mark reads, writes and controls.
 056 RDB  R  read data buffer
 ```
 
-> **Commands the list does not name.** Disassembling the `SYSTEM POWERUP`
-> modules of both BASIC 2.0 and HP-UX 5.01 shows real boot code issuing
-> opcodes **000, 011, 050, 053 and 065**, none of which appears in the §5
-> list. Either the OCR dropped them or the list is incomplete. The IOP refuses
-> them rather than guessing, so they will surface as message traps the moment
-> a boot attempt reaches that far.
+**Five more are list-only.** The ERS's command table has a final group headed
+`IOP COMMAND EXECUTION` — opcodes legal only *inside* an ICEI command list,
+where they are its control flow (sheets 38–39, 41–42):
+
+```
+065  Increment and Branch     067  Skip on Flag False      0115 WCSM W  write count/status
+066  Skip on Status False     0114 WRIF W  write RIF result
+```
+
+- **065 Increment and Branch** is three words wide, not two: "test the count,
+  the contents of the **second** memory location following this command, and
+  branch to the absolute address in the **first** memory location following
+  this command if the value was not zero. It will also increment and replace
+  the count if the count is still negative. If the count is zero, execution
+  will continue at the **third** memory location following this command." A
+  count of −1 therefore takes the branch once and falls through ever after —
+  a list arming itself for a fixed number of passes.
+- **066 / 067** test the addressed PA's Status or Flag line; false clears the
+  PA's skip-mask bit and *leaves the list pointer on the skip command*, so the
+  list retries when the device is next serviced.
+- **0114 WRIF** does a Read Interface using the PA and IC of the command word
+  and stores the result at the address in the following word.
+- **0115 WCSM** stores the Current Count and Status register — the word `RDCS`
+  returns — at the address in the following word. It is a **store**, not the
+  end of the list; this is where a driver reads its transfer's outcome from.
+
+Two properties of list execution follow from the same sheets and are easy to
+miss:
+
+- **The list pointer lives in the DRT and advances.** The ERS says so where it
+  describes 066: "The MPB command list pointer in the DRT points to the next
+  instruction... The command list pointer remains pointing to the skip
+  command." An IOP that only ever *reads* `DRT+12` restarts the list from the
+  top on every ICEI.
+- **ICEI inside a list is a wait, not an end**: "This command suspends
+  execution of commands until the interface responds to a poll" *(sheet 36)*.
+  The list resumes at the following entry when the card answers the interface
+  poll.
+- **Command execution is PER-PA, and DCE does not stop the IOP.** `ICEI`
+  "enables Command Execution (bit 20 in the Status register)...
+  corresponding to the PA in the channel address" *(sheet 36)*; `DCE`
+  "clears a bit in the Interrupt Request register and clears the Command
+  Execution bit (bit 20 in the Status register) **both corresponding to
+  the PA in the channel address**" *(sheet 38)*; `DCEI` does the same and
+  sets the interrupt-mask bit *(sheet 37)*. Modelling `DCE` as a global
+  IOP off-switch cost the 540 its console: the driver polls the card for a
+  second, arms its real transaction in the command list, and issues `DCE`
+  to stop the polling list — and the whole IOP stopped servicing every
+  channel, including the suspended list it had just been asked to run.
+- **The Interrupt Request register is set by the termination, not by the
+  mask**: "DMA termination or a non-DMA service request will cause a bit in
+  the Interrupt Request register corresponding to the proper PA to be set"
+  *(4.1.1)*, with no mention of the mask, which decides only whether the IOP
+  goes on to *post* an interrupt. A driver is free to mask everything off and
+  poll `RIRQ` instead — and HP-UX's panic printer does exactly that.
+
+> Opcodes **000, 011, 050 and 053** are still unnamed anywhere in hand, and
+> the IOP refuses them rather than guessing.
 
 ### 2.3 IOP functional areas *(IO ERS, table of contents)*
 
@@ -434,12 +486,15 @@ Class `0x00` and `0x30` do nothing, `0x10`, `0x20` and `0x40` are completion
 classes reached through the `+201` gate, and anything above `0x40` is the
 error path.
 
-**The identify answer is discarded.** Watching the buffer the driver DMAs it
-into (`WDA 0x00ffe90e`, `WDC 2`) shows nothing ever reads those bytes, which
-is why sweeping the value changes nothing. So this transaction is a presence
-and liveness check, not the slot typing the 520's LCS80 performs — whatever
-binds `HP27128/30` or `HP27110` to a slot happens elsewhere, and finding it
-is the next step for HP-UX device bring-up.
+**The identify answer types the slot, and the ID is in its HIGH byte.**
+(An earlier reading here said the answer was discarded; that was wrong, and
+it was wrong because the card was answering zero in the byte that matters,
+so nothing downstream ever changed.) `CORE SYSTEM +0x2f16` splits the
+halfword the two-byte DMA delivered — high byte to the device record's `+0`,
+low byte to `+2` — then range-checks the high byte against 1..7 with `CRB`
+and computed-branches through a seven-arm table; out of range it stores
+error 30 and abandons the slot. So `identity` is `id << 8 | firmware`:
+`0x0300` for the ASI, `0x0200` for the HP-IB.
 
 #### 2.6.1 Common channel protocol
 
@@ -565,6 +620,190 @@ text terminators, prompt sequence, end-on-count — and are delivered as
 them (codes > 16 = the same code + an error flag) *(Tech Ref, 4-5/4-66)*.
 Configuration is all through write-card-configuration subfunctions (baud,
 format, handshake characters, timeouts).
+
+##### The registers, as HP-UX 5.30 actually drives them
+
+*(The FR-level mapping is still a model — no document joins the CIO protocol
+to the FOCUS IOP's sixteen FRs. What follows is what the 540's console
+bring-up forces, and it now agrees with the documented card protocol rather
+than sitting beside it.)*
+
+**FR8 is the order register, opcode in bits 7:4.** Three of three values
+HP-UX writes there decode under the documented order table *(27110A 4-2)* and
+under nothing else:
+
+| FR8 | Order | What follows |
+|---|---|---|
+| `0x00` | `IDY` identify | a 9-byte input leg — the identity information block |
+| `0x88` | `RTS` read transparent status | a 17-byte input leg, the longest reply |
+| `0x20` | `PAU` pause | nothing; the list then waits for the card |
+| `0x58` | `WC` write control | an **output** leg carrying the request block (this is the HP-IB card's) |
+
+**FR9 is the configuration register**, `mode << 4 | pa` — `0x20` from the
+powerup scan, then `0x00`, `0x20`, `0x40` from the console driver's reset
+path. **A write to it is a command the card answers.** `HP-UX KERNEL +0xc63c`
+is explicit:
+
+```
+WIF1 0x20          device clear
+(short delay)
+WIF1 0x10          device enable
+RIF1 until bit 6   self test complete
+RIF1 until bit 7   configured
+WIF9 (0 << 4)|pa   ---- mode 0
+RIF1 until bit 0   an event is waiting
+RIF9               its HIGH NIBBLE must be 3, else go back to polling
+RIF1 until bit 7
+WIF9 (2 << 4)|pa   ---- mode 2, not waited on
+...
+WIF9 (4 << 4)|pa   ---- mode 4
+IFPL, bit pa, up to 15000 times
+```
+
+The emulated card answers a mode-0 write with an asynchronous event of class
+3 (`0x3n`; the kernel's generic event handler does nothing for that class,
+consistent with it being private to this driver). That much is forced — the
+loop has no other exit. The mode-4 interface poll is **not** answered, and
+that path is the panic printer's, not the console driver's: see below.
+
+##### The identity block is nine bytes, and reading two is not enough
+
+The powerup scan asks for `WDC 2` and types the slot from what comes back;
+**the console open asks for all nine** with the same `IDY` order. A card that
+answers only the halfword leaves the transfer short, and the consequences ran
+a long way: no completion, the driver's timed wait expiring with exception
+56, `HP27128/30` re-raising it, the TTY subsystem retrying and then binding
+the **NULL** driver, and the first request to that stub raising 116 —
+`System halted due to system error.`, printed by the kernel's raw-FR panic
+writer (which is what drives the mode-4 handshake above; it is a
+console-of-last-resort, not the console driver).
+
+The layout is *27128A Tech Ref 4-67*, and the 27130A MUX repeats it with card
+ID 5 *(4-46)*:
+
+```
+        7                                 0
+   byte 0            card ID = 3
+        1           firmware ID = 0
+        2        16-bit binary number
+        3      firmware revision code
+        4   MPX                    bp mode
+        5   No. of active ports - 1 = 0
+        6   max requests/port - 1 = 2
+        7        maximum guaranteed
+        8     data blocking size = 200
+```
+
+Byte 4's field widths are not given; MPX is drawn at the bit-7 end and
+`bp mode` at the bit-0 end. **The 27110A is not the same card here**: its
+Level-2 identify message is two bytes, an id code then capability and
+revision nibbles *(27110A 4-6)*, so `0x0202` rather than a nine-byte block.
+
+##### The transaction protocol, as the console driver drives it
+
+A transaction is opened by a **CLC order and the request block that
+follows it**, and the card asks for it: *"Each read or write is preceded by
+a Connect Logical Channel (CLC) order followed by a request block from the
+host computer. The CLC request is in response to an SRQ signal, requesting
+the next order, from the ASI"* *(4-2)*.
+
+`0xb8` on FR8 is that order — **order 11**, outside the 27110A's table
+(which lists 10–15 unsupported, and an HP-IB card has no logical channels)
+but exactly what an ASI needs. HP-UX writes it and then DMAs seven bytes
+**out**; nothing else fits.
+
+**The request block's request code is in BYTE 2**, not byte 0. The fields
+come in the order the prose lists them:
+
+```
+byte 0-1  logical channel number, host-assigned
+byte 2    S | BLK | -- | -- | request code (4 bits)
+byte 3    subfunction code
+byte 4    port ID (the ASI has one port, so always 0)
+byte 5-6  data length, 16-bit unsigned
+```
+
+The console driver's first block settles it: `00 00 04 fd 00 00 01` reads
+as request 4 *read card information*, subfunction 253 *get the card switch
+setting*, one byte — coherent, and the only coherent reading. Taking the
+code from byte 0 gives request 0, which the same page marks "not used".
+The rest of the bring-up reads the same way: request 5 *write card
+configuration* SF 1 and SF 9, request 6 *control card* SF 3 and SF 5, then
+request 2 *write device data*, 80 bytes at a time.
+
+`RTS` is the card's side of the conversation — how it tells the host what
+it wants, dispatched by the host's interrupt service through a six-arm
+table on the opcode (`CORE SYSTEM +0x384c`). **`SWI` is what answers a
+CLC**: "switch to the logical channel given in the LCN field and continue
+the transaction there" *(4-60)*. Without it the host re-issues the same CLC
+for ever.
+
+##### FR6 is the byte-at-a-time read port
+
+The kernel's panic printer cannot set up DMA on a halted machine, so it
+drives the card through registers alone: write an order to FR8, wait for
+the interface poll (unless the order was `0x28`), and read the answer one
+byte at a time from **FR6** (`HP-UX KERNEL +0xc67c`, `IOR io=0x31` = RIF6).
+Same queue as an inbound DMA leg, one byte per read.
+
+Its transfers are equally deliberate: `CDMK`, `WIMK 0`, then `SDC` — Start
+DMA, Clear IRQ, **not** the `SDEC` that would enable the interrupt — and
+then a spin on `RIRQ & 1<<pa`. That is why the Interrupt Request register
+has to be set by a DMA termination whatever the mask says (§2.2).
+
+##### The Read Status block
+
+Returned by the `RS` order "during the status part of a transaction.
+Following the status block, the logical channel is automatically
+disconnected and the LCN is released" *(4-64)*. Its **length varies by
+request type**, and the host reads it with a count sized for the longest,
+so the short ones end on Device End:
+
+```
+byte 0    card dependent request status (0 = no error)
+          -- ends here for all CONTROL requests            (1 byte)
+byte 1-2  length of data transfer
+          -- ends here for all WRITE requests              (3 bytes)
+byte 3-4  length of data remaining in the current record
+          -- ends here for READ CARD INFORMATION           (5 bytes)
+byte 5    message type for a read request
+byte 6    text terminator for message type 1
+          -- ends here for READ DEVICE DATA                (7 bytes)
+```
+
+Byte 0's codes are enumerated on the same page: 1 illegal subfunction,
+2/3 illegal configuration value/length, 4 illegal or unimplemented
+request, 5 illegal port ID, 6 host write-data overrun, 7 block mode not
+allowed, 8 transfer length too large, 9 no buffer space, 10 link already
+connected, 252–255 the modem cases.
+
+##### `RD` is the data phase of whatever transaction is open
+
+A CLC has already said what that is. A *read device data* request wants a
+record off the terminal, but *read card information* has *already* put its
+answer in the card's outbound queue — fetching a terminal record on `RD`
+throws it away, which is exactly what happened to the console open's first
+transaction (the switch byte it asks for with subfunction 253).
+
+##### Where the 540 console stops
+
+**It prints.** The panic report reaches the terminal in full — the message,
+the register file, the stack, the I/O state and the segment table. That is
+the whole write path working end to end: CLC, request block, configuration
+subfunctions, and 80-column `write device data`.
+
+What still fails is the **console driver's own open**. Its command list
+cycles `PAU` → suspend on ICEI → resume when the card asks for an order →
+`RTS` → read 17 bytes → dispatch, and it keeps choosing to poll rather than
+opening a transaction, because the emulated card answers `IDL`, "nothing to
+do". Its CLC transaction is built and waiting in the list at all times
+(`WIF8 0xb8`, `WDS 0x834` outbound, seven bytes) and the gate in front of
+it is simply never pointed at it. Forcing any other RTS opcode as a
+constant is worse, not better — so what a real ASI reports at this point,
+and when, is the open question. The event list *(4-30/4-31)* is the place
+to look: eleven asynchronous events in priority order, of which "transmit
+buffer is empty" and "a data record was received" are the two a console
+would turn on.
 
 #### 2.6.4 27130A 8-channel MUX
 
@@ -739,6 +978,24 @@ NMOS-II line buffer, the one DIM part with its own self-test, though no document
 names it that way **[unconfirmed]**. Further DIM tests: frame buffer memory,
 space substitution, display interrupt, synchronous startup, window, reset.
 Graphics side: rubber-band memory, line drawing, erase memory.
+
+> **Observed.** With a logging card parked on select code 1
+> (`FOCUS_PROBE=1 FOCUS_PROBELOG=1`), the powerup scan's whole conversation
+> with the graphics interface is: read `FR1`, read `FR3` three times, and then
+> — only when `FR3` answers **zero** — write the select-code bit pattern
+> `0x0002` to `FR0` and poll `FR1` **598,722 times** before giving up and
+> writing `FR1` = 6, 1, `0x43` to shut the slot down. Any non-zero `FR3` ends
+> the scan after two reads instead. So `FR3` is the identity here as it is
+> everywhere else, and the long poll is the not-present timeout, not a
+> handshake worth answering. Echoing the pattern back on `FR1` does not
+> satisfy it, and no identity from 0 to 15 gets BASIC's graphics driver to
+> bind: with the card registered the driver never touches select code 1
+> again, and `PLOTTER IS`-class statements answer `ERROR 702, No graphics
+> driver/CRT graphics hw failure`. The bind test is therefore inside the
+> `GRAPHICS` binary and not in the powerup scan — which is where to read it
+> off next. Compare the alpha side, which works: it answers `FR1` = `0x0080`
+> and `FR3` = `0x0006`, and the driver then writes the 6845's sixteen
+> registers through `FR5` as address/data pairs.
 
 > **Simulator note.** Both principal parts of the 98760A are standard and already
 > modelled in MAME (`upd7220`, `mc6845`), and the geometry, colour map and

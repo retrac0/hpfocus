@@ -593,6 +593,12 @@ private:
 	std::array<std::pair<u32, u32>, 10> m_qtrail{};
 	size_t m_qtrail_at = 0;
 	u32 m_qtrail_last = 0, m_qtrail_prev_p = 0;
+	// The instructions just executed, with the stack pointer each one
+	// left behind. A trap reports the instruction it stopped BEFORE --
+	// the end-of-instruction conditions are tested between instructions
+	// -- so the one that actually caused it is the entry above the last.
+	std::array<std::pair<u32, u32>, 12> m_pctrail{};
+	size_t m_pctrail_at = 0;
 	u32 m_break_at = 0;
 	unsigned m_break_hits = 0, m_break_max = 1;
 	bool m_traced = false;
@@ -741,6 +747,20 @@ void hp9000_5xx_state::report_state(const char *why)
 				core.r.msg, core.r.mask, core.r.test(focus::sf::I) ? 1 : 0,
 				qi, qi ? core.read_mem32(qi - 3 - 16) : 0);
 	}
+	// Where the processor has just been, oldest first, with the stack
+	// pointer as each instruction found it. S jumping between two entries
+	// names the earlier one as the instruction that moved it, which is
+	// what a trap cannot say for itself: the end-of-instruction conditions
+	// are tested before the NEXT instruction, so the trap reports that one.
+	std::printf("  last instructions (P, S on entry to it):");
+	for (size_t i = 0; i < m_pctrail.size(); i++)
+	{
+		const auto &e = m_pctrail[(m_pctrail_at + i) % m_pctrail.size()];
+		if (e.first)
+			std::printf("%s    %08x S=%08x", (i % 3) ? "" : "\n",
+					e.first, e.second);
+	}
+	std::printf("\n");
 	std::printf("  SB+0..+16: %08x %08x %08x %08x %08x\n",
 			core.read_mem32(core.r.sb), core.read_mem32(core.r.sb + 4),
 			core.read_mem32(core.r.sb + 8), core.read_mem32(core.r.sb + 12),
@@ -782,18 +802,37 @@ void hp9000_5xx_state::report_state(const char *why)
 	{
 		const u32 count = core.read_mem32(cst) / 16;
 		std::printf("  CST at %08x, %u entries\n", cst, count);
-		for (u32 seg = 1; seg < count && seg < 40; seg++)
+		for (u32 seg = 1; seg < count && seg < 128; seg++)
 		{
 			const u32 ea = cst + 16 * seg;
 			const u32 len = core.read_mem32(ea + 4);
 			const u32 base = core.read_mem32(ea + 8);
-			if (base || len)
-				std::printf("    seg %2u base=%08x len=%6u\n", seg, base, len);
+			if (!base && !len)
+				continue;
+			// A code segment carries its own name: the module header the
+			// linker wrote is still in front of the code, and CST base
+			// points at it (base+20 is the 16-byte space-padded name,
+			// base+36 the first instruction). Printing it turns a table
+			// of numbers into the machine's list of loaded modules --
+			// which is the question being asked whenever this table is
+			// read at all. Data segments have no such header, so the
+			// name is only printed when it really is one.
+			char name[17] = {};
+			for (unsigned k = 0; k < 16; k++)
+				name[k] = char(core.read_mem8(base + 20 + k));
+			bool named = name[0] > ' ';
+			for (unsigned k = 0; k < 16; k++)
+				if (u8(name[k]) < ' ' || u8(name[k]) > '~')
+					named = false;
+			while (named && name[0] && name[std::strlen(name) - 1] == ' ')
+				name[std::strlen(name) - 1] = 0;
+			std::printf("    seg %3u base=%08x len=%6u%s%s\n", seg, base, len,
+					named ? "  " : "", named ? name : "");
 		}
 	}
 
 	u32 q = core.r.q;
-	for (int frame = 0; frame < 10 && q >= core.r.sb && q <= core.r.sl; frame++)
+	for (int frame = 0; frame < 24 && q >= core.r.sb && q <= core.r.sl; frame++)
 	{
 		const u32 delta  = core.read_mem32(q);
 		const u32 status = core.read_mem32(q - 4);
@@ -1014,6 +1053,11 @@ void hp9000_5xx_state::machine_start()
 			asi->card.iop = &m_iop;
 			asi->card.pa = sc;
 			asi->card.log = getenv("FOCUS_ASILOG") != nullptr;
+			// FOCUS_ASILOGMAX raises the line cap: a driver polling
+			// status outruns 2000 lines long before the interesting
+			// part of a dialogue.
+			if (const char *e = getenv("FOCUS_ASILOGMAX"))
+				asi->card.log_max = unsigned(strtoul(e, nullptr, 0));
 			// FOCUS_ASIID answers a different card identity -- 5 is the
 			// 27130A eight-channel multiplexer, which HP-UX drives with
 			// the same module (HP27128/30).
@@ -1025,6 +1069,26 @@ void hp9000_5xx_state::machine_start()
 				asi->card.identity = u16(strtoul(e, nullptr, 0));
 			if (const char *e = getenv("FOCUS_ASIEVENT"))
 				asi->card.event_done = u8(strtoul(e, nullptr, 0));
+			// FOCUS_ASICFGEVENT sweeps the answer to an FR9 write; the
+			// console driver only tests its high nibble.
+			if (const char *e = getenv("FOCUS_ASICFGEVENT"))
+				asi->card.event_configured = u8(strtoul(e, nullptr, 0));
+			// FOCUS_ASISWITCHES sets the card's configuration switch
+			// byte, which the driver reads with subfunction 253.
+			if (const char *e = getenv("FOCUS_ASISWITCHES"))
+				asi->card.switches = u8(strtoul(e, nullptr, 0));
+			// FOCUS_ASIRTS / FOCUS_ASIEVENT2 sweep what the card reports
+			// through Read Transparent Status -- the opcode, and the
+			// event code it carries under AES.
+			if (const char *e = getenv("FOCUS_ASIRTS"))
+				asi->card.rts_opcode = u8(strtoul(e, nullptr, 0));
+			if (const char *e = getenv("FOCUS_ASIEVENT2"))
+				asi->card.rts_event = u8(strtoul(e, nullptr, 0));
+			// FOCUS_ASIMPX sweeps the multiplexing capability in the
+			// identity block: 0 subchannel only, 1 in-channel only,
+			// 2 both (27128A 4-67; the ASI ships configured with 1).
+			if (const char *e = getenv("FOCUS_ASIMPX"))
+				asi->card.mpx = u8(strtoul(e, nullptr, 0));
 			// The console is the serial card in slot 0 of a machine
 			// that has no display: what it prints goes to the terminal
 			// window and to stdout, and what the window types goes back
@@ -1178,6 +1242,8 @@ void hp9000_5xx_state::machine_start()
 			m_qtrail_last = core.r.q;
 		}
 		m_qtrail_prev_p = core.r.p;
+		m_pctrail[m_pctrail_at] = std::make_pair(core.r.p, core.r.s);
+		m_pctrail_at = (m_pctrail_at + 1) % m_pctrail.size();
 		// FOCUS_QCHECK reports the first instruction that runs with a
 		// misaligned Q or a STATUS whose CSN field is impossible -- the
 		// wreckage of a corrupted stack marker, caught at the moment of
@@ -1290,8 +1356,9 @@ void hp9000_5xx_state::machine_start()
 	// says so here -- the semaphore it parked on names what it is waiting
 	// for.
 	if (getenv("FOCUS_SEMLOG"))
-		m_cpu->core().sem_hook = [](bool block, u32 sem, u32 tcb, u32 pc) {
-			std::printf("[sem %s sem=%08x tcb=%08x at P=%08x]\n",
+		m_cpu->core().sem_hook = [this](bool block, u32 sem, u32 tcb, u32 pc) {
+			std::printf("[%8.3fs sem %s sem=%08x tcb=%08x at P=%08x]\n",
+					machine().time().as_double(),
 					block ? "DOWN-block" : "UP-wake  ", sem, tcb, pc);
 			std::fflush(stdout);
 		};
@@ -1951,14 +2018,35 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	// stacks in low memory as soon as it is up. These were absolute
 	// addresses up at 14-15 MB, which only existed because this driver
 	// claimed 16 MB of RAM; on a real machine they have to be inside the
-	// memory actually fitted. Keep the shape the boot expects -- a base
-	// below the marker, half a megabyte of room above it -- and hang it
-	// off the top of installed memory instead.
+	// memory actually fitted, so the stack hangs off the top of installed
+	// memory instead -- a base below the marker, the rest of memory above
+	// it.
+	//
+	// It also has to clear the image it has just loaded. A fixed base of
+	// top - 0x80000 is only above the image while the image is smaller
+	// than half a megabyte: the BASIC 2.0 boot is 373 KB and fits, but
+	// the 9020 diagnostics environment is 680 KB, and its Q at 0x180203
+	// landed at image offset 0x80203 -- inside the HP97062 segment, which
+	// powerup then relocated with the loader's stack marker written
+	// through it and the self test reported as "CHECKSUM for segment0014".
+	// Anything the loader writes below the end of the image corrupts a
+	// segment that has not been relocated yet, so the base goes above
+	// whichever is higher.
 	const u32 top = m_ram_total;
-	core.r.sb = top - 0x80000;
+	const u32 above_image = (LOAD + size + 0xfff) & ~0xfffu;
+	core.r.sb = std::max(top - 0x80000, above_image);
 	core.r.sl = (top - 4) | 3;
 	core.r.q  = core.r.sb + 0x203;
 	core.r.s  = core.r.q + 0x200;
+	// The handoff was written around a half-megabyte window, so say so
+	// when the image has eaten into it -- the boot may still be fine,
+	// since powerup uses only a few hundred bytes of this stack, but a
+	// machine this tight is worth another RAM board (-mpb5 1m and up).
+	if (core.r.sb + 0x80000 > top)
+		osd_printf_warning("boot: the %u KB image leaves the loader only "
+				"%u KB of stack under the %u KB fitted, not the half "
+				"megabyte the handoff assumes\n",
+				size / 1024, (top - core.r.sb) / 1024, top / 1024);
 	core.r.db = 0;
 	core.r.dl = 0xffffff | 3;
 	core.r.dst = 1152;

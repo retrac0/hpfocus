@@ -440,6 +440,40 @@ static void test_branches()
 	h.put(0x1020, u16((070 << 6) | 6));
 	CHECK(h.cpu.step() == exec_trap::none);
 	CHECK_EQ(h.cpu.r.p, 0x1020 + 12);
+
+	// Branches PRE-index, alone among the instructions (ERS sheet 17:
+	// "For all instructions except branch instructions postindexing is
+	// used... Branch instructions use preindexing so that high-level
+	// language CASE statements can be executed efficiently. In this
+	// case, the base, offset and index register select one of a set of
+	// indirect pointers which is then evaluated (WITHOUT using the index
+	// register) to determine the branch target"; sheet 108 repeats it).
+	//
+	// A jump table of self-relative pointers at P+8, and X selecting the
+	// second arm. Post-indexing would read arm 0's pointer and add 4 to
+	// where it lands -- four bytes into the wrong arm, which is exactly
+	// how a driver ends up calling the wrong routine.
+	h.cpu.r.p = 0x1100;
+	h.cpu.r.x = 4;
+	h.mem.write32(0x1100, u32_insn(030, 0, 8) | (1u << 23) | (1u << 22));
+	h.mem.write32(0x1108, 0x40);                    // arm 0 -> 0x1148
+	h.mem.write32(0x110c, 0x80);                    // arm 1 -> 0x118c
+	CHECK(h.cpu.step() == exec_trap::none);
+	CHECK_EQ(h.cpu.r.p, 0x118c);
+
+	// Arm 0 with the index clear, to show the table itself is right.
+	h.cpu.r.p = 0x1100;
+	h.cpu.r.x = 0;
+	CHECK(h.cpu.step() == exec_trap::none);
+	CHECK_EQ(h.cpu.r.p, 0x1148);
+
+	// The index is dropped once the pointer has been selected: a table
+	// whose arms both point at the same place lands there whatever X is.
+	h.cpu.r.p = 0x1100;
+	h.cpu.r.x = 4;
+	h.mem.write32(0x110c, 0x3c);                    // arm 1 -> 0x1148 too
+	CHECK(h.cpu.step() == exec_trap::none);
+	CHECK_EQ(h.cpu.r.p, 0x1148);
 }
 
 static void test_load_store()
@@ -558,6 +592,85 @@ static void test_unimplemented_is_reported()
 }
 
 
+// FIXD and FIXS: "Indicators = CCA, Overflow", and the ",B" bit rounds
+// where the plain form truncates (ERS sheets 87-88).
+//
+// The Overflow half is what HP-UX's MATH LIBRARY truncate-to-integral
+// routine is built on -- FIXD, then `BOV` to a slow path that masks the
+// fraction off by exponent when the value is too big for 32 bits. With
+// Overflow never set, the kernel's 10 Hz callout daemon computed its next
+// deadline from a saturated integer, found it already past, and never
+// slept: one task spinning at priority, the rest of the boot behind it.
+static void test_fix_overflow_and_rounding(harness &h)
+{
+	// Push a double the way the tests above do: a zero low word with the
+	// high word written under it.
+	const auto push_double = [&h](u32 hi, u32 lo) {
+		h.cpu.push(0); h.cpu.push(lo);
+		h.mem.write32(h.cpu.r.s - 3 - 4, hi);
+	};
+
+	// In range: Overflow is cleared, not left standing.
+	h.cpu.r.put(sf::O, 1);
+	push_double(0x40240000, 0x00000000);               // 10.0
+	CHECK(h.one(f3(041)) == exec_trap::none);          // FIXD
+	CHECK_EQ(h.cpu.stk(0), 10);
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 0);
+	h.cpu.pop();
+
+	// Truncation versus rounding, both signs.
+	push_double(0x40059999, 0x9999999a);               // 2.7
+	CHECK(h.one(f3(041)) == exec_trap::none);          // truncates
+	CHECK_EQ(h.cpu.stk(0), 2);
+	h.cpu.pop();
+	push_double(0x40059999, 0x9999999a);               // 2.7
+	CHECK(h.one(f3(041, true)) == exec_trap::none);    // FIXD,B rounds
+	CHECK_EQ(h.cpu.stk(0), 3);
+	h.cpu.pop();
+	push_double(0xc0059999, 0x9999999a);               // -2.7
+	CHECK(h.one(f3(041)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -2);
+	h.cpu.pop();
+	push_double(0xc0059999, 0x9999999a);               // -2.7, rounded by
+	CHECK(h.one(f3(041, true)) == exec_trap::none);    // magnitude
+	CHECK_EQ(h.cpu.stk(0), -3);
+	h.cpu.pop();
+
+	// Out of range: Overflow set. This is the microsecond clock divided
+	// by 100000 that HP-UX's callout daemon hands the MATH LIBRARY.
+	push_double(0x421492a3, 0xc55e3d1d);               // 22089888087.6
+	CHECK(h.one(f3(041)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 1);
+	h.cpu.pop();
+
+	// The boundaries themselves are in range.
+	push_double(0x41dfffff, 0xffc00000);               // 2147483647.0
+	CHECK(h.one(f3(041)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 2147483647);
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 0);
+	h.cpu.pop();
+	push_double(0xc1e00000, 0x00000000);               // -2147483648.0
+	CHECK(h.one(f3(041)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x80000000u));
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 0);
+	h.cpu.pop();
+
+	// FIXS carries both rules too.
+	h.cpu.push(0x406ccccd);                            // 3.7f
+	CHECK(h.one(f3(071)) == exec_trap::none);          // truncates
+	CHECK_EQ(h.cpu.stk(0), 3);
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 0);
+	h.cpu.pop();
+	h.cpu.push(0x406ccccd);
+	CHECK(h.one(f3(071, true)) == exec_trap::none);    // FIXS,B rounds
+	CHECK_EQ(h.cpu.stk(0), 4);
+	h.cpu.pop();
+	h.cpu.push(0x50000040);                            // 8.59e9f
+	CHECK(h.one(f3(071)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.test(sf::O) ? 1 : 0, 1);
+	h.cpu.pop();
+}
+
 static void test_floating_point()
 {
 	std::printf("floating point\n");
@@ -630,6 +743,8 @@ static void test_floating_point()
 	CHECK_EQ(h.cpu.r.condition_code(), CCG);
 	CHECK(h.one(f3(030)) == exec_trap::none);          // CDSF
 	CHECK_EQ(h.cpu.stk(0), s32(0x40a00000u));
+
+	test_fix_overflow_and_rounding(h);
 }
 
 static void test_new_groups()

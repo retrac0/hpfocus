@@ -58,10 +58,30 @@ name is the test's menu number, not a select code.
 `(6)EXPRINTER`, `(7)97060`, `(8)SRM`, `(9)HPIB`, `(11)PLOTTER`, `(12)97062`,
 `(14)HPIO`, `(16)DIGITIZER`, `(17)RGB_ALIGN`, `(19)GPIO`, `(24)ASI`.
 
-### 500ENV1–3 — no SDF filesystem
+### 500ENV1–3 — the environment the tests run in
 
-These three read as valid Teledisk images but carry no SDF volume, so they
-are not part of the same file world. What they are has not been established.
+These three read as valid Teledisk images but carry no SDF volume, because
+they are not a filesystem at all: they are **a three-volume boot image**,
+labelled `BASIC LANGUAGE SYSTEM  REV 2.00, BINARIES FOR SYS. FUNC. TEST`,
+680,668 bytes across the set, whose twenty-nine segments all verify. This is
+the system the test discs are meant to be booted on, and it is not
+interchangeable with BASIC 2.0: alongside the thirteen segments of the
+ordinary boot it carries **`GRAPHICS` (92,908 bytes), `SRM`, `HP98770`,
+`HP97060` and `HP97062`** — five binaries that appear on no option disc in
+the collection.
+
+That is what the "missing options" message is about. Booted on plain BASIC
+2.0 with every shipped option installed, `LOAD "TEST"` still answers
+
+    SUBPROGRAM Clear_screen  REFERS TO MISSING OPTIONS; IT IS NOT STORABLE
+
+because `Clear_screen` needs `GRAPHICS`, which BASIC 2.0 cannot be given.
+Booted on this environment it loads clean.
+
+Build a fixed disc from the set with
+[`tools/mkdiagdisc.sh`](../tools/mkdiagdisc.sh). The five diagnostics-only
+modules are extracted and disassembled under
+[`disasm/`](../disasm/README.md).
 
 ---
 
@@ -95,21 +115,78 @@ be a thorough workout of the 6845 and the frame buffer.
 
 ---
 
-## 3. Running them is blocked on the same thing as everything else
+## 3. Where the tests stop now
 
-The tests are BASIC programs, so running them needs `LOAD` and `RUN` to work,
-and RUN is the open problem tracked in [SOFTWARE.md](SOFTWARE.md). The demo
-discs matter here: several demos are **single-subprogram** programs —
-`hanoi_towers`, `snow_flake`, `music`, `fft`, `house`, `intro` — which makes
-them the smallest possible real-program RUN targets, much simpler than the
-19-subprogram test driver.
+They boot, load and run. The environment comes up to `BASIC Ready for use.`,
+`LOAD "TEST"` reads the 31,652-byte driver off the flexible volume with no
+complaint, and `RUN` executes it:
 
-There is also a hypothesis worth testing directly. Everything learned about
-RUN so far comes from a program *typed in* at the keyboard, which BASIC
-compiles statement by statement into a prefab scaffold segment. A program
-**loaded from disc** arrives already compiled, with its own transfer table,
-and may take an entirely different path into execution. If it does, a demo
-disc could run before a typed program does.
+    tools/mkdiagdisc.sh
+    tools/runbasic-hd.sh software/hd/diag.img -- \
+        -flop1 "$PWD/software/test/500MFTST.TD0"
+
+then `LOAD "TEST"` and `RUN` — or, for a batch run,
+
+    FOCUS_TYPE='LOAD "TEST"\n;RUN\n' FOCUS_TYPEAT=20,36 FOCUS_DIMDUMP=600 \
+    tools/runbasic-hd.sh software/hd/diag.img -- \
+        -flop1 "$PWD/software/test/500MFTST.TD0" -seconds_to_run 48
+
+The driver's first act is `Clear_screen`, and that is where it stops:
+
+    ERROR 702 IN Clear_screen: No graphics driver/CRT graphics hw failure
+
+which is the program working correctly and the machine being incomplete.
+**The remaining blocker is the graphics display on select code 1**, which
+this emulator does not model at all (HARDWARE.md §2.7). It is not avoidable
+by running a single test instead of the driver: each test file's `MAIN` is
+an empty stub — `PROGRAM MAIN !KEYBOARD    FEB 24, 1983` and nothing else —
+and the real body is a `SUB Program` the driver calls, so `TEST` is the only
+entry point there is.
+
+Five defects in the emulator had to go first, and all five were found by
+these tests rather than by anything else the project runs:
+
+- **The loader's stack sat inside the boot image.** The handoff put SB at
+  `top - 0x80000`, which only clears the image while the image is under half
+  a megabyte. BASIC 2.0's is 373 KB and fits; this environment's is 680 KB,
+  and the loader's Q landed at image offset `0x80203` — inside `HP97062`,
+  which powerup then relocated with the stack marker written through it.
+  The machine said so precisely: `Self test error 2: CHECKSUM for
+  segment0014`.
+- **`PSHN` ran past `SL`.** The ERS is explicit that `ADDS`, `PSHN`, `SLD`
+  and `SCAN` test the stack limit themselves and "clear STAT[9:1] before
+  trapping" (sheet 51), rather than leaving S past `SL` for the
+  end-of-instruction check. BASIC starts a program by allocating its whole
+  variable area in one `PSHN` — 3,330 words for this driver — so run to
+  completion it put S 6 KB outside the stack segment, the handler grew the
+  stack by just enough to cover where S had already landed, and the next
+  call over-ran the fresh limit fatally.
+- **`ADDS` and `SUBS` had only their fixed form.** A zero operand means the
+  count is on the stack instead, which is how the kernel probes for room:
+  `STAX; ADDS #0; LDXA; SUBS #0` reserves N words and gives them straight
+  back, purely to make the overflow trap fire. Both halves were silent
+  no-ops, so the probe probed nothing.
+- **`PSHR`/`SETR` were a byte out on the S form.** The ERS writes the push
+  as `S:=S+1; (S):=S-SB-1`, both S's being the incremented one, so the `-1`
+  undoes the increment; in byte addressing it took a byte off the offset
+  instead. It cancelled against the same error in `SETR` whenever a pair
+  carried S back to itself — but `AP`'s procedure prologue pushes the S form
+  and restores it as the **Q** form (`PSHR 1` / `SETR 2`, opening a frame at
+  the current top), and there the missing byte came through: Q landed one
+  byte below the word grid and the `EXIT` that unwound it read its delta
+  from a misaligned marker. That is the one that was actually killing the
+  test driver.
+- **`IXIT` read "bottom of the ICS" as "no dispatcher to return to".** The
+  delta word of the frame at `QI` is zero for the bottom frame, which is as
+  true of a dispatcher that really was interrupted as of the empty frame the
+  boot handoff leaves; taking the boot's door out of a live one threw the
+  interrupted context away and dispatched through a TCB that had never been
+  filled in. The pseudo-disable count separates them, exactly as it already
+  did in the sibling deferred-`DISP` case. This one showed up as a *phase*
+  dependence — `LOAD` typed at 35 emulated seconds died in a stack underflow
+  inside the `IXIT`, typed at 20 or 33 it did not — which is worth
+  remembering as a shape: a fault that moves with timing is usually in the
+  interrupt path, not in the code that appears to be running.
 
 ---
 

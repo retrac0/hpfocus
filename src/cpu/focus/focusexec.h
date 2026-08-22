@@ -32,6 +32,7 @@
 
 #include "focusdst.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -517,6 +518,43 @@ private:
 	static double to_double(u64 b) { double d; std::memcpy(&d, &b, 8); return d; }
 	static u64 from_double(double d) { u64 b; std::memcpy(&b, &d, 8); return b; }
 	static float to_float(u32 b) { float f; std::memcpy(&f, &b, 4); return f; }
+
+	// FIXD and FIXS, whose ERS entries (sheets 87-88) agree on both
+	// details this core used to miss.
+	//
+	// "Indicators = CCA, Overflow" -- a value the 32-bit result cannot
+	// hold sets Overflow, and it is read back. HP-UX's MATH LIBRARY has a
+	// truncate-to-integral-double routine that is written entirely around
+	// it: clear the user-trap enable, FIXD, `BOV` to a slow path that
+	// masks the fraction off by exponent instead, otherwise FLTD the fixed
+	// value back. Leaving Overflow alone made every large value come back
+	// as the saturated s32 cast: the kernel's 10 Hz callout daemon rounds
+	// the microsecond clock up to the next 100 ms through that routine,
+	// got -2147483647 * 100000 for its deadline, found the deadline
+	// already past, never slept, and spun at task priority forever with
+	// the rest of the boot behind it.
+	//
+	// "If CIR(19:1)=0 then the integer part is kept and the fractional
+	// part truncated. If CIR(19:1)=1 then this number is rounded (by
+	// adding 0.5 to its magnitude)" -- that is the ",B" bit, which was
+	// ignored; both forms truncated.
+	//
+	// The result on overflow is not specified. The low 32 bits of the
+	// whole integer is what a machine that converts and then narrows
+	// produces, and it is at least deterministic; a value too large even
+	// for 64 bits, or a NaN, has no such answer and gives zero.
+	u32 fix(double d, bool round)
+	{
+		const double t = round ? ((d < 0) ? std::ceil(d - 0.5)
+						: std::floor(d + 0.5))
+				: std::trunc(d);
+		const bool fits = t >= -2147483648.0 && t <= 2147483647.0;
+		r.put(sf::O, fits ? 0 : 1);
+		if (fits)
+			return u32(s32(t));
+		return (t > -9.2233720368547758e18 && t < 9.2233720368547758e18)
+				? u32(u64(s64(t))) : 0u;
+	}
 	static u32 from_float(float f) { u32 b; std::memcpy(&b, &f, 4); return b; }
 
 	//----------------------------------------------------------------
@@ -714,11 +752,20 @@ private:
 		}
 		case 005: {                                            // PSHN
 			// Pushes X copies of either zero or the current top of stack
-			// (ERS sheet 67).
+			// (ERS sheet 67), stopping at SL -- see stack_grow_trap.
+			// X counts down as the words go on, so the trap is resumable
+			// where it stood: the IXIT comes back to this same PSHN and
+			// it pushes the rest into the grown stack.
 			u32 fill = 0;
 			if (b3)
 				fill = pop();
-			while (r.x > 0) { push(fill); r.x--; }
+			while (r.x > 0)
+			{
+				if (stack_would_overflow(r.s + 4))
+					return stack_grow_trap();
+				push(fill);
+				r.x--;
+			}
 			return exec_trap::none;
 		}
 		case 006: push(0); return exec_trap::none;             // ZERO
@@ -886,7 +933,7 @@ private:
 			push_double(d); set_fp_cc(d);
 			return exec_trap::none; }
 		case 041: { const double d = pop_double();             // FIXD
-			const u32 v = u32(s32(d)); push(v); cca(v);
+			push(fix(d, b3)); cca(stk(0));
 			return exec_trap::none; }
 		case 042: { const s32 v = s32(pop()); push_double(double(v));
 			return exec_trap::none; }                          // FLTD
@@ -917,8 +964,8 @@ private:
 			set_fp_cc(-x); return exec_trap::none; }           // FNEG
 		case 070: { const s32 v = s32(pop()); push(from_float(float(v)));
 			return exec_trap::none; }                          // FLTS
-		case 071: { const u32 v = u32(s32(to_float(pop()))); push(v);
-			cca(v); return exec_trap::none; }                  // FIXS
+		case 071: { push(fix(double(to_float(pop())), b3));    // FIXS
+			cca(stk(0)); return exec_trap::none; }
 		case 072: { const float y = to_float(pop()), x = to_float(pop());
 			push(from_float(x + y)); set_fp_cc(x + y);
 			return exec_trap::none; }                          // FADS
@@ -1941,8 +1988,8 @@ private:
 			const u32 tempadr = r.s - 15;
 			const s32 nwords = ((d.len + 3) / 4) + 1;
 			const u32 news = tempadr + u32(nwords) * 4 + 19;
-			if (news > r.sl)
-				return take_trap(trap_cause::stack_overflow, 0);
+			if (stack_would_overflow(news))
+				return stack_grow_trap();
 			r.s = news;
 
 			m_mem.write32(tempadr, u32(d.len));
@@ -2048,8 +2095,8 @@ private:
 			}
 			else
 			{
-				if (news > r.sl)
-					return take_trap(trap_cause::stack_overflow, 0);
+				if (stack_would_overflow(news))
+					return stack_grow_trap();
 				r.s = news;
 			}
 
@@ -2213,7 +2260,21 @@ private:
 			// the sequence shown". Pushing only four of them shifted the
 			// kernel's stack-extent probe (seg1 STT[51]) three words and
 			// sent the boot into the error-18 reporter.
-			if (operand & 1)  push(r.s - r.sb - 1);
+			// The S form's value is the offset of S BEFORE the push:
+			// the ERS writes it as "S:=S+1; (S):=S-SB-1", both S's being
+			// the incremented one, so the -1 undoes the increment rather
+			// than biasing the offset. In the word units of that
+			// pseudocode one word is 1; here S is a byte address, so
+			// subtracting a literal 1 took a byte off the offset. It
+			// cancelled against the same mistake in SETR whenever a
+			// PSHR/SETR pair carried S back to itself, which is why it
+			// survived -- but AP's procedure prologue pushes the S form
+			// and restores it as the Q form (PSHR 1 / SETR 2, to open a
+			// frame at the current top), and there the missing byte came
+			// straight through: Q landed one byte below the word grid,
+			// and the EXIT that unwound it read its delta from a
+			// misaligned marker and trapped as a bounds violation.
+			if (operand & 1)  push(r.s - r.sb);
 			if (operand & 2)  push(r.q - r.sb);
 			if (operand & 4)  push(r.status);
 			if (operand & 8)  push(r.dst);
@@ -2233,7 +2294,7 @@ private:
 			if (operand & 8)  { r.dst = pop(); }
 			if (operand & 4)  { r.status = pop(); }
 			if (operand & 2)  { r.q = pop() + r.sb; }
-			if (operand & 1)  { r.s = stk(0) + r.sb + 1; }
+			if (operand & 1)  { r.s = stk(0) + r.sb; }
 			return exec_trap::none;
 		}
 		case 036: {                                               // LLSH
@@ -2456,8 +2517,41 @@ private:
 		}
 		case 026: r.x += imm; cca(r.x); return exec_trap::none;  // ADXI
 		case 027: r.x -= imm; cca(r.x); return exec_trap::none;  // SBXI
-		case 032: r.s += 4u * imm; return exec_trap::none;       // ADDS
-		case 033: r.s -= 4u * imm; return exec_trap::none;       // SUBS
+		// ADDS and SUBS each have two forms, and only the fixed one was
+		// implemented: a zero operand means the count is on the stack
+		// instead ("If the 8-bit operand is zero, the content of the TOS
+		// is added to S-1", ERS sheets 87-88), which is how a routine
+		// reserves a buffer whose size it only learns at run time. Both
+		// halves silently did nothing, and they have to be fixed
+		// together -- SDF_DISC reserves 725 words this way on every
+		// call, so ADDS alone grows a stack that is never given back
+		// and the boot drowns in stack-overflow traps within a second
+		// and a half. The pair also explains how the old build survived
+		// at all: with neither the allocation nor the release happening,
+		// the routine's buffer simply sat in the unclaimed words above
+		// S, where it worked until something else pushed over it.
+		case 032: {                                              // ADDS
+			const u32 news = imm ? r.s + 4u * imm
+					: (r.s - 4) + 4u * stk(0);
+			if (stack_would_overflow(news))
+				return stack_grow_trap();
+			r.s = news;
+			return exec_trap::none;
+		}
+		case 033: {                                              // SUBS
+			// The released count "must be positive"; a zero or negative
+			// one releases nothing and only the count itself goes.
+			if (imm)
+				r.s -= 4u * imm;
+			else
+			{
+				const s32 n = s32(stk(0));
+				r.s -= 4;
+				if (n > 0)
+					r.s -= 4u * u32(n);
+			}
+			return exec_trap::none;
+		}
 		case 035: { const u32 v = stk(0) | imm; set_stk(0, v); cca(v);
 			return exec_trap::none; }                            // ORI
 		case 036: { const u32 v = stk(0) ^ imm; set_stk(0, v); cca(v);
@@ -2621,14 +2715,37 @@ private:
 			// evaluated through the CST as PCL does. Running those words
 			// through data-pointer resolution instead is what sent HP-UX
 			// to PB + 0x4000a6c8: the U bit was still in the offset.
-			if (ind && base != BASE_P_PLUS && base != BASE_P_MINUS)
+			//
+			// And branches PRE-index, alone among the instructions.
+			// Sheet 17: "For all instructions except branch instructions
+			// postindexing is used... Branch instructions use
+			// preindexing so that high-level language CASE statements
+			// can be executed efficiently. In this case, the base,
+			// offset and index register select one of a set of indirect
+			// pointers which is then evaluated (without using the index
+			// register) to determine the branch target." Sheet 108 says
+			// it again: "In all cases preindexing is performed."
+			//
+			// The general addressing unit post-indexes, correctly, for
+			// everything else -- so an indirect branch cannot be left to
+			// it. Post-indexing a CASE dispatch reads the table entry
+			// for arm ZERO and then adds the index to the address that
+			// entry resolves to, which lands a few bytes into the wrong
+			// arm. That is how HP-UX's console driver came to call a
+			// routine that takes a lock the caller was already holding:
+			// the state machine at CORE SYSTEM +0x3ffe dispatched arm 1
+			// into the middle of arm 0, and the machine spun on its own
+			// lock with interrupts disabled.
+			if (ind)
 			{
 				u32 pa;
 				if (!ea(base, off, false, idx, false, pa))
 					return exec_trap::address_error;
 				const u32 ptr = m_mem.read32(pa);
 				u32 target;
-				if (ers32::get(ptr, 0, 1))
+				if (base == BASE_P_PLUS || base == BASE_P_MINUS)
+					target = u32(s32(pa) + s32(ptr));  // self-relative
+				else if (ers32::get(ptr, 0, 1))
 				{
 					exec_trap t;
 					if (!enter_segment(ptr, target, t))
@@ -2642,7 +2759,7 @@ private:
 				return exec_trap::none;
 			}
 			u32 a;
-			if (!ea(base, off, ind, idx, false, a))
+			if (!ea(base, off, false, idx, false, a))
 				return exec_trap::address_error;
 			branch_to(a);
 			return exec_trap::none;
@@ -2877,6 +2994,42 @@ private:
 		}
 	}
 
+	// Notes 1 and 2 of the trap list (ERS sheet 52) split every cause in
+	// two, and the difference is the whole of whether a trap is
+	// recoverable: note 1 says "the trap condition is detected at the end
+	// of an instruction and the offset in the stack marker points to the
+	// NEXT instruction", note 2 that it "is detected during an instruction
+	// and the offset ... points to THIS instruction". A note-2 handler
+	// fixes what the instruction complained about and returns to it; the
+	// instruction then runs and succeeds.
+	//
+	// Only the debug and arithmetic traps are note 1 -- the ones a
+	// completed instruction reports about itself. Everything else is note
+	// 2, so that is the default here and this list is the exception.
+	static bool trap_points_at_next(trap_cause cause)
+	{
+		switch (cause)
+		{
+		case trap_cause::check_trap:                 // notes 1 and 3
+		case trap_cause::machine_instruction:        // notes 1, 3 and 4
+		case trap_cause::unimplemented_instruction:  // notes 1 and 3
+		case trap_cause::user_trap:
+		case trap_cause::fp_operand:
+		case trap_cause::fp_result:
+		case trap_cause::start_of_line:
+		case trap_cause::variable_trace:
+		case trap_cause::start_of_procedure:
+		case trap_cause::end_of_procedure:
+		case trap_cause::start_of_subroutine:
+		case trap_cause::end_of_subroutine:
+		case trap_cause::message_trap:
+		case trap_cause::start_of_line_check:
+			return true;
+		default:
+			return false;
+		}
+	}
+
 	exec_trap take_trap(trap_cause cause, u32 parameter)
 	{
 		m_last_trap = cause;
@@ -2892,7 +3045,14 @@ private:
 		const u32 len_m1 = m_mem.read32(entry + 4);
 		const u32 location = m_mem.read32(entry + 8);
 
-		const u32 ret = m_next - r.pb;
+		// Note 1 returns past the instruction, note 2 back to it. Every
+		// trap used to return past, which is why BASIC could not run a
+		// typed-in program: the scaffold calls STT[9] in a segment whose
+		// transfer table has six entries, the STT-violation trap is how
+		// BASIC is asked to link the ninth, and returning past the call
+		// meant the linked entry was never reached -- execution carried
+		// on from the instruction after a call that never happened.
+		const u32 ret = (trap_points_at_next(cause) ? m_next : r.p) - r.pb;
 		const u32 old_q = r.q;
 		const u32 old_pb = r.pb;
 
@@ -3389,6 +3549,8 @@ private:
 	// external one walks the Code Segment Table.
 	exec_trap do_call(u32 offset)
 	{
+		static const char *calllog = std::getenv("FOCUS_CALLLOG");
+		static const u32 calllog_p = calllog ? strtoul(calllog, nullptr, 16) : 0;
 		u32 ptr;
 		if (offset == 0)
 			ptr = pop();
@@ -3408,6 +3570,9 @@ private:
 				return take_trap(trap_cause::stt_violation, offset);
 			ptr = m_mem.read32(r.pl - offset);
 		}
+		if (calllog_p && r.p == calllog_p)
+			std::printf("[call p=%08x pl=%08x offset=%02x ptr=%08x]\n",
+					r.p, r.pl, offset, ptr);
 
 		const u32 ret = m_next - r.pb;      // PB-relative return address
 		const u32 old_q = r.q;
@@ -3760,6 +3925,38 @@ private:
 	// against SL -- TRY deleting its frame -- reports a bounds violation
 	// instead, tens of thousands of instructions after the fact. That is
 	// what stopped RUN, and it is why LIST died on its second statement.
+	// "ADDS, PSHN, SLD, and SCaN clear STAT[9:1] before trapping" (ERS
+	// sheet 51). Those four are the instructions that move S by an amount
+	// the program chose, so unlike every other instruction they test SL
+	// themselves instead of leaving S past it for the end-of-instruction
+	// check to find. That distinction is not cosmetic: the check between
+	// instructions can only report a deficit already incurred, and BASIC
+	// starts a program by allocating its whole variable area in one PSHN
+	// -- 3,330 words for the 9020 test driver. Run to completion, that
+	// put S 6 KB beyond SL, outside the stack segment altogether, and the
+	// handler grew the stack by just enough to cover where S had already
+	// landed; the next call over-ran the fresh limit and the second
+	// overflow was fatal. Trapping at the limit instead keeps S inside
+	// the segment and asks for the growth before the damage.
+	//
+	// STAT[9:1] is EM, the machine-instruction trap enable. Clearing it
+	// is what makes the sequence resumable: the trap returns to the
+	// instruction, not past it, so it must not re-arm on the way in.
+	exec_trap stack_grow_trap()
+	{
+		r.put(sf::EM, 0);
+		return stack_overflow_trap();
+	}
+
+	// Would moving S to `news` cross SL? Guarded exactly as the
+	// end-of-instruction test is, so the two agree about when the
+	// condition exists at all -- a boot running with traps disabled, or
+	// before SL means anything, has no stack limit to cross.
+	bool stack_would_overflow(u32 news) const
+	{
+		return m_traps_enabled && r.sl != 0 && news > r.sl;
+	}
+
 	exec_trap stack_overflow_trap()
 	{
 		if (on_trap)
@@ -3916,10 +4113,28 @@ private:
 				}
 				// Pseudo-disabled: fall through as cases 3 and 6.
 			}
-			else if (m_mem.read32(qi - 3) == 0)
+			else if (m_mem.read32(qi - 3) == 0
+					&& m_mem.read32(qi - 3 - 16) == 0)
 			{
-				// The frame at QI is empty: there is no interrupted
-				// dispatcher to return to, only a dispatcher to enter.
+				// The frame at QI is empty AND dispatching is not
+				// pseudo-disabled: there is no interrupted dispatcher to
+				// return to, only a dispatcher to enter.
+				//
+				// The delta word alone does not say "empty". It is zero
+				// for the bottom frame on the ICS, which is equally true
+				// of a dispatcher that really was interrupted -- and
+				// taking this door out of one of those threw the
+				// interrupted context away and dispatched through a TCB
+				// that had never been filled in, restoring SB, SL, Q and
+				// S as 0x35 apiece and trapping stack underflow inside
+				// the IXIT. The pseudo-disable count is what separates
+				// the two, exactly as it does in the deferred-DISP case
+				// just above: the boot handoff leaves it zero (the word
+				// is never written and memory starts clear), and a
+				// running system that has disabled dispatching around a
+				// critical section leaves it set. With the count set,
+				// fall through to cases 4 and 6 and return to whatever
+				// was interrupted.
 				// This is the boot handoff's own path -- all three
 				// systems (BASIC 2.0 and both HP-UX kernels) end SYSTEM
 				// POWERUP by writing CTCBP, QI and SLI into the
@@ -3986,7 +4201,7 @@ public:
 	// DOWN (first argument true; then semaphore, CTCBP, P) and on a
 	// waking UP (false; semaphore, woken TCB, P). For harness
 	// instrumentation; never affects execution.
-	void (*sem_hook)(bool, u32, u32, u32) = nullptr;
+	std::function<void(bool, u32, u32, u32)> sem_hook;
 private:
 	u32 m_next = 0;
 	bool m_branched = false;

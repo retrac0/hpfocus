@@ -81,8 +81,10 @@ enum iop_cmd : u8
 	// 002, 012, 031, 0102 and 0132, none of which the Dec-82 ERS names --
 	// the shipped IOP evidently postdates it. They are accepted as
 	// no-ops (reads return zero), which the scan reads as "no device
-	// present" and moves on. Real boot code additionally issues 000 and
-	// 065, still refused until their effect is understood.
+	// present" and moves on. Real boot code additionally issues 000,
+	// still refused until its effect is understood. (065 is no longer
+	// among them: it is Increment and Branch, one of the list-only
+	// opcodes -- see run_command_list.)
 	CMD_WDPA  = 054,   // W  write DMA peripheral address
 	CMD_RDPA  = 055,   // R  read DMA peripheral address
 	CMD_RDB   = 056,   // R  read data buffer
@@ -121,6 +123,13 @@ public:
 
 	// True when the card wants a DMA transfer.
 	virtual bool service_request() { return false; }
+
+	// True when the card is ending the data phase of the current order
+	// short of the channel's count -- the DEND line. A card answers an
+	// order with exactly as much as that order has to say, and the host
+	// programs a count big enough for the largest possible answer, so
+	// almost every inbound leg ends this way rather than on count.
+	virtual bool data_end() { return false; }
 
 	// What the interface poll (IFPL) reports for this card. It defaults
 	// to the transfer request, but the two are not the same thing: the
@@ -207,6 +216,7 @@ public:
 		for (auto &c : m_chan)
 			c.int_enabled = false;
 		m_int_request = 0;
+		m_int_posted = 0;
 		m_int_event = false;
 		m_int_message = 0;
 		m_attn_mask = 0;
@@ -414,6 +424,7 @@ public:
 			c.dma_active = true;
 			m_dma_mask |= (1u << t.pa);
 			m_int_request &= ~(1u << t.pa);
+			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
 			if (std::getenv("FOCUS_IOPLOG"))
 				std::printf("[iop SDC pa=%u addr=%08x cnt=%u st=%08x en=%d]\n",
@@ -426,6 +437,7 @@ public:
 			m_dma_mask |= (1u << t.pa);
 			c.int_enabled = true;
 			m_int_request &= ~(1u << t.pa);
+			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
 			run_dma(t.pa);
 			return true;
@@ -434,6 +446,7 @@ public:
 		case CMD_CDMK: m_dma_mask = 0; return true;
 		case CMD_CIRQ:
 			m_int_request &= ~(1u << t.pa);
+			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
 			if (std::getenv("FOCUS_IOPLOG"))
 				std::printf("[iop CIRQ pa=%u]\n", t.pa);
@@ -446,7 +459,27 @@ public:
 			return true;
 		case CMD_CALM: m_lockout = false; return true;
 		case CMD_SALM: m_lockout = true; return true;
-		case CMD_DCE:  m_enabled = false; return true;
+		case CMD_DCE:
+			// Disable IOP Command Execution: "This command clears a bit
+			// in the Interrupt Request register and clears the Command
+			// Execution bit (bit 20 in the Status register) **both
+			// corresponding to the PA in the channel address**" (I/O ERS
+			// sheet 38). It is PER-PA, and it disables COMMAND
+			// EXECUTION -- not the IOP.
+			//
+			// Modelling it as a global off-switch cost the 540 its
+			// console. The driver polls the card for a second, arms its
+			// real transaction in the command list, and issues DCE to
+			// stop the polling list -- at which point this IOP stopped
+			// servicing every channel, including the suspended list it
+			// had just been asked to run, so the armed transaction never
+			// executed and the open timed out four seconds later.
+			c.cmd_exec = false;
+			c.await_poll = false;
+			m_int_request &= ~(1u << t.pa);
+			m_int_posted  &= ~(1u << t.pa);
+			update_interrupt();
+			return true;
 		case CMD_LON:  m_led = true; return true;
 		case CMD_LOFF: m_led = false; return true;
 		// Interrupt enable is per device: the ERS's request sequence ends
@@ -470,6 +503,13 @@ public:
 			// record (a WIF8 command byte for the card, then SIL, DDMA,
 			// WDS, WDA, WDC, SDEC to set up and start the DMA leg), points
 			// the device's DRT entry word 3 at it, and issues this command.
+			//
+			// It also "enables Command Execution (bit 20 in the Status
+			// register)... corresponding to the PA" (sheet 36), which is
+			// the bit DCE clears.
+			c.cmd_exec = true;
+			m_int_request &= ~(1u << t.pa);
+			m_int_posted  &= ~(1u << t.pa);
 			run_command_list(t.pa);
 			return true;
 		case CMD_RIOB:
@@ -478,6 +518,7 @@ public:
 			for (auto &c : m_chan) { c.dma_active = false; }
 			m_dma_mask = 0;
 			m_int_request = 0;
+			m_int_posted = 0;
 			update_interrupt();
 			return true;
 		case CMD_RIOP:
@@ -492,6 +533,7 @@ public:
 			m_dma_mask = 0;
 			for (auto &c : m_chan) { c.dma_active = false; }
 			m_int_request = 0;
+			m_int_posted = 0;
 			m_int_mask = 0;
 			update_interrupt();
 			return true;
@@ -553,6 +595,32 @@ public:
 
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
 			run_dma(pa);
+
+		// A command list suspended on ICEI resumes when its interface
+		// responds to the poll.
+		static const bool dbg = std::getenv("FOCUS_IOPDBG") != nullptr;
+		if (dbg && (++m_dbg_ticks % 1000) == 0)
+			std::printf("[iop tick %u: pa0 await=%d iface=%d poll=%d "
+					"cmdexec=%d]\n", m_dbg_ticks, m_chan[0].await_poll,
+					m_chan[0].iface != nullptr,
+					m_chan[0].iface && m_chan[0].iface->poll_request(),
+					int(m_enabled));
+		for (unsigned pa = 0; pa < CHANNELS; pa++)
+		{
+			channel_state &c = m_chan[pa];
+			if (!c.await_poll || !c.iface || !c.cmd_exec)
+				continue;
+			if (!c.iface->poll_request())
+			{
+				if (dbg && (++c.stall_ticks % 500) == 1)
+					std::printf("[iop pa=%u suspended, poll quiet "
+							"(%u ticks)]\n", pa, c.stall_ticks);
+				continue;
+			}
+			c.stall_ticks = 0;
+			c.await_poll = false;
+			run_command_list(pa);
+		}
 	}
 
 	// Run a channel's DMA as far as it will go. A counted transfer
@@ -583,9 +651,36 @@ public:
 		const bool output = ers32::get(c.dma_status, 27, 1) != 0;
 		const bool bytes  = ers32::get(c.dma_status, 29, 1) != 0;
 		u32 left = c.dma_count ? c.dma_count : 1;
-		while (left-- && (c.dma_active ? c.iface->service_request()
-				: (c.dma_count != 0 && c.iface->burst_request())))
+		while (left--)
 		{
+			if (!(c.dma_active ? c.iface->service_request()
+					: (c.dma_count != 0 && c.iface->burst_request())))
+			{
+				// The card has stopped supplying. If it is asserting
+				// Device End the transfer is OVER, short of its count,
+				// and the channel has to say so -- otherwise the driver
+				// waits for a completion that never comes. That is what
+				// stranded HP-UX's console open: it asks for 17 bytes of
+				// transparent status and the card has 3 to give.
+				//
+				// Table 5.1 of the I/O ERS puts "DMA Terminated on
+				// Device End" at bit 31, the least significant bit of
+				// the status half RDCS returns -- 0x0001 here, against
+				// 0x2000 (bit 18) for terminated on count. The remaining
+				// count is left standing in `dma_count`, which is how
+				// the driver learns how much really arrived.
+				if (c.dma_active && c.dma_count && c.iface->data_end())
+				{
+					c.dma_active = false;
+					c.term = 0x0001;
+					if (std::getenv("FOCUS_IOPLOG"))
+						std::printf("[iop DMA-dend pa=%u left=%u]\n",
+								pa, c.dma_count);
+					c.iface->dma_complete(output);
+					raise(pa);
+				}
+				break;
+			}
 			if (bytes)
 			{
 				if (output)
@@ -627,10 +722,23 @@ public:
 	//     WDS  <dma status>     WDA <buffer>       WDC <count>
 	//     SDEC                  0115 <link>        074
 	//
-	// and waits for the DMA completion interrupt. Opcodes 0115 and 074 end
-	// the list -- 0115 carries a pointer whose meaning is not yet
-	// established (a continuation block the kernel allocates right after
-	// the list), 074 nothing. Both stop execution here.
+	// and waits for the DMA completion interrupt. 074 (DCEI) ends the
+	// list.
+	//
+	// Three opcodes are legal ONLY inside a list -- the ERS groups them
+	// under "INSTRUCTIONS FOR COMMAND EXECUTION ONLY" (sheets 38-39) and
+	// they are the list's control flow:
+	//
+	//   065  Increment and Branch      no mnemonic
+	//   0114 Write RIF Result to Memory      WRIF
+	//   0115 Write Count and Status to Memory WCSM
+	//
+	// 0115 was read here as an unexplained end-of-list pointer, which it
+	// is not: it is a STORE, and the address it carries is where the
+	// driver expects to find how its transfer went. 065 was refused
+	// outright, and refusing it is what stranded HP-UX's console: the
+	// driver's next list begins with one, the walker stopped on it, the
+	// transaction never ran and the open timed out.
 	void run_command_list(unsigned pa)
 	{
 		memory_interface &mem = m_host.iop_memory();
@@ -639,14 +747,30 @@ public:
 		const bool log = std::getenv("FOCUS_IOPLOG") || std::getenv("FOCUS_ICEILOG");
 		if (log)
 			std::printf("[iop ICEI pa=%u list=%08x]\n", pa, ptr);
-		for (unsigned step = 0; step < 32; step++, ptr += 8)
+		// The list pointer belongs to the IOP, and it ADVANCES: the ERS
+		// says so in passing where it describes Skip on Status False --
+		// "The MPB command list pointer in the DRT points to the next
+		// instruction... The command list pointer remains pointing to
+		// the skip command." A walker that only ever reads the pointer
+		// restarts the list from the top every time the CPU issues ICEI,
+		// which is exactly what the HP-IB card's transaction was doing:
+		// the same seven-command block over and over.
+		struct list_pointer
+		{
+			memory_interface &mem;
+			u32 drt, &ptr;
+			~list_pointer() { mem.write32(drt + 12, ptr); }
+		} keep{ mem, drt, ptr };
+		for (unsigned step = 0; step < 64; step++)
 		{
 			const u32 word = mem.read32(ptr);
 			const u32 operand = mem.read32(ptr + 4);
 			const u8 op = u8(word & 0x1ff);
+			const u32 here = ptr;
+			ptr += 8;
 			if (log)
-				std::printf("[iop ICEI+%02u op=%03o operand=%08x]\n",
-						step, op, operand);
+				std::printf("[iop ICEI+%02u @%08x op=%03o operand=%08x]\n",
+						step, here, op, operand);
 			target t{};
 			t.opcode = op;
 			t.channel = m_channel;
@@ -664,13 +788,83 @@ public:
 			case CMD_CAAK: case CMD_EINT: case CMD_DINT:
 				ok = io_control(t);
 				break;
-			case 0115:
-				// A pointer operand; the kernel stores the address of the
-				// words just after the list. Treated as end-of-list until
-				// its meaning is established.
-				m_chan[pa & 7].chain = operand;
+			case CMD_ICEI:
+				// "This command suspends execution of commands until the
+				// interface responds to a poll" (ERS sheet 36). Inside a
+				// list that is a WAIT, not an end: the pointer left
+				// behind names the entry to resume at, and
+				// poll_and_service starts the list again when the card
+				// answers. Stopping dead here is what left the console's
+				// transaction half-issued.
+				m_chan[pa & 7].await_poll = true;
+				if (log)
+					std::printf("[iop ICEI pa=%u suspend, resume=%08x]\n",
+							pa, ptr);
 				return;
+			case 065: {
+				// Increment and Branch (ERS sheet 39): "test the count,
+				// the contents of the second memory location following
+				// this command, and branch to the absolute address in
+				// the first memory location following this command if
+				// the value was not zero. It will also increment and
+				// replace the count if the count is still negative. If
+				// the count is zero, execution will continue at the
+				// third memory location following this command."
+				//
+				// So the entry is three words wide, not two, and it is
+				// how a list loops or arms itself for a fixed number of
+				// passes: a count of -1 takes the branch once and falls
+				// through ever after.
+				const u32 count_at = here + 8;
+				const s32 count = s32(mem.read32(count_at));
+				if (count != 0)
+				{
+					if (count < 0)
+						mem.write32(count_at, u32(count + 1));
+					ptr = operand;
+				}
+				else
+					ptr = here + 12;
+				continue;
+			}
+			case 0114: {
+				// Write RIF Result to Memory: "do a Read Interface using
+				// the PA and IC lines from the command word and record
+				// the results in the absolute word address found in the
+				// first memory location following the command". The
+				// register number is the IC field, bits 9:4 of the MPB
+				// command word (Figure 5.1).
+				target r{};
+				r.opcode = 0;
+				r.channel = m_channel;
+				r.pa = u8(pa & 7);
+				r.ic = u8(ers32::get(word, 9, 4));
+				u32 v = 0;
+				if (io_read(r, v))
+					mem.write32(operand, v);
+				break;
+			}
+			case 0115: {
+				// Write Count and Status to Memory: "record the contents
+				// of the Current Count and Status register in the
+				// absolute word address found in the first memory
+				// location following the command" -- the same word RDCS
+				// returns, so the driver can read its transfer's outcome
+				// out of memory instead of asking for it.
+				const channel_state &cs = m_chan[pa & 7];
+				mem.write32(operand,
+						((cs.dma_count & 0xffff) << 16) | cs.term);
+				m_chan[pa & 7].chain = operand;
+				break;
+			}
 			case 074:
+				// DCEI, Disable Command Execution and Enable Interrupt:
+				// bit 20 cleared and the interrupt mask bit set for this
+				// PA (I/O ERS sheet 37), so the list ends here and the
+				// CPU is told about it.
+				m_chan[pa & 7].cmd_exec = false;
+				m_chan[pa & 7].await_poll = false;
+				m_chan[pa & 7].int_enabled = true;
 				return;
 			default:
 				// WIF n delivers the operand to the card's register n --
@@ -723,6 +917,23 @@ public:
 		channel_state &c = m_chan[pa];
 		if (std::getenv("FOCUS_IOPLOG"))
 			std::printf("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
+		// The Interrupt REQUEST register records the event whatever the
+		// mask says: "DMA termination or a non-DMA service request will
+		// cause a bit in the Interrupt Request register corresponding to
+		// the proper PA to be set" (I/O ERS 4.1.1). The mask decides
+		// only whether the IOP goes on to POST an interrupt, which is a
+		// separate latch here (`m_int_posted`).
+		//
+		// Setting the request inside the enabled path made the register
+		// invisible to anyone polling it with interrupts off -- which is
+		// exactly how the kernel's panic printer works. It clears the
+		// whole mask with WIMK, starts its transfer with SDC (start DMA,
+		// clear IRQ -- note: NOT the SDEC that would enable the
+		// interrupt), and then spins on `RIRQ & 1<<pa`. With the bit
+		// never set it spun 2800 times for a transfer that had already
+		// finished, gave up, and retried forever: the 540 could not
+		// report its own panic.
+		m_int_request |= (1u << pa);
 		if (!c.int_enabled)
 		{
 			// The request latches while the device is disabled; EINT
@@ -733,6 +944,7 @@ public:
 			c.int_pending = true;
 			return;
 		}
+		m_int_event = true;
 		// "The interrupt mask on the IOP now disables the device that
 		// requested from requesting again" (I/O ERS 4.1.4): an accepted
 		// raise disarms the device until the service routine's EINT, and
@@ -779,8 +991,7 @@ public:
 		// device that requested from requesting again."
 		c.int_enabled = false;
 
-		m_int_request |= (1u << pa);
-		m_int_event = true;
+		m_int_posted |= (1u << pa);
 		update_interrupt();
 	}
 
@@ -821,6 +1032,11 @@ private:
 		u8 dma_pa = 0;
 		u8 int_level = 0;
 		u32 chain = 0;      // the 0115 list terminator's pointer operand
+		bool await_poll = false;    // a list suspended on ICEI
+		// Status bit 20, Command Execution: set by ICEI, cleared by DCE
+		// and DCEI, and per-PA in all three.
+		bool cmd_exec = false;
+		unsigned stall_ticks = 0;   // FOCUS_IOPDBG bookkeeping
 		// Devices power up with interrupt requests disabled: the CPU
 		// arms each one with EINT after it has installed the device's
 		// DRT entry -- vectoring through an empty entry lands at
@@ -841,10 +1057,14 @@ private:
 		return v;
 	}
 
+	// The host's interrupt line follows the requests the IOP actually
+	// POSTED -- an accepted raise on an armed device -- not every bit in
+	// the request register, which a device is free to set with the mask
+	// against it and a driver is free to poll.
 	void update_interrupt()
 	{
 		m_host.iop_interrupt(m_int_enable
-				&& (m_int_request & ~m_int_mask) != 0);
+				&& (m_int_posted & ~m_int_mask) != 0);
 	}
 
 	host &m_host;
@@ -853,6 +1073,8 @@ private:
 	u32 m_dma_mask = 0;
 	u32 m_int_mask = 0;
 	u32 m_int_request = 0;
+	u32 m_int_posted = 0;   // the requests the IOP posted to the CPU
+	unsigned m_dbg_ticks = 0;   // FOCUS_IOPDBG heartbeat
 	bool m_int_event = false;
 	u32 m_int_message = 0;
 	u32 m_attn_mask = 0;

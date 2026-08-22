@@ -162,7 +162,17 @@ static void test_registers()
 	CHECK(h.irq);                        // armed, accepted
 	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));
 	iop.raise(5);
-	CHECK_EQ(iop.interrupt_request(), 0u);   // the raise disarmed it
+	// The raise disarmed the device, so nothing is POSTED -- but the
+	// Interrupt Request register records it anyway: "DMA termination or
+	// a non-DMA service request will cause a bit in the Interrupt
+	// Request register corresponding to the proper PA to be set" (I/O
+	// ERS 4.1.1), with no mention of the mask. Bit 4 from the raise
+	// above is still standing too, never having been cleared. HP-UX's
+	// panic printer depends on exactly this: it masks every interrupt
+	// off, starts its transfer with SDC, and polls RIRQ for the
+	// completion.
+	CHECK(!h.irq);
+	CHECK_EQ(iop.interrupt_request(), (1u << 4) | (1u << 5));
 	CHECK(iop.io_control(tgt(CMD_EINT, 3, 5)));
 	CHECK(h.irq);                        // ...but EINT delivers the latch
 	CHECK(iop.io_control(tgt(CMD_CIRQ, 3, 5)));

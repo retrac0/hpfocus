@@ -501,6 +501,8 @@ internal trap or interrupt the microcode:
    STT entry = the cause number;
 2. pushes a stack marker (§4.2), return address = the next instruction (or
    the *same* instruction for restartable faults, with `STATUS.P` set);
+   **which of the two is decided by the cause**, not by the instruction —
+   see the note-1/note-2 split below;
 3. adjusts code segment use counts;
 4. pushes one parameter word (the program pointer itself when the cause has
    no parameter);
@@ -509,6 +511,30 @@ internal trap or interrupt the microcode:
 7. sets `P` from the STT entry named by the cause.
 
 ### 7.2 Trap causes
+
+**Where the marker points.** Notes 1 and 2 at the end of the ERS's cause
+list (sheet 52) divide every cause in two, and the difference decides
+whether a trap can be recovered from at all:
+
+> **Note 1:** In these cases the trap condition is detected at the end of
+> an instruction and the offset in the stack marker points to the **next**
+> instruction.
+> **Note 2:** In these cases the trap condition is detected during an
+> instruction and the offset in the stack marker points to **this**
+> instruction.
+
+Note 1 is the short list — the debug and arithmetic traps, the ones a
+completed instruction reports about itself: `002` check, `003` breakpoint,
+`004` machine instruction, `020` unimplemented instruction, `031` user
+trap, `034`/`035` floating point, `044` start of line, `045` variable
+trace, `046`/`047` start/end of procedure, `050`/`051` start/end of
+subroutine, `054` message trap, `056` start-of-line check. **Everything
+else is note 2**, so a handler that remedies the cause and returns lands
+back on the instruction that complained and it now succeeds. Note 3 says so
+explicitly for several of them: "the instruction sequence which caused this
+trap is guaranteed to be resumable after the cause of the trap is
+remedied". Note 4 adds that `004`, `013`, `037`, `040`, `042` and `043`
+clear `STATUS.EM` before pushing the marker.
 
 The cause number *is* the STT entry in segment 1. In octal:
 
@@ -1101,6 +1127,15 @@ Convert the integer TOS to single (rounded; *IR*) / double (exact). *CCA.*
 **`FIXS` / `FIXD`** — Fix Single/Double — `F3:71` / `F3:41`
 Convert to integer: `b`=0 truncates toward zero, `b`=1 rounds (±0.5 to the
 magnitude). *CCA, Overflow.*
+Both indicators are load-bearing, and Overflow especially: HP-UX's `MATH
+LIBRARY` implements truncate-to-integral-**double** as *clear the user-trap
+enable, `FIXD`, `BOV` to a slow path that masks the fraction off by
+exponent, otherwise `FLTD` back* — so a value beyond 32 bits is routed
+entirely by this flag, and a core that saturates instead of setting it
+returns ±2³¹ for every large argument. That is a whole-system failure, not
+a rounding one: the kernel's 10 Hz callout daemon rounds the microsecond
+clock up to the next 100 ms through that routine, and a deadline in the
+past means it never sleeps.
 
 **`CSDF`** — Convert Single to Double — `F3:31` — widen; a zero word is
 pushed first so a mid-instruction FP Operand trap leaves a sane stack.
