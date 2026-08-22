@@ -527,6 +527,7 @@ private:
 	TIMER_CALLBACK_MEMBER(iop_tick);
 	TIMER_CALLBACK_MEMBER(rtc_tick);
 	TIMER_CALLBACK_MEMBER(type_tick);
+	TIMER_CALLBACK_MEMBER(type_start);
 
 	QUICKLOAD_LOAD_MEMBER(quickload_cb);
 
@@ -589,6 +590,9 @@ private:
 	emu_timer *m_type_timer = nullptr;
 	std::string m_type_text;
 	size_t m_type_pos = 0;
+	// FOCUS_TYPE may hold several scripts, each with its own start time.
+	std::vector<std::string> m_type_scripts;
+	attotime m_type_rate;
 	u32 m_prev_rq = 0;
 	// The discs in the drive, in the order the loader asks for them: a
 	// boot image is a set, and the operator feeds the volumes one by one.
@@ -1493,24 +1497,52 @@ void hp9000_5xx_state::machine_start()
 					timer_alloc(FUNC(hp9000_5xx_state::state_tick), this);
 			t->adjust(attotime::from_double(at));
 		}
+	// FOCUS_TYPE=<text> feeds keystrokes at FOCUS_TYPEAT seconds, with \n
+	// and \r for the two ways a line ends. A ';' starts a further script
+	// and FOCUS_TYPEAT then takes one time per script:
+	//
+	//   FOCUS_TYPE='LOAD \"CAT_BOOT\"\n;RUN\n' FOCUS_TYPEAT=25,45
+	//
+	// which is what a command that takes seconds to finish needs -- the
+	// keyboard buffer does not hold a line typed while the disc is busy,
+	// so the next command has to wait for the first to land.
 	if (const char *e = getenv("FOCUS_TYPE"))
 	{
+		std::string one;
 		for (const char *pc = e; *pc; pc++)
 		{
-			if (pc[0] == '\\' && pc[1] == 'n') { m_type_text.push_back('\n'); pc++; }
-			else if (pc[0] == '\\' && pc[1] == 'r') { m_type_text.push_back('\r'); pc++; }
-			else m_type_text.push_back(*pc);
+			if (pc[0] == '\\' && pc[1] == 'n') { one.push_back('\n'); pc++; }
+			else if (pc[0] == '\\' && pc[1] == 'r') { one.push_back('\r'); pc++; }
+			else if (pc[0] == ';') { m_type_scripts.push_back(one); one.clear(); }
+			else one.push_back(*pc);
 		}
-		const double at = getenv("FOCUS_TYPEAT")
-				? strtod(getenv("FOCUS_TYPEAT"), nullptr) : 15.0;
+		m_type_scripts.push_back(one);
 		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
 		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
 		// mimics fast human typing; the display driver drops or reorders
 		// characters pushed faster than it redraws the input line.
 		const unsigned ms = getenv("FOCUS_TYPERATE")
 				? strtoul(getenv("FOCUS_TYPERATE"), nullptr, 0) : 350;
-		m_type_timer->adjust(attotime::from_double(at), 0,
-				attotime::from_msec(ms));
+		m_type_rate = attotime::from_msec(ms);
+		std::string list(getenv("FOCUS_TYPEAT") ? getenv("FOCUS_TYPEAT") : "15");
+		double at = 15.0;
+		for (size_t i = 0; i < m_type_scripts.size(); i++)
+		{
+			// A script with no time of its own follows the one before it
+			// by a wide margin -- far enough that a run which needs a
+			// tighter schedule says so rather than getting one by luck.
+			if (!list.empty())
+			{
+				const size_t comma = list.find(',');
+				at = strtod(list.substr(0, comma).c_str(), nullptr);
+				list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+			}
+			else
+				at += 20.0;
+			emu_timer *const t =
+					timer_alloc(FUNC(hp9000_5xx_state::type_start), this);
+			t->adjust(attotime::from_double(at), int(i));
+		}
 	}
 }
 
@@ -1537,6 +1569,14 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::poke_tick)
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::state_tick)
 {
 	report_state("stateat");
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
+{
+	m_type_text = m_type_scripts[size_t(param)];
+	m_type_pos = 0;
+	m_type_timer->adjust(attotime::zero, 0, m_type_rate);
 }
 
 

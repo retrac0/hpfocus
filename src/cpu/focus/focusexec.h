@@ -372,6 +372,17 @@ public:
 		m_branched = false;
 		cycles = CYCLES_TYPICAL;
 
+		// Stack Overflow is condition 6 of the end-of-instruction list
+		// (ERS sheet 50), below the I/O interrupts the device loop has
+		// already had its chance at, and it is tested again "just prior
+		// to executing the first instruction of the trap or interrupt
+		// service routine" -- so between instructions is where it goes.
+		// Detected here, the marker's return offset points at the next
+		// instruction, which is what makes the sequence resumable once
+		// the handler has grown the stack.
+		if (m_traps_enabled && r.sl != 0 && r.s > r.sl)
+			return stack_overflow_trap();
+
 		if (!m_au.in_code(r.p))
 			return exec_trap::code_bounds;
 
@@ -3674,7 +3685,13 @@ private:
 		return vector != 0 && vector != 0x00020001u;
 	}
 
-	exec_trap message_trap(u32 bits)
+	// The frame every ICS-run entry shares (ERS sheets 141-142): a marker
+	// on the interrupted stack, S saved at (SB-1) and a hop to the ICS on
+	// first entry, the interrupted global pointer at (Q+1) when already
+	// there, then the previous mask at (Q+2) and the cause's parameter at
+	// (Q+3). External interrupts, message traps and Stack Overflow all
+	// arrive this way; only what they vector through differs.
+	void enter_ics(u32 parameter)
 	{
 		const u32 ret = r.p - r.pb;
 		const u32 old_q = r.q;
@@ -3706,7 +3723,60 @@ private:
 
 		set_qword(2, r.mask);
 		r.s = r.q + 12;                     // S := Q + 3
-		set_qword(3, bits);
+		set_qword(3, parameter);
+	}
+
+	// Vector into code segment 1 through its Segment Transfer Table, the
+	// way every trap enters its handler. The entry is a program pointer:
+	// offset in bits 2:30, flags above -- HP-UX's carry the uncallable
+	// bit, so the offset has to be extracted rather than used whole.
+	void vector_cs1(unsigned cause)
+	{
+		const u32 cst = m_mem.read32(0);
+		const u32 entry = cst + 16;
+		const u32 len_m1 = m_mem.read32(entry + 4);
+		const u32 location = m_mem.read32(entry + 8);
+		r.pb = location;
+		r.pl = location + len_m1 - 3;
+		r.status = ers32::mask(14, 1);
+		r.put(sf::CSN, 1);
+		const u32 vector = m_mem.read32(r.pl - 4 * cause);
+		branch_to(r.pb + ers32::get(vector, 2, 30));
+	}
+
+	// Stack Overflow (cause 024, ERS sheets 45-51). The condition is
+	// tested between instructions, not inside one: every stack segment
+	// carries an overflow area of at least 64 words above SL "so that
+	// instructions can run to completion even after causing S to become
+	// larger than SL and that all pending traps and interrupts can be
+	// processed". The service routine runs on the ICS -- BASIC's asks the
+	// system to grow the stack segment and leaves through IXIT, which is
+	// why this builds the interrupt frame rather than the in-stack marker
+	// take_trap makes. On the ICS there is nobody to ask, and the
+	// microcode simply raises SL by 64 words itself.
+	//
+	// Without this, a stack that outgrows its segment is never noticed:
+	// the pushes keep working, and the first instruction that does test
+	// against SL -- TRY deleting its frame -- reports a bounds violation
+	// instead, tens of thousands of instructions after the fact. That is
+	// what stopped RUN, and it is why LIST died on its second statement.
+	exec_trap stack_overflow_trap()
+	{
+		if (on_trap)
+			on_trap(trap_cause::stack_overflow, 0);
+		if (m_ics_flag)
+		{
+			r.sl += 256;                    // 64 words
+			return exec_trap::none;
+		}
+		enter_ics(0);
+		vector_cs1(unsigned(trap_cause::stack_overflow));
+		return exec_trap::none;
+	}
+
+	exec_trap message_trap(u32 bits)
+	{
+		enter_ics(bits);
 		// Message delivery masks further messages until the handler's
 		// IXIT restores the mask from (Q+2) -- the CS1 handler is not
 		// reentrant (a second message mid-handler routed its parameter
@@ -3718,57 +3788,13 @@ private:
 
 		// CST entry 1 carries the handler segment; its STT entry 054 the
 		// routine, exactly as the in-stack traps use it.
-		const u32 cst = m_mem.read32(0);
-		const u32 entry = cst + 16;
-		const u32 len_m1 = m_mem.read32(entry + 4);
-		const u32 location = m_mem.read32(entry + 8);
-		r.pb = location;
-		r.pl = location + len_m1 - 3;
-		r.status = ers32::mask(14, 1);
-		r.put(sf::CSN, 1);
-		// The vector is a program pointer: offset in bits 2:30, flags
-		// above. This entry kept the flags where take_trap masks them,
-		// and HP-UX's message vector carries the uncallable bit -- the
-		// machine jumped to PB + 0x4000a6c8 the first time a floating
-		// point instruction trapped.
-		const u32 vector = m_mem.read32(r.pl - 4 * 054);
-		branch_to(r.pb + ers32::get(vector, 2, 30));
+		vector_cs1(054);
 		return exec_trap::none;
 	}
 
 	exec_trap external_interrupt(u32 device)
 	{
-		const u32 ret = r.p - r.pb;
-		const u32 old_q = r.q;
-		r.s += 16;
-		set_stk(3, r.x);
-		set_stk(2, ret);
-		set_stk(1, r.status);
-		set_stk(0, r.s - old_q);
-		r.q = r.s;
-
-		if (!m_ics_flag)
-		{
-			m_mem.write32(r.sb - 4, r.s - r.sb);
-			const u32 ded = ded_base();
-			r.q = m_mem.read32(ded + 8);
-			r.sl = m_mem.read32(ded + 12);
-			r.sb = (r.q & ~3u) - 256;
-			m_ics_flag = true;
-		}
-		else
-		{
-			if (m_disp_flag)
-			{
-				m_disp_flag = false;
-				set_qword(0, qword(0) | 0x80000000u);
-			}
-			set_qword(1, m_mem.read32(r.sb));
-		}
-
-		set_qword(2, r.mask);
-		r.s = r.q + 12;                     // S := Q + 3
-		set_qword(3, device);
+		enter_ics(device);
 
 		// The DRT entry (ERS sheet 43): the first word is the link
 		// halfword plus operating system information, the second the

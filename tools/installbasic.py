@@ -14,8 +14,8 @@ writable emulated media and an interactive session; the result is the same
 image either way, and doing it here means a bootable disc can be built and
 rebuilt from the shipped discs in one command.
 
-Two facts make it straightforward, both established against the shipped
-media rather than assumed:
+Two facts make the boot area straightforward, both established against the
+shipped media rather than assumed:
 
   * The boot image is a chain of segments, each with its length at +4, a
     16-byte name at +28, and a byte-sum checksum at length+8 covering
@@ -25,8 +25,18 @@ media rather than assumed:
     terminator. Appending past the terminator does nothing at all: the
     powerup walk stops there and the segments are never registered.
 
+The file area is not optional. BASIC mounts the device it booted from as
+its system volume, so a fixed disc needs a real SDF file system next to the
+boot area or the boot ends in ERROR 455 -- and with the IO and MS options
+installed it does not even get that far, dying in the kernel on a trap 012
+as the first task is dispatched. The file system is rebuilt here rather
+than patched, so `--copy` can put files in it; tools/sdfwrite.py holds the
+structures.
+
     tools/installbasic.py disc.img --basic software/basic/img/500BT1.img \\
         software/basic/img/500BT2.img --option /tmp/opt1/ERRORS_ENG ...
+    tools/installbasic.py disc.img --basic ... \\
+        --copy software/basic/img/500OPT1.img:BUILD_BOOT,CAT_BOOT
 """
 
 import argparse
@@ -34,6 +44,9 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+
+import sdfread
+import sdfwrite
 
 BLOCK = 256
 DESC = 0x400
@@ -78,6 +91,28 @@ def module(path: Path) -> tuple[bytes, str]:
     return d[:take], d[28:44].decode("ascii", "replace").rstrip()
 
 
+def copies(specs: list[str]) -> list[tuple[str, bytes, int]]:
+    """Files pulled out of shipped SDF volumes, BASIC file type and all.
+
+    `image` takes every file in the volume's root, `image:A,B` takes those
+    named. The type code at +6 of the i-node travels with the file: it is
+    how BASIC tells a stored program from data, so a copy that dropped it
+    would land on the disc as something the system will not open.
+    """
+    out = []
+    for spec in specs:
+        path, _, names = spec.partition(":")
+        vol = sdfread.SDF(Path(path).read_bytes())
+        want = [n for n in names.split(",") if n] or None
+        have = {name: vol.inode(ino) for name, ino in vol.readdir(vol.root())}
+        for name in (want if want is not None else list(have)):
+            ino = have.get(name)
+            if ino is None:
+                raise SystemExit(f"{path}: no file named {name!r}")
+            out.append((name, vol.read_file(ino), ino["uftype"] & 0xffff))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("disc", type=Path, help="fixed-disc image to install onto")
@@ -85,6 +120,8 @@ def main() -> int:
             help="the BASIC boot volumes, in order (500BT1, 500BT2)")
     ap.add_argument("--option", type=Path, nargs="*", default=[],
             help="option binaries to add to the boot area")
+    ap.add_argument("--copy", action="append", default=[], metavar="IMAGE[:A,B]",
+            help="copy files from a shipped SDF volume into the file area")
     ap.add_argument("--image", type=Path,
             help="write the assembled boot image here as well")
     args = ap.parse_args()
@@ -117,9 +154,12 @@ def main() -> int:
             print(f"  installed option {name:<16} {n:,} bytes")
         print(f"boot image with options: {len(image):,} bytes")
 
-    disc = bytearray(args.disc.read_bytes())
-    blocksize = word(bytes(disc), 0x1c)      # 1024 on boot media
-    boot_blocks = word(bytes(disc), 0x24)
+    # The disc supplies the geometry; the volume is rebuilt around it, so
+    # the file system and the boot area are laid out by one piece of code.
+    old = args.disc.read_bytes()
+    blocksize = word(old, 0x1c)              # 1024 on boot media
+    boot_blocks = word(old, 0x24)
+    label = old[0x04:0x14].decode("ascii", "replace").rstrip("\0 ")
     room = boot_blocks * blocksize - SLICE
     if boot_blocks == 0:
         print(f"\n{args.disc} has no boot area -- make one with "
@@ -130,6 +170,13 @@ def main() -> int:
                 f"{len(image):,}; rebuild the disc with more --boot-blocks")
         return 1
 
+    vol = sdfwrite.Volume(len(old) // BLOCK, blksz=blocksize,
+            boot_blocks=boot_blocks, label=label, sector=BLOCK)
+    for name, data, uftype in copies(args.copy):
+        vol.add_file(name, data, uftype)
+        print(f"  copied {name:<16} {len(data):,} bytes  type {uftype:#06x}")
+    disc = bytearray(vol.build())
+
     # The boot descriptor: one volume, the whole image, starting at 0x800 --
     # the same fields the two-disc BASIC set carries, with the split removed.
     struct.pack_into(">I", disc, DESC + 0x00, 0xe9c28206)   # product
@@ -139,14 +186,15 @@ def main() -> int:
     struct.pack_into(">I", disc, DESC + 0x10, 0)            # image offset
     struct.pack_into(">I", disc, DESC + 0x14, 8)            # as volume 1
     struct.pack_into(">I", disc, DESC + 0x18, 5)
-    label = b"BASIC LANGUAGE SYSTEM  REV 2.00 (installed)"
-    disc[DESC + 0x30:DESC + 0x30 + len(label)] = label
+    boot_label = b"BASIC LANGUAGE SYSTEM  REV 2.00 (installed)"
+    disc[DESC + 0x30:DESC + 0x30 + len(boot_label)] = boot_label
 
     disc[SLICE:SLICE + len(image)] = image
     args.disc.write_bytes(bytes(disc))
 
     print(f"\ninstalled onto {args.disc}: {len(image):,} bytes in a "
             f"{room:,}-byte boot area")
+    print(f"  {vol.describe()}")
     print("boot it with:  tools/runbasic-hd.sh")
     return 0
 

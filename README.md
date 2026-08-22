@@ -65,6 +65,45 @@ What is still named in the gap is four string-descriptor instructions
 else left is an opcode Appendix B does not assign — data that a linear scan
 misreads as code, since a run of `0xff` decodes as format 6 opcode 37.
 
+**BASIC runs HP's own programs, from an installed fixed disc.** Build the
+disc with `tools/mkharddisc.py` and `tools/installbasic.py`, boot it with
+`tools/runbasic-hd.sh`, and BASIC reaches its banner, mounts the disc as
+`:INTERNAL`, catalogues it, and **loads and runs a stored program** — HP's
+22 KB `CAT_BOOT` utility prints its banner and prompts for a device.
+
+Two defects had to go first, and they are worth naming because neither was
+where the earlier notes had been looking:
+
+- **The fixed disc had no file system.** `mkharddisc.py` wrote a volume
+  header over a zeroed file area: no File Attributes file, no root
+  directory, no free list. BASIC mounts the device it booted from as its
+  system volume, so the boot ended in `ERROR 455` — and with the `IO` and
+  `MS` options installed it died before the banner, on a trap 012 in the
+  kernel as the first task was dispatched. `tools/sdfwrite.py` now builds a
+  real volume, and `installbasic.py --copy` can put files in it.
+- **Stack Overflow (cause 024) was never raised.** The ERS is explicit that
+  pushing past `SL` traps, that every stack keeps a 64-word reserve above
+  `SL` so the condition can be handled at the *end* of an instruction, and
+  that the handler runs on the ICS. The core checked `SL` in three string
+  instructions and nowhere else, so BASIC's stack silently outgrew its
+  segment and the first instruction that does test against `SL` — `TRY`
+  deleting its frame — reported a bounds violation tens of thousands of
+  instructions later. That is what stopped `RUN`, and it is what the
+  "one TRY frame consumed per statement" note was really seeing. BASIC's
+  own cause-024 handler grows the stack and returns through `IXIT`.
+
+**What still fails: a program typed at the keyboard.** `10 A=1` then `RUN`
+traps 021, STT Violation, in the program scaffold. The scaffold is fixed
+code the boot builds into a user segment (`PCLS STT[4]`, then twice
+`LDIS #9; PCLS STT[9]`, then `BR S-3,I` into the statement) — byte-identical
+whatever statement is typed, which corrects an earlier reading of it as
+compiler output. Its segment's transfer table has six entries and the
+scaffold needs nine. Stamping slots 7/8/9 from `MAIN`'s table does get the
+call through, and the failure moves on to a trap 030 two instructions
+later, so the program's slots 7-9 are *not* simply `MAIN`'s: the table has
+to be built for the program, by the seg5 builder call that the boot never
+reaches. That chain is mapped in the `hpux-boot-frontier` notes.
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment
@@ -232,6 +271,8 @@ tools/
   td0.py               decode Teledisk images to raw sectors
   lifdir.py            list/extract LIF volumes
   cpiolist.py          list/extract big-endian old-binary cpio
+  sdfread.py           read an SDF volume; sdfwrite.py builds one
+  mkharddisc.py        make a fixed disc, installbasic.py installs BASIC
   modmap.py            map named modules in a boot image
   extract_opcodes.py   scrape opcodes from the ERS text layer
   check_opcodes.py     diff that scrape against the Appendix B transcription

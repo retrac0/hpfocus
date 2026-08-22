@@ -97,6 +97,7 @@ class SDF:
         exmap, size, parent = struct.unpack(">iii", e[72:84])
         return {
             "ino": ino, "type": typ, "ftype": ftype, "count": count,
+            "uftype": uftype,
             "blocks": blksz, "exnum": exnum, "size": size,
             "extents": extents[:max(0, min(exnum, 4))], "exmap": exmap,
             "parent": parent,

@@ -285,6 +285,20 @@ through `S` — addresses between `S` and `SL` belong to the segment but are
 **out of bounds** until pushed. `SL` bounds growth: pushing past it raises
 Stack Overflow.
 
+`SL` is not the end of the segment. Above it every stack carries a **stack
+overflow area of at least 64 words**, and the trap is *not* raised inside
+the instruction that crosses `SL`: it is condition 6 of the
+end-of-instruction list (§5.2), tested again just before the first
+instruction of any trap or interrupt handler. The reserve is what makes
+that safe — an instruction can run to completion after taking `S` past
+`SL`, and the pending traps and interrupts still have somewhere to push
+their markers. Cause 024's handler then runs **on the ICS**, so it arrives
+through the interrupt frame rather than an in-stack marker, grows the
+stack segment, and returns with `IXIT`; taken while already on the ICS,
+the microcode simply raises `SL` by 64 words itself. Software leans on all
+of this: BASIC's stacks routinely outgrow their segments, and its cause-024
+handler is where they are extended.
+
 ### 4.2 The stack marker
 
 `PCL`/`PCLS`, traps, and interrupts push a four-word marker and point `Q` at
