@@ -138,7 +138,16 @@ void focus_device::write32(focus::u32 addr, focus::u32 data)
 focus::u8 focus_device::read8(focus::u32 addr)
 {
 	// Big-endian: byte 0 of a word is its most significant.
-	return u8(m_program.read_dword(addr & ~3u) >> (8 * (3 - (addr & 3))));
+	const u32 w = m_program.read_dword(addr & ~3u);
+	// The watch covers the narrow reads too. It has to: a driver that
+	// types a card by the halfword its identify transaction answered
+	// reads that halfword, and a word-only watch reports nothing at all
+	// while the comparison it is hunting for happens in front of it.
+	// The address reported is the one asked for, not the word it lands
+	// in -- which half of a word a driver reads is exactly the question
+	// a narrow read is usually being watched to answer.
+	check_rwatch(addr, w);
+	return u8(w >> (8 * (3 - (addr & 3))));
 }
 
 void focus_device::write8(focus::u32 addr, focus::u8 data)
@@ -151,6 +160,7 @@ void focus_device::write8(focus::u32 addr, focus::u8 data)
 focus::u16 focus_device::read16(focus::u32 addr)
 {
 	const u32 w = m_program.read_dword(addr & ~3u);
+	check_rwatch(addr, w);
 	return u16((addr & 2) ? (w & 0xffff) : (w >> 16));
 }
 

@@ -378,6 +378,10 @@ public:
 	{
 	}
 	virtual focus::iop_interface &focus_iface() = 0;
+	// Cards whose firmware runs on its own -- the serial card assembling
+	// a record, the HP-IB card working through a transfer -- get a call
+	// per IOP tick. A card that is purely register-driven ignores it.
+	virtual void focus_tick() { }
 };
 
 class hp27128_asi_device : public device_t, public device_focus_cio_interface
@@ -397,8 +401,15 @@ protected:
 
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
+	virtual void focus_tick() override { card.tick(); }
 };
 
+// The 27110A and the drive on its bus. The medium belongs to the card,
+// not to the machine: a 540's system disc is a CS/80 drive cabled to this
+// controller, and mounting it anywhere else would be describing a machine
+// HP did not build. So the card carries the image device, and the disc
+// mounts as -hard1 because the card is the only thing in the system that
+// has one.
 class hp27110_hpib_device : public device_t, public device_focus_cio_interface
 {
 public:
@@ -406,16 +417,27 @@ public:
 			device_t *owner, u32 clock)
 		: device_t(mconfig, HP27110_HPIB, tag, owner, clock)
 		, device_focus_cio_interface(mconfig, *this)
+		, m_media(*this, "drive")
 	{
 	}
 
 	focus::hpib_card card;
 
+	hp_focus_media_device &media() { return *m_media; }
+
 protected:
 	virtual void device_start() override {}
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD
+	{
+		HP_FOCUS_MEDIA(config, m_media).set_hard();
+	}
+
+private:
+	required_device<hp_focus_media_device> m_media;
 
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
+	virtual void focus_tick() override { card.tick(); }
 };
 
 DEFINE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device, "hp27128_asi",
@@ -489,7 +511,7 @@ public:
 		, m_floppy(*this, "floppy%u", 1U)
 		, m_hard(*this, "harddisc")
 		, m_mpb(*this, "mpb%u", 3U)
-		, m_cio(*this, "cio%u", 2U)
+		, m_cio(*this, "cio%u", 0U)
 		, m_iop(*this, 2)   // the channel the boot handoff's inventory announces
 	{
 	}
@@ -509,7 +531,12 @@ private:
 	void install_boot_image(const std::vector<u8> &img, const char *whence);
 	bool boot_from_disc();
 	bool boot_from_disc_source(bool from_fixed);
-	bool boot_from_cs80();
+	bool boot_from_cs80(focus::hpib_card &card);
+	// The HP-IB card carrying the system disc, or null when no slot has
+	// one -- a 540 with nothing to boot from.
+	focus::hpib_card *system_disc();
+	void write_back(const std::vector<u8> &now, hp_focus_media_device &media,
+			const char *what);
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 
@@ -541,10 +568,17 @@ private:
 	u32 m_ram_total = 0;
 	std::array<u64, 0x4000> m_pcprof{};
 	u64 m_pcprof_n = 0;
-	// The 520's user-expansion backplane (520 Service 2-29: select codes
-	// 2-5, "the only four available to the user"). Empty by default --
-	// nothing occupied these before this slot existed either.
-	optional_device_array<focus_cio_slot_device, 4> m_cio;
+	// The I/O backplane, indexed BY SELECT CODE -- the slots are
+	// physically labelled with their numbers (530/540 Service 2-27), so
+	// -cio5 is select code 5 on either machine. A 520 has four of them,
+	// 2-5, "the only four available to the user" (520 Service 2-29),
+	// because its display, keyboard and disc occupy the rest; a 540 has
+	// no built-in peripherals at all and offers 0-6. Absent entries are
+	// null, which is what an unpopulated slot is.
+	optional_device_array<focus_cio_slot_device, 7> m_cio;
+	// The console serial card, once a slot on a 530/540 turns out to
+	// hold one: what the terminal window types into and what prints.
+	focus::asi_card *m_console_asi = nullptr;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -552,8 +586,6 @@ private:
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
-	focus::asi_card m_asi;            // select code 0 on the 530/540: the console
-	focus::hpib_card m_hpib;          // the system disc's HP-IB card
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
 	std::string m_trip, m_trip_seen;
 	bool m_tripped = false;
@@ -875,69 +907,13 @@ void hp9000_5xx_state::machine_start()
 	}
 	if (const char *e = getenv("FOCUS_SC0FR1"))
 		m_dim.fr1 = strtoul(e, nullptr, 0);
-	// Select code 0 is the display alphanumeric on the 520 and the
-	// console serial card on the 530/540 (9030/40 CE Handbook 2-3: the
-	// System Terminal interface card goes in slot 0).
-	if (m_console_is_asi)
-	{
-		m_asi.iop = &m_iop;
-		m_asi.pa = 0;
-		m_asi.log = getenv("FOCUS_ASILOG") != nullptr;
-		// FOCUS_ASIID answers a different card identity -- 5 is the
-		// 27130A eight-channel multiplexer, which HP-UX drives with the
-		// same module (HP27128/30).
-		if (const char *e = getenv("FOCUS_ASIID"))
-			m_asi.card_id = u8(strtoul(e, nullptr, 0));
-		if (const char *e = getenv("FOCUS_ASIFR1"))
-			m_asi.fr1_force = strtoul(e, nullptr, 0);
-		if (const char *e = getenv("FOCUS_ASIIDENT"))
-			m_asi.identity = u16(strtoul(e, nullptr, 0));
-		if (const char *e = getenv("FOCUS_ASIEVENT"))
-			m_asi.event_done = u8(strtoul(e, nullptr, 0));
-		m_asi.on_char = [this](u8 c) {
-			trip_watch(c);
-			if (m_terminal)
-				m_terminal->write(c);
-			std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
-			std::fflush(stdout);
-		};
-		m_iop.attach(0, &m_asi);
-	}
-	else
+	// Select code 0 is the display alphanumeric on the 520. On the
+	// 530/540 it is a backplane slot like any other and the console
+	// serial card lives in it, which the loop over the backplane below
+	// fits along with every other card.
+	if (!m_console_is_asi)
 		m_iop.attach(0, &m_dim);
 
-	// FOCUS_HPIB=<select code> puts the system disc's HP-IB card in a
-	// slot -- 5 is where the install procedure says it goes (9030/40 CE
-	// Handbook, 2-3), with the drive at HP-IB address 0.
-	if (const char *e = getenv("FOCUS_HPIB"))
-	{
-		const unsigned sc = strtoul(e, nullptr, 0) & 7;
-		m_hpib.iop = &m_iop;
-		m_hpib.pa = sc;
-		m_hpib.log = getenv("FOCUS_HPIBLOG") != nullptr;
-		if (const char *v = getenv("FOCUS_HPIBIDENT"))
-			m_hpib.identity = u16(strtoul(v, nullptr, 0));
-		if (const char *v = getenv("FOCUS_HPIBADDR"))
-			m_hpib.device_address = u8(strtoul(v, nullptr, 0));
-		// FOCUS_HPIBDISC=<raw image> mounts a medium on the drive.
-		if (const char *v = getenv("FOCUS_HPIBDISC"))
-		{
-			if (FILE *f = fopen(v, "rb"))
-			{
-				fseek(f, 0, SEEK_END);
-				const long n = ftell(f);
-				fseek(f, 0, SEEK_SET);
-				m_hpib.disc.image.assign(size_t(n), 0);
-				if (fread(m_hpib.disc.image.data(), 1, size_t(n), f) != size_t(n))
-					osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
-				fclose(f);
-			}
-			else
-				osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
-		}
-		m_iop.attach(sc, &m_hpib);
-		m_iop.enable_interrupt(sc);
-	}
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
 	if (const char *e = getenv("FOCUS_NVMFILL"))
@@ -1019,82 +995,95 @@ void hp9000_5xx_state::machine_start()
 		m_iop.attach(7, &m_disc);
 	}
 
-	// The 520's user backplane, select codes 2-5, whatever is plugged
-	// into -cio2 .. -cio5 -- the same HP27128_ASI / HP27110_HPIB devices
-	// the 530/540 use below, so a card is one MAME device family reused
-	// in either machine's slot, not a parallel implementation.
-	if (!m_console_is_asi)
-		for (unsigned k = 0; k < 4; k++)
-		{
-			if (!m_cio[k])
-				continue;
-			focus::iop_interface *const iface = m_cio[k]->iface();
-			if (!iface)
-				continue;
-			const unsigned sc = 2 + k;
-			// The existing FOCUS_ASI*/FOCUS_HPIB* debug knobs apply to
-			// whichever concrete card ended up in the slot, so the
-			// tooling built for the 530/540's console and system-disc
-			// cards works unchanged on a 520 wearing the same card.
-			if (auto *asi = dynamic_cast<hp27128_asi_device *>(
-					m_cio[k]->get_card_device()))
-			{
-				asi->card.iop = &m_iop;
-				asi->card.pa = sc;
-				asi->card.log = getenv("FOCUS_ASILOG") != nullptr;
-				if (const char *e = getenv("FOCUS_ASIID"))
-					asi->card.card_id = u8(strtoul(e, nullptr, 0));
-				if (const char *e = getenv("FOCUS_ASIFR1"))
-					asi->card.fr1_force = strtoul(e, nullptr, 0);
-				if (const char *e = getenv("FOCUS_ASIIDENT"))
-					asi->card.identity = u16(strtoul(e, nullptr, 0));
-				if (const char *e = getenv("FOCUS_ASIEVENT"))
-					asi->card.event_done = u8(strtoul(e, nullptr, 0));
-				asi->card.on_char = [this](u8 c) { trip_watch(c); };
-			}
-			else if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
-					m_cio[k]->get_card_device()))
-			{
-				hpib->card.iop = &m_iop;
-				hpib->card.pa = sc;
-				hpib->card.log = getenv("FOCUS_HPIBLOG") != nullptr;
-				if (const char *v = getenv("FOCUS_HPIBIDENT"))
-					hpib->card.identity = u16(strtoul(v, nullptr, 0));
-				if (const char *v = getenv("FOCUS_HPIBADDR"))
-					hpib->card.device_address = u8(strtoul(v, nullptr, 0));
-				if (const char *v = getenv("FOCUS_HPIBDISC"))
-				{
-					if (FILE *f = fopen(v, "rb"))
-					{
-						fseek(f, 0, SEEK_END);
-						const long n = ftell(f);
-						fseek(f, 0, SEEK_SET);
-						hpib->card.disc.image.assign(size_t(n), 0);
-						if (fread(hpib->card.disc.image.data(), 1, size_t(n), f)
-								!= size_t(n))
-							osd_printf_error(
-									"FOCUS_HPIBDISC: short read on %s\n", v);
-						fclose(f);
-					}
-					else
-						osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
-				}
-				m_iop.enable_interrupt(sc);
-			}
-			m_iop.attach(sc, iface);
-			osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
-					m_cio[k]->get_card_device()->name(), sc);
-		}
-
-	// The 540's system disc: the HP-IB card in slot 5 (9030/40 CE
-	// Handbook 2-3), unless FOCUS_HPIB placed it elsewhere above.
-	if (m_console_is_asi && !getenv("FOCUS_HPIB"))
+	// The I/O backplane. One loop serves both machines because a card is
+	// one MAME device family in either: the array is indexed by select
+	// code, so a 520 finds cards in 2-5 and a 540 in 0-6, and the same
+	// FOCUS_ASI*/FOCUS_HPIB* debug knobs reach whichever card is in a
+	// slot. On a 540 this is where the console and the system disc come
+	// from -- there is no built-in anything to fall back on.
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 	{
-		m_hpib.iop = &m_iop;
-		m_hpib.pa = 5;
-		m_hpib.log = getenv("FOCUS_HPIBLOG") != nullptr;
-		m_iop.attach(5, &m_hpib);
-		m_iop.enable_interrupt(5);
+		if (!m_cio[sc])
+			continue;
+		focus::iop_interface *const iface = m_cio[sc]->iface();
+		if (!iface)
+			continue;
+		if (auto *asi = dynamic_cast<hp27128_asi_device *>(
+				m_cio[sc]->get_card_device()))
+		{
+			asi->card.iop = &m_iop;
+			asi->card.pa = sc;
+			asi->card.log = getenv("FOCUS_ASILOG") != nullptr;
+			// FOCUS_ASIID answers a different card identity -- 5 is the
+			// 27130A eight-channel multiplexer, which HP-UX drives with
+			// the same module (HP27128/30).
+			if (const char *e = getenv("FOCUS_ASIID"))
+				asi->card.card_id = u8(strtoul(e, nullptr, 0));
+			if (const char *e = getenv("FOCUS_ASIFR1"))
+				asi->card.fr1_force = strtoul(e, nullptr, 0);
+			if (const char *e = getenv("FOCUS_ASIIDENT"))
+				asi->card.identity = u16(strtoul(e, nullptr, 0));
+			if (const char *e = getenv("FOCUS_ASIEVENT"))
+				asi->card.event_done = u8(strtoul(e, nullptr, 0));
+			// The console is the serial card in slot 0 of a machine
+			// that has no display: what it prints goes to the terminal
+			// window and to stdout, and what the window types goes back
+			// into it.
+			if (m_console_is_asi && sc == 0)
+			{
+				m_console_asi = &asi->card;
+				asi->card.on_char = [this](u8 c) {
+					trip_watch(c);
+					if (m_terminal)
+						m_terminal->write(c);
+					std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+					std::fflush(stdout);
+				};
+			}
+			else
+				asi->card.on_char = [this](u8 c) { trip_watch(c); };
+		}
+		else if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
+				m_cio[sc]->get_card_device()))
+		{
+			hpib->card.iop = &m_iop;
+			hpib->card.pa = sc;
+			hpib->card.log = getenv("FOCUS_HPIBLOG") != nullptr;
+			if (const char *v = getenv("FOCUS_HPIBIDENT"))
+				hpib->card.identity = u16(strtoul(v, nullptr, 0));
+			if (const char *v = getenv("FOCUS_HPIBADDR"))
+				hpib->card.device_address = u8(strtoul(v, nullptr, 0));
+			// The drive on this card's bus. Its medium is the card's own
+			// image device; FOCUS_HPIBDISC remains as a way to hand a raw
+			// file to a card without going through MAME's media system.
+			if (hpib->media().has_media())
+				hpib->card.disc.image = hpib->media().data();
+			if (const char *v = getenv("FOCUS_HPIBDISC"))
+			{
+				if (FILE *f = fopen(v, "rb"))
+				{
+					fseek(f, 0, SEEK_END);
+					const long n = ftell(f);
+					fseek(f, 0, SEEK_SET);
+					hpib->card.disc.image.assign(size_t(n), 0);
+					if (fread(hpib->card.disc.image.data(), 1, size_t(n), f)
+							!= size_t(n))
+						osd_printf_error(
+								"FOCUS_HPIBDISC: short read on %s\n", v);
+					fclose(f);
+				}
+				else
+					osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
+			}
+			if (hpib->card.disc.loaded())
+				osd_printf_info("cio%u: CS/80 drive at HP-IB address %u, "
+						"%u blocks\n", sc, hpib->card.device_address,
+						hpib->card.disc.blocks());
+			m_iop.enable_interrupt(sc);
+		}
+		m_iop.attach(sc, iface);
+		osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
+				m_cio[sc]->get_card_device()->name(), sc);
 	}
 	attach_probes();
 	m_cpu->set_io(&m_iop);
@@ -1590,8 +1579,8 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 		const u8 c = u8(m_type_text[m_type_pos++]);
 		// The 540's console is a terminal on the serial card, and a
 		// terminal sends ASCII -- no keycode translation.
-		if (m_console_is_asi)
-			m_asi.type(c == '\n' ? u8('\r') : c);
+		if (m_console_asi)
+			m_console_asi->type(c == '\n' ? u8('\r') : c);
 		else
 			kbd_put(c);
 	}
@@ -1604,10 +1593,11 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
 	m_iop.poll_and_service();
 	m_disc.tick();
-	if (m_console_is_asi)
-		m_asi.tick();
-	if (getenv("FOCUS_HPIB"))
-		m_hpib.tick();
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+		if (m_cio[sc])
+			if (auto *c = dynamic_cast<device_focus_cio_interface *>(
+					m_cio[sc]->get_card_device()))
+				c->focus_tick();
 	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
 	// about 35 of them.
 	m_iop.timer_tick(35);
@@ -1665,7 +1655,8 @@ void hp9000_5xx_state::save_nv()
 // record is complete.
 void hp9000_5xx_state::term_put(u8 data)
 {
-	m_asi.type(data);
+	if (m_console_asi)
+		m_console_asi->type(data);
 }
 
 
@@ -1677,22 +1668,43 @@ void hp9000_5xx_state::term_put(u8 data)
 // rather than this emulator pretending to.
 void hp9000_5xx_state::machine_stop()
 {
-	if (!m_hard || !m_hard->has_media() || !m_disc.fixed_loaded())
-		return;
 	if (getenv("FOCUS_HDNOSAVE"))
 		return;
-	m_disc.select_device(1);
-	const std::vector<u8> &now = m_disc.medium();
-	if (now == m_hard->data())
+	// The 520's internal Winchester, behind its own controller.
+	if (m_hard && m_hard->has_media() && m_disc.fixed_loaded())
+	{
+		m_disc.select_device(1);
+		write_back(m_disc.medium(), *m_hard, "fixed disc");
+	}
+	// Every CS/80 drive on a card in the backplane -- the 540's system
+	// disc among them, which HP-UX writes to from its first boot.
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+		if (m_cio[sc])
+			if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
+					m_cio[sc]->get_card_device()))
+				if (hpib->media().has_media())
+					write_back(hpib->card.disc.image, hpib->media(),
+							"system disc");
+}
+
+
+// A disc this machine owns and writes to: what the running system did to
+// it has to survive the run, so the medium goes back to the file it came
+// from. Unchanged media are left alone, which keeps a read-only run from
+// touching the file's timestamp.
+void hp9000_5xx_state::write_back(const std::vector<u8> &now,
+		hp_focus_media_device &media, const char *what)
+{
+	if (now.empty() || now == media.data())
 		return;
-	const std::string path = m_hard->filename() ? m_hard->filename() : "";
+	const std::string path = media.filename() ? media.filename() : "";
 	if (path.empty())
 		return;
 	if (FILE *f = fopen(path.c_str(), "r+b"))
 	{
 		fwrite(now.data(), 1, now.size(), f);
 		fclose(f);
-		osd_printf_info("disc: fixed disc written back to %s\n", path.c_str());
+		osd_printf_info("disc: %s written back to %s\n", what, path.c_str());
 	}
 	else
 		osd_printf_error("disc: cannot write %s back\n", path.c_str());
@@ -1706,16 +1718,19 @@ void hp9000_5xx_state::machine_reset()
 	m_iop.reset();
 	m_scm.reset();
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_iop.attach(0, m_console_is_asi
-			? static_cast<focus::iop_interface *>(&m_asi)
-			: static_cast<focus::iop_interface *>(&m_dim));
-	m_iop.attach(6, &m_console6);
 	if (!m_console_is_asi)
+	{
+		m_iop.attach(0, &m_dim);
 		m_iop.attach(7, &m_disc);
-	if (const char *e = getenv("FOCUS_HPIB"))
-		m_iop.attach(strtoul(e, nullptr, 0) & 7, &m_hpib);
-	else if (m_console_is_asi)
-		m_iop.attach(5, &m_hpib);
+	}
+	m_iop.attach(6, &m_console6);
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+		if (m_cio[sc])
+			if (focus::iop_interface *const iface = m_cio[sc]->iface())
+			{
+				m_iop.attach(sc, iface);
+				m_iop.enable_interrupt(sc);
+			}
 	attach_probes();
 	m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
@@ -1744,12 +1759,14 @@ void hp9000_5xx_state::machine_reset()
 
 	if (m_console_is_asi)
 	{
-		// The 540 boots from its CS/80 system disc on the HP-IB card.
-		if (m_hard && m_hard->has_media())
-		{
-			m_hpib.disc.image = m_hard->data();
-			boot_from_cs80();
-		}
+		// The 540 boots from the CS/80 system disc on its HP-IB card --
+		// whichever slot holds a card with a drive in it, which is slot
+		// 5 unless someone re-cabled the machine.
+		if (focus::hpib_card *const card = system_disc())
+			boot_from_cs80(*card);
+		else
+			osd_printf_error("boot: no CS/80 system disc -- fit an HP-IB "
+					"card and mount a disc on it (-cio5 hpib -hard1 <image>)\n");
 	}
 	else if (!m_media.empty() || m_disc.fixed_loaded())
 		boot_from_disc();   // the fixed disc boots on its own
@@ -1761,13 +1778,25 @@ void hp9000_5xx_state::machine_reset()
 // A hard disc carries the boot descriptor at block 0 and the image from
 // byte 0x400 -- the layout the 7914 unit save uses -- and every byte is
 // read through the device's Locate-and-Read path, bounds checks and all.
-bool hp9000_5xx_state::boot_from_cs80()
+focus::hpib_card *hp9000_5xx_state::system_disc()
+{
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+		if (m_cio[sc])
+			if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
+					m_cio[sc]->get_card_device()))
+				if (hpib->card.disc.loaded())
+					return &hpib->card;
+	return nullptr;
+}
+
+
+bool hp9000_5xx_state::boot_from_cs80(focus::hpib_card &card)
 {
 	constexpr u32 MAGIC = 0xe9c28206;
 	constexpr u32 SECTOR = focus::cs80_device::BLOCK;
 
 	std::vector<u8> desc;
-	if (!m_hpib.disc.read_blocks(0, SECTOR, desc))
+	if (!card.disc.read_blocks(0, SECTOR, desc))
 	{
 		osd_printf_error("boot: cannot read the system disc\n");
 		return false;
@@ -1790,7 +1819,7 @@ bool hp9000_5xx_state::boot_from_cs80()
 	}
 
 	std::vector<u8> image;
-	if (!m_hpib.disc.read_blocks(0x400 / SECTOR, total, image))
+	if (!card.disc.read_blocks(0x400 / SECTOR, total, image))
 	{
 		osd_printf_error("boot: the system disc is short\n");
 		return false;
@@ -2363,8 +2392,8 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	// (520 Service 2-29). -cio2 through -cio5 take "asi" or "hpib" -- the
 	// same card devices, and the same option list, the 530/540 use for
 	// its console and system-disc slots below.
-	for (unsigned k = 0; k < 4; k++)
-		FOCUS_CIO_SLOT(config, m_cio[k], focus_cio_cards, nullptr);
+	for (unsigned sc = 2; sc <= 5; sc++)
+		FOCUS_CIO_SLOT(config, m_cio[sc], focus_cio_cards, nullptr);
 
 	// The quickload remains as a debug side door for images that exist
 	// only as files; the supported path is booting from the discs.
@@ -2397,10 +2426,17 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 	GENERIC_TERMINAL(config, m_terminal, 0);
 	m_terminal->set_keyboard_callback(FUNC(hp9000_5xx_state::term_put));
 
-	// The system disc: a CS/80 drive on the HP-IB card in slot 5, where
-	// the install procedure puts it. The 7914 unit-save image mounts
-	// here and the machine boots HP-UX from it.
-	HP_FOCUS_MEDIA(config, m_hard).set_hard();
+	// The whole machine's I/O is the backplane: select codes 0-6, seven
+	// labelled slots, with the SCM at 7 (530/540 Service 2-27). Nothing
+	// is built in, so the two cards that make the machine usable are
+	// fitted by default exactly where the installation procedure puts
+	// them -- the System Terminal interface in slot 0 and the System
+	// Disc HP-IB in slot 5 (9030/40 CE Handbook 2-3). Both are ordinary
+	// slot options: -cio0 and -cio5 can empty or re-card either one, and
+	// the remaining five slots start empty.
+	for (unsigned sc = 0; sc <= 6; sc++)
+		FOCUS_CIO_SLOT(config, m_cio[sc], focus_cio_cards,
+				sc == 0 ? "asi" : sc == 5 ? "hpib" : nullptr);
 
 	QUICKLOAD(config, "quickload", "bin").set_load_callback(
 			FUNC(hp9000_5xx_state::quickload_cb));

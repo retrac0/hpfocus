@@ -9,8 +9,15 @@
 # requires before it will bring up its device world. Delete the file to
 # simulate a dead battery.
 #
+# The machine is all backplane: the console serial card is -cio0 and the
+# system disc's HP-IB card -cio5, where the CE handbook's installation
+# procedure puts them, and the 7914 unit save mounts as the CS/80 drive on
+# that card. Re-card either slot, or fit more, with -cio0 .. -cio6.
+#
 # Where the boot currently gets to is tracked in the hpux-boot-frontier
-# notes: a trap-free multi-tasking idle, no banner yet.
+# notes: the loader reads the image off the CS/80 disc, the kernel runs and
+# types both cards, and then stops short of loading their drivers -- no
+# banner yet.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -51,5 +58,5 @@ done
 # comes after this one and wins, so any backend can still be asked for.
 VIDEO=(-video soft)
 
-exec env FOCUS_SCMNV="$CCT/scm.nv" FOCUS_ASIID=0 \
+exec env FOCUS_SCMNV="$CCT/scm.nv" \
     ./focus hp9040 -hard1 "$DISC" "${THROTTLE[@]}" "${VIDEO[@]}" -sound none "$@"

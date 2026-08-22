@@ -132,7 +132,19 @@ struct asi_card : public iop_interface
 	// The identity block the IDY order answers (27128A 4-67). The MUX
 	// answers the same shape with card ID 5, eight ports and its own
 	// firmware revision (27130A 4-46), so one card models both.
-	u8 card_id = 3;         // 3 = ASI, 5 = MUX
+	//
+	// FR3 is NOT that card ID, which is what this register was first read
+	// as. HP-UX's select-code scan (CONFIGURATION at runtime 0x152fc)
+	// settles it: read FR1 and require (FR1 & 0xf30) == 0; read FR3, and
+	// **if it reads 9, write 0 to FR1 and FR8** -- a reset; read FR3
+	// again and require **zero**, skipping the slot otherwise; only then
+	// write 1<<sc to FR0 and read it back from FR1 as the presence echo.
+	// So FR3 says "this card is configured and ready" (0) or "reset me
+	// first" (9), and a card that answers its ID here is never
+	// registered at all. The disc controller's model already carried the
+	// same note. The 9-then-reset path is not modelled: no card in hand
+	// is known to need it.
+	u8 card_id = 0;         // FR3: 0 = ready. FOCUS_ASIID sweeps it.
 	u8 firmware_id = 0;
 	u16 firmware_rev = 1;
 	u8 mpx = 1;             // 0 subchannel, 1 in-channel, 2 both
@@ -153,9 +165,16 @@ struct asi_card : public iop_interface
 	unsigned event_delay_ms = 2;
 
 	// The halfword the identify transaction answers, which is what types
-	// the slot. Which value binds HP-UX's HP27128/30 driver is not yet
-	// known -- FOCUS_ASIIDENT sweeps it.
-	u16 identity = 0x0003;
+	// the slot -- and the CARD ID goes in its HIGH byte. Read off the
+	// driver: CORE SYSTEM +0x2f16 takes the halfword the two-byte DMA
+	// delivered, stores its high byte at the device record's +0 and its
+	// low byte at +2, then range-checks that high byte with
+	// `CRB` against 1..7 and computed-branches through a seven-arm
+	// table. Out of range stores error 30 and abandons the slot, which
+	// is what 0x0003 -- the ID in the LOW byte -- used to do to every
+	// card in the machine. 3 is the ASI's documented ID (27128A 4-67);
+	// the low byte is the firmware ID. FOCUS_ASIIDENT sweeps it.
+	u16 identity = 0x0300;
 
 	// Where characters the host writes go, and where typed characters
 	// come from. A host wires these to a terminal.
@@ -257,12 +276,14 @@ struct asi_card : public iop_interface
 				m_echo_pending = false;
 				m_present = true;
 			}
+			else if (fr1_force)
+				// FOCUS_ASIFR1: a constant answer, for finding which bit a
+				// driver is really waiting on. It is tested before the
+				// presence gate below, because a forced constant that
+				// the gate can still override is not a constant.
+				v = fr1_force & 0xffff;
 			else if (!m_present)
 				v = 0;
-			else if (fr1_force)
-				v = fr1_force & 0xffff;   // FOCUS_ASIFR1: a constant answer,
-										  // for finding which bit a driver
-										  // is really waiting on
 			else
 				// The house status register of this machine's CIO cards,
 				// established by sweeping constants past the HP-UX 5.30

@@ -306,9 +306,13 @@ struct hpib_card : public iop_interface
 	bool log = false;
 
 	// The halfword the identify transaction answers, which is what types
-	// the slot. Which value binds HP-UX's HP27110 driver is not yet
-	// known; FOCUS_HPIBIDENT sweeps it.
-	u16 identity = 0;
+	// the slot: the card ID in the HIGH byte, the firmware ID in the low
+	// one. HP-UX's scan range-checks the high byte against 1..7 and
+	// abandons a slot outside it (see focusasi.h for the driver code the
+	// reading comes from), so zero -- what this used to answer -- was
+	// rejected. 2 is the HP-IB card's documented ID.
+	// FOCUS_HPIBIDENT sweeps it.
+	u16 identity = 0x0200;
 
 	// The device on the bus, at its HP-IB address. The install procedure
 	// sets the system disc to address 0.

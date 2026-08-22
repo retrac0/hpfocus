@@ -383,7 +383,7 @@ enough that the two are evidently one house design:
 |---|---|
 | `FR1` read | card status: **bit 7 configured / self test passed, bit 6 self test complete, bit 0 an event code is waiting**. A driver polls here and will not proceed until bits 7 and 6 are both set — answering `0x80` alone leaves it polling forever (200,000 reads in three emulated seconds); `0xc0` sets it going. |
 | `FR1` write | commands: 1 is the attention-request disable the IOP's own poll issues (I/O ERS 4.4, and the CIO write_control byte's bit 0), 2 acknowledges the event standing in FR9. |
-| `FR3` read | the presence/registration identity. The powerup scan registers a slot only when this reads **0**; the CIO card-ID byte (§2.6) is a different thing, carried in the identify *response*. |
+| `FR3` read | not an identity at all: a readiness register. The scan (`CONFIGURATION`, runtime `0x152fc`) reads it, and **if it reads 9 writes 0 to FR1 and FR8** — a reset — then reads it again and registers the slot only when it reads **0**, skipping it otherwise. The CIO card-ID byte (§2.6) is a different thing, carried in the identify *response*. |
 | `FR8` write | the transaction command byte. **0 = identify.** |
 | `FR9` write | a configuration word, `(2 << 4) | pa` — `0x20` in slot 0. LCS80 sends the disc controller the identical word; the high nibble's meaning is unestablished on either card. |
 | `FR9` read | the event code being announced. Dispatched by high nibble: 1, 2 and 4 are completion classes, 3 and anything above `0x4f` an error. |
@@ -395,6 +395,17 @@ points the device's DRT entry at it. For identify the list's `WDC` is **2** —
 the answer is one halfword, and that halfword types the slot. When the leg
 completes the card posts an event, asserts ASYNC, and the driver reads the
 code from FR9.
+
+**How the halfword types the slot** (`CORE SYSTEM` +0x2f16, read off the
+running kernel). The DMA lands the two bytes at the device record's **+2**.
+The driver then splits them: the **high** byte is stored at +0 and the low
+byte back at +2, and it is the high byte that is the card ID — 3 for the
+ASI, 2 for the HP-IB, the numbers §2.6 gives. It is range-checked with `CRB`
+against **1..7** and computed-branched through a seven-arm table; out of
+range stores error **30** at +6 and abandons the slot. So a card that
+answers its ID in the low byte is typed 0 and rejected, which is what every
+card modelled here did until the halfwords were corrected to `0x0300` and
+`0x0200`.
 
 Observed in full on a 540 boot, in order: powerup presence test (FR1, FR3 ×3,
 `WIF0 1<<pa`, FR1 echo) → driver polls FR1 for `0xc0` → `WIF9 (2<<4)|pa` →
