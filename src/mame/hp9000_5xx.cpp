@@ -924,6 +924,20 @@ void hp9000_5xx_state::machine_start()
 		}
 		osd_printf_info("mpb: %u RAM board%s, %u KB\n", boards,
 				boards == 1 ? "" : "s", m_ram_total / 1024);
+		// FOCUS_RAMFILL=<hex byte> poisons all of RAM before the boot,
+		// standing in for the garbage a real machine powers up with --
+		// MAME's boards come up zeroed, and zeros silently satisfy any
+		// code that reads memory nothing initialised. A boot that
+		// behaves differently under poison is depending on exactly such
+		// a read, which on hardware would differ run to run.
+		if (const char *e = getenv("FOCUS_RAMFILL"))
+		{
+			const u8 fill = u8(strtoul(e, nullptr, 16));
+			for (auto &slot : m_mpb)
+				if (mpb_ram_device *card = slot ? slot->card() : nullptr)
+					std::memset(card->base(), fill, card->size());
+			osd_printf_info("mpb: RAM poisoned with 0x%02x\n", fill);
+		}
 		if (onemeg & 1)
 			osd_printf_warning("mpb: 1M RAM boards must be installed in "
 					"pairs (service manual 2-1); this stack has %u\n", onemeg);
@@ -1935,7 +1949,15 @@ bool hp9000_5xx_state::boot_from_cs80(focus::hpib_card &card)
 void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 		const char *whence)
 {
-	constexpr u32 LOAD = 0x100000;
+	// FOCUS_BOOTLOAD=<hex> moves the image, testing the load address the
+	// (undumped) loader ROM chose. Nothing downstream may care: powerup
+	// reads it back out of Q+52, relocates every segment into [0, load)
+	// and never touches the image region again -- measured with RWATCH
+	// over both the image and the loader stack after t=1.3. A behaviour
+	// difference under this knob would mean a hidden dependency on the
+	// placement, which is exactly what it exists to find.
+	const u32 LOAD = getenv("FOCUS_BOOTLOAD")
+			? u32(strtoul(getenv("FOCUS_BOOTLOAD"), nullptr, 16)) : 0x100000;
 
 	// FOCUS_BOOTOPT=<file>[,<file>...] appends option binaries to the
 	// boot image, which is what a configured machine actually runs.

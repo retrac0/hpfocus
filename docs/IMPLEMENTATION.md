@@ -689,6 +689,123 @@ protocol, one run per question.
 
 ---
 
+## The loader hand-off, validated
+
+There is no ROM dump, so the loader is a reconstruction -- the contract
+bootrun reverse-engineered from what SYSTEM POWERUP consumes. That makes
+"the loader put something in the wrong place" a standing suspect for any
+unexplained crash. This section is the measurement campaign (2026-08-23)
+that retires it for the current failures, and the inventory of every
+piece of state the hand-off defines.
+
+### What the load placement can and cannot be
+
+Three things could be "in the wrong spot": the image, the loader stack,
+and the parameter block. Measured, none of them is load-bearing beyond
+the constraints already documented:
+
+- **The image's load address is arbitrary.** `FOCUS_BOOTLOAD` moves it;
+  booting BASIC at `0xc0000`, `0x100000` and `0x180000` produces
+  byte-identical behaviour -- same `BASIC Ready`, same ` 5` from
+  `DISP 5`, same `TRAP:00000021` from `RUN`, same registers in the trap
+  report. Powerup reads the address back from `Q+52`, relocates every
+  segment into `[0, load)`, and the image region is never read again:
+  `FOCUS_RWATCH` over the image's scaffold templates and over the whole
+  loader stack shows **zero accesses after t=1.3** for the rest of a
+  26-second run. The `MAIN` copies FOCUS_FIND turns up above 1 MB are
+  dead residue of the original image, not live code.
+- **The loader stack placement is arbitrary.** It hangs off top of
+  memory, so the RAM sweep (below) moved it from `0x180000` to
+  `0x380000`; bootrun uses `0xe00000`/`0xf00203` in its 16 MB flat
+  memory. No difference anywhere.
+- **PB = 0 is pinned** (not arbitrary): the module copies its relocation
+  routine to the absolute address in its header word and branches there
+  with BRSI through that word as a local pointer -- PB-relative must
+  mean absolute. This was established when bootrun was written and
+  nothing here disturbs it.
+
+### The parameter block is consumed exactly as written
+
+Watching the whole hand-off region during powerup:
+
+- Powerup's first act on the stack is to **zero-fill its own locals**,
+  `Q-0xef` upward, byte by byte (220 writes from `P=0x1000f0`) --
+  before any read. The first read below `Q` lands on memory it just
+  zeroed.
+- `[SB, Q-0xf0)`: **zero reads, ever.**
+- `Q+4 .. Q+48` (the gap between the device number and the load
+  address): **zero accesses, ever.**
+- `Q+96 .. Q+0x200` (between the last written word and the handed-over
+  `S`): **zero accesses, ever.** `S = Q+0x200` is pure headroom.
+
+So the consumed contract is exactly the words the loader writes: the
+marker `(Q-3)..(Q)`, the inventory doubling as the IXIT frame, `(Q+2)`,
+`(Q+3)`, the load address at `Q+52`, top-of-memory at `Q+64`, the
+20-byte boot device record, `Q+88`, `Q+92`, and the `-2` cold-start
+word in the TOS cache. Nothing reads state we failed to provide.
+
+### Nothing depends on uninitialised memory
+
+MAME's RAM boards power up zeroed; a real machine's do not. If any code
+in the chain read memory that neither the loader nor powerup wrote,
+zeros would be silently standing in for garbage -- a hidden hand-off
+dependency and a source of real-hardware-only flakiness.
+`FOCUS_RAMFILL=a5` poisons every RAM board before boot:
+
+- BASIC: boots identically, `DISP 5` prints, `RUN` traps 021 with an
+  identical report.
+- HP-UX: reaches the same console panic, printed to the terminal.
+
+Powerup's zero-fill of `[0, load)` plus its own-locals fill is
+airtight for both images.
+
+### Memory configurations
+
+`-mpb3..-mpb12` sweep, BASIC from the installed disc, both failure
+cases (`DISP 5`/`DISP 6` second-statement trap 001; typed-program `RUN`
+trap 021):
+
+| RAM | trap (T1 / T2) | differences in the report |
+|---|---|---|
+| 2048 KB | 001 / 021 | baseline |
+| 2304 KB | 001 / 021 | DST only |
+| 2560 KB | 001 / 021 | DST only |
+| 3072 KB | 001 / 021 | DST only |
+| 4096 KB | 001 / 021 | DST only |
+
+The only word that moves is DST = top − 0x2b00 -- the OS builds its
+data segment table just under top of memory, as expected. SB, DB, DL
+and every fault address are identical: BASIC's world is fully
+determined by the image, not by memory size or placement.
+
+### The complete hand-off state
+
+Everything the machine is, at the moment control passes to the image:
+
+| state | value | provenance |
+|---|---|---|
+| P, PB, PL | entry in image, 0, image length | pinned by the module's own code |
+| SB, SL, Q, S | top−0x80000 (or above image), top−4, SB+0x203, Q+0x200 | arbitrary; validated by the sweeps |
+| DB, DL, DST | 0, 0xffffff\|3, 1152 | DB=0 is the global segment; 1152 = octal 2200, where powerup builds the DST |
+| STATUS | M=1, all else 0 (CSN 0, I off, CC 0) | matches the marker's `(Q-1)` word |
+| MASK | channel-1 bit | the MPB inventory names the same channel |
+| TOS cache | one word, −2 | cold start; powerup tests it |
+| X, FLAGS, MSG, BRKPT, SAR, SDR | 0 | reset defaults; nothing reads them first |
+| control store date | 0x19820319 (CPU 4.0) | RCS location 6; powerup compares 19810828 |
+| address lockout | on | the ERS default mode |
+| traps | off until dedicated word 0 is nonzero | modelling crutch: pre-CST traps are fatal on hardware anyway; auto-enables when powerup points location 0 at the CST |
+| RAM | image at LOAD, parameter block, rest zero | poison-validated: nothing reads the "rest" before writing it |
+
+### What this rules out, and what it does not
+
+The two open BASIC failures -- the once-per-session TRY frame and the
+short-STT `RUN` trap -- are **not** loader artifacts: they are invariant
+under load address, memory size, loader-stack placement, and RAM
+poison, and no boot-time read of unprovided state exists. The defect is
+in BASIC's own runtime scaffold composition, or in the semantics of an
+instruction it uses -- the instruction set is reconstructed from
+documents too, and that axis is untouched by everything above.
+
 ## Core design notes
 
 **Bit numbering.** The ERS numbers bits with **0 as the most significant**, and
