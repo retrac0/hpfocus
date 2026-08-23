@@ -359,6 +359,30 @@ moved. It did not. The scaffold trap comes from `do_call`'s own limit
 check against the *calling* segment, exactly where the project's notes
 put it, and none of the three corrected paths is involved.
 
+### The scaffold path, audited end to end (all correct)
+
+Debugging the trap-021 frontier put five components of the segmentation and
+addressing core under the ERS one after another. Every one matches, and
+that is worth recording so the next person down this path does not repeat
+it. The list is also the reason the remaining divergence has to be in
+BASIC's own placement rather than in the machine.
+
+| component | sheet | checked |
+|---|---|---|
+| STT length field and limit test | 28, 48 | `(13:19)`, "four times the number of entries", and cause 21's test is *greater than*, so the entry at exactly the length is valid. `do_call`'s `offset > limit` is right. |
+| external program pointer decode | 28 | `(1:19)` four-times-entry-number, `(20:12)` segment. Reproduces the recorded values: `0x80340006` is entry 208 of segment 6. |
+| data pointer evaluation | 56 | The pseudocode contains `If PTR (2:11) = 0 then EDS Pointer Violation Trap` -- literally what the core does. |
+| `CPTR` tag preservation | 121 | `(S)(2:30) := Offset` keeps the tag; the core writes `ers32::set(ptr, 2, 30, offset)`. |
+| `EXIT` stack discipline | 96 | `S := Q`, unwind through the marker, `S := S-4-CIR(24:8)`. The core pops 16 bytes plus `4n`. |
+
+One deviation found and left alone: `CPTR`'s **external-pointer branch**
+with bit 3 set. Sheet 121 calls for a full evaluation of the pointer, a
+check that `OFFSET(0:13)` is zero, and storing the *evaluated* `PTR`; the
+core instead folds the delta into the `(13:19)` offset field and range-
+checks it. Equivalent for an unchained pointer, not obviously so for a
+chained one. It is not on the failing path -- that call takes the else
+branch -- so it is reported here rather than changed.
+
 ### Not yet checked
 
 The audit stops here, with roughly 70% of executed instructions covered by
