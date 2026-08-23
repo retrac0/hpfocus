@@ -152,6 +152,45 @@ be linked *for this program*, and the open question is which of the two
 segments the composed scaffold belongs in: the destination comes from field
 `+60` of the object at `DB+384`.
 
+**A cheaper bench, and what it shows.** A stored program off the demo discs
+fails in exactly the same instruction, which makes HP's `MASTERMIND` — 3,780
+bytes against the diagnostics driver's 31,652 — the smallest reproducer the
+project has (docs/SOFTWARE.md). Watched with `FOCUS_WWATCH` on the length
+word and `FOCUS_TRAPLOG`, the whole sequence takes six milliseconds and
+names its own participants:
+
+```
+t=32.489  BASIC COMPILER  (PB=0x130dc) composes  LDIS #9; PCLS 9   at PB+0x288
+t=32.491  BASIC PARSER    (PB=0x35cf8) stamps    length = 0x18     by MVB 7,B
+t=32.495  the PCLS traps  021, parameter 0x24
+```
+
+The compose and the stamp are two *different* BASIC segments writing the
+same container two milliseconds apart, and the stamp lands after the code.
+
+The container's table, read out at the moment of the trap (`PL` = 0x77d6b):
+
+```
+entry 1   0000027c   local, PB+0x27c -- the composed program's entry point
+entry 2-6 80008c10 802e8006 8022c006 803a0003 80394003
+entry 7-9 00000000 00000000 00000000
+length    00000018
+```
+
+**Raising the length alone is not enough, and that is the new fact.**
+Poking `0x24` into the length word immediately before the call
+(`FOCUS_POKEPC=00077ce2:00077d68:00000024`) clears the STT violation — and
+the call lands on **zeros**, trapping 020 with CIR = 0. Entries 7, 8 and 9
+of this container are empty, not merely out of bounds.
+
+So the length mismatch was hiding the real gap. It is not enough to know
+which of the two containers the scaffold belongs in: whichever it is, the
+step that *fills* slots 7-9 never runs for a freshly compiled program. The
+question to put next is what populates those three entries for a program
+that works — `CAT_BOOT` ships with a 21-entry table already populated and
+runs, so the linking path may simply never be exercised by anything that
+currently works.
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment
