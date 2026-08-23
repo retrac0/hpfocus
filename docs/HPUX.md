@@ -428,6 +428,39 @@ All addresses runtime for this configuration.
   first 91 is a re-raise at seg 32 +0x1822), and decide whether the
   printer's FR1 poll can be served without taking the report away from
   the interrupt-driven reader. EDD looks adoptable once it can.
+- **The panic printer bypasses the driver completely.** Asked directly:
+  it does not go through the console driver, or the IOP command list, or
+  interrupts. It drives the card register by register.
+
+  | | driver path | panic printer |
+  |---|---|---|
+  | I/O from seg 32 HP27128/30 | **zero, all boot** | — |
+  | how orders reach FR8 | `IOC io=0x38` = **ICEI**, then `IXIT`; the **IOP** runs a command list | `LDIS #184; IOW io=0x42` — writes the order byte itself |
+  | issuing site | CORE SYSTEM +0x3bf8 (999×) and +0x3d88 (2×) | HP-UX KERNEL +0xc898, +0xca9c |
+  | orders produced | PAU 999, RTS ~1000, CLC 1, RD 1, RS 1, IDY 2 | CLC 27, WD 25, RS 27, RTS 54 |
+  | DMA setup | in the list | its own (`op 003/004/005`, 52× each) |
+  | completion | interrupt | polls FR1 itself: `IOR io=0x09` at +0xc65c, 892 reads |
+
+  The console DDM issues **no I/O at all** — nor do TTY SUBSYSTEM or
+  SERIAL. Everything on the driver side is CORE SYSTEM starting a list
+  and the IOP executing it. The printer, by contrast, has the literal
+  `0xb8` in an immediate and writes it to the order register inline.
+- **So "the report has two readers" is structural, not incidental.** One
+  reader is the IOP command list, running on the driver's behalf and
+  interrupt-driven; the other is the printer, polling FR1 from the CPU
+  with no list and no interrupt. They contend for the same one-shot RTS
+  report, and whichever arrives first consumes it. That is exactly why
+  EDD fixes the driver and hangs the printer — and why any fix here has
+  to serve both, as this file has said all along.
+- **Attribution warning, second instance.** `FOCUS_IOALL`'s `p=` is the
+  CPU's PC, so **list-driven** I/O is attributed to whatever was
+  running. The 878 RTS orders that appear to come from WIN/H9000 are
+  not its: WIN/H9000 +0x19f1c is `DECM Q-35; CMPN #0; BCC.EL`, a delay
+  loop containing no I/O instruction. Likewise the 999 PAU orders "from"
+  CORE SYSTEM +0x3bf8 — that site issues ICEI (`op=070`), not the order
+  write (`op=0102`). Only `IOW`/`IOR`/`IOC` sites confirmed in the
+  disassembly are real attributions; the printer's are, the driver
+  path's are not.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
