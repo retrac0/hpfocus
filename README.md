@@ -531,10 +531,40 @@ were wrong and are corrected below.
   Immediate mode works because segment 4 gets grown on its first
   statement and gains nine entries; segment 5 never does.
 
-**NEXT.** Find the caller in the immediate path that requests the sizing
-and has no counterpart in RUN — the divergence is above BASIC +0x5128.
-Then decide whether RUN should be growing segment 5 too, or should be
-composing into segment 4 (the grown one) in the first place.
+- **The two flows place code through different routines**, measured
+  0 against 1 hits each way: COMPILER +0x966c (the copier that plants
+  the composed program) runs only under `RUN`, and PARSER +0x5bf8 /
+  +0x5cac (the sizing and grow) only in immediate mode.
+- **`RUN` does size-check — and the check passes.** COMPILER +0x95d2
+  computes `[DB+488]*4 + 125 + [Q+12]` = `0`·4 + 125 + 16 = **141** and
+  calls `STT[195]` with it. Container 5 is `0xd0` = 208 bytes, so the
+  request fits, nothing grows, and the table is never reconsidered.
+- **One instruction stream writes a complete table, and only one.**
+  PARSER +0x5c32 writes the length word `0x24` and entries 1..9 in a
+  single descending byte burst at t=17.118 — the whole table at once,
+  as an image copy. Nothing else in either flow produces more than a
+  single entry: at `RUN` time exactly **one** entry (2, value `0x80`,
+  from BASIC +0x516a) is written into container 5, and entries 3-9 are
+  boot residue.
+- **Killed hypothesis: an empty table does not trigger activation.**
+  Poking container 5's table length to 0 before `RUN` does not summon
+  any builder; the trap simply moves earlier, parameter `0x10` —
+  `PCLS STT[4]` — instead of `0x24`. There is no fault-driven table
+  producer in any direction, which is the second and final nail in the
+  "trap 021 activates the scaffold" idea.
+
+So the defect is exact: `RUN` plants a scaffold body that references
+`STT[9]` — an index that comes from the template, not from compiling
+`DISP 5` — into a container that never receives the block stamp,
+because the stamp happens only inside the PARSER grow, and RUN's size
+request fits the container it was given.
+
+**NEXT.** The block stamp copies a prepared table image; find where
+that image is built and whether a RUN-shaped one exists. If it does,
+the missing step is a call; if it does not, the composed program's
+`STT[9]` is being emitted against a table nobody ever intended to
+build, and the question moves to why the template's index survives
+composition.
 
 ## `RUN` of a typed program: the short table, confirmed by experiment
 
