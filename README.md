@@ -472,6 +472,111 @@ at field `+60` of the object at `DB+384`.
 
 **Not yet fixed.** A keyboard-entered program still does not run.
 
+## The scaffold machinery, mapped
+
+Watching the containers, their tables and the user DST turns the two
+BASIC failures into one mechanism. Two things previously written here
+were wrong and are corrected below.
+
+- **User code segments are DST entries.** A CSN of 3072+n is user DST
+  entry n; the CSN in the RUN trap's STATUS is `0xc05` = 3077 = user
+  entry **5**. (The DST register itself is top of memory − 0x2b00, so
+  it moves with the fitted RAM: `0x0fd500` on the 1 MB default,
+  `0x1fd500` on a 2 MB machine. Watching a stale DST address is a good
+  way to measure nothing at all.)
+- **CORRECTION — "A and B" are one segment, not two copies.** They are
+  user entry 4 before and after a **growth**:
+
+  | | length field | base |
+  |---|---|---|
+  | before (A) | `0x18f` → 0x190 bytes | `0x8219c` |
+  | after (B) | `0x1ef` → 0x1f0 bytes | `0x7655c` |
+
+  Same DST entry, same module name, 86 of 120 words identical — the
+  grow could not extend in place, so it relocated. Everything the notes
+  said about "two scaffold segments, one three entries short" is this:
+  the short table is the segment's state *before* it grows.
+- **CORRECTION — trap 021 is not the activation trigger.** An earlier
+  version of this section claimed the kernel had a scaffold-activation
+  arm ahead of the internal-error reporter, driven by the fault.
+  `FOCUS_TRAPLOG` from t=15 over the immediate flow shows exactly **one
+  trap in the whole session** — trap 1 at 19.568, the TRY bounds
+  violation — and none at 17.118 when the table is stamped. The
+  stamping is proactive, not fault-driven. The lesson is the same one
+  as the semaphore and the CLC: a plausible mechanism, believed because
+  the timing fitted, and disproved by the log that counts.
+- **What actually stamps the table: a conditional segment extend in
+  PARSER/RTS.**
+
+      +0x5c0e   LDS Q-16,I ; LDS Q-20 ; CMP,B ; BCCS.EL   skip if
+                                                  needed <= current
+      +0x5c1c   PCL STT[306]  ->  kernel +0x8734           grow it
+
+  The current size it compares against is `0x190` — the segment's
+  pre-growth length — and the grow is what restamps the STT with its
+  **nine** entries (length `0x24`, entries `0x86`, `0x72`, external
+  labels into seg 6). So the nine-entry table is not something the
+  scaffold is born with; it is earned by growing.
+- **The RUN flow never enters that routine.** Zero hits at the guard
+  (+0x5c0e), at the call (+0x5c1c), and at three successive callers up
+  the chain — COMPILER +0x2eb0, COMPILER +0x602, BASIC +0x5128 —
+  against one hit each in the immediate flow. RUN never asks for a
+  scaffold extend. The kernel's grow entry is reached twice in the RUN
+  flow (from TRAP HANDLERS +0x758, before the trap, so the machinery is
+  alive) but never for the scaffold's table.
+- So the composed program is planted in user segment **5** — a
+  different, 0xd0-byte container carrying the six-entry table stamped
+  at boot — and nothing ever grows *it*. `PCLS STT[4]` succeeds against
+  the stale table, `PCLS STT[9]` exceeds its limit, trap 021.
+  Immediate mode works because segment 4 gets grown on its first
+  statement and gains nine entries; segment 5 never does.
+
+**NEXT.** Find the caller in the immediate path that requests the sizing
+and has no counterpart in RUN — the divergence is above BASIC +0x5128.
+Then decide whether RUN should be growing segment 5 too, or should be
+composing into segment 4 (the grown one) in the first place.
+
+## `RUN` of a typed program: the short table, confirmed by experiment
+
+`10 DISP 5` / `20 END` / `RUN` halts with `TRAP:00000021`. The causes are
+numbered in octal, so that is **`021` = `stt_violation`**, and
+`FOCUS_TRAPLOG` gives its parameter as **`0x24`** — the code executed
+`PCLS STT[9]`, offset 36.
+
+It faults at `PB=0x8233c`, a **bare composed segment**: length `0xd0`,
+and no module name in its header, unlike the two `MAIN` copies. Its
+`PL` is `0x8240b`, and the STT length word there reads **`0x18`** —
+six entries against the nine the code asks for. Three short.
+
+That word is written exactly **once**, at t=1.075, by BASIC `+0x668c`:
+
+    LDS   Q+12,I,X      X = 4
+    SUBI  #28
+    CPTR,B
+    LDIS  #28
+    MVB   7
+
+The `7` is not a word count — in `MVB` the operand is flags: `operand&3`
+is how many words to pop (3) and bit 2 says the source is a data segment
+pointer. The size is the `28` pushed above it. (The older note reading
+this as "seven words" is wrong.)
+
+**The decisive experiment.** `FOCUS_POKE=82408:24:14` forces the limit to
+nine entries before `RUN`. The STT violation disappears — and the machine
+halts instead with **`TRAP:00000020` = `unimplemented_instruction`**. So
+the bound is not the problem by itself: entries 7, 8 and 9 are simply not
+there, and `PCLS` through them calls into whatever follows. The scaffold
+really is composed into the short segment, and no adjustment to the bound
+can fix that.
+
+The builder's own frame holds both sizes at the moment it runs — `0x24`
+below `Q` and `0x18` above it — and `LDIS #24; STS Q+52` at builder
+`+0x1e` plants the small one unconditionally. Which of those the
+destination should be chosen from is the open question; the notes point
+at field `+60` of the object at `DB+384`.
+
+**Not yet fixed.** A keyboard-entered program still does not run.
+
 ## The scaffold machinery, mapped (2026-08-23)
 
 A day of watching the containers, their tables and the user DST turns
