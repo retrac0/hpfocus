@@ -311,13 +311,49 @@ All addresses runtime for this configuration.
   |---|---|---|---|
   | 1.269 | +0x3546 | 0 | init |
   | 2.268 | +0x3db0 | −1 | claimed |
-  | 2.268 | +0x3e62 | 4 | CLC issued |
-  | 2.270 | +0x3c3e | 24 | the SWI arm — it *does* run |
-  | 2.271 | +0x3b68 | 0 | the completion closes the channel |
+  | 2.268 | +0x3e62 | 4 | |
+  | 2.270 | +0x3c3e | 24 | |
+  | 2.271 | +0x3b68 | 0 | the close |
+
+  (The old labels on those rows — "CLC issued", "the SWI arm" — were
+  carried over from the reading below and are **not** supported: the
+  order census in the next bullet shows no CLC and no SWI in this
+  window. The state word moves; nothing reaches the card.)
 
   The transaction blocks are right too: CLC (0x834), `RD` (0x824 to
   0x1e9dd4) and `RS` (0x824 to 0x1e9de1) are all built, with the struct
   pointing back at `DB` at +68. The card dialogue is not what is broken.
+- **THE DRIVER NEVER ISSUES A CLC.** `FOCUS_ASIDBG` logs every order,
+  and `write_order()` has exactly one caller (`transaction()`, from the
+  FR8 write), so the log is complete. Up to the moment the panic printer
+  starts, the card has seen:
+
+  | order | count |
+  |---|---|
+  | `0x88` RTS read transparent status | 999 |
+  | `0x20` | 998 |
+  | `0x00` | 2 |
+  | `0xb8` CLC, `0x68` RD, `0x78` WD, RS | **0** |
+
+  and **all 999 RTS reads answer IDL with LCN 0**. The first non-IDL
+  report of the entire boot comes after the first `0xb8`, and that CLC
+  belongs to the **panic printer**, not the driver. The card's SWI/EDD
+  alternation then works exactly as designed, which is why the panic
+  reaches the terminal.
+  So the standing claim that "the driver runs its real CLC transactions
+  and they succeed" is about the *printer*. On the failing open path the
+  driver builds its CLC/`RD`/`RS` blocks in the channel struct, moves
+  the state word through −1/4/24/0, and **puts nothing on the card at
+  all**. The handler polls RTS about once a millisecond for ~1 s, gets
+  IDL every time, and the state dispatch on IDL + LCN 0 lands on the
+  channel the close just zeroed.
+- **Not a clobber: the 3-byte writes at `0x1e980b` are the RTS reply.**
+  `FOCUS_WWATCH=1e9808:1e980f` shows three byte-writes there every
+  millisecond attributed to `PB=0x817c4` (seg 70 WIN/H9000). That
+  attribution is the documented `wwatch` caveat — a non-CPU agent shows
+  whatever P the CPU was at. It is the IOP DMAing the RTS answer, which
+  is exactly three bytes (opcode + 16-bit LCN), into `DB+52`/`DB+56`.
+  WIN/H9000 is not writing to the console driver's data.
 - **The abort path, traced instruction by instruction.**
   `FOCUS_BREAK=2749c:1 FOCUS_TRACEN=4000` records the whole way from the
   close to the panic, and it confirms the re-dispatch reading above
