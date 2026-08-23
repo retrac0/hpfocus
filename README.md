@@ -459,11 +459,31 @@ the newest frame bounds-checked against `Q < frame < S`, which is what
 the emulator does; with the head reading `1` there is no frame to find
 and a trap is correct. The missing piece is the per-statement create.
 
+Dumping both copies settles what "two scaffold segments" means in
+practice. They are near-identical — 86 of 120 words the same, the same
+module name, and the same `TRY,B` create at `+0x62` — and they differ
+in exactly the way that matters:
+
+| | A = `0x8219c` | B = `0x7655c` |
+|---|---|---|
+| length at `+0x04` | `0x190` | `0x1f0` |
+| `TRY,B` create at `+0x62` | present, **runs once per session** | present, **never entered** |
+| body at `+0x130` | **all NOPs** | the compiled statement, ending `TRY` (delete) at `+0x162` |
+
+`FOCUS_WATCH` shows BASIC entering B at **`+0x130`** — straight into the
+body, past B's own prologue. So the live prologue is A's and the live
+body is B's: the two halves of one scaffold, executing out of two
+different copies. A's create fires once at session start, B's delete
+fires once per statement, and the second statement finds nothing to
+unwind.
+
 Neither `MAIN` appears in the system CST at `0x480` even with all 300
 entries dumped, which fits: the composed program scaffold lives in the
 **user** segment table (the 3076/3077 pair), not the system one. That
 is the same two-segment split already known to break `RUN`, so one fix
-should recover both.
+should recover both. The open question is unchanged — which segment the
+composed scaffold belongs in; the destination comes from field `+60` of
+the object at `DB+384`.
 
 `FOCUS_CSTMAX` raises the CST dump's cap; it was a silent 128 against
 BASIC's 300 entries, and both scaffold segments sit above the cut. The
