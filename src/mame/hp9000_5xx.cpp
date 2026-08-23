@@ -1160,6 +1160,7 @@ void hp9000_5xx_state::machine_start()
 	attach_probes();
 	m_cpu->set_io(&m_iop);
 	m_iop.trace_pc = [this]() { return m_cpu->core().r.p; };
+	m_iop.trace_time = [this]() { return machine().time().as_double(); };
 
 
 	// FOCUS_BREAK=<absolute address> reports the same state as the trip

@@ -272,6 +272,12 @@ public:
 	// protocol log is for. The host wires it to the CPU.
 	std::function<u32()> trace_pc;
 	u32 tpc() const { return trace_pc ? trace_pc() : 0; }
+	// Emulated seconds, for the card logs. Without it FOCUS_ASIDBG is a
+	// bare sequence of orders with no way to line them up against
+	// anything else, and partitioning it by eye is how two wrong
+	// conclusions got drawn -- see docs/HPUX.md 6.
+	std::function<double()> trace_time;
+	double tnow() const { return trace_time ? trace_time() : 0.0; }
 
 	//----------------------------------------------------------------
 	//  MPB command entry points
@@ -283,7 +289,8 @@ public:
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
 		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop W op=%03o pa=%u d=%08x p=%08x]\n", t.opcode, t.pa, data, tpc());
+			std::printf("[%8.3fs iop W op=%03o pa=%u d=%08x p=%08x]\n",
+					tnow(), t.opcode, t.pa, data, tpc());
 
 		switch (t.opcode)
 		{
@@ -334,8 +341,8 @@ public:
 		const bool logging = std::getenv("FOCUS_IOALL") != nullptr;
 		const bool ok = io_read_inner(t, data);
 		if (logging)
-			std::printf("[iop R op=%03o pa=%u -> %08x%s p=%08x]\n",
-					t.opcode, t.pa, data, ok ? "" : " REFUSED", tpc());
+			std::printf("[%8.3fs iop R op=%03o pa=%u -> %08x%s p=%08x]\n",
+					tnow(), t.opcode, t.pa, data, ok ? "" : " REFUSED", tpc());
 		return ok;
 	}
 
@@ -406,7 +413,8 @@ public:
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
 		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[iop C op=%03o pa=%u p=%08x]\n", t.opcode, t.pa, tpc());
+			std::printf("[%8.3fs iop C op=%03o pa=%u p=%08x]\n",
+					tnow(), t.opcode, t.pa, tpc());
 
 		switch (t.opcode)
 		{

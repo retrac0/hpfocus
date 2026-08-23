@@ -343,6 +343,9 @@ struct asi_card : public iop_interface
 	// and has nothing in flight is asking for its next order, and that
 	// request is what an interface poll reports.
 	bool poll_request() override { return m_want_order; }
+	// Emulated seconds for the log lines below.
+	double stamp() const { return iop ? iop->tnow() : 0.0; }
+
 	static bool dbg()
 	{
 		static const bool on = std::getenv("FOCUS_ASIDBG") != nullptr;
@@ -415,8 +418,8 @@ struct asi_card : public iop_interface
 				m_events.pop_front();
 				m_ard = false;
 				if (dbg())
-					std::printf("[asi%u event %02x read from FR9]\n",
-							pa, u8(v));
+					std::printf("[%8.3fs asi%u event %02x read from FR9]\n",
+							stamp(), pa, u8(v));
 			}
 			break;
 		case 12:
@@ -554,8 +557,8 @@ struct asi_card : public iop_interface
 			const u8 code = m_pending.front();
 			m_pending.pop_front();
 			if (dbg())
-				std::printf("[asi%u event %02x queued, %u still pending]\n",
-						pa, code, unsigned(m_pending.size()));
+				std::printf("[%8.3fs asi%u event %02x queued, %u pending]\n",
+						stamp(), pa, code, unsigned(m_pending.size()));
 			m_events.push_back(code);
 			if (iop)
 				iop->raise(pa);
@@ -639,8 +642,8 @@ private:
 		if (u8(o >> 4) == ORD_CLC)
 			m_want_order = false;
 		if (dbg())
-			std::printf("[asi%u order %02x want_order=%d]\n", pa, o,
-					m_want_order);
+			std::printf("[%8.3fs asi%u order %02x want_order=%d]\n",
+					stamp(), pa, o, m_want_order);
 		switch (m_order)
 		{
 		case ORD_IDY:
@@ -685,7 +688,8 @@ private:
 			const u8 op = m_rts_report ? m_rts_report : rts_opcode;
 			m_rts_report = 0;
 			if (dbg())
-				std::printf("[asi%u RTS reports %u lcn=%u]\n", pa, op,
+				std::printf("[%8.3fs asi%u RTS reports %u lcn=%u]\n",
+						stamp(), pa, op,
 						op == RTS_AES ? 0u : unsigned(rts_lcn));
 			m_out.push_back(op);
 			if (op == RTS_AES)
@@ -736,8 +740,9 @@ private:
 				!= m_pending.end())
 			return;
 		if (dbg())
-			std::printf("[asi%u event %02x armed (%s), %u pending]\n",
-					pa, code, why, unsigned(m_pending.size()) + 1);
+			std::printf("[%8.3fs asi%u event %02x armed (%s), %u pending]\n",
+					stamp(), pa, code, why,
+					unsigned(m_pending.size()) + 1);
 		m_pending.push_back(code);
 	}
 

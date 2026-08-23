@@ -487,6 +487,42 @@ All addresses runtime for this configuration.
   **It still does not print the panic text under EDD** — no `WD` orders
   are issued, so something later in the printer's sequence is not yet
   satisfied. That is the next thread.
+- **Card and I/O logs are timestamped now.** `FOCUS_ASIDBG`,
+  `FOCUS_IOALL` and the event log all carry emulated seconds
+  (`iop.trace_time`). This closes the gap that produced two wrong
+  conclusions above: an untimestamped order stream cannot be
+  partitioned by eye, and `p=` is useless for list-driven I/O.
+- **`FOCUS_ASICLCRTS=2` is not a candidate fix — it lies to the
+  printer.** The knob forces the post-CLC report for **every** CLC, and
+  the printer issues 27 of its own. Told `EDD` ("end of data for this
+  transaction") the moment it connects, the printer concludes its data
+  phase is already over and never sends any. Measured, printer orders:
+
+  | | default | `ASICLCRTS=2` |
+  |---|---|---|
+  | CLC | 27 | 27 |
+  | **WD** | **25** | **0** |
+  | **PAU** | 0 | **25** |
+  | RS | 27 | 2 |
+
+  Twenty-five `WD` become twenty-five `PAU`, one for one. So the EDD
+  result above is not "the driver fixed and the printer unlucky" — it
+  is one global override breaking every CLC-issuer, and it happens to
+  suppress the driver's abort as a side effect. The card already does
+  the state-dependent thing correctly: `take_request_block()` arms
+  `SWI` after a CLC and `dma_complete()` arms `EDD` after an `RD`/`WD`.
+- **The transaction, timestamped end to end** (current build):
+
+      2.321  status := 55, the transaction is set up
+      2.322  CLC reaches the card
+      2.323  the card reports SWI
+      2.324  status := 66, the abort
+
+  Three milliseconds, and the SWI does arrive one millisecond before
+  the abort. The frontier is exactly where the traced path left it.
+  **Do not compare timestamps across builds** — the event-queue fix
+  moved this whole sequence about 50 ms later, because the printer's
+  configuration handshake now completes instead of livelocking.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
