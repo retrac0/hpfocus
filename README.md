@@ -246,15 +246,46 @@ ADDI #145     0x1c + 145 = 0xad
 INCM S-3,I    dereferences 0xad -> external DST segment 0 -> trap 030
 ```
 
-Had that word carried the DB-relative tag, `0x800000ad` would be a perfectly
-good pointer to `DB+0xad`. So the open question is narrow: either the word
-the compiler plants at `P-16` should be tagged and is not, or `PCLS STT[9]`
-is a runtime hook meant to *replace* the top of stack with a tagged pointer
-and our emulation returned its input unchanged — the call does run, into
-segment 6 at offset 0x6344, and comes back with `0x1c` still on top.
+**The emulator is faithful here, and the whole block says why it matters.**
+ERS sheet 56 gives the pointer evaluation as pseudocode, and it contains
+`If PTR (2:11) = 0 then EDS Pointer Violation Trap` — literally what the
+core does, so `0xad` really is an invalid pointer. `CPTR`, which is what
+builds tagged pointers two instructions before the compiler plants that
+word, also checks out: sheet 121 assigns `(S)(2:30) := Offset`, preserving
+the tag, and the core writes `ers32::set(ptr, 2, 30, offset)`.
 
-Distinguishing those two is the next measurement, and `MASTERMIND` with
-four pokes is the bench for it.
+Dumping the whole 48-byte block rather than the 16 bytes first watched
+shows the stack discipline, and that is the thing:
+
+```
+PCLS STT[4]
+DEL
+LDS  P-8        pushes 0xc000002c   -- a STACK pointer, tag 11
+LDS  SB+8       pushes ...
+LDS  P-16       pushes 0x0000001c
+LDIS #9
+PCLS STT[9]     the callee's EXIT N=1 drops one word, the 9
+ADDI #145       0x1c + 145 = 0xad
+INCM S-3,I      traps 030
+```
+
+`0xc000002c + 145` is `0xc00000bd`, a perfectly good stack pointer. So the
+`ADDI` is meant to land on the pointer that `LDS P-8` pushed, which means
+the hook at STT[9] should consume **three** words and leave that pointer on
+top — not one.
+
+**Which makes the trap 030 above an artifact of the poke, not a second
+blocker.** The entries poked into 7-9 were copied from a different
+container on the assumption that 5-9 are common constants; entries 5 and 6
+do match, but the routine actually reached takes one argument where this
+call site supplies three. The earlier claim that this reproduced the trap
+030 from the `MAIN`-table attempt is therefore too strong and is withdrawn.
+
+What the block does give is a hard constraint on the answer: whatever STT[9]
+resolves to for a freshly compiled program, it has to consume the three
+pushed words and leave `0xc000002c` on the stack. That is a much sharper
+test than "does it stop trapping", and `MASTERMIND` is small enough to walk
+instruction by instruction.
 
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
