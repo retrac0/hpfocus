@@ -1152,13 +1152,27 @@ private:
 			// and resolved address -- the census that catches a wake
 			// landing on the wrong word, which the block/wake hook
 			// cannot see (an UP with no waiter is silent there).
+			// The interesting moment is often thousands of events in
+			// (the console open is past 400), so FOCUS_SEMALLMAX raises
+			// the cap and FOCUS_SEMALLSKIP drops the boot's own traffic
+			// off the front.
 			static const bool sem_all = std::getenv("FOCUS_SEMALL") != nullptr;
 			if (sem_all)
 			{
+				static const unsigned sem_all_max
+						= std::getenv("FOCUS_SEMALLMAX")
+						? strtoul(std::getenv("FOCUS_SEMALLMAX"), nullptr, 0)
+						: 400;
+				static const unsigned sem_all_skip
+						= std::getenv("FOCUS_SEMALLSKIP")
+						? strtoul(std::getenv("FOCUS_SEMALLSKIP"), nullptr, 0)
+						: 0;
 				static unsigned census = 0;
-				if (census++ < 400)
+				const unsigned seq = census++;
+				if (seq >= sem_all_skip && seq - sem_all_skip < sem_all_max)
 				{
-					std::printf("[%s%s ptr=%08x -> %08x count=%d p=%08x]\n",
+					std::printf("[%u %s%s ptr=%08x -> %08x count=%d "
+							"p=%08x]\n", seq,
 							op3 == 021 ? "DOWN" : "UP", b3 ? ",B" : "",
 							ptr, a, s32(m_mem.read32(a + 4)), r.p);
 					std::fflush(stdout);

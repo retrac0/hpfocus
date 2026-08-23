@@ -328,24 +328,33 @@ All addresses runtime for this configuration.
   handler: `LDIS #5; WAIT` at +0x410e, then four abort orders
   (`IOC 0x3b/0x0e/0x1f/0x18`), block+36 and block+52 set to −1, and
   finally state→0 / status→66 through the `DB+232` walk.
-- **THE MISSING WAKEUP.** `FOCUS_SEMLOG` names it. Every other semaphore
-  in the boot pairs `DOWN-block` at +0x4446 with `UP-wake` at +0x469e
-  inside a millisecond. The console open blocks on **`0xbd798`** at
-  t=2.269 from a different site, CORE SYSTEM **+0x59ba** (tcb
-  `0x1e8f48`) — and that semaphore **is never upped again for the rest
-  of the boot**. It is the last semaphore event in the run. The transfer
-  completes and closes the channel at +0x3b68 two milliseconds later
-  without waking the waiter, the `WAIT #5` expires, and everything above
-  follows.
-  So the frontier is not the report vocabulary, the stale re-dispatch or
-  the channel table: **the completion path closes the channel without
-  posting the semaphore the opener is parked on.**
-- **NEXT.** Find who owes `0xbd798` the `UP`. It is not in the channel
-  struct (dumped 97 words at the raise; the value does not appear), so
-  it is held by the waiting task's TCB `0x1e8f48` or by the request
-  block. Read it out of the frame at CORE SYSTEM +0x59ba, then
-  `FOCUS_RWATCH` that cell to find which completion-path code loads it
-  and what guard skips the post.
+- **Retracted: there is no missing semaphore post.** An earlier version
+  of this section claimed the open parked on semaphore `0xbd798` and was
+  never woken. Two facts kill it. The task that blocks on `0xbd798` runs
+  in **seg 70 WIN/H9000** (callers +0x49de and +0x3470) on stack
+  `SB=0xcde00`, while the whole failing chain — the 66s through seg 32
+  and the panic — is on `SB=0xad0a0`. Different tasks; the WIN block is
+  unrelated. And `WAIT` is not a blocking wait at all: ERS sheet 95 makes
+  it a **calibrated delay** (decrement TOS to zero), so `LDIS #5; WAIT`
+  is a pause inside a poll loop, not a timeout expiring.
+- **The console driver takes no semaphores — it polls.** `FOCUS_SEMALL`
+  censuses the entire twelve-second boot at **1554** UP/DOWN operations,
+  and none of them belongs to the console open. The three that follow the
+  block are `UP,B` on `0x1e991c` and `0x1e9aa0` — struct+12 of the first
+  two channel structs — each with `count=0`, so each just bumps a counter
+  with no waiter to wake.
+- **The give-up path is a poll loop, and this is where to look.** At
+  CORE SYSTEM +0x40d0 the loop loads the byte at entry+4 (`LDIS #4;
+  PLDA,B`), exits successfully at +0x4106 when it is **non-negative**,
+  and otherwise increments it, rings the doorbell (`LDI #0x200000;
+  SMSG,B` at +0x40fc — the same bit the microcode's UP sets) and loops.
+  The outer test at +0x40ce takes the failing branch when the list link
+  is negative, and that is what reaches +0x410e: short delay, four abort
+  orders, then state→0 / status→66.
+  **NEXT:** watch the byte at entry+4 — the one flag whose sign decides
+  success — and find which completion-path write is supposed to clear
+  it. `FOCUS_BREAK=27a04` stops at the loop head with the entry in X; `FOCUS_WWATCH`
+  over entry+4 then names the writer, exactly as it did for block+32.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
