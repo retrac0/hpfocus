@@ -472,6 +472,64 @@ at field `+60` of the object at `DB+384`.
 
 **Not yet fixed.** A keyboard-entered program still does not run.
 
+## The scaffold machinery, mapped (2026-08-23)
+
+A day of watching the containers, their tables and the user DST turns
+the two BASIC failures from mysteries into one mechanism with one
+poisoned state. The pieces:
+
+- **User code segments are DST entries.** A CSN of 3072+n (0xc00+n) is
+  user DST entry n; the CSN in the RUN trap's STATUS is **0xc05 = 3077**
+  = user entry 5. The scaffold world at the crashes:
+  entry 4 = `0x7655c` (B, len 0x1f0) in immediate mode but `0x8219c`
+  (A, len 0x190) at RUN; entry 5 = `0x8233c` (len 0xd0) throughout.
+  B is the immediate-mode **all-in-one** (prologue + statement area);
+  A + entry 5 are the RUN-mode **split pair** (prologue + composed
+  code). A and container 5 are also the **startup** context's pair —
+  A's prologue ran at t=1.076, and container 5's six-entry table was
+  stamped at t=1.075.
+- **Scaffold tables are stamped lazily, and trap 021 is the trigger.**
+  Measured in the immediate flow: B's table is all zeros until the
+  first statement's `PCLS` faults into it; the kernel (SUN OS KERNEL
+  0x48b7c..0x49144) takes the fault, briefly marks the DST entry
+  absent (`w0=0x00070011`), and PARSER/RTS +0x5c32 stamps the full
+  **nine-entry** table (length 0x24, entries 0x86, 0x72, external
+  labels into seg 6...) at the container's PL; the statement then
+  runs. The old note "CS1 routes 021/022/023 to one common
+  internal-error reporter, so it always halts" is **wrong** — 021 has
+  a scaffold-activation arm ahead of the reporter.
+- **The RUN composition, instruction by instruction** (COMPILER
+  +0x9654): copy `[DB+468]*2` bytes from the compose buffer at
+  `DB+4564` to the cursor held in the descriptor's word 0 — the
+  descriptor being `resolve(DB+384)` = A, whose `+0` holds a user-seg-5
+  pointer advancing as composition proceeds. The composed code calls
+  `PCLS STT[4]` and `PCLS STT[9]`.
+- **The poisoned state.** Container 5 still carries its **stale
+  six-entry table from boot** (stamped by BASIC +0x668c at t=1.075 for
+  the startup context; 28-byte MVB — the operand `7` is flags, not a
+  size; the size is the pushed 28). The composed program's
+  `PCLS STT[4]` **succeeds against the wrong table** (startup's entry
+  4 = seg6+0x22c, where the nine-entry table has a self-label into the
+  container), and `PCLS STT[9]` exceeds the six-entry limit → trap 021
+  — which the kernel this time routes to the **panic reporter**, not
+  the activation arm. The plausible discriminator: a stale-but-nonzero
+  table reads as "already activated", so the fault looks genuine.
+- So both failures are the same shape: **a container is entered with
+  the wrong table state**. RUN reuses container 5 without resetting
+  its boot table (an empty table would have triggered the measured
+  activation path and stamped the nine entries). Immediate mode enters
+  B at +0x130 with A's session TRY frame and no per-statement
+  re-create — the same "wrong container state at entry" family.
+
+**NEXT.** Two threads, in order of sharpness: (1) find the reset that
+should clear container 5's table when the RUN context claims it —
+watch the DST entry-5 rewrite path (`0x48a5a/0x48a88` at boot) for a
+RUN-time equivalent that skips the table, and the kernel's 021 arm for
+the exact discriminator it applies before choosing panic over
+activation; (2) check whether the boot-time stamp itself is the
+divergence — whether on real hardware the startup context uses a
+different container and 3077 stays virgin for RUN.
+
 ## Interactive BASIC: why only the first statement runs
 
 `DISP 5` alone prints ` 5`. `DISP 5` then `DISP 6` halts with
