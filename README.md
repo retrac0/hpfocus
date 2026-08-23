@@ -431,6 +431,44 @@ python3 tools/check_opcodes.py
 
 See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
 
+## Interactive BASIC: why only the first statement runs
+
+`DISP 5` alone prints ` 5`. `DISP 5` then `DISP 6` halts with
+`TRAP:00000001`. Measured, the cause is a split scaffold, and it is the
+same defect that stops `RUN`.
+
+Both statements execute an instruction-for-instruction identical `TRY`
+sequence (`FOCUS_TRYLOG`); the only difference is the resting chain head
+at `(SB+2)`:
+
+| | statement 1 | statement 2 |
+|---|---|---|
+| head at MAIN's delete | `0xbf` — a real frame | `1` — the empty sentinel |
+| outcome | unwinds, prints ` 5` | bounds violation, trap 1 |
+
+Following that frame's whole life explains it. It is created **once per
+session**, at `p=0x821fe`, and destroyed **once per statement**, at
+`p=0x766be` — and those two PCs are in *different segments*
+(`PB=0x8219c` and `PB=0x7655c`) whose module headers both read `MAIN`.
+So the scaffold's entry half and its exit half live in two different
+copies: statement 1 consumes the session's only frame, and statement 2
+has nothing left to unwind.
+
+The `TRY` delete itself is not the bug. ERS `F4:40` with `b`=0 unwinds
+the newest frame bounds-checked against `Q < frame < S`, which is what
+the emulator does; with the head reading `1` there is no frame to find
+and a trap is correct. The missing piece is the per-statement create.
+
+Neither `MAIN` appears in the system CST at `0x480` even with all 300
+entries dumped, which fits: the composed program scaffold lives in the
+**user** segment table (the 3076/3077 pair), not the system one. That
+is the same two-segment split already known to break `RUN`, so one fix
+should recover both.
+
+`FOCUS_CSTMAX` raises the CST dump's cap; it was a silent 128 against
+BASIC's 300 entries, and both scaffold segments sit above the cut. The
+dump now reports how many live entries it dropped.
+
 ## Sources
 
 - [bitsavers.org — HP 9000/500](http://www.bitsavers.org/pdf/hp/9000_500/)

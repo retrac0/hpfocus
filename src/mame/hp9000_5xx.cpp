@@ -801,8 +801,15 @@ void hp9000_5xx_state::report_state(const char *why)
 	if (cst)
 	{
 		const u32 count = core.read_mem32(cst) / 16;
+		// The cap used to be a silent 128, and BASIC's CST has 300
+		// entries -- both of the scaffold's MAIN segments live above the
+		// cut, so the table simply did not show the thing being hunted.
+		// FOCUS_CSTMAX raises it, and the count of what was dropped is
+		// printed either way so nothing is hidden without saying so.
+		static const u32 cst_max = getenv("FOCUS_CSTMAX")
+				? u32(strtoul(getenv("FOCUS_CSTMAX"), nullptr, 0)) : 128;
 		std::printf("  CST at %08x, %u entries\n", cst, count);
-		for (u32 seg = 1; seg < count && seg < 128; seg++)
+		for (u32 seg = 1; seg < count && seg < cst_max; seg++)
 		{
 			const u32 ea = cst + 16 * seg;
 			const u32 len = core.read_mem32(ea + 4);
@@ -828,6 +835,19 @@ void hp9000_5xx_state::report_state(const char *why)
 				name[std::strlen(name) - 1] = 0;
 			std::printf("    seg %3u base=%08x len=%6u%s%s\n", seg, base, len,
 					named ? "  " : "", named ? name : "");
+		}
+		if (count > cst_max)
+		{
+			unsigned dropped = 0;
+			for (u32 seg = cst_max; seg < count; seg++)
+			{
+				const u32 ea = cst + 16 * seg;
+				if (core.read_mem32(ea + 4) || core.read_mem32(ea + 8))
+					dropped++;
+			}
+			if (dropped)
+				std::printf("    (%u further live entries above %u not "
+						"shown; FOCUS_CSTMAX to raise)\n", dropped, cst_max);
 		}
 	}
 
