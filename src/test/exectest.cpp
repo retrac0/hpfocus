@@ -175,7 +175,7 @@ static void test_factorial()
 	cpu.r.dl = 0210000 - 1;
 
 	// STT entry 2 sits at PL - 4*2 and holds a PB-relative pointer to the
-	// procedure (ERS sheet 92: PCLS reads PL - 4*n).
+	// procedure (ERS sheet 95: PCLS reads PL - 4*n).
 	mem.write32(cpu.r.pl - 8, PROC - CODE_BASE);
 
 	{
@@ -504,10 +504,10 @@ static void test_memory_arithmetic()
 	std::printf("memory increment and decrement\n");
 	harness h;
 
-	// INCM/DECM step by one; INCF/DECF step by *four* (ERS sheets 81.1-81.3
-	// name them "Increment/Decrement Memory by Four"). The powerup module's
-	// checksum loop counts a byte total down with DECF while advancing X by
-	// four, which is what caught DECF stepping by one.
+	// INCM/DECM step by one; INCF/DECF step by *four* (ERS sheet 80, items
+	// 81.1-81.3, name them "Increment/Decrement Memory by Four"). The
+	// powerup module's checksum loop counts a byte total down with DECF
+	// while advancing X by four, which is what caught DECF stepping by one.
 	h.mem.write32(h.cpu.r.db + 16, 100);
 	CHECK(h.one(u32_insn(024, 2, 16)) == exec_trap::none);     // INCM
 	CHECK_EQ(h.mem.read32(h.cpu.r.db + 16), 101);

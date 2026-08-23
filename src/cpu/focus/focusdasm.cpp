@@ -43,7 +43,7 @@ constexpr u8 FMT4_IXIT = 074;
 
 
 //  Render a branch mnemonic with its condition-code mask appended.
-//  ERS sheet 90: CCF(0:1) selects CCG, CCF(1:1) CCE, CCF(2:1) CCL.
+//  ERS sheet 91: CCF(0:1) selects CCG, CCF(1:1) CCE, CCF(2:1) CCL.
 void focus_disassembler::format_cc(std::ostream &stream, const char *mnemonic,
 		u8 ccf)
 {
@@ -104,7 +104,7 @@ offs_t focus_disassembler::disassemble(std::ostream &stream, offs_t pc,
 		}
 
 		// EXF/DPF: J = CIR(27:5) start bit, K = CIR(22:5) = 32 - width,
-		// bit 8 sign-extends (EXF), bit 9 indexes (ERS sheet 116).
+		// bit 8 sign-extends (EXF), bit 9 indexes (ERS sheet 73).
 		if (op2 == FMT6_EXF || op2 == FMT6_DPF)
 		{
 			const u8 j = d & 0x1f;

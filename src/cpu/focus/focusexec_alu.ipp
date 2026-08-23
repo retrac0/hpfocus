@@ -52,7 +52,7 @@ private:
 			m_mem.write32(a, pop());
 			return exec_trap::none;
 		}
-		case 6:     // BCCS -- see ERS sheet 90
+		case 6:     // BCCS -- see ERS sheet 91
 		{
 			const u8 ccf = (w >> 9) & 7;
 			const u32 off = w & 0xff;
@@ -67,7 +67,7 @@ private:
 		return exec_trap::unimplemented;
 	}
 
-	// CCF(0:1) selects CCG, CCF(1:1) CCE, CCF(2:1) CCL (ERS sheet 90).
+	// CCF(0:1) selects CCG, CCF(1:1) CCE, CCF(2:1) CCL (ERS sheet 91).
 	bool cc_taken(u8 ccf) const
 	{
 		const u32 cc = r.condition_code();
@@ -708,7 +708,7 @@ private:
 		}
 
 		case 037: {                                             // BRSI
-			// Branch Stack Indirect (ERS sheet 108.1): a faster BR S-0,I
+			// Branch Stack Indirect (ERS item 108.1): a faster BR S-0,I
 			// that also pops the indirect pointer. The pointer follows
 			// the STT convention: bit 0 clear is a local program pointer,
 			// a byte offset from PB with the uncallable bit ignored.
