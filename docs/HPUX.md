@@ -384,6 +384,50 @@ All addresses runtime for this configuration.
   popping it. Either the close must not zero the state while the loop
   will still dispatch on it, or the loop must not reach the state
   dispatch with an empty queue.
+- **The report/DMA matrix, re-measured (2026-08-22).** Twelve 14-second
+  runs, `FOCUS_ASICLCRTS` × `FOCUS_IOPDEFER`, counting escapes. The five
+  `941`s are benign and present in every row.
+
+  | post-CLC report | plain | + `FOCUS_IOPDEFER` |
+  |---|---|---|
+  | default / SWI(1) | 7×66 | 2×56, 6×66 |
+  | **EDD(2)** | **3×91, no 66 at all** | 2×56, 6×66 |
+  | LCD(3) | 7×66 | 2×56, 6×66 |
+  | AES(4) | 2×56, 6×66 | 2×56, 6×66 |
+  | ERT(5) | 2×56, 6×66 | 2×56, 6×66 |
+
+  Deferred DMA now adds `56`s in **every** configuration and removes no
+  `66`s; it is not worth pursuing on its own. ERT has moved since the
+  older sweep (it used to give no cascade, it now behaves like AES).
+- **EDD is a real advance, and the busy loop it used to cost is gone.**
+  This file recorded EDD as trading the abort for a busy loop in
+  `0x27000–0x27fff`. `FOCUS_PCPROF` over 30 emulated seconds says that
+  is no longer true — the two IOP interrupt fixes removed it:
+
+      P=00043000..00043fff  35,917,865      <- the new stall
+      P=00100000..00100fff   1,986,358
+      P=0009b000..0009bfff   1,429,762
+      P=00027000..00027fff      57,154      <- was ~34,000,000
+
+  So under EDD the console driver's whole abort chain is eliminated:
+  no 66, no handler loop. The driver raises **escape 91** three times
+  at t=2.28 (seg 32 +0x1822, then +0x2fae, then HP-UX KERNEL +0xb4 —
+  the same three propagation sites the 66 used) and the machine then
+  goes completely static: identical P/Q/S at t=5, t=15 and t=29.
+- **What it stalls on is the panic printer, not the driver.** The spin
+  is HP-UX KERNEL **+0xc65c**, and it is two instructions:
+  `LDS Q+24; IOR io=0x09; BRO; BCCS.ALW` — `CMD_RIF1`, read interface
+  FR1. `FOCUS_IOALL` confirms 4000 consecutive `op=011 pa=0
+  p=00043fe0` and nothing else. That is the printer polling the console
+  card's FR1 forever, which is exactly why the panic stops reaching the
+  terminal under EDD, and it is the **"the report has two readers"**
+  constraint in concrete form: the report the printer is waiting for
+  has already been consumed.
+  **NEXT:** identify escape 91 (`escmap --value 91` gives SERIAL
+  +0x1e08 and three CORE SYSTEM sites; none appear in the log, so the
+  first 91 is a re-raise at seg 32 +0x1822), and decide whether the
+  printer's FR1 poll can be served without taking the report away from
+  the interrupt-driven reader. EDD looks adoptable once it can.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
