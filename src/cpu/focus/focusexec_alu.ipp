@@ -42,6 +42,7 @@ private:
 				return exec_trap::address_error;
 			push(m_mem.read32(a));
 			push(m_mem.read32(a + 4));
+			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
 		case 5:     // STS  -- store, word offset
@@ -141,6 +142,7 @@ private:
 			u32 fill = 0;
 			if (b3)
 				fill = pop();
+			const bool pushed_any = r.x > 0;
 			while (r.x > 0)
 			{
 				if (stack_would_overflow(r.s + 4))
@@ -148,13 +150,18 @@ private:
 				push(fill);
 				r.x--;
 			}
+			// "If original X>0 then CCA else unaffected": a PSHN that
+			// pushed nothing leaves the code alone.
+			if (pushed_any)
+				cca(stk(0));
 			return exec_trap::none;
 		}
-		case 006: push(0); return exec_trap::none;             // ZERO
+		case 006: push(0); cca(0); return exec_trap::none;      // ZERO
 		case 007: push(0); push(0); return exec_trap::none;    // DZRO
 		case 016: {                                            // DXCH
 			const u32 a = stk(0), b = stk(1), c = stk(2), d = stk(3);
 			set_stk(0, c); set_stk(1, d); set_stk(2, a); set_stk(3, b);
+			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
 		case 017: {                                            // CMP
@@ -237,8 +244,7 @@ private:
 		case 025: cca(stk(0)); if (b3) pop();
 			return exec_trap::none;                            // TEST
 		case 026: {                                            // TSTD
-			const s64 v = (s64(u64(stk(1)) << 32) | stk(0));
-			r.put(sf::CC, (v < 0) ? CCL : (v == 0) ? CCE : CCG);
+			dcca(stk(1), stk(0));
 			if (b3) { pop(); pop(); }
 			return exec_trap::none;
 		}
@@ -248,6 +254,7 @@ private:
 		case 032: {                                            // XCH
 			const u32 a = stk(0), b = stk(1);
 			set_stk(0, b); set_stk(1, a);
+			cca(stk(0));
 			return exec_trap::none;
 		}
 		case 033: {                                            // DIVS
@@ -256,10 +263,21 @@ private:
 			const s32 divisor = s32(stk(0)), dividend = s32(stk(1));
 			if (divisor == 0)
 				return exec_trap::divide_by_zero;
+			// The one quotient that will not fit, and the one division
+			// that is undefined behaviour in C++ as well.
+			if (dividend == INT32_MIN && divisor == -1)
+			{
+				r.put(sf::O, 1);
+				set_stk(1, u32(dividend));
+				set_stk(0, 0);
+				cca(stk(1));
+				return exec_trap::none;
+			}
 			s32 quot = dividend / divisor, rem = dividend % divisor;
 			if (b3 && rem < 0) { rem = -rem; }
 			set_stk(1, u32(quot));
 			set_stk(0, u32(rem));
+			cca(u32(quot));
 			return exec_trap::none;
 		}
 		case 034: {                                            // ISC
@@ -283,6 +301,7 @@ private:
 		case 035: {                                            // XAX
 			const u32 a = stk(0);
 			set_stk(0, r.x); r.x = a;
+			cca(stk(0));
 			return exec_trap::none;
 		}
 		case 036: r.x += stk(0); if (b3) pop(); cca(r.x);
@@ -293,12 +312,15 @@ private:
 		case 043: r.x = stk(0); if (b3) pop(); cca(r.x);
 			return exec_trap::none;                            // STAX
 		case 044: push(r.x); cca(r.x); return exec_trap::none; // LDXA
-		case 045: push(stk(0)); return exec_trap::none;        // DUP
+		case 045: push(stk(0)); cca(stk(0));
+			return exec_trap::none;                            // DUP
 		case 046: { const u32 a = stk(0), b = stk(1); push(b); push(a);
+			dcca(stk(1), stk(0));
 			return exec_trap::none; }                          // DDUP
 		case 056: {                                            // CAB
 			const u32 a = stk(0), b = stk(1), c = stk(2);
 			set_stk(0, c); set_stk(1, a); set_stk(2, b);
+			cca(stk(0));
 			return exec_trap::none;
 		}
 		case 003: set_fp_cc(to_double((u64(stk(1)) << 32) | stk(0)));
@@ -318,6 +340,7 @@ private:
 			push(fix(d, b3)); cca(stk(0));
 			return exec_trap::none; }
 		case 042: { const s32 v = s32(pop()); push_double(double(v));
+			set_fp_cc(double(v));
 			return exec_trap::none; }                          // FLTD
 		case 050: {                                            // FCMP
 			const double y = pop_double();
@@ -345,6 +368,7 @@ private:
 		case 055: { const double x = pop_double(); push_double(-x);
 			set_fp_cc(-x); return exec_trap::none; }           // FNEG
 		case 070: { const s32 v = s32(pop()); push(from_float(float(v)));
+			set_fp_cc(double(float(v)));
 			return exec_trap::none; }                          // FLTS
 		case 071: { push(fix(double(to_float(pop())), b3));    // FIXS
 			cca(stk(0)); return exec_trap::none; }
@@ -658,7 +682,8 @@ private:
 				m_addr_trap = e.t;
 				return exec_trap::address_error;
 			}
-			set_stk(0, e.addr); cca(e.addr);
+			// No condition code: ERS sheet 118 says Indicators Unaffected.
+			set_stk(0, e.addr);
 			return exec_trap::none;
 		}
 		case 013: {                                             // MUC
@@ -942,6 +967,9 @@ private:
 			if (n == 0)
 				return take_trap(trap_cause::inconsistent_registers, 0);
 			m_mem.write32(a, n - 1);
+			// CCL says "no dispatch happened", which is always true
+			// here: entering the dispatcher from PSEB is not modelled.
+			r.put(sf::CC, CCL);
 			return exec_trap::none;
 		}
 		case 074: return do_ixit();                             // IXIT

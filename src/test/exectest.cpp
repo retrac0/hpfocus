@@ -362,6 +362,103 @@ static void test_arithmetic()
 	CHECK_EQ(h.cpu.stk(0), s32(~0xf0ffu));
 }
 
+// Every instruction whose ERS entry names an indicator has to set one. The
+// condition code is the easiest effect in this architecture to leave out:
+// nothing in an instruction's own test looks at it, and an omission only
+// surfaces when some later branch reads a stale code. Sixteen instructions
+// had drifted that way (docs/VALIDATION.md, findings S1 and S2); these
+// pin the ones that were fixed, so they cannot drift back.
+//
+// `tools/ers.py --indicators` is the wider net -- it compares every
+// instruction's `Indicators =` line against whether the code sets one.
+static void test_condition_codes()
+{
+	std::printf("condition codes the ERS requires\n");
+	harness h;
+
+	// The stack group: "CCA on the new TOS" (ERS sheets 66-68).
+	h.cpu.r.status = 0;
+	h.cpu.push(5);
+	CHECK(h.one(f3(045)) == exec_trap::none);       // DUP of a positive
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	h.cpu.push(u32(-7));
+	CHECK(h.one(f3(045)) == exec_trap::none);       // DUP of a negative
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	CHECK(h.one(f3(006)) == exec_trap::none);       // ZERO
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
+	// XCH brings the word beneath to the top, and the code follows it.
+	h.cpu.push(0); h.cpu.push(9);
+	CHECK(h.one(f3(032)) == exec_trap::none);       // XCH
+	CHECK_EQ(h.cpu.stk(0), 0u);
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
+	// CAB rotates three; the code reports whatever lands on top.
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(1); h.cpu.push(2); h.cpu.push(u32(-3));
+	CHECK(h.one(f3(056)) == exec_trap::none);       // CAB
+	CHECK_EQ(h.cpu.stk(0), 1u);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	// XAX swaps A and X, and reports the new A.
+	h.cpu.r.x = u32(-1);
+	CHECK(h.one(f3(035)) == exec_trap::none);       // XAX
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	// The doubleword forms report the 64-bit value, not either half. A
+	// negative doubleword has its sign in the word beneath the top, so a
+	// naive CCA on the top word alone would call this one CCG.
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(0xffffffffu);        // high half: negative
+	h.cpu.push(0x00000001u);        // low half: positive on its own
+	CHECK(h.one(f3(046)) == exec_trap::none);       // DDUP
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	// ...and a doubleword is zero only when both halves are.
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(0); h.cpu.push(0);
+	CHECK(h.one(f3(016)) == exec_trap::none);       // DXCH
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
+	// DIVS reports the quotient, not the remainder left on top.
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(u32(-20)); h.cpu.push(3);
+	CHECK(h.one(f3(033)) == exec_trap::none);       // DIVS
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);        // quotient -6
+
+	// The quotient that does not fit: INT_MIN / -1 sets Overflow rather
+	// than executing a division C++ leaves undefined.
+	h.cpu.r.s = 0x4003;
+	h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(033)) == exec_trap::none);       // DIVS
+	CHECK_EQ(h.cpu.r.get(sf::O), 1u);
+
+	// BCY and BNC clear Carry, as BOV and BNO clear Overflow
+	// (ERS sheet 92, items 110-111).
+	h.cpu.r.s = 0x4003;
+	h.cpu.r.put(sf::C, 1);
+	CHECK(h.one(f2(060, 0)) == exec_trap::none);    // BCY, carry set
+	CHECK_EQ(h.cpu.r.get(sf::C), 0u);
+
+	h.cpu.r.put(sf::C, 1);
+	CHECK(h.one(f2(061, 0)) == exec_trap::none);    // BNC, carry set
+	CHECK_EQ(h.cpu.r.get(sf::C), 0u);
+
+	// PSHN reports only when it pushed something: "If original X>0 then
+	// CCA else unaffected".
+	h.cpu.r.s = 0x4003;
+	h.cpu.r.put(sf::CC, CCG);
+	h.cpu.r.x = 0;
+	CHECK(h.one(f3(005)) == exec_trap::none);       // PSHN with X = 0
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);        // left alone
+	h.cpu.r.x = 2;
+	CHECK(h.one(f3(005)) == exec_trap::none);       // PSHN with X = 2
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);        // pushed zeros
+}
+
 static void test_stack_ops()
 {
 	std::printf("stack manipulation\n");
@@ -2177,6 +2274,7 @@ int main()
 	std::printf("FOCUS execution core tests\n\n");
 	test_arithmetic();
 	test_stack_ops();
+	test_condition_codes();
 	test_branches();
 	test_load_store();
 	test_memory_arithmetic();

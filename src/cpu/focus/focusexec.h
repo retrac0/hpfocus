@@ -519,6 +519,15 @@ private:
 	// Condition code, CCA interpretation, on a signed value.
 	void cca(u32 v) { r.set_cca(s32(v)); }
 
+	// CCA on a doubleword -- the (high, low) pair the stack holds with the
+	// high word beneath, which is the order TSTD tests and the order every
+	// doubleword instruction leaves behind.
+	void dcca(u32 high, u32 low)
+	{
+		const s64 v = s64((u64(high) << 32) | low);
+		r.put(sf::CC, (v < 0) ? CCL : (v == 0) ? CCE : CCG);
+	}
+
 	//----------------------------------------------------------------
 	//  floating point
 	//----------------------------------------------------------------

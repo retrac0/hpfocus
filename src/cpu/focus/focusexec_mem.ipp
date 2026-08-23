@@ -616,10 +616,10 @@ private:
 			return exec_trap::none;
 		case 041: case 045: rel(); return exec_trap::none;        // BUN
 		case 060: case 064:                                       // BCY
-			if (r.test(sf::C)) rel();
+			if (r.test(sf::C)) { r.put(sf::C, 0); rel(); }
 			return exec_trap::none;
 		case 061: case 065:                                       // BNC
-			if (!r.test(sf::C)) rel();
+			if (!r.test(sf::C)) rel(); else r.put(sf::C, 0);
 			return exec_trap::none;
 		case 062: case 066:                                       // BOV
 			if (r.test(sf::O)) { r.put(sf::O, 0); rel(); }
@@ -902,6 +902,7 @@ private:
 			if (!ea(base, off, ind, idx, false, a))
 				return exec_trap::address_error;
 			push(m_mem.read32(a)); push(m_mem.read32(a + 4));
+			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
 		case 023: case 024: {                                     // DECM/INCM
