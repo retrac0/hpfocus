@@ -221,13 +221,40 @@ INCM    S-3,I         <- now traps 030
 DEL
 ```
 
-`INCM S-3,I` is the instruction `focusaddr.h` already carries a hypothesis
-about: the external-program-label fallback, written for BASIC's DISP path
-(`LPP STT[11]; INCM S-3,I`) and switched off by `FOCUS_NOLABELDATA`. The
-scaffold reaches the same instruction by a different route, which makes it
-a second and much smaller test case for a reading that was only ever
-supported by one. Settling whether that fallback is right is now the
-frontier, and `MASTERMIND` with four pokes is the bench for it.
+**What the trap 030 actually is.** The same instruction appears in BASIC's
+DISP path (`LPP STT[11]; INCM S-3,I`), which is what the external-program-
+label fallback in `focusaddr.h` was written for, so the first guess was that
+the scaffold had produced a second test case for that hypothesis. **It has
+not**, and the measurement says so plainly. Watching the operand
+(`FOCUS_RWATCH` on the stack top) catches the read:
+
+```
+[rwatch 0008250c -> 000000ad P=00077ce8]     the pointer INCM dereferences
+```
+
+`0x000000ad` has tag `(0:2) = 00`, which is the *external data segment*
+path, and its segment number `(2:11)` is zero — that is the trap. The label
+fallback needs bit 0 set and lives inside the `tag == 2` branch, so this
+pointer never reaches it. `FOCUS_NOLABELDATA` makes no difference here.
+
+The pointer has **no tag at all**. It is a bare offset, and the two
+instructions that build it are visible:
+
+```
+LDS  P-16     loads 0x0000001c from the code segment at 0x77cd0
+ADDI #145     0x1c + 145 = 0xad
+INCM S-3,I    dereferences 0xad -> external DST segment 0 -> trap 030
+```
+
+Had that word carried the DB-relative tag, `0x800000ad` would be a perfectly
+good pointer to `DB+0xad`. So the open question is narrow: either the word
+the compiler plants at `P-16` should be tagged and is not, or `PCLS STT[9]`
+is a runtime hook meant to *replace* the top of stack with a tagged pointer
+and our emulation returned its input unchanged — the call does run, into
+segment 6 at offset 0x6344, and comes back with `0x1c` still on top.
+
+Distinguishing those two is the next measurement, and `MASTERMIND` with
+four pokes is the bench for it.
 
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
