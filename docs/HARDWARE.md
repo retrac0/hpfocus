@@ -63,7 +63,7 @@ Population rules *(530/540 Service, same section)*:
   taking third-party DRAM in the same capacities. So the real range is
   well under 1 MB up to 10 MB, and **no 520 ever had 16 MB**.
 - The emulator models the boards as MPB slot cards: `-mpb3` .. `-mpb12`
-  each take `256k`, `512k` or `1m`, defaulting to a pair of 1 MB boards.
+  each take `256k`, `512k` or `1m`, defaulting to the base machine's pair of 512 KB boards.
   The stack's total is reported to the boot as the top of memory, which
   the language system sizes everything from -- with 2 MB fitted BASIC
   reports 1,625,476 bytes free and puts its per-task control block at
@@ -375,9 +375,12 @@ Since HP-UX 5.0 postdates 4.0, a Rev B-equivalent loader is the right target.
 > megabyte above it). Both are inventions that work, not documented values.
 > They had been absolute addresses at 14-15 MB, which only existed because the
 > driver claimed 16 MB of RAM; a real machine has at most 10, so the stack now
-> scales with what is fitted. One consequence of the 1 MB load address: the
-> smallest machine this emulator can boot is 2 MB, though a real 520 could be
-> built with 1 MB (two 512 KB boards).
+> scales with what is fitted. The load address is 1 MB when the machine can
+> take it and otherwise adapts, loading the image high with a small stack
+> window under top of memory -- so the base 1 MB machine (two 512 KB boards,
+> now the emulator's default) boots the images whose relocated world fits
+> below the image; one that does not fit is the machine genuinely out of
+> memory, and the boot says so.
 > Those are recoverable by disassembling the HP-UX boot image once the CPU core
 > exists — see [SOFTWARE.md](SOFTWARE.md#the-loader-rom-question), and §3.3
 > below for what has already been recovered.

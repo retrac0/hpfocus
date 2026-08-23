@@ -122,13 +122,13 @@ They boot, load and run. The environment comes up to `BASIC Ready for use.`,
 complaint, and `RUN` executes it:
 
     tools/mkdiagdisc.sh
-    tools/runbasic-hd.sh software/hd/diag.img -- \
+    tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
         -flop1 "$PWD/software/test/500MFTST.TD0"
 
 then `LOAD "TEST"` and `RUN` — or, for a batch run,
 
     FOCUS_TYPE='LOAD "TEST"\n;RUN\n' FOCUS_TYPEAT=20,36 FOCUS_DIMDUMP=600 \
-    tools/runbasic-hd.sh software/hd/diag.img -- \
+    tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
         -flop1 "$PWD/software/test/500MFTST.TD0" -seconds_to_run 48
 
 The driver's first act is `Clear_screen`, and that is where it stops:

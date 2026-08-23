@@ -67,5 +67,11 @@ done
 # comes after this one and wins, so any backend can still be asked for.
 VIDEO=(-video soft)
 
+# RAM. The machine default is HP's 1 MB base configuration, but the
+# HP-UX image is 597 KB and its relocated world reaches past 0xb2000:
+# together they cannot fit under 1 MB, so this boot pins the two 1 MB
+# boards it was brought up and measured on. Fit different boards by
+# editing here; a second -mpb3 on the command line is a MAME error.
 exec env FOCUS_SCMNV="$CCT/scm.nv" \
-    ./focus hp9040 -hard1 "$DISC" "${THROTTLE[@]}" "${VIDEO[@]}" -sound none "$@"
+    ./focus hp9040 -mpb3 1m -mpb4 1m \
+    -hard1 "$DISC" "${THROTTLE[@]}" "${VIDEO[@]}" -sound none "$@"

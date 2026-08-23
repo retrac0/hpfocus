@@ -19,7 +19,7 @@
 #
 # Then boot it with the test disc in the flexible drive:
 #
-#   tools/runbasic-hd.sh software/hd/diag.img -- \
+#   tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
 #       -flop1 "$PWD/software/test/500MFTST.TD0"
 #
 # and, at the BASIC prompt, LOAD "TEST" and RUN.

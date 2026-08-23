@@ -704,7 +704,12 @@ Three things could be "in the wrong spot": the image, the loader stack,
 and the parameter block. Measured, none of them is load-bearing beyond
 the constraints already documented:
 
-- **The image's load address is arbitrary.** `FOCUS_BOOTLOAD` moves it;
+- **The image's load address is arbitrary.** (Since validated, the
+  driver uses this: the default machine is HP's 1 MB base configuration
+  -- two 512 KB boards -- and an image that cannot sit at 1 MB loads
+  high instead, under a small loader-stack window at top of memory.
+  BASIC boots and behaves identically there, image at `0x8d000`.)
+  `FOCUS_BOOTLOAD` moves it;
   booting BASIC at `0xc0000`, `0x100000` and `0x180000` produces
   byte-identical behaviour -- same `BASIC Ready`, same ` 5` from
   `DISP 5`, same `TRAP:00000021` from `RUN`, same registers in the trap

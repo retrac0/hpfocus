@@ -528,6 +528,16 @@ private:
 	void mem_map(address_map &map) ATTR_COLD;
 	void kbd_put(u8 data);
 	void attach_probes();
+	// The one fit rule: an image boots if it, the loader-stack window and
+	// a floor for the relocated world all fit in installed RAM. The floor
+	// is a sanity bound, not a promise -- an image whose relocated world
+	// outgrows [0, load) still dies in relocation, as it would on real
+	// hardware short of memory.
+	static constexpr u32 BOOT_STACK_MIN = 0x3000;
+	bool boot_image_fits(u32 size) const
+	{
+		return u64(size) + BOOT_STACK_MIN + 0x40000 <= m_ram_total;
+	}
 	void install_boot_image(const std::vector<u8> &img, const char *whence);
 	bool boot_from_disc();
 	bool boot_from_disc_source(bool from_fixed);
@@ -941,10 +951,8 @@ void hp9000_5xx_state::machine_start()
 		if (onemeg & 1)
 			osd_printf_warning("mpb: 1M RAM boards must be installed in "
 					"pairs (service manual 2-1); this stack has %u\n", onemeg);
-		if (m_ram_total < 0x200000)
-			osd_printf_warning("mpb: the boot handoff loads the image at "
-					"1 MB, so a stack under 2 MB will not boot here even "
-					"though a real 520 could run in it\n");
+		// No lower bound is enforced here: install_boot_image() places
+		// the image to fit the fitted RAM and says so when it cannot.
 	}
 	// The System Control Module answers select code 7, which is IOP
 	// channel 1, peripheral address 7. The consoles: select code 0 is
@@ -1922,9 +1930,11 @@ bool hp9000_5xx_state::boot_from_cs80(focus::hpib_card &card)
 		return false;
 	}
 	const u32 total = beword(4);
-	if (total > m_ram_total - 0x100000)
+	if (!boot_image_fits(total))
 	{
-		osd_printf_error("boot: image of %u bytes will not fit\n", total);
+		osd_printf_error("boot: a %u byte image will not fit in %u KB of "
+				"RAM; fit more boards (-mpb5 512k ...)\n",
+				total, m_ram_total / 1024);
 		return false;
 	}
 
@@ -1956,8 +1966,15 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	// over both the image and the loader stack after t=1.3. A behaviour
 	// difference under this knob would mean a hidden dependency on the
 	// placement, which is exactly what it exists to find.
-	const u32 LOAD = getenv("FOCUS_BOOTLOAD")
-			? u32(strtoul(getenv("FOCUS_BOOTLOAD"), nullptr, 16)) : 0x100000;
+	//
+	// The default placement is 1 MB when the machine can take it -- the
+	// address every measured result was taken at -- and otherwise high,
+	// leaving a small loader-stack window under top of memory, so the
+	// base 1 MB machine (two 512 KB boards) boots the images that fit.
+	// The remaining constraint is real: the relocated world must fit
+	// below the image, and when it does not, that is the machine
+	// genuinely out of memory.
+	u32 LOAD = 0x100000;
 
 	// FOCUS_BOOTOPT=<file>[,<file>...] appends option binaries to the
 	// boot image, which is what a configured machine actually runs.
@@ -2039,6 +2056,22 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	const std::vector<u8> &img = extended.empty() ? base : extended;
 	const u32 size = u32(img.size());
 
+	if (const char *e = getenv("FOCUS_BOOTLOAD"))
+		LOAD = u32(strtoul(e, nullptr, 16));
+	else if (LOAD + size + BOOT_STACK_MIN > m_ram_total)
+	{
+		if (!boot_image_fits(size))
+		{
+			osd_printf_error("boot: a %u KB image cannot fit in %u KB of "
+					"RAM; fit more boards (-mpb5 512k ...)\n",
+					size / 1024, m_ram_total / 1024);
+			return;
+		}
+		LOAD = (m_ram_total - size - BOOT_STACK_MIN) & ~0xfffu;
+		osd_printf_info("boot: %u KB fitted, the %u KB image loads at %#x "
+				"instead of 1 MB\n", m_ram_total / 1024, size / 1024, LOAD);
+	}
+
 	auto &core = m_cpu->core();
 	focus::memory_interface &mem = m_cpu->memory();
 	for (u32 i = 0; i < size; i++)
@@ -2093,7 +2126,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	// when the image has eaten into it -- the boot may still be fine,
 	// since powerup uses only a few hundred bytes of this stack, but a
 	// machine this tight is worth another RAM board (-mpb5 1m and up).
-	if (core.r.sb + 0x80000 > top)
+	if (LOAD == 0x100000 && core.r.sb + 0x80000 > top)
 		osd_printf_warning("boot: the %u KB image leaves the loader only "
 				"%u KB of stack under the %u KB fitted, not the half "
 				"megabyte the handoff assumes\n",
@@ -2259,9 +2292,11 @@ bool hp9000_5xx_state::boot_from_disc_source(bool from_fixed)
 		{
 			total = this_total;
 			volumes = nvols;
-			if (total > m_ram_total - 0x100000)
+			if (!boot_image_fits(total))
 			{
-				osd_printf_error("boot: image of %u bytes will not fit\n", total);
+				osd_printf_error("boot: a %u byte image will not fit in "
+						"%u KB of RAM; fit more boards (-mpb5 512k ...)\n",
+						total, m_ram_total / 1024);
 				return false;
 			}
 			image.assign(total, 0);
@@ -2495,10 +2530,12 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 
 	// The MPB stack's RAM slots. Slot 1 is the CPU and slot 2 the IOP;
 	// boards go in the ten remaining slots as -mpb3 .. -mpb12, each
-	// "256k", "512k" or "1m" (1 MB boards in pairs). Two 1 MB boards is
-	// the default machine.
-	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "1m");
-	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "1m");
+	// "256k", "512k" or "1m" (1 MB boards in pairs). The default is the
+	// base machine HP shipped: 1 MB as two 512 KB boards (HARDWARE.md
+	// §1.2). Fit more with e.g. -mpb3 1m -mpb4 1m; the boot loads the
+	// image adaptively, so small machines boot whatever fits.
+	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "512k");
+	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "512k");
 	for (unsigned k = 2; k < 10; k++)
 		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
 
@@ -2554,10 +2591,12 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 
 	// The MPB stack's RAM slots. Slot 1 is the CPU and slot 2 the IOP;
 	// boards go in the ten remaining slots as -mpb3 .. -mpb12, each
-	// "256k", "512k" or "1m" (1 MB boards in pairs). Two 1 MB boards is
-	// the default machine.
-	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "1m");
-	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "1m");
+	// "256k", "512k" or "1m" (1 MB boards in pairs). The default is the
+	// base machine HP shipped: 1 MB as two 512 KB boards (HARDWARE.md
+	// §1.2). Fit more with e.g. -mpb3 1m -mpb4 1m; the boot loads the
+	// image adaptively, so small machines boot whatever fits.
+	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "512k");
+	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "512k");
 	for (unsigned k = 2; k < 10; k++)
 		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
 	m_console_is_asi = true;
