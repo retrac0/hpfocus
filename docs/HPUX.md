@@ -296,14 +296,16 @@ All addresses runtime for this configuration.
   outstanding at the loop. That points at the data phase ending too
   early — `RD` moved one byte and `RS` five — rather than at the report
   vocabulary, which is where the next look should go.
-- **Corrected: the channel state IS populated, and the 66 is a timeout.**
-  The table is based at `DB+232` (not 236): eight-byte entries of
-  (pointer, DB-relative offset), indexed by the LCN byte at block+12
-  — `LDIS #12; PLDA,B; LSL 3; ADXI #232` at CORE SYSTEM +0x4148. For
-  this boot `DB=0x1e97d4` and the three channel structs are `0x1e9910`,
-  `0x1e9a94`, `0x1e9c18`, 388 bytes each. Watching the first one's state
-  word (`FOCUS_WWATCH=1e9910:1e9913`) shows the documented lifecycle
-  running **correctly**:
+- **The channel state IS populated** — the earlier "never populated"
+  reading was wrong. The table is at `DB+232`, eight bytes per LCN:
+  the **absolute pointer** at `+232+8k` and the **DB-relative offset**
+  of the same struct at `+236+8k`. Both forms are used: the state
+  dispatch takes the offset (`LDS DB+236,X` then `LDX DB+0,X`), the
+  teardown takes the pointer (`ADXI #232`). For this boot `DB=0x1e97d4`
+  and the three structs are `0x1e9910`, `0x1e9a94`, `0x1e9c18`, 388
+  bytes each. Watching the first one's state word
+  (`FOCUS_WWATCH=1e9910:1e9913`) shows the documented lifecycle running
+  **correctly**:
 
   | t | P | state | |
   |---|---|---|---|
@@ -313,48 +315,56 @@ All addresses runtime for this configuration.
   | 2.270 | +0x3c3e | 24 | the SWI arm — it *does* run |
   | 2.271 | +0x3b68 | 0 | the completion closes the channel |
 
-  The transaction blocks in the struct are right too: CLC (0x834), `RD`
-  (0x824 to 0x1e9dd4) and `RS` (0x824 to 0x1e9de1) are all built, with
-  the struct pointing back at `DB` at +68. The card dialogue is not
-  what is broken.
+  The transaction blocks are right too: CLC (0x834), `RD` (0x824 to
+  0x1e9dd4) and `RS` (0x824 to 0x1e9de1) are all built, with the struct
+  pointing back at `DB` at +68. The card dialogue is not what is broken.
+- **The abort path, traced instruction by instruction.**
+  `FOCUS_BREAK=2749c:1 FOCUS_TRACEN=4000` records the whole way from the
+  close to the panic, and it confirms the re-dispatch reading above
+  rather than replacing it:
+
+      +0x3b68  the completion closes the channel (state -> 0)
+      +0x3b74  the handler loop head; the work queue is empty
+      +0x3b9c  LDS DB+52 -> STAX -> LSXL 2 -> BR P+8,I,X   the re-dispatch
+      +0x3bfc  arm 0: LCN = DB+56 >> 16, bounds-checked against DB+12,
+               LDS DB+236,X (X = LCN*8), LDX DB+0,X, BR P+8,I,X
+      +0x3d94  the state dispatch's arm for state 0 — the error path
+      +0x4118  the teardown: four abort orders, block+36/+52 := -1,
+               then state -> 0 and status -> 66 through the DB+232 walk
+      +0x4330  the completion check reads the status, sees 66, raises it
+
+  So there are **two** dispatches, not one. `DB+52` selects the outer arm
+  and measures **0 at all eight visits** (`FOCUS_BREAK=274d8:8`, X is the
+  arm); the inner one dispatches on the channel's own state word, which
+  the close zeroed two instructions earlier — and state 0 is the error
+  arm. That is exactly the documented "re-dispatch against a closed
+  channel", now measured rather than inferred.
 - **The 66 is a completion status, not a raise.** Block+32 is the
   completion status: 55 is success. `FOCUS_WWATCH=1e9930:1e9933` catches
   exactly two writes — **55 at +0x41e0** when the transaction is set up,
-  then **66 at +0x4160**, which overwrites it. The reader at +0x4330
-  (`LDIS #32; PLDA,B; CMPI #55; BCCS.GL; EXIT N=6; ESCP`) returns
-  normally on 55 and otherwise **raises the status itself** — so the
-  first escape 66 of the boot is this field, not one of escmap's
-  constant sites. The stamping site at +0x4160 is the tail of a timeout
-  handler: `LDIS #5; WAIT` at +0x410e, then four abort orders
-  (`IOC 0x3b/0x0e/0x1f/0x18`), block+36 and block+52 set to −1, and
-  finally state→0 / status→66 through the `DB+232` walk.
-- **Retracted: there is no missing semaphore post.** An earlier version
-  of this section claimed the open parked on semaphore `0xbd798` and was
-  never woken. Two facts kill it. The task that blocks on `0xbd798` runs
-  in **seg 70 WIN/H9000** (callers +0x49de and +0x3470) on stack
-  `SB=0xcde00`, while the whole failing chain — the 66s through seg 32
-  and the panic — is on `SB=0xad0a0`. Different tasks; the WIN block is
-  unrelated. And `WAIT` is not a blocking wait at all: ERS sheet 95 makes
-  it a **calibrated delay** (decrement TOS to zero), so `LDIS #5; WAIT`
-  is a pause inside a poll loop, not a timeout expiring.
-- **The console driver takes no semaphores — it polls.** `FOCUS_SEMALL`
-  censuses the entire twelve-second boot at **1554** UP/DOWN operations,
-  and none of them belongs to the console open. The three that follow the
-  block are `UP,B` on `0x1e991c` and `0x1e9aa0` — struct+12 of the first
-  two channel structs — each with `count=0`, so each just bumps a counter
-  with no waiter to wake.
-- **The give-up path is a poll loop, and this is where to look.** At
-  CORE SYSTEM +0x40d0 the loop loads the byte at entry+4 (`LDIS #4;
-  PLDA,B`), exits successfully at +0x4106 when it is **non-negative**,
-  and otherwise increments it, rings the doorbell (`LDI #0x200000;
-  SMSG,B` at +0x40fc — the same bit the microcode's UP sets) and loops.
-  The outer test at +0x40ce takes the failing branch when the list link
-  is negative, and that is what reaches +0x410e: short delay, four abort
-  orders, then state→0 / status→66.
-  **NEXT:** watch the byte at entry+4 — the one flag whose sign decides
-  success — and find which completion-path write is supposed to clear
-  it. `FOCUS_BREAK=27a04` stops at the loop head with the entry in X; `FOCUS_WWATCH`
-  over entry+4 then names the writer, exactly as it did for block+32.
+  then **66 at +0x4160** in the teardown, which overwrites it. The reader
+  at +0x4330 (`LDIS #32; PLDA,B; CMPI #55; BCCS.GL; EXIT N=6; ESCP`)
+  returns normally on 55 and otherwise **raises the status itself** — so
+  the first escape 66 of the boot is this field, and none of escmap's
+  constant-66 sites is involved.
+- **Two dead ends, recorded so they are not re-run.** (1) There is no
+  missing semaphore post. The one task that blocks in the failure window
+  — on `0xbd798`, at CORE SYSTEM +0x59ba — is a **seg 70 WIN/H9000**
+  task on stack `SB=0xcde00`, while the whole failing chain runs on
+  `SB=0xad0a0`. Unrelated. The console driver takes no semaphores at
+  all: `FOCUS_SEMALL` censuses the entire boot at **1554** UP/DOWN
+  operations and none belongs to the open. (2) `WAIT` is not a blocking
+  wait — ERS sheet 95 makes it a calibrated delay — so `LDIS #5; WAIT`
+  at +0x410e times nothing out, and the loop at +0x40d0 is an open-coded
+  wake-all that the failing path never enters.
+- **NEXT.** The close at +0x3b68 and the re-dispatch at +0x3b9c are in
+  the same handler pass, so one of them is wrong. `DB+52` never changes
+  (0 at every visit), which makes the outer arm a constant — worth
+  checking whether anything is supposed to refresh it, since the docs'
+  older note has run 0x2787a pushing work onto `DB+40` and run 0x274c4
+  popping it. Either the close must not zero the state while the loop
+  will still dispatch on it, or the loop must not reach the state
+  dispatch with an empty queue.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
