@@ -461,6 +461,32 @@ All addresses runtime for this configuration.
   write (`op=0102`). Only `IOW`/`IOR`/`IOC` sites confirmed in the
   disassembly are real attributions; the printer's are, the driver
   path's are not.
+- **FIXED: the card's completion event was a slot, not a queue.** The
+  contention above is not abstract, and instrumenting `m_pending_event`
+  showed it directly: the printer writes FR9 and arms `configured`
+  (0x30), the driver's list arms `done` (0x10) microseconds later and
+  **overwrites** it, the tick queues 0x10, and the printer — which
+  requires a high nibble of 3 — rejects it and polls FR1 for ever. That
+  was the livelock at HP-UX KERNEL +0xc65c.
+  A plain queue is wrong the other way, and measuring caught that too:
+  `answer()` arms `done` on every transparent-status read, ~1000 times a
+  boot, so the backlog reached **137** entries at one announcement per
+  tick and the printer's code sat behind all of them. `arm_event()` now
+  appends a new code and ignores a duplicate — collapsing repeats is
+  what the single slot did correctly — and the queue stays two deep.
+
+  | EDD (`FOCUS_ASICLCRTS=2`) | before | after |
+  |---|---|---|
+  | emulated speed | 93% | **3381%** |
+  | instructions in `0x43000–0x43fff` | 35,917,865 | never reaches the 40M mark in 90 s |
+  | printer reads of event 0x30 | 0 | 4 |
+  | state | livelock on the FR1 poll | idle |
+
+  The default configuration is unchanged (7×66, panic prints) and BASIC
+  on the installed disc still boots clean.
+  **It still does not print the panic text under EDD** — no `WD` orders
+  are issued, so something later in the printer's sequence is not yet
+  satisfied. That is the next thread.
 - **The open itself** runs in the doorbell-server task: TTY SUBSYSTEM
   +0x2eb8 (run 0x60ca4 region, frame chain seg 11 ret 0x776) → seg 32
   HP27128/30 frames (rets 0x560/0x1108/0x2674) → CORE SYSTEM timed
