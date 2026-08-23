@@ -431,6 +431,47 @@ python3 tools/check_opcodes.py
 
 See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
 
+## `RUN` of a typed program: the short table, confirmed by experiment
+
+`10 DISP 5` / `20 END` / `RUN` halts with `TRAP:00000021`. The causes are
+numbered in octal, so that is **`021` = `stt_violation`**, and
+`FOCUS_TRAPLOG` gives its parameter as **`0x24`** — the code executed
+`PCLS STT[9]`, offset 36.
+
+It faults at `PB=0x8233c`, a **bare composed segment**: length `0xd0`,
+and no module name in its header, unlike the two `MAIN` copies. Its
+`PL` is `0x8240b`, and the STT length word there reads **`0x18`** —
+six entries against the nine the code asks for. Three short.
+
+That word is written exactly **once**, at t=1.075, by BASIC `+0x668c`:
+
+    LDS   Q+12,I,X      X = 4
+    SUBI  #28
+    CPTR,B
+    LDIS  #28
+    MVB   7
+
+The `7` is not a word count — in `MVB` the operand is flags: `operand&3`
+is how many words to pop (3) and bit 2 says the source is a data segment
+pointer. The size is the `28` pushed above it. (The older note reading
+this as "seven words" is wrong.)
+
+**The decisive experiment.** `FOCUS_POKE=82408:24:14` forces the limit to
+nine entries before `RUN`. The STT violation disappears — and the machine
+halts instead with **`TRAP:00000020` = `unimplemented_instruction`**. So
+the bound is not the problem by itself: entries 7, 8 and 9 are simply not
+there, and `PCLS` through them calls into whatever follows. The scaffold
+really is composed into the short segment, and no adjustment to the bound
+can fix that.
+
+The builder's own frame holds both sizes at the moment it runs — `0x24`
+below `Q` and `0x18` above it — and `LDIS #24; STS Q+52` at builder
+`+0x1e` plants the small one unconditionally. Which of those the
+destination should be chosen from is the open question; the notes point
+at field `+60` of the object at `DB+384`.
+
+**Not yet fixed.** A keyboard-entered program still does not run.
+
 ## Interactive BASIC: why only the first statement runs
 
 `DISP 5` alone prints ` 5`. `DISP 5` then `DISP 6` halts with
