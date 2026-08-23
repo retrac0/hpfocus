@@ -80,6 +80,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include "focusiop.h"
 
 #include <cstdio>
@@ -413,6 +414,9 @@ struct asi_card : public iop_interface
 				v = m_events.front();
 				m_events.pop_front();
 				m_ard = false;
+				if (dbg())
+					std::printf("[asi%u event %02x read from FR9]\n",
+							pa, u8(v));
 			}
 			break;
 		case 12:
@@ -483,8 +487,8 @@ struct asi_card : public iop_interface
 			// the console bring-up stopped: no console, and interrupts
 			// disabled around it, so nothing else ran either.
 			m_config = v;
-			m_pending_event = event_configured;
-			m_event_timer = event_delay_ms ? event_delay_ms : 1;
+			arm_event(event_configured, "FR9 config");
+			start_event_timer();
 			break;
 		default:
 			break;
@@ -529,8 +533,7 @@ struct asi_card : public iop_interface
 			m_rts_report = RTS_EDD;
 		// The transfer the command asked for is done, so the card
 		// announces the completion the driver is waiting for.
-		if (m_pending_event)
-			m_event_timer = event_delay_ms ? event_delay_ms : 1;
+		start_event_timer();
 		post(STAT_DONE);
 	}
 
@@ -546,12 +549,19 @@ struct asi_card : public iop_interface
 		// A completion the driver is not yet waiting for is discarded by
 		// the kernel's handler (see focushpib.h), so the card takes a
 		// tick or two to announce one, as real hardware does.
-		if (m_event_timer && --m_event_timer == 0 && m_pending_event)
+		if (m_event_timer && --m_event_timer == 0 && !m_pending.empty())
 		{
-			m_events.push_back(m_pending_event);
-			m_pending_event = 0;
+			const u8 code = m_pending.front();
+			m_pending.pop_front();
+			if (dbg())
+				std::printf("[asi%u event %02x queued, %u still pending]\n",
+						pa, code, unsigned(m_pending.size()));
+			m_events.push_back(code);
 			if (iop)
 				iop->raise(pa);
+			// One announcement per tick; whatever is left keeps the
+			// clock running so nothing is stranded.
+			start_event_timer();
 		}
 		if (!m_rx.empty() && !m_status_posted && m_arq_enabled)
 		{
@@ -709,12 +719,44 @@ private:
 		}
 	}
 
+	// Arm a completion code: at most one of each kind outstanding.
+	//
+	// Both halves matter. Appending rather than overwriting is what
+	// keeps the printer's `configured` alive when the driver's list arms
+	// `done` a few microseconds later -- the bug this replaces. But a
+	// plain queue is just as wrong the other way: `answer()` arms `done`
+	// on every transparent-status read, a thousand times a boot, so the
+	// backlog ran to 137 entries and the printer's code sat behind all
+	// of them at one announcement per tick. Collapsing repeats of the
+	// same code is what the old single slot did correctly, and it bounds
+	// the queue at the number of distinct codes -- two or three here.
+	void arm_event(u8 code, const char *why)
+	{
+		if (std::find(m_pending.begin(), m_pending.end(), code)
+				!= m_pending.end())
+			return;
+		if (dbg())
+			std::printf("[asi%u event %02x armed (%s), %u pending]\n",
+					pa, code, why, unsigned(m_pending.size()) + 1);
+		m_pending.push_back(code);
+	}
+
+	// Start the announcement clock if it is not already running. The
+	// codes armed by answer() and the write family wait for the data to
+	// actually move -- dma_complete starts it for them -- while an FR9
+	// configuration write is its own completion and starts it at once.
+	void start_event_timer()
+	{
+		if (!m_event_timer && !m_pending.empty())
+			m_event_timer = event_delay_ms ? event_delay_ms : 1;
+	}
+
 	// The order has an answer ready: the host will read it out, and the
 	// completion event follows.
 	void answer()
 	{
 		m_answering = true;
-		m_pending_event = event_done;
+		arm_event(event_done, "answer");
 	}
 
 	// The identity information block (27128A 4-67).
@@ -818,7 +860,7 @@ private:
 			// opened a transaction and is waiting for a card that is
 			// waiting for it.
 			m_want_order = true;
-			m_pending_event = event_done;
+			arm_event(event_done, "write-family");
 			break;
 		}
 	}
@@ -981,7 +1023,15 @@ private:
 	}
 
 	std::deque<u8> m_events;    // event codes waiting to be read from FR9
-	u8 m_pending_event = 0;     // posted when the command's transfer ends
+	// Codes armed but not yet announced. This is a QUEUE, not a slot:
+	// two conversations can be open on this card at once -- the driver's
+	// IOP command list and the kernel's register-level panic printer --
+	// and with one slot the second arm destroyed the first. Measured:
+	// the printer writes FR9 and arms `configured` (0x30), the list arms
+	// `done` (0x10) a few microseconds later, 0x10 is what gets queued,
+	// and the printer rejects it (it requires high nibble 3) and polls
+	// FR1 for ever. See docs/HPUX.md 6.
+	std::deque<u8> m_pending;   // posted when the command's transfer ends
 	unsigned m_event_timer = 0;
 	std::deque<u8> m_rx;        // characters typed at the terminal
 	std::deque<u8> m_out;       // what the host reads next
