@@ -318,6 +318,25 @@ All addresses runtime for this configuration.
   The transaction blocks are right too: CLC (0x834), `RD` (0x824 to
   0x1e9dd4) and `RS` (0x824 to 0x1e9de1) are all built, with the struct
   pointing back at `DB` at +68. The card dialogue is not what is broken.
+- **Attribution needs `FOCUS_IOALL`, not `FOCUS_ASIDBG`.** The order
+  log says what the card saw and nothing about who sent it, and it
+  carries no timestamps; `FOCUS_IOALL` prints `p=` for every I/O. Doing
+  this properly gives the driver's whole transaction, order for order:
+
+  | order | issued from |
+  |---|---|
+  | `0xb8` CLC | `p=0x276bc` — CORE SYSTEM **+0x3d88**, the handler |
+  | `0x20` PAU / `0x88` RTS | the poll |
+  | `0x68` RD | `p=0x276bc` |
+  | `0x49` RS | `p=0x182f2` — TRAP HANDLERS +0x162, the IOP list |
+
+  and the card answers SWI, then EDD. **The driver's transaction runs
+  and succeeds.** The 27 later CLCs come from HP-UX KERNEL +0xc898 and
+  +0xca9c — the panic printer. The 999 IDL polls that precede all this
+  are the handler's idle poll from `p=0x2752c` over the second before
+  the open: normal, not a symptom. Open and panic are three
+  milliseconds apart, which is why they look adjacent in an
+  untimestamped card log.
 - **The abort path, traced instruction by instruction.**
   `FOCUS_BREAK=2749c:1 FOCUS_TRACEN=4000` records the whole way from the
   close to the panic, and it confirms the re-dispatch reading above
@@ -381,5 +400,7 @@ All addresses runtime for this configuration.
 | first anomalous escape | `FOCUS_ESCLOG` (+ `FOCUS_ESCVAL=<hex>` to break on one) |
 | who writes/reads a cell | `FOCUS_WWATCH`/`FOCUS_RWATCH` (`*FROM` to arm late) |
 | card dialogues | `FOCUS_ASILOG` + `FOCUS_ASILOGMAX`, `FOCUS_HPIBLOG`, `FOCUS_IOALL`, `FOCUS_ICEILOG` |
+| **who issued an order** | `FOCUS_IOALL` (`p=`). `FOCUS_ASIDBG` shows what the card saw, never who sent it, and has no timestamps — do not partition it by eye |
+| semaphore census | `FOCUS_SEMALL` + `FOCUS_SEMALLMAX`/`FOCUS_SEMALLSKIP` (default cap 400 hides everything past ~1.4 s) |
 | where time goes | `FOCUS_PCPROF` |
 | task blocking | `FOCUS_SEMLOG` (timestamped) |
