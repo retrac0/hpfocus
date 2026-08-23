@@ -559,12 +559,60 @@ So the defect is exact: `RUN` plants a scaffold body that references
 because the stamp happens only inside the PARSER grow, and RUN's size
 request fits the container it was given.
 
-**NEXT.** The block stamp copies a prepared table image; find where
-that image is built and whether a RUN-shaped one exists. If it does,
-the missing step is a call; if it does not, the composed program's
-`STT[9]` is being emitted against a table nobody ever intended to
-build, and the question moves to why the template's index survives
-composition.
+### The chain, end to end
+
+Following the block stamp back reaches a hard-coded constant, and the
+picture changes once more.
+
+- **The grow does not create the nine-entry table — it preserves one.**
+  Segment 4 *pre*-grow already has `0x24` at its PL. Both tables are
+  stamped at boot, ~1 ms apart, by two block moves in one BASIC
+  routine, from an image the routine builds in its own locals:
+
+  | site | `LDIS` | bytes | target |
+  |---|---|---|---|
+  | BASIC +0x668c | `#24` (`0x18`) | 28 = 7 words | container 5 |
+  | BASIC +0x66d4 | `#36` (`0x24`) | 40 = 10 words | segment 4 |
+
+  Both sizes are **constants in BASIC's own code**. Container 5 is
+  *designed* to hold six entries. (This is the "ten words versus the
+  top seven" in the oldest notes, finally located: not two copies of
+  one scaffold, but two containers deliberately built to different
+  sizes.)
+- **The composition destination is user segment 5, and it is chosen
+  deliberately.** The `MVB` operands read directly: source
+  `0x800011d4` = DB+0x11d4 = the compose buffer at DB+4564; target
+  `0x4028007c` = **user segment 5, offset 124**; count `0x28` = 40
+  bytes. The segment comes from word 0 of the segment-4 header object
+  (`0x40280000`, a segment-5 pointer) and the offset from field `+60`
+  (`0x7c`), which advances as composition proceeds. The two headers
+  name each other — segment 5's word 0 is `0x40200000`, a segment-4
+  pointer — so the pair is deliberate. The long-standing note "the
+  destination comes from field +60" is half right: `+60` is the
+  offset; word 0 is the segment.
+- **`STT[9]` is not computed — it is canned.** COMPILER +0x209a
+  assembles the compose buffer by `MVB`-ing a template out of the
+  compiler's **own code segment** (`LRAS P+14,X`, with X = `[Q-16]*2`
+  = `0x12a` and the length from halfword tables at P+580/P+586). The
+  template literally reads `LDIS #9; PCLS STT[9]` — twice — and the
+  bytes land in the buffer verbatim.
+- **And the constant is calibrated to nine entries exactly.** The STT
+  check is `offset > limit`, so `PCLS STT[9]` (offset 36) passes
+  against segment 4's limit of 36 as *the last valid entry*, and traps
+  against container 5's limit of 24.
+
+So the whole failure is one mismatch: a template hard-wired for a
+nine-entry segment, composed into a container BASIC deliberately built
+with six.
+
+**NEXT.** Only two things can be wrong, and they are now sharply
+separable. Either the boot stamps the two containers the wrong way
+round — the 40-byte image belongs on segment 5, the code destination —
+or the destination pairing is inverted and composition should target
+segment 4. Reading which object each stamp takes as its target
+(`[Q+12]` indexed for the 28-byte move, `[Q-16]` indexed for the
+40-byte one) against what the RUN pairing expects should settle it in
+one measurement.
 
 ## `RUN` of a typed program: the short table, confirmed by experiment
 
