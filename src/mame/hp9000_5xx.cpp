@@ -50,6 +50,10 @@
 #include <tuple>
 #include "screen.h"
 
+// The run-time knobs: one catalogue, printed by FOCUS_HELP=1.
+// See src/cpu/focus/focusknobs.h.
+namespace knob = focus::knob;
+
 //**************************************************************************
 //  MEDIA
 //**************************************************************************
@@ -614,13 +618,11 @@ private:
 	bool m_traced = false;
 	u32 m_trace_left = 0;
 	u32 m_wpoint = 0, m_wpoint_last = 0;
-	unsigned m_wpoint_hits = 0;
 	unsigned m_traps_seen = 0, m_escapes = 0;
 	u32 m_ea_at = 0;
 	unsigned m_ea_want = 6;
 	bool m_ea_armed = false;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
-	unsigned m_watch_hits = 0, m_watch_max = 12;
 	double m_watch_from = 0.0;
 	double m_break_from = 0.0;
 	double m_wp_from = 0.0;
@@ -703,7 +705,7 @@ void hp9000_5xx_state::trip_watch(u8 c)
 void hp9000_5xx_state::memory_find()
 {
 	focus::cpu_core &core = m_cpu->core();
-	if (const char *e = getenv("FOCUS_FIND"))
+	if (const char *e = knob::text("FOCUS_FIND").get())
 	{
 		std::vector<u8> want;
 		if (*e == '"')
@@ -781,7 +783,7 @@ void hp9000_5xx_state::report_state(const char *why)
 			core.read_mem32(core.r.db + 224), core.read_mem32(core.r.db + 228));
 	// FOCUS_DUMP=<hex addr>[:<words>][,...] prints memory windows, for
 	// looking at tables the system built.
-	if (const char *e = getenv("FOCUS_DUMP"))
+	if (const char *e = knob::text("FOCUS_DUMP").get())
 		for (const char *p = e; *p; )
 		{
 			const u32 addr = strtoul(p, nullptr, 16) & ~3u;
@@ -801,7 +803,7 @@ void hp9000_5xx_state::report_state(const char *why)
 			p = comma + 1;
 		}
 
-	if (getenv("FOCUS_FIND") && !getenv("FOCUS_FINDAT"))
+	if (knob::flag("FOCUS_FIND") && !knob::flag("FOCUS_FINDAT"))
 		memory_find();
 
 	// The code segment table says which module each frame is in: entry
@@ -816,8 +818,7 @@ void hp9000_5xx_state::report_state(const char *why)
 		// cut, so the table simply did not show the thing being hunted.
 		// FOCUS_CSTMAX raises it, and the count of what was dropped is
 		// printed either way so nothing is hidden without saying so.
-		static const u32 cst_max = getenv("FOCUS_CSTMAX")
-				? u32(strtoul(getenv("FOCUS_CSTMAX"), nullptr, 0)) : 128;
+		static const u32 cst_max = u32(knob::number("FOCUS_CSTMAX", 128));
 		std::printf("  CST at %08x, %u entries\n", cst, count);
 		for (u32 seg = 1; seg < count && seg < cst_max; seg++)
 		{
@@ -884,7 +885,7 @@ void hp9000_5xx_state::report_state(const char *why)
 // internal mass storage and this driver puts the System Control Module.
 void hp9000_5xx_state::attach_probes()
 {
-	const char *e = getenv("FOCUS_PROBE");
+	const char *e = knob::text("FOCUS_PROBE").get();
 	if (!e)
 		return;
 	for (const char *p = e; *p; )
@@ -895,11 +896,10 @@ void hp9000_5xx_state::attach_probes()
 		m_probes[sc].id = (colon && (!comma || colon < comma))
 				? strtoul(colon + 1, nullptr, 0) : 0;
 		m_probes[sc].pa = sc;
-		m_probes[sc].log = getenv("FOCUS_PROBELOG") != nullptr;
-		if (const char *m = getenv("FOCUS_PROBEFR0"))
-			m_probes[sc].fr0_answer = strtoul(m, nullptr, 0);
-		if (const char *m = getenv("FOCUS_PROBEFR1"))
-			m_probes[sc].fr1_mode = strtoul(m, nullptr, 0);
+		m_probes[sc].log.name("probe", sc);
+		m_probes[sc].log.enable(bool(knob::flag("FOCUS_PROBELOG")));
+		m_probes[sc].fr0_answer = knob::number("FOCUS_PROBEFR0", m_probes[sc].fr0_answer);
+		m_probes[sc].fr1_mode = knob::number("FOCUS_PROBEFR1", m_probes[sc].fr1_mode);
 		m_iop.attach(sc, &m_probes[sc]);
 		if (!comma)
 			break;
@@ -910,6 +910,9 @@ void hp9000_5xx_state::attach_probes()
 
 void hp9000_5xx_state::machine_start()
 {
+	// FOCUS_HELP=1 lists every knob and what it does. Printed here
+	// rather than at exit so it lands before the machine's own output.
+	knob::handle_help();
 	machine().add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&hp9000_5xx_state::machine_stop, this));
 
@@ -940,7 +943,7 @@ void hp9000_5xx_state::machine_start()
 		// code that reads memory nothing initialised. A boot that
 		// behaves differently under poison is depending on exactly such
 		// a read, which on hardware would differ run to run.
-		if (const char *e = getenv("FOCUS_RAMFILL"))
+		if (const char *e = knob::text("FOCUS_RAMFILL").get())
 		{
 			const u8 fill = u8(strtoul(e, nullptr, 16));
 			for (auto &slot : m_mpb)
@@ -967,27 +970,27 @@ void hp9000_5xx_state::machine_start()
 	// configuration memory: loaded here, written back at exit. Without
 	// it every boot is a first boot, and HP-UX treats an unset clock as
 	// reason to abandon its device bring-up.
-	if (const char *e = getenv("FOCUS_SCMNV"))
+	if (const char *e = knob::text("FOCUS_SCMNV").get())
 	{
 		if (m_scm.load_nv(e))
 			osd_printf_info("SCM RTC/NVM restored from %s\n", e);
 		machine().add_notifier(MACHINE_NOTIFY_EXIT,
 				machine_notify_delegate(&hp9000_5xx_state::save_nv, this));
 	}
-	if (const char *e = getenv("FOCUS_SC0ID"))
-		m_dim.id = strtoul(e, nullptr, 0);
-	m_dim.log_fr = getenv("FOCUS_SC0LOG") != nullptr;
-	m_dim.log_cells = getenv("FOCUS_DIMCELLS") != nullptr;
+	m_dim.id = knob::number("FOCUS_SC0ID", m_dim.id);
+	m_dim.log_fr.name("dim");
+	m_dim.log_fr.enable(bool(knob::flag("FOCUS_SC0LOG")));
+	m_dim.log_cells.name("dim");
+	m_dim.log_cells.enable(bool(knob::flag("FOCUS_DIMCELLS")));
 	// FOCUS_TRIP=<text> prints the processor state and a walk back up the
 	// stack markers the moment that text reaches the screen, which is how
 	// the code behind a message -- an error report, say -- gets found.
-	if (const char *e = getenv("FOCUS_TRIP"))
+	if (const char *e = knob::text("FOCUS_TRIP").get())
 	{
 		m_trip = e;
 		m_dim.on_cell = [this](u16 v) { trip_watch(u8(v)); };
 	}
-	if (const char *e = getenv("FOCUS_SC0FR1"))
-		m_dim.fr1 = strtoul(e, nullptr, 0);
+	m_dim.fr1 = knob::number("FOCUS_SC0FR1", m_dim.fr1);
 	// Select code 0 is the display alphanumeric on the 520. On the
 	// 530/540 it is a backplane slot like any other and the console
 	// serial card lives in it, which the loop over the backplane below
@@ -996,13 +999,12 @@ void hp9000_5xx_state::machine_start()
 		m_iop.attach(0, &m_dim);
 
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
-	m_console6.log_fr = getenv("FOCUS_KBDLOG") != nullptr;
-	if (const char *e = getenv("FOCUS_NVMFILL"))
-		m_console6.fill_nvm(u8(strtoul(e, nullptr, 0)));
-	if (const char *e = getenv("FOCUS_SC6FR1"))
-		m_console6.fr1_base = strtoul(e, nullptr, 0);
-	if (const char *e = getenv("FOCUS_KBDST"))
-		m_console6.st = strtoul(e, nullptr, 0);
+	m_console6.log_fr.name("sc", 6);
+	m_console6.log_fr.enable(bool(knob::flag("FOCUS_KBDLOG")));
+			if (const knob::number v{"FOCUS_NVMFILL", 0}; v.set())
+			m_console6.fill_nvm(u8(v));
+		m_console6.fr1_base = knob::number("FOCUS_SC6FR1", m_console6.fr1_base);
+		m_console6.st = knob::number("FOCUS_KBDST", m_console6.st);
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	m_iop.attach(6, &m_console6);
@@ -1018,25 +1020,22 @@ void hp9000_5xx_state::machine_start()
 	if (!m_console_is_asi)
 	{
 		m_disc.iop = &m_iop;
-		m_disc.log = getenv("FOCUS_DISCLOG") != nullptr;
+		m_disc.log.name("disc");
+		m_disc.log.enable(bool(knob::flag("FOCUS_DISCLOG")));
 		// FOCUS_DISCID: the halfword the identify transaction answers;
 		// 1..6 map to internal device types, anything else types the
 		// slot 29 (the kernel's default).
-		if (const char *e = getenv("FOCUS_DISCID"))
-			m_disc.identity = u16(strtoul(e, nullptr, 0));
-		if (const char *e = getenv("FOCUS_DISCFR3"))
-			m_disc.id_fr3 = u16(strtoul(e, nullptr, 0));
-		if (const char *e = getenv("FOCUS_DISCFR3B"))
-			m_disc.id_fr3_alt = u16(strtoul(e, nullptr, 0));
-		if (const char *e = getenv("FOCUS_DISCBUSY"))
-			m_disc.busy_ms = strtoul(e, nullptr, 0);
+		m_disc.identity = u16(knob::number("FOCUS_DISCID", m_disc.identity));
+		m_disc.id_fr3 = u16(knob::number("FOCUS_DISCFR3", m_disc.id_fr3));
+		m_disc.id_fr3_alt = u16(knob::number("FOCUS_DISCFR3B", m_disc.id_fr3_alt));
+		m_disc.busy_ms = knob::number("FOCUS_DISCBUSY", m_disc.busy_ms);
 		// FOCUS_FLOPPY=<raw image>[,<raw image>...]: the discs in the
 		// drive, one byte per byte (35 cyl x 2 heads x 16 sectors of 256
 		// bytes = 286,720 for the media the system shipped on). A boot
 		// image is a SET -- BASIC 2.0 is two volumes, the diagnostics
 		// three -- and the loader works through them in order, which is
 		// what an operator feeding discs to the drive does.
-		if (const char *e = getenv("FOCUS_FLOPPY"))
+		if (const char *e = knob::text("FOCUS_FLOPPY").get())
 			for (std::string list(e); !list.empty(); )
 			{
 				const size_t comma = list.find(',');
@@ -1094,51 +1093,51 @@ void hp9000_5xx_state::machine_start()
 		{
 			asi->card.iop = &m_iop;
 			asi->card.pa = sc;
-			asi->card.log = getenv("FOCUS_ASILOG") != nullptr;
+			asi->card.log.name("asi", sc);
+			asi->card.log.enable(bool(knob::flag("FOCUS_ASILOG")));
 			// FOCUS_ASILOGMAX raises the line cap: a driver polling
 			// status outruns 2000 lines long before the interesting
 			// part of a dialogue.
-			if (const char *e = getenv("FOCUS_ASILOGMAX"))
-				asi->card.log_max = unsigned(strtoul(e, nullptr, 0));
+			asi->card.log.set_cap(unsigned(
+					knob::number("FOCUS_ASILOGMAX", asi->card.log.cap())));
 			// FOCUS_ASIID answers a different card identity -- 5 is the
 			// 27130A eight-channel multiplexer, which HP-UX drives with
 			// the same module (HP27128/30).
-			if (const char *e = getenv("FOCUS_ASIID"))
-				asi->card.card_id = u8(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASIFR1"))
-				asi->card.fr1_force = strtoul(e, nullptr, 0);
-			if (const char *e = getenv("FOCUS_ASIIDENT"))
-				asi->card.identity = u16(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASIEVENT"))
-				asi->card.event_done = u8(strtoul(e, nullptr, 0));
+			asi->card.card_id =
+					u8(knob::number("FOCUS_ASIID", asi->card.card_id));
+			asi->card.fr1_force =
+					knob::number("FOCUS_ASIFR1", asi->card.fr1_force);
+			asi->card.identity =
+					u16(knob::number("FOCUS_ASIIDENT", asi->card.identity));
+			asi->card.event_done =
+					u8(knob::number("FOCUS_ASIEVENT", asi->card.event_done));
 			// FOCUS_ASICFGEVENT sweeps the answer to an FR9 write; the
 			// console driver only tests its high nibble.
-			if (const char *e = getenv("FOCUS_ASICFGEVENT"))
-				asi->card.event_configured = u8(strtoul(e, nullptr, 0));
+			asi->card.event_configured =
+					u8(knob::number("FOCUS_ASICFGEVENT", asi->card.event_configured));
 			// FOCUS_ASISWITCHES sets the card's configuration switch
 			// byte, which the driver reads with subfunction 253.
-			if (const char *e = getenv("FOCUS_ASISWITCHES"))
-				asi->card.switches = u8(strtoul(e, nullptr, 0));
+			asi->card.switches =
+					u8(knob::number("FOCUS_ASISWITCHES", asi->card.switches));
 			// FOCUS_ASIRTS / FOCUS_ASIEVENT2 sweep what the card reports
 			// through Read Transparent Status -- the opcode, and the
 			// event code it carries under AES.
 			// FOCUS_ASIEVDELAY sets how many milliseconds of card time
 			// pass before a completion event is announced.
-			if (const char *e = getenv("FOCUS_ASIEVDELAY"))
-				asi->card.event_delay_ms = unsigned(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASICLCRTS"))
-				asi->card.clc_report = u8(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASILCN"))
-				asi->card.lcn_force = u16(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASIRTS"))
-				asi->card.rts_opcode = u8(strtoul(e, nullptr, 0));
-			if (const char *e = getenv("FOCUS_ASIEVENT2"))
-				asi->card.rts_event = u8(strtoul(e, nullptr, 0));
+			asi->card.event_delay_ms =
+					unsigned(knob::number("FOCUS_ASIEVDELAY", asi->card.event_delay_ms));
+			asi->card.clc_report =
+					u8(knob::number("FOCUS_ASICLCRTS", asi->card.clc_report));
+			asi->card.lcn_force =
+					u16(knob::number("FOCUS_ASILCN", asi->card.lcn_force));
+			asi->card.rts_opcode =
+					u8(knob::number("FOCUS_ASIRTS", asi->card.rts_opcode));
+			asi->card.rts_event =
+					u8(knob::number("FOCUS_ASIEVENT2", asi->card.rts_event));
 			// FOCUS_ASIMPX sweeps the multiplexing capability in the
 			// identity block: 0 subchannel only, 1 in-channel only,
 			// 2 both (27128A 4-67; the ASI ships configured with 1).
-			if (const char *e = getenv("FOCUS_ASIMPX"))
-				asi->card.mpx = u8(strtoul(e, nullptr, 0));
+			asi->card.mpx = u8(knob::number("FOCUS_ASIMPX", asi->card.mpx));
 			// The console is the serial card in slot 0 of a machine
 			// that has no display: what it prints goes to the terminal
 			// window and to stdout, and what the window types goes back
@@ -1162,17 +1161,18 @@ void hp9000_5xx_state::machine_start()
 		{
 			hpib->card.iop = &m_iop;
 			hpib->card.pa = sc;
-			hpib->card.log = getenv("FOCUS_HPIBLOG") != nullptr;
-			if (const char *v = getenv("FOCUS_HPIBIDENT"))
-				hpib->card.identity = u16(strtoul(v, nullptr, 0));
-			if (const char *v = getenv("FOCUS_HPIBADDR"))
-				hpib->card.device_address = u8(strtoul(v, nullptr, 0));
+			hpib->card.log.name("hpib", sc);
+			hpib->card.log.enable(bool(knob::flag("FOCUS_HPIBLOG")));
+			hpib->card.identity =
+					u16(knob::number("FOCUS_HPIBIDENT", hpib->card.identity));
+			hpib->card.device_address =
+					u8(knob::number("FOCUS_HPIBADDR", hpib->card.device_address));
 			// The drive on this card's bus. Its medium is the card's own
 			// image device; FOCUS_HPIBDISC remains as a way to hand a raw
 			// file to a card without going through MAME's media system.
 			if (hpib->media().has_media())
 				hpib->card.disc.image = hpib->media().data();
-			if (const char *v = getenv("FOCUS_HPIBDISC"))
+			if (const char *v = knob::text("FOCUS_HPIBDISC").get())
 			{
 				if (FILE *f = fopen(v, "rb"))
 				{
@@ -1209,52 +1209,48 @@ void hp9000_5xx_state::machine_start()
 	// wire the first time the processor reaches that instruction, with a
 	// window of the current stack frame -- enough to read the arguments a
 	// routine was called with.
-	if (const char *e = getenv("FOCUS_BREAK"))
+	if (const char *e = knob::text("FOCUS_BREAK").get())
 	{
 		m_break_at = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
 			m_break_max = strtoul(colon + 1, nullptr, 0);
 		// FOCUS_BREAKFROM=<emulated seconds>, as for the watch: ignore
 		// the boot's own visits to the address.
-		if (const char *n = getenv("FOCUS_BREAKFROM"))
-			m_break_from = strtod(n, nullptr);
+		m_break_from = knob::seconds("FOCUS_BREAKFROM", m_break_from);
 	}
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
-	if (const char *e = getenv("FOCUS_WPOINT"))
+	if (const char *e = knob::text("FOCUS_WPOINT").get())
 	{
 		m_wpoint = strtoul(e, nullptr, 16);
 		// FOCUS_WPFROM=<emulated seconds> arms the watch late, as for the
 		// execution watch: heap memory is recycled, and a write seen
 		// before the interesting object exists at the address belongs to
 		// some earlier tenant, not to the code being hunted.
-		if (const char *n = getenv("FOCUS_WPFROM"))
-			m_wp_from = strtod(n, nullptr);
+		m_wp_from = knob::seconds("FOCUS_WPFROM", m_wp_from);
 	}
-	if (const char *e = getenv("FOCUS_TRACEN"))
-		m_trace_left = strtoul(e, nullptr, 0);
+	m_trace_left = knob::number("FOCUS_TRACEN", m_trace_left);
 
 	// FOCUS_WATCH=<lo>:<hi> reports the first instructions executed inside
 	// an address range, which answers whether a driver is ever entered.
-	if (const char *e = getenv("FOCUS_WATCH"))
+	if (const char *e = knob::text("FOCUS_WATCH").get())
 	{
 		m_watch_lo = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
 			m_watch_hi = strtoul(colon + 1, nullptr, 16);
-		if (const char *n = getenv("FOCUS_WATCHN"))
-			m_watch_max = strtoul(n, nullptr, 0);
+		// FOCUS_WATCHN=<n> sets how many hits to report; the channel that
+		// prints them owns that budget.
 		// FOCUS_WATCHFROM=<emulated seconds> ignores everything before that
 		// moment, which is how activity from a typed command gets separated
 		// from the boot's own.
-		if (const char *n = getenv("FOCUS_WATCHFROM"))
-			m_watch_from = strtod(n, nullptr);
+		m_watch_from = knob::seconds("FOCUS_WATCHFROM", m_watch_from);
 	}
 
 	// FOCUS_RUNAWAY reports the moment the processor leaves real memory,
 	// with the last instructions it executed before it did. A machine
 	// that has jumped to nowhere cannot say where it came from, and the
 	// stack marker is usually gone too, so the trail has to be kept.
-	m_runaway = getenv("FOCUS_RUNAWAY") != nullptr;
+	m_runaway = knob::flag("FOCUS_RUNAWAY").on();
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
 		// FOCUS_PCPROF buckets the program counter by 4 KB and prints the
 		// busiest buckets every 40M instructions, so "where is the
@@ -1263,7 +1259,7 @@ void hp9000_5xx_state::machine_start()
 		// this comment sits above the fix for: the counts were far larger
 		// than any real workload, which is what pointed at emulated time
 		// running too fast rather than at any one routine.
-		static const bool pcprof = getenv("FOCUS_PCPROF") != nullptr;
+		static const knob::flag pcprof("FOCUS_PCPROF");
 		if (pcprof)
 		{
 			m_pcprof[(core.r.p >> 12) & 0x3fff]++;
@@ -1299,7 +1295,7 @@ void hp9000_5xx_state::machine_start()
 		// misaligned Q or a STATUS whose CSN field is impossible -- the
 		// wreckage of a corrupted stack marker, caught at the moment of
 		// restoration rather than at the crash it causes later.
-		static const bool qcheck = getenv("FOCUS_QCHECK") != nullptr;
+		static const knob::flag qcheck("FOCUS_QCHECK");
 		if (qcheck && !m_qcheck_hit && core.r.q != 0
 				&& ((core.r.q & 3) != 3 || core.r.status == 0xfffffffcu))
 		{
@@ -1329,27 +1325,23 @@ void hp9000_5xx_state::machine_start()
 			m_trail[m_trail_at] = std::make_pair(core.r.p, core.r.pb);
 			m_trail_at = (m_trail_at + 1) % m_trail.size();
 		}
+		static knob::channel watch("FOCUS_WATCH", 12, "FOCUS_WATCHN");
 		if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
-				&& m_watch_hits < m_watch_max
+				&& watch
 				&& machine().time().as_double() >= m_watch_from)
-		{
-			m_watch_hits++;
-			std::printf("[%.2fs watch %08x  Q=%08x]\n",
+			watch("[%.2fs watch %08x  Q=%08x]\n",
 					machine().time().as_double(), core.r.p, core.r.q);
-			std::fflush(stdout);
-		}
 	// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
 	// processor is in, which names the code that faulted. A number sets
 	// how many reports to print (default 6); FOCUS_TRAPFROM=<seconds>
 	// skips the boot's own faults, which otherwise eat the whole budget
 	// before the interesting one arrives.
-	if (const char *e = getenv("FOCUS_TRAPLOG"))
+	if (const char *e = knob::text("FOCUS_TRAPLOG").get())
 	{
 		// "1" is the historical on-switch, not a budget of one.
 		const unsigned long n = strtoul(e, nullptr, 0);
 		const unsigned cap = n > 1 ? unsigned(n) : 6;
-		const double from = getenv("FOCUS_TRAPFROM")
-				? strtod(getenv("FOCUS_TRAPFROM"), nullptr) : 0.0;
+		const double from = knob::seconds("FOCUS_TRAPFROM", 0.0);
 		m_cpu->core().on_trap =
 				[this, cap, from](focus::trap_cause cause, u32 parameter) {
 			if (machine().time().as_double() < from)
@@ -1367,7 +1359,7 @@ void hp9000_5xx_state::machine_start()
 	// FOCUS_EATRACE=<addr>[:<n>] prints the next n data addresses the
 	// processor computes once it reaches that instruction, with what it
 	// found there.
-	if (const char *e = getenv("FOCUS_EATRACE"))
+	if (const char *e = knob::text("FOCUS_EATRACE").get())
 	{
 		m_ea_at = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
@@ -1386,19 +1378,16 @@ void hp9000_5xx_state::machine_start()
 	// computes inside a range, with the instruction that did it -- the
 	// definitive record of which words of a structure are actually read
 	// or written, where a static scan of the code can misjudge.
-	if (const char *e = getenv("FOCUS_EAWATCH"))
+	if (const char *e = knob::text("FOCUS_EAWATCH").get())
 	{
 		static u32 lo = strtoul(e, nullptr, 16);
 		static u32 hi = strchr(e, ':')
 				? strtoul(strchr(e, ':') + 1, nullptr, 16) : lo + 4;
-		static unsigned hits = 0;
 		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
-			if (addr >= lo && addr <= hi && hits++ < 400)
-			{
-				std::printf("[ea p=%08x addr=%08x = %08x]\n", pc, addr,
+			static knob::channel ea("FOCUS_EAWATCH", 400);
+			if (addr >= lo && addr <= hi && ea)
+				ea("[ea p=%08x addr=%08x = %08x]\n", pc, addr,
 						m_cpu->core().read_mem32(addr & ~3u));
-				std::fflush(stdout);
-			}
 		};
 	}
 
@@ -1406,7 +1395,7 @@ void hp9000_5xx_state::machine_start()
 	// on and which one wakes it. An idle kernel that has stopped short
 	// says so here -- the semaphore it parked on names what it is waiting
 	// for.
-	if (getenv("FOCUS_SEMLOG"))
+	if (knob::flag("FOCUS_SEMLOG"))
 		m_cpu->core().sem_hook = [this](bool block, u32 sem, u32 tcb, u32 pc) {
 			std::printf("[%8.3fs sem %s sem=%08x tcb=%08x at P=%08x]\n",
 					machine().time().as_double(),
@@ -1414,11 +1403,11 @@ void hp9000_5xx_state::machine_start()
 			std::fflush(stdout);
 		};
 
-	if (getenv("FOCUS_ESCLOG"))
+	if (knob::flag("FOCUS_ESCLOG"))
 		m_cpu->core().on_escape = [this](u32 p, u32 value) {
 			// FOCUS_ESCVAL=<hex> logs only that escape value, uncapped;
 			// otherwise the first 400.
-			if (const char *e = getenv("FOCUS_ESCVAL"))
+			if (const char *e = knob::text("FOCUS_ESCVAL").get())
 			{
 				if (*e == '*')      // log everything, uncapped
 				{
@@ -1452,14 +1441,15 @@ void hp9000_5xx_state::machine_start()
 			const u32 now = core.read_mem32(m_wpoint);
 			if (now != m_wpoint_last)
 			{
-				if (m_wpoint_hits++ < 20)
+				static knob::channel wp("FOCUS_WPOINT", 20);
+				if (wp)
 				{
-					std::printf("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
+					wp("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
 							m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
 					// FOCUS_WPSTACK adds the call chain, which is how the
 					// code that asked for a write gets named when the
 					// writer itself is a shared helper.
-					if (getenv("FOCUS_WPSTACK"))
+					if (knob::flag("FOCUS_WPSTACK"))
 						report_state("wp");
 				}
 				m_wpoint_last = now;
@@ -1470,8 +1460,7 @@ void hp9000_5xx_state::machine_start()
 		// shared routine can be traced on a chosen later visit -- the
 		// compile-time call and the run-time call of the same helper are
 		// different questions.
-		static const double ea_from = getenv("FOCUS_EATRACEFROM")
-				? strtod(getenv("FOCUS_EATRACEFROM"), nullptr) : 0.0;
+		static const double ea_from = knob::seconds("FOCUS_EATRACEFROM", 0.0);
 		// FOCUS_POKEPC=<pc>:<addr>:<hex value>[,...] writes a word the
 		// first time the processor reaches an instruction, which is the
 		// only way to reach a moment two events share -- the compiler's
@@ -1483,7 +1472,7 @@ void hp9000_5xx_state::machine_start()
 			if (!parsed)
 			{
 				parsed = true;
-				if (const char *e = getenv("FOCUS_POKEPC"))
+				if (const char *e = knob::text("FOCUS_POKEPC").get())
 					for (std::string list(e); !list.empty(); )
 					{
 						const size_t comma = list.find(',');
@@ -1569,7 +1558,7 @@ void hp9000_5xx_state::machine_start()
 	// the boot has settled -- the headless way to drive the command line.
 	// \n becomes EXECUTE. FOCUS_TYPEAT=<emulated seconds> delays the
 	// first keystroke (default 15).
-	if (const char *e = getenv("FOCUS_FINDAT"))
+	if (const char *e = knob::text("FOCUS_FINDAT").get())
 	{
 		emu_timer *const t = timer_alloc(FUNC(hp9000_5xx_state::find_tick), this);
 		t->adjust(attotime::from_double(strtod(e, nullptr)));
@@ -1578,7 +1567,7 @@ void hp9000_5xx_state::machine_start()
 	// a chosen moment -- the fake-V experiment: hand a waiting task the
 	// event nobody produces and watch whether the machine sails on, which
 	// confirms a blocker and shows the downstream in one run.
-	if (const char *e = getenv("FOCUS_POKE"))
+	if (const char *e = knob::text("FOCUS_POKE").get())
 		for (std::string list(e); !list.empty(); )
 		{
 			const size_t comma = list.find(',');
@@ -1594,7 +1583,7 @@ void hp9000_5xx_state::machine_start()
 					timer_alloc(FUNC(hp9000_5xx_state::poke_tick), this);
 			t->adjust(attotime::from_double(at), int(m_pokes.size() - 1));
 		}
-	if (const char *e = getenv("FOCUS_STATEAT"))
+	if (const char *e = knob::text("FOCUS_STATEAT").get())
 		for (std::string list(e); !list.empty(); )
 		{
 			const size_t comma = list.find(',');
@@ -1613,7 +1602,7 @@ void hp9000_5xx_state::machine_start()
 	// which is what a command that takes seconds to finish needs -- the
 	// keyboard buffer does not hold a line typed while the disc is busy,
 	// so the next command has to wait for the first to land.
-	if (const char *e = getenv("FOCUS_TYPE"))
+	if (const char *e = knob::text("FOCUS_TYPE").get())
 	{
 		std::string one;
 		for (const char *pc = e; *pc; pc++)
@@ -1628,10 +1617,10 @@ void hp9000_5xx_state::machine_start()
 		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
 		// mimics fast human typing; the display driver drops or reorders
 		// characters pushed faster than it redraws the input line.
-		const unsigned ms = getenv("FOCUS_TYPERATE")
-				? strtoul(getenv("FOCUS_TYPERATE"), nullptr, 0) : 350;
+		const unsigned ms = unsigned(knob::number("FOCUS_TYPERATE", 350));
 		m_type_rate = attotime::from_msec(ms);
-		std::string list(getenv("FOCUS_TYPEAT") ? getenv("FOCUS_TYPEAT") : "15");
+		const knob::text typeat("FOCUS_TYPEAT");
+		std::string list(typeat ? typeat.get() : "15");
 		double at = 15.0;
 		for (size_t i = 0; i < m_type_scripts.size(); i++)
 		{
@@ -1726,7 +1715,7 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 	// experiment for a kernel whose clock service waits on a tick it never
 	// asked the IOP for. bootrun's --tick taught that injecting during
 	// powerup panics a machine that is not ready, hence the start delay.
-	if (const char *e = getenv("FOCUS_FORCETICK"))
+	if (const char *e = knob::text("FOCUS_FORCETICK").get())
 	{
 		static const unsigned period = std::max(1L, strtol(e, nullptr, 0));
 		static const double from = strchr(e, ':')
@@ -1761,7 +1750,7 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::rtc_tick)
 
 void hp9000_5xx_state::save_nv()
 {
-	if (const char *e = getenv("FOCUS_SCMNV"))
+	if (const char *e = knob::text("FOCUS_SCMNV").get())
 		if (m_scm.save_nv(e))
 			std::printf("[SCM RTC/NVM saved to %s]\n", e);
 }
@@ -1786,7 +1775,7 @@ void hp9000_5xx_state::term_put(u8 data)
 // rather than this emulator pretending to.
 void hp9000_5xx_state::machine_stop()
 {
-	if (getenv("FOCUS_HDNOSAVE"))
+	if (knob::flag("FOCUS_HDNOSAVE"))
 		return;
 	// The 520's internal Winchester, behind its own controller.
 	if (m_hard && m_hard->has_media() && m_disc.fixed_loaded())
@@ -1987,7 +1976,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	// chain the powerup walk follows. This stands in for BUILD_BOOT while
 	// the emulated media is read-only.
 	std::vector<u8> extended;
-	if (const char *e = getenv("FOCUS_BOOTOPT"))
+	if (const char *e = knob::text("FOCUS_BOOTOPT").get())
 	{
 		// The modules go INTO the chain, not after it. The powerup walk
 		// stops at the terminator that follows the last segment, so an
@@ -2056,8 +2045,9 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	const std::vector<u8> &img = extended.empty() ? base : extended;
 	const u32 size = u32(img.size());
 
-	if (const char *e = getenv("FOCUS_BOOTLOAD"))
-		LOAD = u32(strtoul(e, nullptr, 16));
+	const knob::number bootload("FOCUS_BOOTLOAD", LOAD, 16);
+	if (bootload.set())
+		LOAD = u32(bootload);
 	else if (LOAD + size + BOOT_STACK_MIN > m_ram_total)
 	{
 		if (!boot_image_fits(size))
@@ -2093,8 +2083,7 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 
 	// FOCUS_BOOTPB=<base> overrides the code base the module runs with,
 	// for testing what the loader really hands over.
-	core.r.pb = getenv("FOCUS_BOOTPB")
-			? u32(strtoul(getenv("FOCUS_BOOTPB"), nullptr, 16)) : 0;
+	core.r.pb = u32(knob::number("FOCUS_BOOTPB", 0, 16));
 	core.r.pl = LOAD + beword(8) + 3;
 	core.r.p  = LOAD + entry_off;
 
@@ -2445,16 +2434,15 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// appearance: most of the demo disc's file names are lower case,
 	// and LOAD answers ERROR 56, file name is undefined, for a name
 	// whose case does not match.
-	u8 code = getenv("FOCUS_RAWKEYS") ? data : KEYCODES[data & 0x7f];
-	if (!getenv("FOCUS_RAWKEYS") && data >= 'a' && data <= 'z')
+	static const knob::flag rawkeys("FOCUS_RAWKEYS");
+	u8 code = rawkeys ? data : KEYCODES[data & 0x7f];
+	if (!rawkeys && data >= 'a' && data <= 'z')
 		code |= 0x80;
-	if (getenv("FOCUS_RAWKEYS"))
+	if (rawkeys)
 	{
 		// FOCUS_KEYOR adds flag bits above the 8-bit host byte, for
 		// probing the holding register's shift/control encoding.
-		u16 flags = 0;
-		if (const char *e = getenv("FOCUS_KEYOR"))
-			flags = u16(strtoul(e, nullptr, 16));
+		const u16 flags = u16(knob::number("FOCUS_KEYOR", 0, 16));
 		m_console6.type(u16(data) | flags);
 		return;
 	}
@@ -2475,8 +2463,8 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 	const unsigned rows = std::min<unsigned>(m_dim.rows(), SCREEN_ROWS);
 	const bool blink = (screen.frame_number() & 0x10) != 0;
 
-	if (getenv("FOCUS_DIMDUMP")
-			&& (screen.frame_number() % strtoul(getenv("FOCUS_DIMDUMP"), nullptr, 0)) == 0)
+	static const knob::number dimdump("FOCUS_DIMDUMP", 0);
+	if (dimdump.set() && (screen.frame_number() % dimdump.get()) == 0)
 	{
 		std::printf("--- frame %d start %04x rows %u\n",
 				int(screen.frame_number()), m_dim.start(), rows);

@@ -51,6 +51,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <deque>
 #include <vector>
@@ -61,7 +62,7 @@ struct disc_card : public iop_interface
 {
 	iop_core *iop = nullptr;
 	unsigned pa = 7;
-	bool log = false;
+	knob::device_log log;
 
 	// The halfword the identify transaction answers. Values 1..6 map to
 	// internal device types 6, 5, 26, 7, 27 and 18; anything else types
@@ -96,12 +97,9 @@ struct disc_card : public iop_interface
 		// rights". Whether the running system ever reads it is an open
 		// question (HARDWARE.md §2.5.1) -- report any access while unit 1
 		// is selected, so a licence check would show itself.
-		if (m_device && getenv("FOCUS_UNIT1"))
-		{
-			std::printf("[disc UNIT1 R fr%u p=%08x]\n", n,
-					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
+		static knob::channel unit1("FOCUS_UNIT1");
+		if (m_device && unit1)
+			unit1("[disc UNIT1 R fr%u p=%08x]\n", n, iop ? iop->tpc() : 0);
 		switch (n)
 		{
 		case 3:
@@ -142,23 +140,15 @@ struct disc_card : public iop_interface
 			v = m_fr[n & 15];
 			break;
 		}
-		if (log)
-		{
-			std::printf("[disc R fr%u = %04x p=%08x]\n", n, v & 0xffff,
-					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
+		log("[disc R fr%u = %04x p=%08x]\n", n, v & 0xffff,
+				iop ? iop->tpc() : 0);
 		return v;
 	}
 
 	void write_fr(unsigned n, u32 v) override
 	{
-		if (log)
-		{
-			std::printf("[disc W fr%u = %04x p=%08x]\n", n, v & 0xffff,
-					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
+		log("[disc W fr%u = %04x p=%08x]\n", n, v & 0xffff,
+				iop ? iop->tpc() : 0);
 		m_fr[n & 15] = v & 0xffff;
 		switch (n)
 		{
@@ -186,12 +176,9 @@ struct disc_card : public iop_interface
 			// The driver writes the complement of the device number in
 			// the high byte: 0xff00 selects device 0, 0xfe00 device 1.
 			m_device = (~v >> 8) & 1;
-			if (m_device && getenv("FOCUS_UNIT1"))
-			{
-				std::printf("[disc UNIT1 selected p=%08x]\n",
-						iop ? iop->tpc() : 0);
-				std::fflush(stdout);
-			}
+			static knob::channel unit1("FOCUS_UNIT1");
+			if (m_device && unit1)
+				unit1("[disc UNIT1 selected p=%08x]\n", iop ? iop->tpc() : 0);
 			break;
 		case 9:
 			m_config = v & 0xffff;
@@ -206,11 +193,7 @@ struct disc_card : public iop_interface
 		// Opcode 070 is the IOP's own ICEI, not a strobe on this card;
 		// nothing else is known to strobe registers here, so a strobe
 		// arriving is something new to learn from.
-		if (log)
-		{
-			std::printf("[disc C fr%u  (fr9=%04x)]\n", n, m_fr[9]);
-			std::fflush(stdout);
-		}
+		log("[disc C fr%u  (fr9=%04x)]\n", n, m_fr[9]);
 	}
 
 	// The card asserts ASYNC while it holds event codes; the IOP's
@@ -238,22 +221,22 @@ struct disc_card : public iop_interface
 		{
 			if (log)
 			{
-				std::printf("[%u disc block mode=%x:", m_seq++, m_go_mode);
+				std::string hex;
+				char b2[4];
 				for (u8 b : m_in)
-					std::printf(" %02x", b);
-				std::printf("]\n");
-				std::fflush(stdout);
+				{
+					std::snprintf(b2, sizeof b2, " %02x", b);
+					hex += b2;
+				}
+				log("[%u disc block mode=%x:%s]\n", m_seq++, m_go_mode,
+						hex.c_str());
 			}
 			command_block(m_in);
 			m_in.clear();
 		}
 		else if (output && m_phase == 2)
 		{
-			if (log)
-			{
-				std::printf("[disc data-in %zu bytes]\n", m_in.size());
-				std::fflush(stdout);
-			}
+			log("[disc data-in %zu bytes]\n", m_in.size());
 			commit_write();
 			m_in.clear();
 		}
@@ -274,11 +257,7 @@ struct disc_card : public iop_interface
 	void dma_write(u8 b) override
 	{
 		m_in.push_back(b);
-		if (log)
-		{
-			std::printf("[disc DMA-in %02x]\n", b);
-			std::fflush(stdout);
-		}
+		log("[disc DMA-in %02x]\n", b);
 	}
 	void dma_write16(u16 v) override
 	{
@@ -400,11 +379,7 @@ private:
 				iop->raise(pa);
 			break;
 		default:
-			if (log)
-			{
-				std::printf("[disc FR1 command %02x unhandled]\n", v);
-				std::fflush(stdout);
-			}
+			log("[disc FR1 command %02x unhandled]\n", v);
 			break;
 		}
 	}
@@ -531,14 +506,10 @@ private:
 					break;
 				}
 				std::fill(medium().begin(), medium().end(), u8(0));
-				if (log)
-				{
-					std::printf("[disc initialize media: options %02x, "
-							"interleave %u, %u blocks cleared]\n",
-							options, interleave,
-							unsigned(medium().size() / BLOCK));
-					std::fflush(stdout);
-				}
+				log("[disc initialize media: options %02x, "
+						"interleave %u, %u blocks cleared]\n",
+						options, interleave,
+						unsigned(medium().size() / BLOCK));
 				break;
 			}
 			case 0x34:      // no op
@@ -549,11 +520,7 @@ private:
 							// meaning not yet established, accepted
 				break;
 			default:
-				if (log)
-				{
-					std::printf("[disc CS80 op %02x unhandled]\n", op);
-					std::fflush(stdout);
-				}
+				log("[disc CS80 op %02x unhandled]\n", op);
 				i = cmd.size();
 				break;
 			}
@@ -626,9 +593,8 @@ private:
 			// The system may well map the number to what it will support
 			// on the volume, so FOCUS_FIXEDDEV=<6 digits> makes it
 			// something to test rather than something to guess at.
-			u32 dev = 0x007908;
-			if (const char *e = getenv("FOCUS_FIXEDDEV"))
-				dev = u32(strtoul(e, nullptr, 16));
+			static const knob::number fixeddev("FOCUS_FIXEDDEV", 0x007908, 16);
+			const u32 dev = u32(fixeddev.get());
 			b(0); b(u8(dev >> 16)); b(u8(dev >> 8)); b(u8(dev));
 		}
 		else

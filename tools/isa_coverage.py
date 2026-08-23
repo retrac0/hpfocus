@@ -14,7 +14,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXEC = ROOT / "src/cpu/focus/focusexec.h"
+
+# The core is split by subject across focusexec.h and the fragments it
+# includes, so the dispatchers no longer live in one file. Scanning all of
+# them keeps this honest: a dispatcher that moved would otherwise report as
+# implementing nothing, and the coverage figure would quietly collapse.
+CORE = sorted((ROOT / "src/cpu/focus").glob("focusexec*"))
 
 spec = importlib.util.spec_from_file_location("fd", ROOT / "tools/focusdis.py")
 fd = importlib.util.module_from_spec(spec)
@@ -32,12 +37,14 @@ FUNCS = {
 
 
 def implemented() -> set:
-    src = EXEC.read_text()
+    src = "\n".join(f.read_text() for f in CORE)
     out = set()
+    found = set()
     for name, fmt in FUNCS.items():
         m = re.search(rf"exec_trap {name}\(", src)
         if not m:
             continue
+        found.add(name)
         # Scan forward to the next function definition at the same level.
         rest = src[m.end():]
         nxt = re.search(r"\n\t(?:exec_trap|void|bool|u32) \w+\(", rest)
@@ -46,6 +53,15 @@ def implemented() -> set:
             lit = c.group(1)
             # Format 1 opcodes are written in decimal, the rest in octal.
             out.add((fmt, int(lit, 8) if lit.startswith("0") else int(lit)))
+
+    missing = set(FUNCS) - found
+    if missing:
+        raise SystemExit(
+            "isa_coverage: no definition found for "
+            + ", ".join(sorted(missing))
+            + f" in {', '.join(f.name for f in CORE)}.\n"
+            "The dispatchers have moved; teach CORE where they went rather "
+            "than reading a coverage figure that is silently too low.")
     return out
 
 

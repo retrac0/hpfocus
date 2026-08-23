@@ -283,13 +283,31 @@ public:
 	//  MPB command entry points
 	//----------------------------------------------------------------
 
+	// The three log channels the IOP writes on. Buffered: FOCUS_IOALL
+	// alone runs to twenty thousand lines on an HP-UX boot.
+	static knob::channel &ioall()
+	{
+		static knob::channel c("FOCUS_IOALL", knob::sync::buffered);
+		return c;
+	}
+	static knob::channel &ioplog()
+	{
+		static knob::channel c("FOCUS_IOPLOG", knob::sync::buffered);
+		return c;
+	}
+	static knob::channel &irqlog()
+	{
+		static knob::channel c("FOCUS_IRQLOG", knob::sync::buffered);
+		return c;
+	}
+
 	bool io_write(const target &t, u32 data) override
 	{
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
-		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[%8.3fs iop W op=%03o pa=%u d=%08x p=%08x]\n",
+		if (ioall())
+			ioall()("[%8.3fs iop W op=%03o pa=%u d=%08x p=%08x]\n",
 					tnow(), t.opcode, t.pa, data, tpc());
 
 		switch (t.opcode)
@@ -312,8 +330,8 @@ public:
 		case CMD_WTMC: m_timer_count = data >> 8; return true;
 		case CMD_WAMK:
 			m_attn_mask = data;
-			if (std::getenv("FOCUS_IOPLOG"))
-				std::printf("[iop WAMK=%08x ch=%u pa=%u]\n", data, t.channel, t.pa);
+			if (ioplog())
+				ioplog()("[iop WAMK=%08x ch=%u pa=%u]\n", data, t.channel, t.pa);
 			return true;
 		case CMD_WMCN:
 			// Bits 3-5 of the data word become the IOP's MPB identification;
@@ -330,18 +348,17 @@ public:
 					c.iface->write_fr(register_of(t), data & 0xffff);
 				return true;
 			}
-			if (std::getenv("FOCUS_IOPLOG"))
-				std::printf("[iop REFUSED W op=%03o pa=%u d=%08x]\n", t.opcode, t.pa, data);
+			if (ioplog())
+				ioplog()("[iop REFUSED W op=%03o pa=%u d=%08x]\n", t.opcode, t.pa, data);
 			return false;
 		}
 	}
 
 	bool io_read(const target &t, u32 &data) override
 	{
-		const bool logging = std::getenv("FOCUS_IOALL") != nullptr;
 		const bool ok = io_read_inner(t, data);
-		if (logging)
-			std::printf("[%8.3fs iop R op=%03o pa=%u -> %08x%s p=%08x]\n",
+		if (ioall())
+			ioall()("[%8.3fs iop R op=%03o pa=%u -> %08x%s p=%08x]\n",
 					tnow(), t.opcode, t.pa, data, ok ? "" : " REFUSED", tpc());
 		return ok;
 	}
@@ -412,8 +429,8 @@ public:
 		if (t.channel != m_channel)
 			return false;
 		channel_state &c = m_chan[t.pa & (CHANNELS - 1)];
-		if (std::getenv("FOCUS_IOALL"))
-			std::printf("[%8.3fs iop C op=%03o pa=%u p=%08x]\n",
+		if (ioall())
+			ioall()("[%8.3fs iop C op=%03o pa=%u p=%08x]\n",
 					tnow(), t.opcode, t.pa, tpc());
 
 		switch (t.opcode)
@@ -435,8 +452,8 @@ public:
 			m_int_request &= ~(1u << t.pa);
 			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
-			if (std::getenv("FOCUS_IOPLOG"))
-				std::printf("[iop SDC pa=%u addr=%08x cnt=%u st=%08x en=%d]\n",
+			if (ioplog())
+				ioplog()("[iop SDC pa=%u addr=%08x cnt=%u st=%08x en=%d]\n",
 						t.pa, c.dma_addr, c.dma_count, c.dma_status,
 						c.int_enabled);
 			if (!defer_dma())
@@ -459,8 +476,8 @@ public:
 			m_int_request &= ~(1u << t.pa);
 			m_int_posted  &= ~(1u << t.pa);
 			update_interrupt();
-			if (std::getenv("FOCUS_IOPLOG"))
-				std::printf("[iop CIRQ pa=%u]\n", t.pa);
+			if (ioplog())
+				ioplog()("[iop CIRQ pa=%u]\n", t.pa);
 			return true;
 		case CMD_CAAK: m_attn_log &= ~(1u << t.pa); return true;
 		case CMD_ETMI:
@@ -556,8 +573,8 @@ public:
 					c.iface->control_fr(register_of(t));
 				return true;
 			}
-			if (std::getenv("FOCUS_IOPLOG"))
-				std::printf("[iop REFUSED C op=%03o pa=%u]\n", t.opcode, t.pa);
+			if (ioplog())
+				ioplog()("[iop REFUSED C op=%03o pa=%u]\n", t.opcode, t.pa);
 			return false;
 		}
 	}
@@ -609,9 +626,11 @@ public:
 
 		// A command list suspended on ICEI resumes when its interface
 		// responds to the poll.
-		static const bool dbg = std::getenv("FOCUS_IOPDBG") != nullptr;
+		// One line per thousand poll rounds; the sampling is here, so the
+		// channel itself is uncapped.
+		static knob::channel dbg("FOCUS_IOPDBG", knob::sync::buffered);
 		if (dbg && (++m_dbg_ticks % 1000) == 0)
-			std::printf("[iop tick %u: pa0 await=%d iface=%d poll=%d "
+			dbg("[iop tick %u: pa0 await=%d iface=%d poll=%d "
 					"cmdexec=%d]\n", m_dbg_ticks, m_chan[0].await_poll,
 					m_chan[0].iface != nullptr,
 					m_chan[0].iface && m_chan[0].iface->poll_request(),
@@ -624,7 +643,7 @@ public:
 			if (!c.iface->poll_request())
 			{
 				if (dbg && (++c.stall_ticks % 500) == 1)
-					std::printf("[iop pa=%u suspended, poll quiet "
+					dbg("[iop pa=%u suspended, poll quiet "
 							"(%u ticks)]\n", pa, c.stall_ticks);
 				continue;
 			}
@@ -650,8 +669,8 @@ public:
 	// completion path runs against state the handler is still using.
 	static bool defer_dma()
 	{
-		static const bool on = std::getenv("FOCUS_IOPDEFER") != nullptr;
-		return on;
+		static const knob::flag on("FOCUS_IOPDEFER");
+		return on.on();
 	}
 
 	void run_dma(unsigned pa)
@@ -696,8 +715,8 @@ public:
 				{
 					c.dma_active = false;
 					c.term = 0x0001;
-					if (std::getenv("FOCUS_IOPLOG"))
-						std::printf("[iop DMA-dend pa=%u left=%u]\n",
+					if (ioplog())
+						ioplog()("[iop DMA-dend pa=%u left=%u]\n",
 								pa, c.dma_count);
 					c.iface->dma_complete(output);
 					raise(pa);
@@ -725,8 +744,8 @@ public:
 			{
 				c.dma_active = false;
 				c.term = 0x2000;    // terminated on count, no error
-				if (std::getenv("FOCUS_IOPLOG"))
-					std::printf("[iop DMA-done pa=%u en=%d]\n", pa, c.int_enabled);
+				if (ioplog())
+					ioplog()("[iop DMA-done pa=%u en=%d]\n", pa, c.int_enabled);
 				c.iface->dma_complete(output);
 				raise(pa);
 			}
@@ -767,9 +786,13 @@ public:
 		memory_interface &mem = m_host.iop_memory();
 		const u32 drt = 128u * m_channel + 16u * (pa & 7);
 		u32 ptr = mem.read32(drt + 12);
-		const bool log = std::getenv("FOCUS_IOPLOG") || std::getenv("FOCUS_ICEILOG");
+		// The command-list walk answers to either switch: FOCUS_ICEILOG
+		// for the lists alone, FOCUS_IOPLOG for them alongside everything
+		// else the IOP does.
+		static knob::channel iceilog("FOCUS_ICEILOG", knob::sync::buffered);
+		knob::channel &log = iceilog.on() ? iceilog : ioplog();
 		if (log)
-			std::printf("[iop ICEI pa=%u list=%08x]\n", pa, ptr);
+			log("[iop ICEI pa=%u list=%08x]\n", pa, ptr);
 		// The list pointer belongs to the IOP, and it ADVANCES: the ERS
 		// says so in passing where it describes Skip on Status False --
 		// "The MPB command list pointer in the DRT points to the next
@@ -792,7 +815,7 @@ public:
 			const u32 here = ptr;
 			ptr += 8;
 			if (log)
-				std::printf("[iop ICEI+%02u @%08x op=%03o operand=%08x]\n",
+				log("[iop ICEI+%02u @%08x op=%03o operand=%08x]\n",
 						step, here, op, operand);
 			target t{};
 			t.opcode = op;
@@ -821,7 +844,7 @@ public:
 				// transaction half-issued.
 				m_chan[pa & 7].await_poll = true;
 				if (log)
-					std::printf("[iop ICEI pa=%u suspend, resume=%08x]\n",
+					log("[iop ICEI pa=%u suspend, resume=%08x]\n",
 							pa, ptr);
 				return;
 			case 065: {
@@ -895,7 +918,7 @@ public:
 				if ((op & 7) == 2 && op <= 0172)
 					ok = io_write(t, operand);
 				if (!ok && log)
-					std::printf("[iop ICEI STOP op=%03o]\n", op);
+					log("[iop ICEI STOP op=%03o]\n", op);
 				if (!ok)
 					return;
 				break;
@@ -941,11 +964,11 @@ public:
 		// FOCUS_IRQLOG: every raise, with the device's enable and both
 		// latches, for telling "the card keeps interrupting" apart from
 		// "the line never fell".
-		if (std::getenv("FOCUS_IRQLOG"))
-			std::printf("[iop raise pa=%u en=%d req=%02x posted=%02x]\n",
+		if (irqlog())
+			irqlog()("[iop raise pa=%u en=%d req=%02x posted=%02x]\n",
 					pa, c.int_enabled, m_int_request, m_int_posted);
-		if (std::getenv("FOCUS_IOPLOG"))
-			std::printf("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
+		if (ioplog())
+			ioplog()("[iop raise pa=%u en=%d lvl=%u]\n", pa, c.int_enabled, c.int_level);
 		// The Interrupt REQUEST register records the event whatever the
 		// mask says: "DMA termination or a non-DMA service request will
 		// cause a bit in the Interrupt Request register corresponding to

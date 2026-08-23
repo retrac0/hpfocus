@@ -75,7 +75,7 @@ struct console_card : public iop_interface
 	u32 fr0 = 0;               // pending input: 0 = none, else keycode
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
-	bool log_fr = false;       // trace every register access
+	knob::device_log log_fr;   // trace every register access
 	unsigned writes = 0;       // register writes so far, for ordering logs
 	u32 fr1_base = 0x80;       // the status bits above the pending flag
 	// Where display characters go: the panic reporter (and, on the
@@ -187,11 +187,7 @@ struct console_card : public iop_interface
 		case 13: v = nvm[(~latch12) & 2047]; break;
 		default: v = scratch[n & 15]; break;
 		}
-		if (log_fr)
-		{
-			std::printf("[sc%u R fr%u=%04x]\n", pa, n, v & 0xffff);
-			std::fflush(stdout);
-		}
+		log_fr("[sc%u R fr%u=%04x]\n", pa, n, v & 0xffff);
 		return v;
 	}
 	bool input_ready() const { return fr0 != 0; }
@@ -207,6 +203,10 @@ struct console_card : public iop_interface
 	{
 		if (on_char)
 			on_char(c);
+		// Not a log: this is the machine's own console output, which is
+		// why it goes out unconditionally and why it is the one printf
+		// left in this file. Everything diagnostic goes through a
+		// knob::device_log.
 		std::printf("%c", (c >= 32 && c < 127) ? c : '.');
 		std::fflush(stdout);
 	}
@@ -244,11 +244,7 @@ struct console_card : public iop_interface
 	void write_fr(unsigned n, u32 v) override
 	{
 		writes++;
-		if (log_fr)
-		{
-			std::printf("[sc%u W fr%u=%04x]\n", pa, n, v & 0xffff);
-			std::fflush(stdout);
-		}
+		log_fr("[sc%u W fr%u=%04x]\n", pa, n, v & 0xffff);
 		if (n == 1 || n == 8)   // the scan's reset pair, and the ARD
 		{
 			was_reset = true;
@@ -322,11 +318,7 @@ struct console_card : public iop_interface
 			// edge for the host to forward.)
 			latch12 = v & 0xffff;
 			out.push_back(char(v & 0xff));
-			if (log_fr)
-			{
-				std::printf("[%u:%02x]", pa, v & 0xff);
-				std::fflush(stdout);
-			}
+			log_fr("[%u:%02x]", pa, v & 0xff);
 			return;
 		case 13:           // NVM data byte
 			nvm[(~latch12) & 2047] = u8(v);
@@ -343,7 +335,7 @@ struct probe_card : public iop_interface
 {
 	u32 id = 0;
 	unsigned pa = 0;
-	bool log = false;
+	knob::device_log log;
 	bool was_reset = false;
 	u32 fr[16] = {};
 	u32 status() override { return 0; }
@@ -394,8 +386,7 @@ struct probe_card : public iop_interface
 			v = (m_fr1_reads++ == 0) ? fr[0] : fr1_policy(fr[0]);
 		}
 		else             v = fr[n & 15];
-		if (log)
-			std::printf("[probe%u R fr%u = %04x]\n", pa, n, v);
+		log("[probe%u R fr%u = %04x]\n", pa, n, v);
 		return v;
 	}
 	void write_fr(unsigned n, u32 v) override
@@ -405,8 +396,7 @@ struct probe_card : public iop_interface
 		if (n == 1 || n == 8)
 			was_reset = true;
 		fr[n & 15] = v & 0xffff;
-		if (log)
-			std::printf("[probe%u W fr%u = %04x]\n", pa, n, v & 0xffff);
+		log("[probe%u W fr%u = %04x]\n", pa, n, v & 0xffff);
 	}
 };
 

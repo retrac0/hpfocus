@@ -213,8 +213,9 @@ const char *addr_trap_name(focus::trap t)
 
 int main(int argc, char **argv)
 {
-	if (const char *e = std::getenv("FOCUS_IOP_CHANNEL"))
-		iop_channel = unsigned(std::strtoul(e, nullptr, 0)) & 7;
+	if (focus::knob::handle_help())
+		return 0;
+	iop_channel = unsigned(knob::number("FOCUS_IOP_CHANNEL", iop_channel)) & 7;
 	if (argc < 2)
 	{
 		std::fprintf(stderr, "usage: bootprobe <module.bin> [load_address]\n");

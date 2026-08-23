@@ -103,7 +103,8 @@ struct cs80_device
 
 	// Run one CS/80 command message, appending whatever execution message
 	// it produces to `out`.
-	void command(const std::vector<u8> &cmd, std::deque<u8> &out, bool log = false)
+	void command(const std::vector<u8> &cmd, std::deque<u8> &out,
+			knob::device_log *log = nullptr)
 	{
 		for (size_t i = 0; i < cmd.size(); )
 		{
@@ -156,10 +157,7 @@ struct cs80_device
 			default:
 				set_flag(5);            // illegal opcode
 				if (log)
-				{
-					std::printf("[cs80 op %02x unhandled]\n", op);
-					std::fflush(stdout);
-				}
+					(*log)("[cs80 op %02x unhandled]\n", op);
 				return;
 			}
 		}
@@ -303,7 +301,7 @@ struct hpib_card : public iop_interface
 {
 	iop_core *iop = nullptr;
 	unsigned pa = 5;
-	bool log = false;
+	knob::device_log log;
 
 	// The halfword the identify transaction answers, which is what types
 	// the slot: the card ID in the HIGH byte, the firmware ID in the low
@@ -347,31 +345,12 @@ struct hpib_card : public iop_interface
 		}
 	}
 
-	// Log capping, for the same reason as the serial card: a driver
-	// polling status outruns any useful log in a second of emulated time.
-	unsigned log_max = 2000;
-	bool log_line(char dir, unsigned n, u32 v)
+	// Collapsing and capping come from knob::device_log, for the same
+	// reason as the serial card: a driver polling status outruns any
+	// useful log in a second of emulated time.
+	static unsigned long log_key(char dir, unsigned n, u32 v)
 	{
-		if (!log)
-			return false;
-		const u32 key = (u32(dir) << 24) | (n << 16) | (v & 0xffff);
-		if (key == m_log_last) { m_log_repeat++; return false; }
-		if (m_log_repeat)
-		{
-			std::printf("[hpib%u ... x%u more]\n", pa, m_log_repeat);
-			m_log_repeat = 0;
-		}
-		m_log_last = key;
-		if (m_log_lines++ >= log_max)
-		{
-			if (m_log_lines == log_max + 1)
-			{
-				std::printf("[hpib%u log capped]\n", pa);
-				std::fflush(stdout);
-			}
-			return false;
-		}
-		return true;
+		return (u32(dir) << 24) | (n << 16) | (v & 0xffff);
 	}
 
 	//----------------------------------------------------------------
@@ -431,24 +410,18 @@ struct hpib_card : public iop_interface
 			v = m_fr[n & 15];
 			break;
 		}
-		if (log_line('R', n, v))
-		{
-			std::printf("[hpib%u R fr%u = %04x p=%08x]\n", pa, n, v & 0xffff,
+		if (log.gate(log_key('R', n, v)))
+			log("[hpib%u R fr%u = %04x p=%08x]\n", pa, n, v & 0xffff,
 					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
 		return v;
 	}
 
 	void write_fr(unsigned n, u32 v) override
 	{
 		v &= 0xffff;
-		if (log_line('W', n, v))
-		{
-			std::printf("[hpib%u W fr%u = %04x p=%08x]\n", pa, n, v,
+		if (log.gate(log_key('W', n, v)))
+			log("[hpib%u W fr%u = %04x p=%08x]\n", pa, n, v,
 					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
 		m_fr[n & 15] = v;
 		switch (n)
 		{
@@ -540,11 +513,14 @@ private:
 		const u8 fc = raw[0];
 		if (log)
 		{
-			std::printf("[hpib%u request %02x:", pa, fc);
+			std::string hex;
+			char b2[4];
 			for (size_t k = 1; k < raw.size() && k < 24; k++)
-				std::printf(" %02x", raw[k]);
-			std::printf("]\n");
-			std::fflush(stdout);
+			{
+				std::snprintf(b2, sizeof b2, " %02x", raw[k]);
+				hex += b2;
+			}
+			log("[hpib%u request %02x:%s]\n", pa, fc, hex.c_str());
 		}
 		switch (fc >> 6)
 		{
@@ -587,7 +563,7 @@ private:
 			m_tstat = 0x0e;
 			return;
 		}
-		disc.command(cmd, m_out, log);
+		disc.command(cmd, m_out, &log);
 		m_tstat = 0;
 
 		// The status block: TSTAT, then the device's QSTAT, and if that
@@ -601,7 +577,7 @@ private:
 		{
 			std::deque<u8> report;
 			const std::vector<u8> rs{ 0x0d };
-			disc.command(rs, report, log);
+			disc.command(rs, report, &log);
 			for (u8 b : report)
 				m_status_block.push_back(b);
 		}
@@ -654,9 +630,6 @@ private:
 	bool m_present = false;
 	bool m_echo_pending = false;
 	u32 m_last_fr0 = 0;
-	u32 m_log_last = 0xffffffffu;
-	unsigned m_log_repeat = 0;
-	unsigned m_log_lines = 0;
 };
 
 } // namespace focus

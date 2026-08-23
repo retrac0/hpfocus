@@ -47,38 +47,21 @@ std::unique_ptr<util::disasm_interface> focus_device::create_disassembler()
 // the standard effective-address path computes -- a table reached through
 // PLDA/PSTA, as the per-task handler table is, is invisible to it.
 // Instruction fetches come through here too, so keep the range to data.
-static struct
-{
-	bool checked = false, on = false;
-	focus::u32 lo = 0, hi = 0;
-	double from = 0.0;
-	unsigned left = 200;
-} s_rwatch;
-
 void focus_device::check_rwatch(focus::u32 addr, focus::u32 data)
 {
-	auto &w = s_rwatch;
-	if (!w.checked)
-	{
-		w.checked = true;
-		if (const char *e = getenv("FOCUS_RWATCH"))
-		{
-			w.lo = strtoul(e, nullptr, 16);
-			if (const char *colon = strchr(e, ':'))
-				w.hi = strtoul(colon + 1, nullptr, 16);
-			if (const char *n = getenv("FOCUS_RWFROM"))
-				w.from = strtod(n, nullptr);
-			w.on = w.hi >= w.lo && w.hi != 0;
-		}
-	}
-	if (!w.on || addr + 4 <= w.lo || addr > w.hi || !w.left
-			|| machine().time().as_double() < w.from)
+	static const focus::knob::range where("FOCUS_RWATCH");
+	static const focus::knob::seconds from("FOCUS_RWFROM", 0.0);
+	static focus::knob::channel log("FOCUS_RWATCH", 200);
+
+	const double now = machine().time().as_double();
+	if (!where || addr + 4 <= where.lo() || addr > where.hi() || !log
+			|| now < from)
 		return;
-	w.left--;
-	std::printf("[rwatch %08x -> %08x P=%08x PB=%08x t=%.3f]%s\n",
-			addr, data, m_core.r.p, m_core.r.pb,
-			machine().time().as_double(), w.left ? "" : " (cap reached)");
-	std::fflush(stdout);
+	// The last line the budget allows says so, rather than the report
+	// simply stopping and leaving the reader to wonder.
+	const char *const note = log.left() == 1 ? " (cap reached)" : "";
+	log("[rwatch %08x -> %08x P=%08x PB=%08x t=%.3f]%s\n",
+			addr, data, m_core.r.p, m_core.r.pb, now, note);
 }
 
 focus::u32 focus_device::read32(focus::u32 addr)
@@ -94,39 +77,20 @@ focus::u32 focus_device::read32(focus::u32 addr)
 // a store from DMA or another non-CPU agent shows P of whatever the CPU was
 // doing at the time -- attribution still needs the caller to check that P's
 // neighbourhood really contains a store instruction.
-static struct
-{
-	bool checked = false, on = false;
-	focus::u32 lo = 0, hi = 0;
-	double from = 0.0;
-	unsigned left = 400;
-} s_wwatch;
-
 void focus_device::check_wwatch(focus::u32 addr, focus::u32 data, unsigned bytes)
 {
-	auto &w = s_wwatch;
-	if (!w.checked)
-	{
-		w.checked = true;
-		if (const char *e = getenv("FOCUS_WWATCH"))
-		{
-			w.lo = strtoul(e, nullptr, 16);
-			if (const char *colon = strchr(e, ':'))
-				w.hi = strtoul(colon + 1, nullptr, 16);
-			if (const char *n = getenv("FOCUS_WWFROM"))
-				w.from = strtod(n, nullptr);
-			w.on = w.hi >= w.lo && w.hi != 0;
-		}
-	}
-	if (!w.on || addr + bytes <= w.lo || addr > w.hi || !w.left
-			|| machine().time().as_double() < w.from)
+	static const focus::knob::range where("FOCUS_WWATCH");
+	static const focus::knob::seconds from("FOCUS_WWFROM", 0.0);
+	static focus::knob::channel log("FOCUS_WWATCH", 400);
+
+	const double now = machine().time().as_double();
+	if (!where || addr + bytes <= where.lo() || addr > where.hi() || !log
+			|| now < from)
 		return;
-	w.left--;
-	std::printf("[wwatch %08x <- %0*x (%u) P=%08x PB=%08x t=%.3f]%s\n",
+	const char *const note = log.left() == 1 ? " (cap reached)" : "";
+	log("[wwatch %08x <- %0*x (%u) P=%08x PB=%08x t=%.3f]%s\n",
 			addr, int(bytes * 2), data, bytes, m_core.r.p, m_core.r.pb,
-			machine().time().as_double(),
-			w.left ? "" : " (cap reached)");
-	std::fflush(stdout);
+			now, note);
 }
 
 void focus_device::write32(focus::u32 addr, focus::u32 data)

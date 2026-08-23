@@ -52,9 +52,9 @@ struct dim_card : public iop_interface
 	u8 crtc[16] = {};
 	u32 id = 6;             // the identity the alphanumeric driver binds
 	unsigned pa = 0;
-	bool log_fr = false;
+	knob::device_log log_fr;
 	u32 fr1 = 0x80;         // what the powerup self test reads
-	bool log_cells = false;
+	knob::device_log log_cells;
 	// A host that wants to know which code put a particular message on
 	// the screen watches every cell going by.
 	std::function<void(u16)> on_cell;
@@ -88,15 +88,13 @@ struct dim_card : public iop_interface
 		else if (n == 3)
 			v = id;
 
-		if (log_fr)
-			std::printf("[dim R fr%u=%04x]\n", n, v);
+		log_fr("[dim R fr%u=%04x]\n", n, v);
 		return v;
 	}
 
 	void write_fr(unsigned n, u32 v) override
 	{
-		if (log_fr)
-			std::printf("[dim W fr%u=%04x]\n", n, v & 0xffff);
+		log_fr("[dim W fr%u=%04x]\n", n, v & 0xffff);
 		switch (n)
 		{
 		case 0:                     // a character cell, written directly
@@ -150,12 +148,10 @@ struct dim_card : public iop_interface
 private:
 	void put(u16 v)
 	{
-		if (log_cells)
-		{
-			std::printf("[dim %04x <- %04x %c]\n", m_addr, v,
-					(v & 0xff) >= 32 && (v & 0xff) < 127 ? char(v & 0xff) : '.');
-			std::fflush(stdout);   // MAME buffers stdout; keep the log ordered
-		}
+		// Flushed by the log, which matters here: MAME buffers stdout
+		// and these interleave with the machine's own output.
+		log_cells("[dim %04x <- %04x %c]\n", m_addr, v,
+				(v & 0xff) >= 32 && (v & 0xff) < 127 ? char(v & 0xff) : '.');
 		if (on_cell)
 			on_cell(v);
 		vram[m_addr] = v;

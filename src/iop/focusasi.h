@@ -95,40 +95,16 @@ struct asi_card : public iop_interface
 {
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
-	bool log = false;
-
-	// A driver polling a status register runs to hundreds of thousands of
-	// accesses in a few emulated seconds, and logging each one -- flushed,
-	// so a killed run still says what it saw -- costs more time than the
-	// emulation itself. Identical consecutive accesses are collapsed into
-	// a repeat count, and the whole log stops after `log_max` lines.
-	unsigned log_max = 2000;
-	bool log_line(const char *dir, unsigned n, u32 v)
+	// The card's log. Collapsing and capping live in knob::device_log,
+	// shared with the HP-IB card, because a driver polling a status
+	// register runs to hundreds of thousands of accesses in a few
+	// emulated seconds and neither card can afford to print them all.
+	knob::device_log log;
+	// What makes one register access different from the last: the
+	// direction, the register and the value.
+	static unsigned long log_key(char dir, unsigned n, u32 v)
 	{
-		if (!log)
-			return false;
-		const u32 key = (u32(dir[0]) << 24) | (n << 16) | (v & 0xffff);
-		if (key == m_log_last)
-		{
-			m_log_repeat++;
-			return false;
-		}
-		if (m_log_repeat)
-		{
-			std::printf("[asi%u ... x%u more]\n", pa, m_log_repeat);
-			m_log_repeat = 0;
-		}
-		m_log_last = key;
-		if (m_log_lines++ >= log_max)
-		{
-			if (m_log_lines == log_max + 1)
-			{
-				std::printf("[asi%u log capped at %u lines]\n", pa, log_max);
-				std::fflush(stdout);
-			}
-			return false;
-		}
-		return true;
+		return (u32(dir) << 24) | (n << 16) | (v & 0xffff);
 	}
 
 	// The identity block the IDY order answers (27128A 4-67). The MUX
@@ -346,10 +322,13 @@ struct asi_card : public iop_interface
 	// Emulated seconds for the log lines below.
 	double stamp() const { return iop ? iop->tnow() : 0.0; }
 
-	static bool dbg()
+	// The card's own running commentary, distinct from the FR-register
+	// trace above: what it decided and when, in emulated time. One
+	// channel serves every card in the machine, as the switch does.
+	static knob::channel &dbg()
 	{
-		static const bool on = std::getenv("FOCUS_ASIDBG") != nullptr;
-		return on;
+		static knob::channel c("FOCUS_ASIDBG");
+		return c;
 	}
 
 	u32 read_fr(unsigned n) override
@@ -418,7 +397,7 @@ struct asi_card : public iop_interface
 				m_events.pop_front();
 				m_ard = false;
 				if (dbg())
-					std::printf("[%8.3fs asi%u event %02x read from FR9]\n",
+					dbg()("[%8.3fs asi%u event %02x read from FR9]\n",
 							stamp(), pa, u8(v));
 			}
 			break;
@@ -433,24 +412,18 @@ struct asi_card : public iop_interface
 			v = m_fr[n & 15];
 			break;
 		}
-		if (log_line("R", n, v))
-		{
-			std::printf("[asi%u R fr%u = %04x p=%08x]\n", pa, n, v & 0xffff,
+		if (log.gate(log_key('R', n, v)))
+			log("[asi%u R fr%u = %04x p=%08x]\n", pa, n, v & 0xffff,
 					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
 		return v;
 	}
 
 	void write_fr(unsigned n, u32 v) override
 	{
 		v &= 0xffff;
-		if (log_line("W", n, v))
-		{
-			std::printf("[asi%u W fr%u = %04x p=%08x]\n", pa, n, v,
+		if (log.gate(log_key('W', n, v)))
+			log("[asi%u W fr%u = %04x p=%08x]\n", pa, n, v,
 					iop ? iop->tpc() : 0);
-			std::fflush(stdout);
-		}
 		m_fr[n & 15] = v;
 		switch (n)
 		{
@@ -557,7 +530,7 @@ struct asi_card : public iop_interface
 			const u8 code = m_pending.front();
 			m_pending.pop_front();
 			if (dbg())
-				std::printf("[%8.3fs asi%u event %02x queued, %u pending]\n",
+				dbg()("[%8.3fs asi%u event %02x queued, %u pending]\n",
 						stamp(), pa, code, unsigned(m_pending.size()));
 			m_events.push_back(code);
 			if (iop)
@@ -642,7 +615,7 @@ private:
 		if (u8(o >> 4) == ORD_CLC)
 			m_want_order = false;
 		if (dbg())
-			std::printf("[%8.3fs asi%u order %02x want_order=%d]\n",
+			dbg()("[%8.3fs asi%u order %02x want_order=%d]\n",
 					stamp(), pa, o, m_want_order);
 		switch (m_order)
 		{
@@ -688,7 +661,7 @@ private:
 			const u8 op = m_rts_report ? m_rts_report : rts_opcode;
 			m_rts_report = 0;
 			if (dbg())
-				std::printf("[%8.3fs asi%u RTS reports %u lcn=%u]\n",
+				dbg()("[%8.3fs asi%u RTS reports %u lcn=%u]\n",
 						stamp(), pa, op,
 						op == RTS_AES ? 0u : unsigned(rts_lcn));
 			m_out.push_back(op);
@@ -740,7 +713,7 @@ private:
 				!= m_pending.end())
 			return;
 		if (dbg())
-			std::printf("[%8.3fs asi%u event %02x armed (%s), %u pending]\n",
+			dbg()("[%8.3fs asi%u event %02x armed (%s), %u pending]\n",
 					stamp(), pa, code, why,
 					unsigned(m_pending.size()) + 1);
 		m_pending.push_back(code);
@@ -829,13 +802,16 @@ private:
 		m_length      = u16((m_in[5] << 8) | m_in[6]);
 		if (log)
 		{
-			std::printf("[asi%u request code=%u channel=%u sf=%u port=%u "
-					"len=%u raw", pa, m_request, m_channel, m_subfunction,
-					m_port, m_length);
+			std::string hex;
+			char b2[4];
 			for (u8 b : m_in)
-				std::printf(" %02x", b);
-			std::printf("]\n");
-			std::fflush(stdout);
+			{
+				std::snprintf(b2, sizeof b2, " %02x", b);
+				hex += b2;
+			}
+			log("[asi%u request code=%u channel=%u sf=%u port=%u "
+					"len=%u raw%s]\n", pa, m_request, m_channel,
+					m_subfunction, m_port, m_length, hex.c_str());
 		}
 		m_in.clear();
 		m_transferred = 0;
@@ -1094,9 +1070,6 @@ private:
 	u16 m_length = 0;
 
 	// The powerup presence test's echo, as on every other card here.
-	u32 m_log_last = 0xffffffffu;
-	unsigned m_log_repeat = 0;
-	unsigned m_log_lines = 0;
 	bool m_present = false;
 	bool m_echo_pending = false;
 	u32 m_last_fr0 = 0;

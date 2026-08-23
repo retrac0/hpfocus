@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "focusknobs.h"
 #include "focusstate.h"
 
 #include <cstdlib>
@@ -266,7 +267,7 @@ public:
 			// PL-relative SLOT itself in the named code segment --
 			// per-segment static storage addressed through PL, the way
 			// the STT is. If this is wrong the bounds trap stands.
-			static const bool no_fb = getenv("FOCUS_NOLABELDATA") != nullptr;
+			static const knob::flag no_fb("FOCUS_NOLABELDATA");
 			if (!no_fb && out.t != trap::none && ers32::get(ptr, 0, 1) == 1 && m_cst)
 			{
 				u32 base = 0, len = 0;

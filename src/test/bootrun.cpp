@@ -160,6 +160,8 @@ const char *addr_trap_name(focus::trap t)
 
 int main(int argc, char **argv)
 {
+	if (knob::handle_help())
+		return 0;
 	const char *path = nullptr;
 	u32 p64 = 2060 + 8000;         // Q+64: 2060 + G, G unknown; a knob
 	u32 load = 0x100000;           // where the "loader" places the image
@@ -291,7 +293,8 @@ int main(int argc, char **argv)
 	// stays out of the device bitmap whatever the console is set to.
 	console.id = 4;
 	console6.id = console_id;
-	console6.log_fr = kbd_log;
+	console6.log_fr.name("sc", 6);
+	console6.log_fr.enable(kbd_log);
 	iop.attach(0, &console);       // select code 0: the error reporter's
 	console6.iop = &iop;
 	console6.pa = 6;
@@ -300,7 +303,8 @@ int main(int argc, char **argv)
 	{
 		probe.pa = probe_pa;
 		probe.id = probe_id;
-		probe.log = probe_log;
+		probe.log.name("probe", probe_pa);
+		probe.log.enable(probe_log);
 		iop.attach(probe_pa, &probe);
 	}
 
