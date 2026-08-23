@@ -240,6 +240,124 @@ undamaged BASIC and diagnostic discs carry the project through its first three
 milestones, and they target the 520 — which is the machine the media was
 written for.
 
+## The BASIC demonstration discs
+
+`software/demos/BASDEM1-7.TD0` are HP's seven-volume BASIC 2.0 demonstration
+set, October 1982. All seven decode and mount, and the emulator reads their
+file system correctly -- `CAT` inside BASIC agrees with `tools/sdfread.py`
+run over the same image offline, directory for directory.
+
+Each disc carries a `/DEMO` directory with an uppercase `MAIN_MENU` and a
+crowd of lowercase-named programs; disc 2 also has `/DEMO/DIR/games/` with
+`BREAKOUT`, `MASTERMIND` and `CUBIE`.
+
+**Where they get to.** `LOAD` works and `LIST` works -- a demo's source
+prints on the console, line numbers and all:
+
+```
+1510    Y=45*SIN(Ang)
+1520*   MISSING OPTION # 48
+```
+
+`RUN` does not. Every stored program tried so far stops at the same place:
+
+```
+System halted due to system error. TRAP:00000021 00001578 00064001 00000099
+```
+
+The trap parameters are **identical** for a 3.7 KB text game (`MASTERMIND`)
+and a 12.5 KB menu program (`MAIN_MENU`), and identical again whether the
+machine boots plain BASIC 2.0 or the option-rich diagnostics disc built by
+`tools/mkdiagdisc.sh`. This is the typed-program scaffold failure the README
+describes, reached by a second, independent route: not a demo-specific
+problem and not a missing option.
+
+The control matters as much: **`CAT_BOOT` still runs** -- banner, copyright
+and its interactive device prompt -- so the failure is not "stored programs
+do not run", it is narrower than that.
+
+**Two things get in the way before that, both worth knowing.**
+
+*The letter `e` cannot be typed in lower case.* Everything else can:
+typing `abcdefghijklmnopqrstuvwxyz` at the BASIC prompt produces
+`abcd{fghijklmnopqrstuvwxyz`. The keyboard translation table in the
+diagnostics image (`diag.bin` 0x23614) says why -- unshifted keycode 0x2a is
+`E`, and the shifted half maps 0xaa, which is what `code | 0x80` produces,
+to `{`. There is no shifted slot that yields lower-case `e`.
+
+This matters because most demo file names are lower case, and `games` has an
+`e` in it. Two ways round it, both tried:
+
+- Build the name in BASIC: `LOAD "DEMO/DIR/gam"&CHR$(101)&"s/..."`. The
+  string concatenation itself stops at `TRAP:00000030`, with
+  `2F67616D 2F444952 44454D4F` -- "DEMO/DIR/gam" -- on the stack.
+- Rename the directory in the image. Uppercasing the six occurrences of
+  `games` in `BASDEM2` leaves the file system valid (`sdfread.py` reports
+  `corrupt=0`) and makes the whole path typeable. This is what got
+  `MASTERMIND` as far as its trap.
+
+The source comment in `hp9000_5xx.cpp` still says "LOWER CASE IS NOT
+REACHABLE YET" and that shifted letters "type unrelated characters". That
+was true when it was written and is not any more: twenty-five of the
+twenty-six work. Only `e` is left.
+
+*The graphical demos cannot work yet regardless.* `MAIN_MENU` and most of
+the lowercase programs draw, and no graphics display is modelled
+(HARDWARE.md 2.7) -- the same wall HP's own diagnostics hit at `ERROR 702`.
+`MASTERMIND` was chosen for the attempt because it is the one likely to be
+pure text.
+
+**What separates the programs that run from the ones that trap.** Reading
+the stored files directly with `tools/progfile.py` -- extract a disc with
+`tools/sdfread.py <image> --extract <dir>` first -- shows every program's
+subprogram count and the size of its transfer table:
+
+| program | subprograms | table | bytes | RUN |
+|---|---:|---:|---:|---|
+| `CAT_BOOT` (fixed disc) | 20 | **21** | 22,100 | runs, prompts |
+| `BUILD_BOOT` (fixed disc) | 36 | **25** | 56,238 | not tried |
+| `introduction.c` | 4 | **5** | 13,874 | runs, `ERROR 3` |
+| the ~380-byte stubs | 1 | **2** | ~380 | runs, `ERROR 3` |
+| `bplot_control` | 2 | 0 | 1,105 | runs, `ERROR 3` |
+| `MASTERMIND` | 2 | 0 | 3,780 | **TRAP 021** |
+| `BREAKOUT` | 7 | 0 | 8,979 | not tried |
+| `CUBIE` | 9 | 0 | 12,882 | not tried |
+| `MAIN_MENU` | 15 | 0 | 12,595 | **TRAP 021** |
+
+`ERROR 3, Line not found or not in current context` is BASIC's own error,
+not a fault: those programs are launcher stubs that expect the context
+`MAIN_MENU` sets up, and reaching a BASIC error message means the emulator
+ran them.
+
+The first reading of this table -- programs with a prebuilt table run,
+programs with a zero-entry table trap -- is *not* right, and
+`bplot_control` is the case that disproves it: zero entries, no trap. It
+dies on `ERROR 3` on its way in, before it ever calls a subprogram.
+
+What survives is narrower and more useful: **the trap needs a real
+run-time call into a subprogram whose transfer-table entry was never
+built.** A program that ships with its table populated (`CAT_BOOT`, 21
+entries) resolves its calls without the scaffold and runs. A program that
+ships with none has to have them linked as it goes, and that is the
+mechanism that fails. A program that errors out before its first call
+never exercises either path.
+
+That makes `MASTERMIND` the cheapest reproducer the project has for the
+scaffold trap: 3,780 bytes, two subprograms, and it fails in the same
+instruction with the same parameters as HP's 22 KB diagnostics driver.
+
+**Iterating LIST works, with a caveat.** `LIST 1,25` lists the range and
+prints its `AVAILABLE MEMORY` trailer correctly -- then the machine takes a
+bounds violation, `TRAP:00000001`, before another command can be typed. So
+a program can be read out of the machine a window at a time, but at one
+window per boot. Reading the file offline with `progfile.py` is the faster
+route and is what the table above came from.
+
+`FOCUS_DIMCELLS` is the way to capture that output: it logs every character
+cell written, so text that scrolled off is still recoverable. Replaying the
+log in write order, breaking a line wherever the address is not one past
+the last, reconstructs what was printed.
+
 ## What is still missing
 
 1. **SCM loader ROM** — see above. Soft blocker, late in the schedule.

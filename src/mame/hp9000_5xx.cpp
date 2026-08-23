@@ -2414,16 +2414,25 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// need shift on the real keyboard therefore map to code | 0x80.
 	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
 	// how the table above was read off the machine.
-	// LOWER CASE IS NOT REACHABLE YET, and it costs something real: a
-	// file whose name is lower case -- most of the demo discs -- cannot
-	// be named to LOAD, which answers ERROR 56, file name is undefined.
-	// Unshifted letters arrive upper case, and setting the shift bit
-	// (code | 0x80, which is how the punctuation in the map above reaches
-	// its shifted half) does NOT give the lower-case letter: it types
-	// unrelated characters. So the case key is not the shift bit. It is
-	// probably a CAPS toggle held in the keyboard board's own state, or a
-	// modifier reported outside the keycode; identifying it needs another
-	// sweep of the board's registers. Upper-case-named files load fine.
+	// Lower case reaches the machine for twenty-five letters of the
+	// twenty-six: typing the alphabet at the BASIC prompt produces
+	// `abcd{fghijklmnopqrstuvwxyz`. Only `e` is missing, and the
+	// translation table says why rather than leaving it a mystery --
+	// unshifted 0x2a is `E`, and the shifted half maps 0xaa, which is
+	// what `code | 0x80` produces, to `{`. No shifted slot yields a
+	// lower-case `e`, so this is not a wrong entry in the table above
+	// but a key this model has no way to press: probably a CAPS toggle
+	// held in the keyboard board's own state, or a modifier reported
+	// outside the keycode. Identifying it needs another sweep of the
+	// board's registers.
+	//
+	// It costs something real. Most demo-disc file names are lower case
+	// and `games` has an `e` in it, so `/DEMO/DIR/games/MASTERMIND`
+	// cannot be typed and LOAD answers ERROR 56, file name is undefined.
+	// See docs/SOFTWARE.md for the two ways round it.
+	//
+	// (An earlier reading of this said no lower case was reachable at
+	// all. That was taken before the table above was complete.)
 	// Case. The holding register is a 7-bit keycode plus Shift and
 	// Control bits (520 Service, "Theory of Operation" 2-33), so bit 7
 	// of the translation index is Shift -- and on this machine the

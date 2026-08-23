@@ -87,7 +87,7 @@ struct result
 // When `tos` is supplied the loader's parameter is pushed before entry, and
 // `trail` collects the last addresses executed.
 result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
-		u32 pb, u32 entry, unsigned budget, std::vector<u8> &visits,
+		u32 pb, u32 entry, unsigned budget, std::vector<u16> &visits,
 		bool push_tos = false, u32 tos = 0, std::vector<u32> *trail = nullptr)
 {
 	std::fill(mem.m_d.begin() + 0x400000, mem.m_d.begin() + 0x520000, 0);
@@ -140,9 +140,13 @@ result run_from(flat_memory &mem, const std::vector<u8> &img, u32 base,
 		{
 			if (visits[idx] == 0)
 				distinct++;
-			if (visits[idx] < 255)
+			if (visits[idx] < 0xffff)
 				visits[idx]++;
 			// A tight self-loop means it is spinning, not progressing.
+			// The counter is 16 bits because this test needs it to be: as
+			// a saturating byte it stopped at 255 and the comparison below
+			// could never be true, so a spinning probe ran its whole
+			// budget instead of stopping.
 			if (visits[idx] > 20000)
 				break;
 		}
@@ -243,7 +247,7 @@ int main(int argc, char **argv)
 		const u32 tos = u32(strtoul(argv[6], nullptr, 0));
 		if (argc >= 8)
 			param_q64 = u32(strtoul(argv[7], nullptr, 0));
-		std::vector<u8> visits(img.size() / 2 + 2, 0);
+		std::vector<u16> visits(img.size() / 2 + 2, 0);
 		std::vector<u32> trail;
 		flat_memory mem(0x600000);
 		const result r = run_from(mem, img, base, base + pb, base + entry,
@@ -267,7 +271,7 @@ int main(int argc, char **argv)
 			"PB", "entry", "steps", "distinct", "stopped by", "at");
 	std::printf("%s\n", std::string(70, '-').c_str());
 
-	std::vector<u8> visits(img.size() / 2 + 2, 0);
+	std::vector<u16> visits(img.size() / 2 + 2, 0);
 	flat_memory mem(0x600000);
 	struct cand { unsigned distinct; u32 pb, entry; };
 	std::vector<cand> best;
