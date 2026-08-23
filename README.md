@@ -185,11 +185,49 @@ of this container are empty, not merely out of bounds.
 
 So the length mismatch was hiding the real gap. It is not enough to know
 which of the two containers the scaffold belongs in: whichever it is, the
-step that *fills* slots 7-9 never runs for a freshly compiled program. The
-question to put next is what populates those three entries for a program
-that works — `CAT_BOOT` ships with a 21-entry table already populated and
-runs, so the linking path may simply never be exercised by anything that
-currently works.
+step that *fills* slots 7-9 never runs for a freshly compiled program.
+
+**Entries 5-9 are fixed runtime hooks.** `FOCUS_FIND` locates the three-word
+pattern in five other places in the same run, so populated nine-entry
+containers exist alongside the broken one. Reading a working one out
+(`0x77864`) against the broken one puts the difference beyond doubt:
+
+| entry | broken | working |
+|---|---|---|
+| 1-4 | program-specific | program-specific |
+| 5, 6 | `803a0003 80394003` | `803a0003 80394003` |
+| 7, 8, 9 | `00000000` x3 | `80340006 802f4006 80360006` |
+| length | `00000018` | `00000024` |
+
+Entries 5 to 9 are the same constants in every working container — hooks
+into segment 6, BASIC — and the broken one received two of the five.
+
+**Supplying the missing three gets the call through.** Poking entries 7-9
+and the length in immediately before the call (`FOCUS_POKEPC`) lets
+`PCLS STT[9]` resolve: it calls into segment 6 at offset 0x6344, runs, and
+returns cleanly. The failure moves two instructions on, to **trap 030**, in
+exactly the place the earlier `MAIN`-table attempt reached — now from a
+third independent direction, and on a 3.7 KB program rather than a 31 KB
+one.
+
+**And the scaffold disassembles.** The ten words the compiler composes are:
+
+```
+LDS     P-16          a word out of the code segment
+LDIS    #9
+PCLS    STT[9]        <- was trapping 021
+ADDI    #145
+INCM    S-3,I         <- now traps 030
+DEL
+```
+
+`INCM S-3,I` is the instruction `focusaddr.h` already carries a hypothesis
+about: the external-program-label fallback, written for BASIC's DISP path
+(`LPP STT[11]; INCM S-3,I`) and switched off by `FOCUS_NOLABELDATA`. The
+scaffold reaches the same instruction by a different route, which makes it
+a second and much smaller test case for a reading that was only ever
+supported by one. Settling whether that fallback is right is now the
+frontier, and `MASTERMIND` with four pokes is the bench for it.
 
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
