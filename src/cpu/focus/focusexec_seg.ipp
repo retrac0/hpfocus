@@ -145,6 +145,17 @@ private:
 		const u32 stt_off = ers32::get(ptr, 1, 19);
 		const u32 seg = ers32::get(ptr, 20, 12);
 
+		// "An external program pointer contains a code segment number of
+		// zero, 1024, or 3072" (sheet 47, cause 17). do_exit had the EXIT
+		// half of this; the pointer half was missing. 1024 and 3072 are
+		// the sharable and user sub-table headers, and 0 is the pre-CST
+		// absolute environment -- none of them is callable.
+		if (seg == 0 || seg == 1024 || seg == 3072)
+		{
+			out = take_trap(trap_cause::external_program_pointer, seg);
+			return false;
+		}
+
 		u32 ea;
 		if (!cst_entry_addr(seg, ea))
 		{
@@ -162,11 +173,27 @@ private:
 		const u32 pb = m_mem.read32(ea + 8);
 		const u32 pl = pb + m_mem.read32(ea + 4);   // length-1, low bits 11
 
+		// Cause 21's length test is "in the referenced segment" (sheet
+		// 48), and the referenced segment is this one, not the caller's.
+		// do_call bounds the first lookup against its own PL; this is the
+		// second lookup, into the STT of the segment being entered, and
+		// it was going unchecked.
+		const u32 limit = ers32::get(m_mem.read32(pl), 13, 19);
+		if (stt_off > limit)
+		{
+			out = take_trap(trap_cause::stt_violation, stt_off);
+			return false;
+		}
+
 		// The STT entry in the called segment must be a local pointer.
+		// This is STT Violation condition 2 -- "the STT number in an
+		// external program pointer points to an external program pointer
+		// in the referenced segment" (sheet 48) -- and not cause 17,
+		// which is about a pointer naming a reserved segment number.
 		const u32 slot = m_mem.read32(pl - stt_off);
 		if (ers32::get(slot, 0, 1))
 		{
-			out = take_trap(trap_cause::external_program_pointer, slot);
+			out = take_trap(trap_cause::stt_violation, slot);
 			return false;
 		}
 		if (ers32::get(slot, 1, 1) && !r.privileged())

@@ -319,6 +319,46 @@ negative doubleword whose top word is positive, and a `PSHN` with X = 0
 that must leave the code alone. The suite goes 618 checks to 648 with the
 same 15 recorded failures.
 
+### Findings G1-G3 (fixed) — the segmentation group's traps
+
+The trap causes are specified on sheets 47-48, and three of them were
+being raised for the wrong condition. All three sit in `enter_segment`,
+which is the code every external procedure call goes through.
+
+Sheet 48, cause 21, STT Violation, gives **two** conditions:
+
+> 1) An STT entry number is greater than the STT length in the referenced
+>    segment.
+> 2) The STT number in an external program pointer points to an external
+>    program pointer in the referenced segment.
+
+And sheet 47, cause 17, is about something else entirely:
+
+> External Program Pointer Violation. An external program pointer contains
+> a code segment number of zero, 1024, or 3072. Or an attempt to EXIT to
+> code segment 1024 or 3072.
+
+| | finding |
+|---|---|
+| **G1** | `enter_segment` raised cause **17** when the called segment's STT slot held an external pointer. That is cause 21 condition 2. |
+| **G2** | Cause 17's own condition -- a pointer naming segment 0, 1024 or 3072 -- was implemented for `EXIT` but not on entry, so an external pointer into a sub-table header was never caught. |
+| **G3** | `enter_segment` read the called segment's STT slot with no length test at all. `do_call` bounds the *first* lookup against its own `PL`; this is the second lookup, into the STT of the segment being entered, and cause 21 condition 1 says "in the referenced segment". |
+
+Condition 1 also settles a question the scaffold work depends on: the test
+is "greater than", so the entry at exactly the STT length is the last
+valid one. `do_call`'s `offset > limit` is right, and the frontier
+analysis that rests on it is not resting on an off-by-one.
+
+**What the fixes changed: nothing.** All seventeen golden probes stay
+identical, and the `MASTERMIND` reproducer still stops at
+`TRAP:00000021 00001578 00064001 00000099`, the same cause with the same
+parameters. That is worth stating plainly, because the hope was otherwise:
+these three are on the scaffold's path, and if BASIC had been failing to
+link because it was handed cause 17 where it expected 21, this would have
+moved. It did not. The scaffold trap comes from `do_call`'s own limit
+check against the *calling* segment, exactly where the project's notes
+put it, and none of the three corrected paths is involved.
+
 ### Not yet checked
 
 The audit stops here, with roughly 70% of executed instructions covered by
