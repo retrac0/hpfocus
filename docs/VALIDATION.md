@@ -359,6 +359,45 @@ moved. It did not. The scaffold trap comes from `do_call`'s own limit
 check against the *calling* segment, exactly where the project's notes
 put it, and none of the three corrected paths is involved.
 
+### Finding S3 (fixed) — CRB popped its bounds on the Check Trap path
+
+Compare Range & Branch (sheet 93) is the CASE-dispatch instruction: a value
+under a lower and an upper bound, branching when the value falls outside,
+and taking a Check Trap instead when the branch field is zero — which is how
+a CASE with no default reports an unmatched selector.
+
+The sheet is explicit about the stack:
+
+> The bounds parameters are popped from the stack if the integer is within
+> the range or if the branch is taken. **They are not popped for the trap
+> case.**
+
+The implementation popped unconditionally, before the range test, so the
+Check Trap path removed two words the handler is entitled to read. Fixed by
+moving the pop into the two branches that the sheet says perform it.
+`exectest` gained the case, which needs traps disabled — `take_trap` then
+returns without touching the stack, so what CRB itself did is what is left.
+Against the old code it fails four assertions.
+
+**The endpoint question is also now settled, and the code was already
+right.** The comment carried an open question: the scanned pseudocode reads
+`If (S-1) < (S-2) < (S)`, strict at both ends, but the code treated the
+bounds as inclusive and said "revisit if real code disagrees". Real code
+disagrees, decisively. Disassembling the BASIC boot image finds 309 CRB
+sites, and the constants pushed as bounds settle it:
+
+| bounds | reading |
+|---|---|
+| 48, 57 — at three sites | `'0'`..`'9'`, a digit test |
+| 34, 90 | `'"'`..`'Z'`, a character class |
+| −24, 24 | a symmetric range |
+| 1, 10 | a ten-way CASE |
+
+Under the strict reading, 48..57 classifies only `'1'`..`'8'` as digits and
+BASIC could not scan the numerals 0 or 9. Inclusive it is; the scanned `<`
+is either OCR damage to `≤` or the document being loose. The evidence now
+sits in the comment in place of the open question.
+
 ### The scaffold path, audited end to end (all correct)
 
 Debugging the trap-021 frontier put five components of the segmentation and

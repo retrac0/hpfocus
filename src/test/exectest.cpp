@@ -1343,6 +1343,24 @@ static void test_system_group()
 		CHECK(h.one(f2(077, 4)) == exec_trap::none);
 		CHECK_EQ(h.cpu.r.p, 0x1000 - 2 * 4);
 
+		// "The bounds parameters are popped from the stack if the
+		// integer is within the range or if the branch is taken. They
+		// are not popped for the trap case" (ERS sheet 93). With traps
+		// disabled take_trap returns without touching the stack, so
+		// what CRB itself did to it is what is left.
+		h.cpu.r.s = h.cpu.r.sb + 3;
+		h.cpu.push(99); h.cpu.push(1); h.cpu.push(10);
+		{
+			const u32 s_before = h.cpu.r.s;
+			CHECK(h.one(f2(073, 0)) == exec_trap::trapped);
+			CHECK(h.cpu.last_trap() == trap_cause::check_trap);
+			CHECK_EQ(h.cpu.r.s, s_before);        // nothing popped
+			CHECK_EQ(h.cpu.stk(0), 10);
+			CHECK_EQ(h.cpu.stk(1), 1);
+			CHECK_EQ(h.cpu.stk(2), 99);
+			CHECK_EQ(h.cpu.r.get(sf::CC), CCG);
+		}
+
 		// A zero branch field means Check Trap, STT entry 2, with CIR as
 		// the parameter (ERS sheet 46).
 		h.mem.write32(0, 0x2000);                 // system CST

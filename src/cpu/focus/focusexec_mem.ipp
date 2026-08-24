@@ -630,26 +630,34 @@ private:
 		case 073: case 077: {                                     // CRB
 			// Compare Range & Branch (ERS sheet 93). The value sits under
 			// two bounds: (S) is the upper, (S-1) the lower, (S-2) the
-			// value. The bounds are popped either way; in range gives CCE
-			// and falls through, out of range gives CCG and branches -- or
-			// takes a Check Trap when the branch field is zero, which is
-			// how a CASE with no default reports an unmatched selector.
+			// value. In range gives CCE and falls through, out of range
+			// gives CCG and branches -- or takes a Check Trap when the
+			// branch field is zero, which is how a CASE with no default
+			// reports an unmatched selector.
 			//
-			// The bounds are treated as inclusive. The ERS pseudocode as
-			// scanned reads "If (S-1) < (S-2) < (S)", strict at both ends,
-			// but that would reject the endpoints of every CASE range and
-			// contradicts the sibling CHEK, whose own text calls its limits
-			// bounds. Read as inclusive; revisit if real code disagrees.
+			// The bounds are inclusive. The ERS pseudocode as scanned reads
+			// "If (S-1) < (S-2) < (S)", strict at both ends, and BASIC
+			// settles it: three sites in the boot image push 48 and 57 --
+			// '0' and '9' -- around a character and branch on the result,
+			// which is a digit test that the strict reading would narrow
+			// to '1'..'8'. Others push 34 and 90 ('"' and 'Z'), and -24
+			// and 24. tools/focusdis.py over the boot image lists them.
+			//
+			// The pop cannot be hoisted above the test. The bounds go when
+			// the value is in range and when the branch is taken, but
+			// "they are not popped for the trap case" (sheet 93) -- a
+			// Check Trap handler is entitled to still find them there.
 			const s32 hi = s32(stk(0)), lo = s32(stk(1)), v = s32(stk(2));
-			r.s -= 8;
 			if (v >= lo && v <= hi)
 			{
+				r.s -= 8;
 				r.put(sf::CC, CCE);
 				return exec_trap::none;
 			}
 			r.put(sf::CC, CCG);
 			if (operand == 0)
 				return take_trap(trap_cause::check_trap, m_cir);
+			r.s -= 8;
 			rel();
 			return exec_trap::none;
 		}
