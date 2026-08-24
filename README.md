@@ -322,6 +322,29 @@ not was wrong. It does not bite here, because 628 fits inside segment 17 and
 no chain walk is needed, so the two readings agree. It would bite on a
 container whose offset ran past its segment.)
 
+**How the six-entry table gets there, and a walk-back.** Watching every byte
+of the table region shows the length word and all six entries arriving in a
+*single* 28-byte `MVB 7,B` — the "28-byte move" of the older note, installing
+`0x18` and six entries in one go. Breaking on it puts the machine in the
+parser segment, privileged, with `X = 783` (the container's size less one)
+and a caller chain lying entirely in the SUN OS KERNEL at `0x44xxx-0x49xxx`.
+This is the kernel's segment-creation path, handed a six-entry table to
+install. The nine-entry containers, by contrast, are never written after
+`t = 25`: they pre-exist, and the six-entry one is built fresh for this
+program at RUN.
+
+That means the conclusion just above — "the destination is not inverted" —
+is stated too strongly and should be read as: *the emulator faithfully
+computes the destination that BASIC's own object fields specify*. It does
+not establish that those fields are right, and there is now positive
+evidence against them. The composed code calls `STT[9]` and expects that
+call to consume three stack words, but entry 9 is the same constant
+`0x80360006` in every container examined, and the routine it names exits
+`N=1`. A template whose call site disagrees about arity with the universal
+hook it names is a template built for a different container's conventions.
+So the destination pairing is back on the table alongside the stamp, and
+the arity mismatch is the sharpest evidence either way.
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment
