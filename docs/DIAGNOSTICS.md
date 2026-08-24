@@ -141,7 +141,36 @@ this emulator does not model at all (HARDWARE.md §2.7). It is not avoidable
 by running a single test instead of the driver: each test file's `MAIN` is
 an empty stub — `PROGRAM MAIN !KEYBOARD    FEB 24, 1983` and nothing else —
 and the real body is a `SUB Program` the driver calls, so `TEST` is the only
-entry point there is.
+entry point there is. Confirmed from the other side too: `LOAD "(6)STATUS"`
+then `RUN` answers `ERROR 5 IN MAIN: Improper context terminator`.
+
+### What the driver actually wants from select code 1
+
+Parking a logging card there says more than "not modelled" does:
+
+    FOCUS_PROBE=1 FOCUS_PROBELOG=1 FOCUS_TYPE='LOAD "TEST"\n;RUN\n' \
+    FOCUS_TYPEAT=30,44 tools/runbasic-hd.sh software/hd/diag.img -- \
+        -mpb3 1m -mpb4 1m -flop1 "$PWD/software/test/500MFTST.TD0" -str 56
+
+The scan **succeeds**. It reads FR1, reads FR3 three times and gets zero,
+writes `1<<1` = 2 to FR0, and reads the presence echo back from FR1 — the
+same sequence every other card goes through, and a plain echoing interface
+satisfies all of it. The card is registered.
+
+What follows is the interesting part: the driver then reads FR1 **598,730
+times** and gives up. So `ERROR 702` is not "no card found", it is a
+**timeout waiting on a status bit in FR1** from a card the driver has
+already accepted. The detection half needs nothing; only the status
+semantics are missing.
+
+A short sweep of what FR1 answers — 0x0002, 0x0042, 0x0082, 0x00c2, 0x0102
+through `FOCUS_PROBEFR1`, all keeping bit 1 set so the presence echo still
+passes — leaves `ERROR 702` unchanged. That is the expected outcome rather
+than a discouraging one: §2.7 of HARDWARE.md records that no document in
+the collection gives the meaning of the individual FRs for this interface,
+so the bit is not going to be found by guessing five of them. Reading it
+off HP's own driver, which is on the option disc as `GRAPHICS`, is the
+route that does not depend on a manual nobody has.
 
 Five defects in the emulator had to go first, and all five were found by
 these tests rather than by anything else the project runs:
