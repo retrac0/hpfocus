@@ -404,8 +404,36 @@ That moves the question one hop further back and makes it much narrower than
 "which container": the SUN OS kernel builds a six-entry image at `t=32.488`
 for a program whose compiled code calls `STT[9]`, while five other
 containers alive in the same run carry nine with the last three being the
-fixed hooks `80340006 802f4006 80360006`. What decides that count in the
-kernel is the thing to find.
+fixed hooks `80340006 802f4006 80360006`. The instruction doing the writing
+is a `PMVA 3,B` inside a kernel copy loop at `PB+0xb98e`, so the count is an
+argument from further up, and what decides it is the thing to find.
+
+**What the two tables actually hold.** Decoding both entry by entry — bit 0
+clear is a local pointer, set is an external one with the segment in
+`(20:12)` and four times the entry number in `(1:19)` — shows the tail is
+not one block of five but two groups:
+
+| entry | broken (6 entries) | working (9 entries) |
+|---|---|---|
+| 1 | local `PB+0x27c` | local `PB+0x86` |
+| 2 | extern seg 3088 entry 2 | local `PB+0x72` |
+| 3 | extern seg 6 entry 186 | extern seg 4 entry 83 |
+| 4 | extern seg 6 entry 139 | extern seg 3091 entry 1 |
+| 5 | **extern seg 3 entry 232** | **extern seg 3 entry 232** |
+| 6 | **extern seg 3 entry 229** | **extern seg 3 entry 229** |
+| 7 | *empty* | extern seg 6 entry 208 |
+| 8 | *empty* | extern seg 6 entry 189 |
+| 9 | *empty* | extern seg 6 entry 216 |
+
+Entries 1-4 are the program's own and differ in shape between the two, which
+is expected. Entries 5 and 6 are byte-identical in both and point into
+segment 3, BASIC IO/MM RTS. Entries 7, 8 and 9 point into segment 6, BASIC
+itself — and those are the three the broken container never receives.
+
+So the missing piece is specifically **the link group into the BASIC runtime
+segment**, not a generic shortfall, and `STT[9]` — the entry the composed
+code calls — is the last member of it. The container gets its IO/MM links
+and not its BASIC links.
 
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
