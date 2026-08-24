@@ -110,10 +110,42 @@ stack for an empty one. See [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 **What still fails: a program typed at the keyboard.** `10 DISP 5` /
 `20 END` / `RUN` traps 021, STT Violation, in the program scaffold. A
 statement typed *without* a line number is a useful control: `DISP 5` and
-EXECUTE prints ` 5`, so compiling and running one statement works — it is
-specifically the stored-program scaffold that fails. (Note which key ends
-the line: in `FOCUS_TYPE`, `\n` is EXECUTE and `\r` STORE, and a numbered
-line needs `\r` or BASIC answers `IMPROPER COMMAND`.)
+EXECUTE prints ` 5`. (Note which key ends the line: in `FOCUS_TYPE`, `\n` is
+EXECUTE and `\r` STORE, and a numbered line needs `\r` or BASIC answers
+`IMPROPER COMMAND`.)
+
+**But that control is narrower than it looks, and it was over-read.** Trying
+a range of immediate statements says what actually works:
+
+| typed | result |
+|---|---|
+| `DISP 7`, `DISP 9` | ` 7`, ` 9` — correct |
+| `DISP "HI"` | `HI` — correct |
+| `DISP (7)` | ` 7` — correct |
+| `DISP 1+1` | **` 9`** |
+| `DISP 2+3`, `DISP 3*4`, `DISP 2+3*4` | **` 9`** each |
+| `DISP -5` | **` 9`** |
+| `LET A=6` | **TRAP 030** |
+| `NEW` | **TRAP 001** |
+
+So a *literal* prints, and so does a parenthesised one, but **any expression
+containing an operator — binary or unary — silently prints ` 9`** whatever
+its operands, with no trap at all. `LET` and `NEW` fault outright. What the
+`DISP 5` control demonstrates is therefore much less than "compiling and
+running one statement works": it shows that displaying a constant works.
+
+Two further things fall out. **The interactive loop survives exactly two
+statements**, then takes a bounds violation unprompted — reproducible across
+runs and true even when both statements succeeded, as `DISP "HI"` followed by
+`DISP 9` shows. And the constant ` 9`, tempting as it is next to the
+scaffold's `LDIS #9`, is **not** that: `FOCUS_SEGCALL` over an expression run
+against a literal run shows about 66 extra transfers, all HUMAN INTERFACE
+into the kernel at entries 81, 83, 209, 210 and 400-408, with no new
+call targets and nothing reaching a user container. The expression path never
+goes near `STT[9]`.
+
+These are much cheaper reproducers than anything above: `DISP 1+1` needs no
+disc, no `LOAD`, and no patched image.
 
 Every trap used to return past the instruction that caused it. The ERS
 splits its causes into two groups (sheet 52, notes 1 and 2): note 1 is
