@@ -373,6 +373,40 @@ to a bounds violation rather than past it. That poke invented a value rather
 than measuring one and should not be read as evidence either way; it is
 recorded only so the next person does not repeat it.
 
+**The six-entry table traced back to where it is born.** Breaking on the
+block move and reading its three stack operands — source, target, count —
+at each of its two firings maps the whole chain, and it turns out to be
+short:
+
+```
+t=32.488  SUN OS KERNEL builds a table image at 0x77cd0..0x77ceb
+t=32.489  MVB  copies 28 bytes  0x77ceb -> 0x77d2b   (staging)
+t=32.489  the compiler composes code over 0x77cd0..  (reusing the scratch)
+t=32.491  MVB  copies 28 bytes  0x77d2b -> 0x77d6b   (into PL)
+t=32.495  the composed code calls STT[9] and traps 021
+```
+
+Both moves carry count 28 and both are faithful: dumping the source at the
+moment of the first one shows
+
+```
+0x77cc0: 75650000 ffffffff 30005450 6c6f7400   <- unrelated data
+0x77cd0: 80394003 803a0003 8022c006 802e8006   <- entries 6,5,4,3
+0x77ce0: 80008c10 00000086 00000018            <- entries 2,1, length 0x18
+```
+
+Entries grow downward from a table's top, so entries 7, 8 and 9 would sit at
+`0x77cc4`, `0x77cc8`, `0x77ccc` — and what is there is `"Plot\0"` and
+`0xffffffff`, not pointers. **The image is born with six entries.** Neither
+copy truncates anything; the 28 is correct for what it is copying.
+
+That moves the question one hop further back and makes it much narrower than
+"which container": the SUN OS kernel builds a six-entry image at `t=32.488`
+for a program whose compiled code calls `STT[9]`, while five other
+containers alive in the same run carry nine with the last three being the
+fixed hooks `80340006 802f4006 80360006`. What decides that count in the
+kernel is the thing to find.
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment
