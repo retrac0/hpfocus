@@ -394,3 +394,78 @@ is worth knowing. It is a mask, not a fix, and it does not generalise:
   it matters here: at statement 1's delete `TEMP == S` exactly, which the
   ERS's strict `TEMP < S` would refuse. Neither bound changes the two cases
   above, but anyone tightening them should re-run `list-twice` first.
+
+
+---
+
+## 8. The compiler emits arithmetic for `/` and nothing for `+`, `-`, `*`
+
+`DISP 5` prints ` 5`; `DISP 4+1` prints ` 9`. The container is a red
+herring for this one — the fault is in what the **BASIC COMPILER**
+(segment 4) writes into it.
+
+Watching the emitted bytes (`FOCUS_WWATCH` over the container's code area,
+`FOCUS_WWFROM=19`) shows the compiler writing the statement one byte at a
+time from **COMPILER +0xf54**. Comparing two statements that differ only in
+the operator:
+
+| addr | `DISP 8/2` | `DISP 8+2` |
+|---|---|---|
+| 0x766b0 | `2c08` LDIS #8 | `2c08` LDIS #8 |
+| 0x766b2 | `0022` **FLTD** | `2c02` LDIS #2 |
+| 0x766b4 | `2c02` LDIS #2 | `2c09` **LDIS #9** |
+| 0x766b6 | `0022` **FLTD** | `320d` PCLS STT[13] |
+| 0x766b8 | `002c` **FDIV** | `2c01` LDIS #1 |
+| 0x766ba | `320d` PCLS STT[13] | `320e` PCLS STT[14] |
+
+Division compiles correctly — both operands floated, then the operation.
+**`+`, `-` and `*` all emit a single `LDIS #9` where the arithmetic
+belongs**, and all three emit byte-identical code (`DISP 1+1` and
+`DISP 1*1` produce byte-identical containers). The opcodes are `docs/opcodes.csv`
+octal: FLTD 042, FADD 051, FSUB 052, FMPY 053, FDIV 054.
+
+**The printed 9 is that literal.** Patching the emitted constant from
+`2c09` to `2c07` with
+`FOCUS_POKEPC=766b0:766b4:2c07320d` makes `DISP 4+1` print ` 7`. The
+formatter is simply printing the last thing pushed.
+
+Two readings are ruled out:
+
+- **Not the operands.** `DISP 40+17` emits `2c28` and `2c11` — 40 and 17.
+  The operand values are compiled in correctly; only the operation is
+  missing.
+- **Not constant folding.** No folded double appears anywhere in the
+  container (`DISP 8+2` would need `40240000 00000000`), and the emitted
+  constant is 9 for every operand pair tried: 1+1, 4+1, 2+3, 8+2, 40+17.
+
+The formatter itself is innocent: segment 3 entry 188 (the container's
+STT[13]) is a real number-formatting routine — `LDD DB+7996`, a character
+buffer at `DB+7576`, `PCLS STT[219]`, `PCLS STT[148]` — and the double it
+loads is 0.0, because nothing computed a result to put there.
+
+**So the emulator is mis-executing the compiler.** The compiler is HP's
+code; it emits correct arithmetic for one operator and not for three
+others, which it cannot have done on real hardware. The next step is to
+diff the compiler's own execution for `+` against `/` and find where the
+operator dispatch diverges.
+
+## 9. `NEW` is a third, separate defect: a frame too shallow
+
+`NEW` traps 001 at container +0x152 (`PB=0x7657c`), and the frame chain is
+intact at that point (head still `0xbf`), so it is **not** the
+second-statement TRY defect of section 7.
+
+The faulting instruction is `0x8424` = **`LDDS Q+144`**. With Q = 0x8245b
+that addresses 0x824eb, while S = 0x824df — it reads sixteen bytes **above
+the stack top**.
+
+Our bound is right. ERS sheet 18, section 2.2.5 "Bounds Checking", lists
+the ranges the microcode enforces, and for stack segments it is **`SB to
+S`** — which is exactly `in_stack()` in
+[focusaddr.h](../src/cpu/focus/focusaddr.h). So the composed code is
+reading a local the frame never reserved: the statement wants stack the
+container did not allocate.
+
+Same theme as section 8, then, and probably the same root: the composed
+container is incomplete — missing the arithmetic for `+`/`-`/`*`, and
+missing the stack the statement's locals need.
