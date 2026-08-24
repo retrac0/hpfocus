@@ -430,7 +430,11 @@ public:
 		switch (t)
 		{
 		case exec_trap::unimplemented:
-			return take_trap(trap_cause::unimplemented_instruction, 0);
+			// "The Current Instruction register is passed as a parameter"
+			// (ERS sheet 47, cause 20). Passing zero instead cost a whole
+			// extra measurement the first time an unimplemented instruction
+			// had to be identified from a panic report.
+			return take_trap(trap_cause::unimplemented_instruction, m_cir);
 		case exec_trap::code_bounds:
 			return take_trap(trap_cause::instruction_sequencing, r.p);
 		case exec_trap::bounds_violation:

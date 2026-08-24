@@ -25,19 +25,41 @@ is `(12)DISPLAY`, 37 subprograms against a 25-entry table, and `BUILD_BOOT`
 on the BASIC boot disc breaks it the same way at 36 against 25 — the same
 number twice, so 25 reads as a cap rather than a miscount.
 
-That matters because of what it says about the programs that *fail*. Every
-HP-built program here ships with its table filled in. On the demo discs the
-picture splits: `introduction.c` has 4 subprograms and 5 entries, the small
-launcher stubs have 1 and 2 — and `MASTERMIND`, `MAIN_MENU`, `BREAKOUT`,
-`CUBIE` and `bplot_control` have **no table at all**. Those are exactly the
-files whose `RUN` ends in trap 021 (SOFTWARE.md), and `MAIN_MENU` is the one
-BASIC calls `NOT STORABLE` because it refers to options the machine storing
-it did not have.
+On the demo discs the picture splits: `introduction.c` has 4 subprograms and
+5 entries, the small launcher stubs have 1 and 2 — and `MASTERMIND`,
+`MAIN_MENU`, `BREAKOUT`, `CUBIE` and `bplot_control` have **no table at
+all**. `MAIN_MENU` is the one BASIC itself calls `NOT STORABLE`, because it
+refers to options the machine that stored it did not have.
 
-So the failing path is not "running a stored program". It is
-**reconstructing a transfer table for a program stored without one**, a path
-nothing that currently works goes near, because everything that works
-shipped with its table already built.
+**A correction.** An earlier reading of this — that a zero-entry table is
+what makes `RUN` fail, and that the table-bearing demo programs run — was
+wrong, and wrong in the more embarrassing direction: the programs it rested
+on never loaded. `LOAD "DEMO/music"` and
+`LOAD "DEMO/DIR/intro/introduction.c"` both answer
+
+    ERROR 62: File is protected or wrong PROTECT code
+
+and the `ERROR 3` seen afterwards is `RUN` finding nothing in memory, not a
+program reaching its own error. The first screen dumps showed only the last
+line and the `ERROR 62` above it was missed.
+
+What the corrected observation gives is more interesting than what it
+replaced, because the correlation inverts:
+
+| file | subprograms | table | `LOAD` |
+|---|---:|---:|---|
+| `music` | 1 | 2 | **ERROR 62** |
+| `introduction.c` | 4 | 5 | **ERROR 62** |
+| `MASTERMIND` | 2 | **0** | loads, then trap 021 at `RUN` |
+| `MAIN_MENU` | 15 | **0** | loads, then trap 021 at `RUN` |
+
+Files that ship *with* a transfer table refuse to load; files that ship
+without one load and then fail at `RUN`. Neither the SDF mode bits nor any
+protect field explains the refusal — `sdfread.py --long` shows mode `000000`
+on all four — and `CAT_BOOT`, which has a 21-entry table, loads and runs
+perfectly from the fixed disc. So the difference is not "has a table" on its
+own; it is something about these files or this medium, and it is a second
+open question rather than an answer to the first.
 
 Read any of them with [`tools/progfile.py`](../tools/progfile.py), which
 documents the file format in its header comment:

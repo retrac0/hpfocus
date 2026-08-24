@@ -324,15 +324,20 @@ subprogram count and the size of its transfer table:
 | `CUBIE` | 9 | 0 | 12,882 | not tried |
 | `MAIN_MENU` | 15 | 0 | 12,595 | **TRAP 021** |
 
-`ERROR 3, Line not found or not in current context` is BASIC's own error,
-not a fault: those programs are launcher stubs that expect the context
-`MAIN_MENU` sets up, and reaching a BASIC error message means the emulator
-ran them.
+**Those `ERROR 3` rows are not what they look like, and a later measurement
+overturned them.** `music`, `introduction.c` and `bplot_control` do not run
+and then report a BASIC error; they never load. `LOAD` answers
 
-The first reading of this table -- programs with a prebuilt table run,
-programs with a zero-entry table trap -- is *not* right, and
-`bplot_control` is the case that disproves it: zero entries, no trap. It
-dies on `ERROR 3` on its way in, before it ever calls a subprogram.
+    ERROR 62: File is protected or wrong PROTECT code
+
+and the `ERROR 3` that follows is `RUN` finding nothing in memory. The first
+screen dumps showed only the last line, so the `ERROR 62` above it was
+missed. Any conclusion drawn from those three "running" is void.
+
+Corrected, the correlation runs the other way: the two files that load are
+the two with **no** transfer table, and the two that refuse are the two that
+have one. `CAT_BOOT`, with 21 entries, loads and runs from the fixed disc, so
+"has a table" is not the whole story — see DIAGNOSTICS.md.
 
 What survives is narrower and more useful: **the trap needs a real
 run-time call into a subprogram whose transfer-table entry was never
