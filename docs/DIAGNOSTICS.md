@@ -16,6 +16,29 @@ statements as compiled FOCUS code with the transfer-table indices HP's own
 compiler assigned — which is exactly the thing the RUN investigation has been
 reconstructing by experiment. See [SOFTWARE.md](SOFTWARE.md) for that thread.
 
+**What the suite says about transfer tables.** Reading all twenty-two test
+programs gives a rule, and it is a clean one: the transfer table holds
+**one entry per subprogram, plus one**. Twenty-one of the twenty-two obey
+it exactly — `(7)KEYBOARD` 17 subprograms and 18 entries, `(6)STATUS` 19 and
+20, `TEST` itself 19 and 20, `(17)PRINTER` 24 and 25. The single exception
+is `(12)DISPLAY`, 37 subprograms against a 25-entry table, and `BUILD_BOOT`
+on the BASIC boot disc breaks it the same way at 36 against 25 — the same
+number twice, so 25 reads as a cap rather than a miscount.
+
+That matters because of what it says about the programs that *fail*. Every
+HP-built program here ships with its table filled in. On the demo discs the
+picture splits: `introduction.c` has 4 subprograms and 5 entries, the small
+launcher stubs have 1 and 2 — and `MASTERMIND`, `MAIN_MENU`, `BREAKOUT`,
+`CUBIE` and `bplot_control` have **no table at all**. Those are exactly the
+files whose `RUN` ends in trap 021 (SOFTWARE.md), and `MAIN_MENU` is the one
+BASIC calls `NOT STORABLE` because it refers to options the machine storing
+it did not have.
+
+So the failing path is not "running a stored program". It is
+**reconstructing a transfer table for a program stored without one**, a path
+nothing that currently works goes near, because everything that works
+shipped with its table already built.
+
 Read any of them with [`tools/progfile.py`](../tools/progfile.py), which
 documents the file format in its header comment:
 
