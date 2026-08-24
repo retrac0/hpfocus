@@ -469,3 +469,58 @@ container did not allocate.
 Same theme as section 8, then, and probably the same root: the composed
 container is incomplete — missing the arithmetic for `+`/`-`/`*`, and
 missing the stack the statement's locals need.
+
+
+---
+
+## 10. The compiler's state is not being trashed
+
+The natural hypothesis for section 8 -- that something corrupts the
+compiler's state, so it stops producing valid code -- is disconfirmed by
+four measurements.
+
+- **Nothing uninitialised is read.** `FOCUS_RAMFILL=a5` poisons every RAM
+  board; `DISP 8+2` emits the identical bytes (`2c08 2c02 2c09 320d`) and
+  prints the identical ` 9`.
+- **No corrupted markers, no runaway.** `FOCUS_QCHECK` (misaligned Q or an
+  impossible CSN) and `FOCUS_RUNAWAY` (execution leaving real memory)
+  report nothing across the whole session.
+- **The compiler's code is never written.** `FOCUS_WWATCH` over the whole
+  of segment 4 (`0x130dc..0x1d0cb`) from t=1 records **zero** stores. Its
+  code and tables are intact.
+- **Its registers are well formed.** At the compose site
+  (COMPILER +0x209a): `SB 82428 <= Q 8271b <= S 8272b <= SL 84007`,
+  `DB 7bc9c <= DL 7e7ab`, `PB 130dc <= P <= PL`, Q and S both word
+  aligned, DST non-zero. (Sampling with `FOCUS_STATEAT` is not the way to
+  check this -- those samples catch the CPU idle on the ICS, showing
+  PB=0/PL=0xfffffffc, which is the dispatcher's context and not BASIC's.)
+
+The loader hand-off was separately validated in 2026-08-23 (commit
+08327c3, `docs/IMPLEMENTATION.md`): load address arbitrary, parameter
+block consumed exactly as written, nothing reading uninitialised RAM.
+
+### The operator dispatch is healthy too
+
+Tracing the compiler from the compose site for `DISP 8+2` and `DISP 8/2`
+and diffing the two instruction streams: they are **identical for 2,526
+instructions**, then split at COMPILER +0x3678. The split is a deliberate
+CASE dispatch at +0x3664:
+
+```
+ZERO / LDIS #61     bounds 0..61 -- a 62-way dispatch
+CRB
+LSL 1 / STAX,B
+LDH P+24,X          halfword jump table
+ADAX,B
+BR P+16,X           computed branch
+```
+
+`+` lands at +0x45ec and `/` at +0x4644 -- two distinct, valid handler
+entries. So the compiler selects the right handler for each operator, and
+the fault is inside the handler that `+`, `-` and `*` share, not in the
+state it runs on or the dispatch that reaches it.
+
+**That is where to look next:** the `+` handler at COMPILER +0x45ec, whose
+first dozen halfwords are nearly identical to the `/` handler's at +0x4644
+(they diverge at `4405 4404` versus `4405 2303`). One instruction in that
+region is behaving differently from the hardware.
