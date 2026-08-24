@@ -287,6 +287,41 @@ pushed words and leave `0xc000002c` on the stack. That is a much sharper
 test than "does it stop trapping", and `MASTERMIND` is small enough to walk
 instruction by instruction.
 
+**The destination is not inverted, so the stamp is the wrong side.** The
+compose site in the compiler reads directly:
+
+```
+LRA  DB+4564      the source buffer
+LDS  DB+384,I     the object pointer
+LDXI #60
+LDS  DB+384,I,X   object[+60], the offset
+CPTR,B            build the destination pointer
+MVB  7            compose
+```
+
+Breaking on that `CPTR` and reading its operands gives base `0x40880000`
+and delta `0x274`. The base is an external pointer naming **user DST
+segment 17, offset 0**, and 0x40880000 + 628 lands at `0x77cd0` — which
+makes segment 17's base `0x77a5c`, exactly the `PB` of the container that
+then traps. BASIC is not composing into the wrong container; it is
+composing into the one it means to.
+
+And that container has room for nine entries. It is 784 bytes
+(`PL - PB + 1`), the composed block ends near `0x77d07`, and a nine-entry
+table would occupy `0x77d44` upward — clear of the code with room to spare.
+Five other containers in the same run carry nine entries with hooks 5-9
+identical to this one's. So of the two alternatives the older note left
+open — the boot stamping the pair the wrong way round, or the destination
+pairing being inverted — **the destination is right, and the 0x18 the
+parser stamps two milliseconds after the compose is the wrong number.**
+
+(One correction to the note above: `CPTR`'s external branch, where the core
+departs from sheet 121 by folding the delta into the offset field instead of
+re-evaluating the pointer, *is* on this path — the earlier claim that it was
+not was wrong. It does not bite here, because 628 fits inside segment 17 and
+no chain walk is needed, so the two readings agree. It would bite on a
+container whose offset ran past its segment.)
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment

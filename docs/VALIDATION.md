@@ -380,8 +380,13 @@ with bit 3 set. Sheet 121 calls for a full evaluation of the pointer, a
 check that `OFFSET(0:13)` is zero, and storing the *evaluated* `PTR`; the
 core instead folds the delta into the `(13:19)` offset field and range-
 checks it. Equivalent for an unchained pointer, not obviously so for a
-chained one. It is not on the failing path -- that call takes the else
-branch -- so it is reported here rather than changed.
+chained one. It **is** on the scaffold path: the compiler builds the
+compose destination with exactly this instruction and an external base
+pointer, so the deviating branch runs. It does not change the outcome there
+because the delta stays inside the segment and no chain walk is needed, but
+an earlier note saying the branch was not reached was wrong. Reported rather
+than changed, since correcting it needs the evaluation procedure wired into
+`CPTR` and nothing currently exercises the chained case.
 
 ### Not yet checked
 
