@@ -345,6 +345,34 @@ hook it names is a template built for a different container's conventions.
 So the destination pairing is back on the table alongside the stamp, and
 the arity mismatch is the sharpest evidence either way.
 
+**A positive control, and the failing site is the odd one out.** Searching
+memory for the two halfwords `2c09 3209` — `LDIS #9; PCLS STT[9]` — finds
+five sites: one in the compiler at `+0x209e`, which is the template source
+the older note located at `+0x209a`; two inside containers; the failing one;
+and one further out. The two container copies are byte-identical to each
+other and *unlike* the failing one:
+
+```
+0x77d18, 0x7ce98:   LDIS #1; LDIS #4; STD Q+217; LDIS #9; PCLS STT[9]; LDIS #1
+0x77ce2 (failing):  LDS P-16;                    LDIS #9; PCLS STT[9]; ADDI #145; INCM S-3,I
+```
+
+The common form calls `STT[9]` having pushed exactly one argument, which is
+what the universal hook's `EXIT N=1` consumes. It is the shape the hook was
+written for. The failing site is the only one that pushes a pointer and two
+more words first and then dereferences what the call leaves behind.
+
+Note that `0x77d18` is in the *same* container as the failing `0x77ce2`. If
+the template really does emit the pair twice, then one copy landed in
+surroundings that match the hook and the other did not, which is a sharper
+thing to explain than "the container is short".
+
+*Not* established: an attempt to unblock the dereference by planting a
+DB-tagged word at `P-16` in place of the compiler's `0x1c` moved the failure
+to a bounds violation rather than past it. That poke invented a value rather
+than measuring one and should not be read as evidence either way; it is
+recorded only so the next person does not repeat it.
+
 **Where the boot actually stops.** `src/test/bootrun` now carries the 9020
 diagnostics environment and BASIC 2.0 through their **entire launch chain**:
 `SYSTEM POWERUP` verifies and relocates every segment, builds the segment
