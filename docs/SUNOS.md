@@ -524,3 +524,56 @@ state it runs on or the dispatch that reaches it.
 first dozen halfwords are nearly identical to the `/` handler's at +0x4644
 (they diverge at `4405 4404` versus `4405 2303`). One instruction in that
 region is behaving differently from the hardware.
+
+
+---
+
+## 11. Two arithmetic paths: the integer one is broken, the real one needs BTD
+
+Section 8 showed the compiler emitting `FLTD/FLTD/FDIV` for `/` and a bare
+`LDIS #9` for `+`, `-`, `*`. The fork is now identified, and it is
+**integer versus real**, not one operator versus another.
+
+Breaking at the shared code-generation call (`PCLS STT[177]`) in each
+handler and reading the argument:
+
+| | type code passed |
+|---|---|
+| `DISP 8+2` (handler COMPILER +0x45ec) | **2** |
+| `DISP 8/2` (handler COMPILER +0x4644) | **4** |
+
+`/` forces its operands to real; `+`, `-` and `*` keep the operands' own
+type, which for two integer literals is 2. **The integer path is the
+broken one.**
+
+The prediction that follows is confirmed. Give `+` or `*` a real operand
+and it takes the other path:
+
+| expression | result |
+|---|---|
+| `DISP 8+2`, `8-2`, `8*2` | prints ` 9` — the spurious literal |
+| `DISP 4.5+1`, `4+1.5`, `2.5*2`, `8/2` | **TRAP 020** — unimplemented `BTD` |
+
+So real arithmetic **already works**. `DISP 8/2` leaves IEEE `40100000
+00000000` = 4.0 on the stack; the compiler, the operand conversion and
+the arithmetic are all correct, and the only thing missing is the
+binary-to-decimal conversion the formatter needs.
+
+### This makes BTD/DTB the highest-value item, not a marginal gap
+
+Two things changed:
+
+- **Its blast radius is much larger than `SQR`.** Every real-typed
+  expression in BASIC ends at this trap.
+- **It can now be validated end to end**, which is what made it risky
+  before. The ERS digit packing is OCR-damaged in the bit positions that
+  matter, but there are now several cases with known answers --
+  `DISP 8/2` must print 4, `DISP 4.5+1` must print 5.5, `DISP 2.5*2` must
+  print 5, `DISP SQR(4)` must print 2. A wrong packing shows up
+  immediately as a wrong digit rather than hiding.
+
+`src/test/basictest.sh` carries `real-add` and `real-mul` for this.
+
+The integer path remains a separate defect: the emitted `LDIS #9` where an
+integer operation belongs, with the 9 shared by `+`, `-` and `*` and so
+not an operator code.

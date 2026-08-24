@@ -78,6 +78,12 @@ CASES=(
 	# session, so the second statement has nothing to delete.
 	"list          | LIST\n                | AVAILABLE MEMORY = 487760"
 	"list-twice    | LIST\n;LIST\n         | AVAILABLE MEMORY = 487760 | 20,26 | 34"
+	# --- real-typed arithmetic takes the OTHER compiler path ---------
+	# It compiles correctly and computes the right answer; it fails only
+	# in the formatter, on the unimplemented BTD. These pass the moment
+	# BTD and DTB exist.
+	"real-add      | DISP 4.5+1\n         | 5.5"
+	"real-mul      | DISP 2.5*2\n         | 5"
 )
 
 # ------------------------------------------------------------------ options
