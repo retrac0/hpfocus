@@ -400,6 +400,35 @@ Entries grow downward from a table's top, so entries 7, 8 and 9 would sit at
 `0xffffffff`, not pointers. **The image is born with six entries.** Neither
 copy truncates anything; the 28 is correct for what it is copying.
 
+**The same instruction is called with 40 at LOAD and 28 at RUN.** Logging
+inter-segment transfers (`FOCUS_SEGCALL`, docs/SUNOS.md) shows the program
+is started by one user container calling into another — `3088 -> 3089
+entry 1` — and reading both out of the user CST separates them cleanly.
+The user CST base is word 0 of the CPU's dedicated block, and user segment
+*N* is CST 3072+*N* in the single table SUNOS uses as both CST and DST, so
+"user DST segment 17" and "CST segment 3089" are one entry.
+
+| | container 3088 | container 3089 |
+|---|---|---|
+| built at | `t=21.880`, during LOAD | `t=32.488`, during RUN |
+| built by | segment 6, BASIC itself | the kernel/parser copy path |
+| table | **9 entries** | **6 entries** |
+
+Both are runtime containers for the same program, and the composed code went
+into the six-entry one. Better still, the *same* block-move instruction at
+parser `PB+0x5c32` builds both, so its arguments can be compared directly:
+
+```
+LOAD  t=21.825   source 4020018f  target 4020020f  count 0x28 = 40   (seg 3076)
+RUN   t=32.489   source 4088028f  target 408802cf  count 0x1c = 28   (seg 3089)
+```
+
+Forty bytes is nine entries and a length word; twenty-eight is six. One
+instruction, one run, two callers, and the RUN caller asks for six. That is
+as far down as measurement reaches without disassembling the caller: the
+count is a parameter, the routine is faithful to it, and what computes it at
+RUN is the last unknown.
+
 That moves the question one hop further back and makes it much narrower than
 "which container": the SUN OS kernel builds a six-entry image at `t=32.488`
 for a program whose compiled code calls `STT[9]`, while five other
