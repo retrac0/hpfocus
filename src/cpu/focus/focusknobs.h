@@ -88,6 +88,10 @@ inline constexpr spec CATALOGUE[] = {
   "Make MVB copy ascending even when the regions overlap, the way it did "
   "before the overlap fix. Reproduces the smear that killed any stored "
   "program two statements in." },
+{ "FOCUS_SEGCALL", "", group::cpu, false,
+  "Log every inter-segment transfer as caller segment, target segment and "
+  "STT entry. The static form of the same information is in the boot image "
+  "(tools/stt.py, docs/SUNOS.md), so the two can be diffed." },
 { "FOCUS_SEMALL", "", group::cpu, false,
   "Log every UP and DOWN with its raw operand and resolved address -- the "
   "census that catches a wake landing on the wrong word, which the "

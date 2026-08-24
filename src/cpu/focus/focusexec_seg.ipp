@@ -202,6 +202,14 @@ private:
 			return false;
 		}
 
+		// Every transfer between segments comes through here, so this is
+		// the one place that sees the whole call graph. docs/SUNOS.md has
+		// the static version, read out of the boot image.
+		static knob::channel segcall("FOCUS_SEGCALL", knob::sync::buffered);
+		if (segcall)
+			segcall("[segcall %u -> %u entry %u  p=%08x]\n",
+					r.get(sf::CSN), seg, stt_off / 4, r.p);
+
 		cst_use_count(r.get(sf::CSN), -1);
 		r.pb = pb;
 		r.pl = pl;
