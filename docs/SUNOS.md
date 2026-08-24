@@ -206,3 +206,191 @@ container against BASIC's own.
 See [SOFTWARE.md](SOFTWARE.md) for that investigation and
 [DIAGNOSTICS.md](DIAGNOSTICS.md) for the transfer-table rule that HP's own
 programs obey.
+
+---
+
+## 6. Every operator goes through a container, and that is one bug, not two
+
+The trap-021 investigation above treats runtime-built containers as a
+stored-program problem. They are not. **Any expression with an operator in
+it, typed at the prompt, is executed out of a container** — which puts the
+immediate-mode arithmetic failure and the stored-program failure on the same
+machinery.
+
+`src/test/basictest.sh` is the instrument: a table of (keystrokes, expected
+screen line) cases, each booted headless, driven with `FOCUS_TYPE` and read
+back through `FOCUS_DIMDUMP` and `tools/screen.py`.
+
+### What separates the working cases from the broken ones
+
+| typed | shows | |
+|---|---|---|
+| `DISP 7`, `DISP "HI"`, `DISP (7)` | correct | |
+| `DISP 4,5` | ` 4          5` | correct — two literals, two columns |
+| `DISP 1+1`, `1+0`, `100+200`, `9-8`, `3*4`, `-7` | ` 9` | no trap |
+| `DISP 1=1` | ` 0` | should be 1 |
+| `DISP "A"&"B"` | trap 001 | |
+| `DISP 8/2`, `DISP SQR(4)` | trap 020 | `BTD` is unimplemented |
+
+`FOCUS_TRIP=' 9'` walks the stack back from the moment the character reaches
+the screen, and the two paths are not the same path at all:
+
+```
+DISP 7      10 frames, every one in segment 7 (HUMAN INTERFACE)
+DISP 1+1    13 frames: kernel -> segment 3076 -> segment 3 (IO/MM RTS)
+                    -> kernel -> segment 22 -> segment 7
+```
+
+A literal never compiles anything. An operator builds a container first.
+
+### The container does not encode the operator
+
+Container 3076 sits at `0x7655c` (user CST entry 4, at `0xfd500 + 16*4`,
+whose base comes from word 0 of the CPU dedicated block). Dumping and
+disassembling it gives a fixed scaffold — a TRY/ESCP handler table, then:
+
+```
+PB+0154  LDIS #1        the operands
+PB+0156  LDIS #1
+PB+0158  LDIS #9
+PB+015a  PCLS STT[13]   -> segment 3 entry 188
+PB+015c  LDIS #1
+PB+015e  PCLS STT[14]   -> segment 3 entry 156     the print
+```
+
+Three measurements pin down what it is:
+
+- **`DISP 2+3` changes exactly two halfwords**, `2c01 2c01` to `2c02 2c03`.
+  The operand values are compiled in.
+- **`DISP 1*1` produces a byte-identical container to `DISP 1+1`.** The
+  operator is *not* compiled in. The container is a scaffold, and the
+  operator must live in a structure it walks.
+- **At the print call the stack is `(1, 1, 1)`** — the two operands and the
+  immediate. No sum was computed, and no double-precision 2.0 exists
+  anywhere on the stack.
+
+STT[13] resolves to a three-instruction stub, `LDIS #1; PCLS STT[148];
+EXIT N=1`, which takes one parameter and returns nothing — matching the one
+word observed popped across the call. Both it and STT[14] are `EXIT N=1`.
+
+### Division is the useful control
+
+`DISP 8/2` traps 020 on the unimplemented `BTD`, and the state dump has
+`40100000 00000000` — IEEE-754 **4.0** — sitting on the stack. The division
+computed the right answer; only the *formatter* failed, and it failed on a
+missing instruction rather than a wrong one. So the arithmetic underneath is
+not what is broken, and `BTD`/`DTB` (sheets 84–85) are squarely on the path
+that displays a computed number.
+
+### Two candidates ruled out by measurement
+
+- **The condition-code work (`bb9ae1a`) is not the cause.** Reversing all
+  three files of that commit, rebuilding and re-running gives ` 9`, ` 0` and
+  ` 7` for `DISP 1+1`, `DISP 1=1` and `DISP 7` — identical in every case.
+- **The keystrokes are not being mangled.** `FOCUS_DIMDUMP=30` shows the
+  echo growing `D`, `DI`, `DIS`, `DISP`, `DISP 1`, `DISP 1+1`, and then the
+  answer. BASIC received the line in full.
+
+
+---
+
+## 7. The second-statement crash: a TRY frame created once, deleted per statement
+
+`LIST` works. `LIST` twice halts with `TRAP:00000001`. This is the cleanest
+reproducer the container machinery has offered, and it is **a different
+defect from the trap-021 short table**: this container's transfer table is
+correctly sized — length word `0x28` at `PL = 0x82328` gives ten entries and
+the body calls exactly `STT[10]`. It also involves no segment growth, so
+prologue and body are in one image, which is what makes it readable.
+
+`src/test/basictest.sh` carries both cases (`list`, `list-twice`).
+
+### The accounting
+
+The TRY chain belongs to a **stack**, not a code segment — its head is
+`(SB+2)`. Tallying `FOCUS_TRYLOG` by code address is therefore misleading;
+tally by `sb`. On the container's stack (`sb=0x82428`):
+
+```
+ 705  TRY,B  p=0x821fe  head=0        container prologue creates -> head 0xbf
+ 722  ESCP,B p=0x24028  head=0xbf     session init: frame intact
+....  many BASIC/kernel creates and deletes, all balanced
+1557  TRY    p=0x822da  head=0xbf     statement 1's body deletes it -> head 0
+1568  ESCP,B p=0x24028  head=0        the same escape, now with an empty chain
+1660  TRY    p=0x822da  head=0        statement 2: nothing to delete -> TRAP
+```
+
+**One create against one delete per statement.** The frame the body eats is
+the one the prologue made at session start, and nothing replaces it.
+
+### The emulator is right to trap
+
+ERS sheet 126 gives `TRY`: the create (`CIR(19:1)=1`) saves the old `(SB+2)`
+into the frame at `(S-3)` and stores the new head; the delete restores
+`(SB+2) := (TEMP-3)`, pops four words, and bounds-tests `Q+4 < TEMP < S`.
+Create and delete are balanced in our implementation (`LRAS` pushes the
+recovery word, create adds three, delete removes four). With head 0,
+`TEMP = SB` and the test fails. The trap is correct; **a create is
+genuinely missing.**
+
+### Where the missing create is not
+
+The container has two `TRY,B` sites:
+
+```
++0x60   LRAS P+10        pushes PB+0x6a as the recovery address
++0x62   TRY,B            create                       [runs once, at init]
++0x64   LDIS #0 / LRAS Q+1
++0x68   PCLS STT[7]      -> segment 6 entry 208
++0x6a   LRAS P+0
++0x6c   TRY,B            create                       [NEVER runs]
+...
++0x130  the body, entered per statement
++0x13e  TRY              delete                       [runs per statement]
++0x140  BR P-220         -> +0x64, past the create at +0x62
+```
+
++0x6a is the recovery address the first create registers, and `LRAS P+0;
+TRY,B` there is the classic re-arm shape — land on recovery, immediately
+create the next frame. It would balance the books exactly. **It is never
+reached, in any flow, including session init**, because `PCLS STT[7]` never
+returns. So the design cannot be relying on it, and the re-arm is dead code
+in this BASIC.
+
+Control enters the body by a *planted return address*, not a call:
+`FOCUS_SEGCALL` records no transfer into 3076 at all, and the body is
+reached by `EXIT N=2` at BASIC `0x233ac`. At session init the analogous
+`EXIT` (BASIC `0x204e2`) returns to **+0x60**, ahead of the create; per
+statement it returns to **+0x130**, past it. The container header holds
+`0x130` at base+0x34, which is presumably where the resume offset comes
+from.
+
+**Still open:** what is supposed to put a frame on the chain before the
+second statement's body runs. The evidence does not name it, so no fix is
+offered here.
+
+### A control, and its limit
+
+`FOCUS_TRYNOP=1` (absorb the delete when the chain is empty instead of
+faulting) makes two `LIST`s work — BASIC prints `AVAILABLE MEMORY = 487760`
+twice over. So the statement loop *is* sustainable without that frame, which
+is worth knowing. It is a mask, not a fix, and it does not generalise:
+`DISP 1`/`DISP 2`/`DISP 3` still halts, now at the grown container's
++0x162, and `NEW` and `LET` are unchanged.
+
+### Two cautions for the next reader
+
+- **Static disassembly of segment 6 is shifted.** `segdump.py` reports
+  BASIC's code at image `0x184f8` with 30,372 bytes, but the CST length is
+  30,407, and `image + 0x57c8` decodes bytes that live at runtime
+  `PB+0x57ec` — a `0x24` shift. A listing taken that way reads as plausible
+  code and is wrong. Entry 208 was misread this way as a `CRB` CASE
+  dispatcher; live, it is `LDXI #45; LDS SB+12; LDI #4020; LRAS; LRAS;
+  PCLS STT[138]`. Dump from memory (`FOCUS_DUMP`) and disassemble that.
+  Segment 3's mapping was checked against a runtime trace and is sound.
+- **`TRY` and `ESCP` already deviate from the sheet deliberately.** Both use
+  `SL` as the upper bound where the ERS says `S`. The comment in
+  [focusexec_alu.ipp](../src/cpu/focus/focusexec_alu.ipp) explains why, and
+  it matters here: at statement 1's delete `TEMP == S` exactly, which the
+  ERS's strict `TEMP < S` would refuse. Neither bound changes the two cases
+  above, but anyone tightening them should re-run `list-twice` first.

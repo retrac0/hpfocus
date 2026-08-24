@@ -65,6 +65,14 @@ done
 # looks dead. This display is 640x390 of character cells, so the software
 # renderer costs nothing and always works. A -video on the command line
 # comes after this one and wins, so any backend can still be asked for.
+# A headless run has no business opening a window. MAME initialises SDL's
+# video subsystem even for -video none, which costs real time on a loaded
+# desktop and, on this machine, intermittently leaves the emulated boot
+# dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
+case " $* " in
+    *" -video none "*) export SDL_VIDEODRIVER=dummy ;;
+esac
+
 VIDEO=(-video soft)
 
 # RAM. The machine default is HP's 1 MB base configuration, but the

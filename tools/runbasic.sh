@@ -53,6 +53,14 @@ cd mame
 # looks dead. This display is 640x390 of character cells, so the software
 # renderer costs nothing and always works. A -video on the command line
 # comes after this one and wins, so any backend can still be asked for.
+# A headless run has no business opening a window. MAME initialises SDL's
+# video subsystem even for -video none, which costs real time on a loaded
+# desktop and, on this machine, intermittently leaves the emulated boot
+# dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
+case " $* " in
+    *" -video none "*) export SDL_VIDEODRIVER=dummy ;;
+esac
+
 VIDEO=(-video soft)
 
 exec ./focus hp9020 -flop1 "$BASIC/500BT1.TD0" -flop2 "$BASIC/500BT2.TD0" \

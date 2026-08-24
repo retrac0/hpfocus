@@ -60,10 +60,16 @@ and `MUC` (segment use counts). Then the byte scan and compare group —
 `SCW`, `SCU`, `CMPB` and `TRAN` — which matters most in userland, where the
 kernel-weighted figure understates it.
 
-What is still named in the gap is four string-descriptor instructions
-(`SLD`, `SVAL`, `SCON`, `SAS`) and the decimal group. Everything
-else left is an opcode Appendix B does not assign — data that a linear scan
-misreads as code, since a run of `0xff` decodes as format 6 opcode 37.
+The string-descriptor instructions (`SLD`, `SVAL`, `SCON`, `SAS`) went the
+same way and are covered by five `exectest` cases; the note that used to
+name them here was stale. What is left in the gap is **`BTD` and `DTB`**,
+the binary-to-decimal pair on ERS sheets 84–85 — and they are not academic:
+`DISP 8/2` computes 4.0 correctly and then traps 020 converting it for
+display, so they sit directly on the path that shows a computed number.
+`DLAD` and `DLSB`, the rest of the decimal group, are implemented.
+Everything else left is an opcode Appendix B does not assign — data that a
+linear scan misreads as code, since a run of `0xff` decodes as format 6
+opcode 37.
 
 **BASIC runs HP's own programs, from an installed fixed disc.** Build the
 disc with `tools/mkharddisc.py` and `tools/installbasic.py`, boot it with
@@ -707,6 +713,26 @@ git submodule update --init --depth 1 mame   # ~930 MB
 ./tools/link_into_mame.sh
 cd src/test && make test
 ```
+
+Two harnesses sit above the unit tests, because unit tests keep passing
+through a great many real regressions:
+
+- **`src/test/golden.sh`** — behaviour preservation. Seventeen probes,
+  including two multi-million-instruction traces and three real boots,
+  compared byte for byte against a recorded baseline. It answers "did
+  anything change?", which is the question a refactor has to answer.
+- **`src/test/basictest.sh`** — behaviour *correctness*. A table of
+  (keystrokes, expected screen line) cases, each booted headless, typed at
+  with `FOCUS_TYPE` and read back through `FOCUS_DIMDUMP` and
+  [tools/screen.py](tools/screen.py). It answers "does BASIC give the right
+  answer?", which golden.sh cannot. Cases that pass are regression guards;
+  cases that fail are the work list, and the score is the measure of
+  progress. `--list` shows the table, `--only <name>` runs one.
+
+`tools/screen.py` rebuilds the display from a `FOCUS_DIMDUMP` log. That is
+not a formality: the dump prints the frame buffer in vram order, while the
+6845 scrolls by moving its start address, so past the first screenful the
+dumped row numbers no longer name displayed lines.
 
 ## Documentation
 

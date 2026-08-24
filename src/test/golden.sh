@@ -197,6 +197,8 @@ else
 	if [ -x "$ROOT/mame/focus" ]; then
 		# FOCUS_HDNOSAVE keeps the run from writing the fixed disc back,
 		# which would make the next run start somewhere else.
+		# Headless: no window, no SDL video init (see tools/runbasic-hd.sh).
+		export SDL_VIDEODRIVER=dummy
 		export FOCUS_HDNOSAVE=1 FOCUS_STATEAT=5,12,19
 
 		run mame-basic env -u FOCUS_SCMNV \
