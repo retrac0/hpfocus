@@ -432,6 +432,82 @@ private:
 
 	// Format 4: specials. Bit 3 of the instruction is CIR(19:1), which most
 	// of these use as their index flag.
+	//----------------------------------------------------------------
+	//  the decimal conversion group (ERS sheets 84-87)
+	//----------------------------------------------------------------
+	//
+	// BASIC's numbers are three-word decimal floating point: a ten-bit
+	// exponent in (S-2)(0:10) and seventeen decimal digits, which the
+	// sheets describe as "a 17-digit integer", filling the rest of that
+	// word and the two below it. BTD packs a binary double into that form,
+	// DTB unpacks it, and POT supplies the powers of ten a caller needs to
+	// scale between the two.
+	//
+	// The digits are BCD, and BASIC settles that: it runs DLAD and DLSB
+	// straight down this mantissa, and a binary integer there raises an
+	// Illegal Decimal trap on the first nibble above nine.
+	//
+	// The scanned field list "(S-2)(15:17)" is damaged. It is
+	// (S-2)(16:16) -- sixteen bits, four BCD digits -- giving a twenty
+	// digit mantissa: four in (S-2) and eight in each of (S-1) and (S),
+	// most significant first, least significant in the low nibble of (S),
+	// the order bcd_add and bcd_sub already use. One digit sits before
+	// the point and nineteen after.
+	//
+	// BASIC settles that too, and to the digit: packing seventeen digits
+	// instead of twenty printed 0.004 for 8/2 and 0.002 for SQR(4) --
+	// right digits, point three places out, which is the three digits the
+	// shorter field left off.
+
+	// Split a seventeen digit value into the twenty BCD digits of a
+	// packed mantissa: the value scaled by a thousand, as four top digits
+	// and sixteen below. Done without ever forming the twenty digit
+	// integer, which would overflow sixty-four bits.
+	static u64 bcd20_pack(u64 m17, u32 &top4)
+	{
+		u64 t = m17 / 10000000000000ull;              // the top four digits
+		u32 hi = 0;
+		for (unsigned d = 0; d < 4; d++) { hi |= u32(t % 10) << (4 * d); t /= 10; }
+		top4 = hi;
+
+		u64 v = (m17 % 10000000000000ull) * 1000ull;  // the sixteen below
+		u64 lo = 0;
+		for (unsigned d = 0; d < 16; d++) { lo |= (v % 10) << (4 * d); v /= 10; }
+		return lo;
+	}
+
+	// The same twenty digits back as a value. Accumulated in a double
+	// because twenty digits do not fit an integer register.
+	static double bcd20_unpack(u32 top4, u64 lo)
+	{
+		double v = 0;
+		for (int d = 3; d >= 0; d--) v = v * 10 + double((top4 >> (4 * d)) & 0xf);
+		for (int d = 15; d >= 0; d--) v = v * 10 + double((lo >> (4 * d)) & 0xf);
+		return v;
+	}
+
+	// Sign-extend the ten-bit exponent field, whose range the sheets give
+	// as -512..511.
+	static s32 exp10_field(u32 w)
+	{
+		const s32 v = s32(ers32::get(w, 0, 10));
+		return (v & 0x200) ? v - 0x400 : v;
+	}
+
+	// A and B with A/B = 10^k, pushed as two doubles. The pair exists so a
+	// caller can scale without an intermediate overflow, which is why the
+	// sheets hand over a ratio rather than 10^k whole. Splitting at 22 --
+	// the largest power of ten a double holds exactly -- keeps both halves
+	// exact for |k| <= 44 and both well inside range for the whole legal
+	// -308 < k < 308.
+	void push_power_pair(s32 k)
+	{
+		const s32 a = (k >= 0) ? std::min(k, 22) : std::max(k, -22);
+		const s32 b = a - k;
+		push_double(std::pow(10.0, double(a)));
+		push_double(std::pow(10.0, double(b)));
+	}
+
 	exec_trap exec_fmt4(u8 op3, bool b3)
 	{
 		// The privileged absolute-address group: the operand is an absolute
@@ -441,6 +517,98 @@ private:
 
 		switch (op3)
 		{
+		case 000: {                                             // DTB
+			if (b3)
+			{
+				// Decimal to binary, b form (sheet 84): the exponent word
+				// of a decimal float becomes the scaling pair for the
+				// conversion, offset by the digits the mantissa carries
+				// behind its point.
+				//
+				// The sheet says sixteen. It is nineteen, for the same
+				// reason the mantissa is twenty digits and not seventeen
+				// -- the two have to agree or the scaling misses by the
+				// difference, and BASIC shows it: with sixteen here, the
+				// literal in DISP 4.5+1 comes back a thousand times too
+				// large and the POT two instructions later rejects its
+				// exponent.
+				const s32 e = exp10_field(stk(0));
+				if (!(e > -308 && e < 308))
+					return take_trap(trap_cause::exponent_size, m_cir);
+				pop();
+				push_power_pair(e - 19);
+				r.put(sf::CC, CCG);
+				return exec_trap::none;
+			}
+			// Plain DTB: the three-word decimal float in (S-2,S-1,S) has
+			// its exponent discarded and its digits, "treated as a
+			// 17-digit integer", converted to a double left in (S-1,S).
+			double v = bcd20_unpack(ers32::get(stk(2), 16, 16),
+					(u64(stk(1)) << 32) | stk(0));
+			if (ers32::get(stk(2), 10, 1)) v = -v;
+			r.s -= 12;
+			push_double(v);
+			set_fp_cc(v);
+			return exec_trap::none;
+		}
+		case 001: {                                             // BTD
+			if (b3)
+			{
+				// Binary to decimal, b form (sheet 86): estimate I so that
+				// N/10^I lands in [1,10). The sheet specifies a fast
+				// approximation that is wrong by +1 for about 4% of
+				// values, and says the plain form corrects it. An exact
+				// floor(log10) is computed instead -- the caller's loop
+				// adjusts in both directions, so being right first time
+				// only makes it converge on the first pass.
+				const double n = pop_double();
+				const s32 i = (n == 0.0) ? 0
+						: s32(std::floor(std::log10(std::fabs(n))));
+				push(u32(i));
+				cca(u32(i));
+				return exec_trap::none;
+			}
+			// Plain BTD: pack N into the decimal float, using I as its
+			// exponent. Out-of-range magnitudes are not an error -- the
+			// stack is trimmed to the corrected exponent and the caller
+			// rescales and comes back.
+			const s32 i = s32(stk(2));
+			const double n = to_double((u64(stk(1)) << 32) | stk(0));
+			if (n == 0.0)
+			{
+				set_stk(2, 0); set_stk(1, 0); set_stk(0, 0);
+				r.put(sf::CC, CCE);
+				return exec_trap::none;
+			}
+			const double a = std::fabs(n);
+			const double ip = std::floor(a);
+			if (ip < 1.0)
+			{
+				r.s -= 8; set_stk(0, u32(i - 1));
+				r.put(sf::CC, CCL);
+				return exec_trap::none;
+			}
+			if (ip > 9.0)
+			{
+				r.s -= 8; set_stk(0, u32(i + 1));
+				r.put(sf::CC, CCG);
+				return exec_trap::none;
+			}
+			if (!(i > -512 && i < 511))
+				return take_trap(trap_cause::exponent_size, m_cir);
+			// Seventeen digits: one before the point and sixteen after,
+			// which is what the exponent's -16 offset in DTB pays for.
+			u32 top4 = 0;
+			const u64 lo = bcd20_pack(u64(std::llround(a * 1e16)), top4);
+			u32 w = ers32::set(0, 0, 10, ers32::get(u32(i), 22, 10));
+			if (n < 0) w = ers32::set(w, 10, 1, 1);
+			w = ers32::set(w, 16, 16, top4);
+			set_stk(2, w);
+			set_stk(1, u32(lo >> 32));
+			set_stk(0, u32(lo));
+			r.put(sf::CC, CCE);
+			return exec_trap::none;
+		}
 		case 002: {                                             // LBIT
 			// The top of stack is a bit offset: bits 0-28 give the byte
 			// index, which goes to X, and bits 29-31 the bit within that
@@ -654,6 +822,18 @@ private:
 			if (!r.privileged()) return exec_trap::unimplemented;
 			const u32 v = pop(), a = pop();
 			m_mem.write16(a + xx, u16(v));
+			return exec_trap::none;
+		}
+		case 053: {                                             // POT
+			// Power of Ten (sheet 87): an integer becomes the pair A and
+			// B with A/B = 10^I, which is how the decimal conversions get
+			// their scaling without risking an overflow on the way.
+			const s32 i = s32(stk(0));
+			if (!(i > -308 && i < 308))
+				return take_trap(trap_cause::exponent_size, m_cir);
+			pop();
+			push_power_pair(i);
+			r.put(sf::CC, CCG);
 			return exec_trap::none;
 		}
 		case 063: {                                             // PSLA

@@ -9,6 +9,8 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cmath>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -682,10 +684,13 @@ static void test_unimplemented_is_reported()
 	std::printf("unimplemented opcodes are reported\n");
 	harness h;
 
-	// The decimal group is not modelled yet; it must not be silently
-	// treated as a set of no-ops.
-	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);   // DTB
-	CHECK(h.one(u16(1 << 6 | 001)) == exec_trap::unimplemented);   // BTD
+	// What is left of format 4 must not be silently treated as a set of
+	// no-ops. DTB, BTD and POT used to stand in here and are implemented
+	// now, so the stand-ins are the four that remain.
+	CHECK(h.one(u16(1 << 6 | 024)) == exec_trap::unimplemented);   // CTCB
+	CHECK(h.one(u16(1 << 6 | 054)) == exec_trap::unimplemented);   // CNTO
+	CHECK(h.one(u16(1 << 6 | 056)) == exec_trap::unimplemented);   // RFC
+	CHECK(h.one(u16(1 << 6 | 071)) == exec_trap::unimplemented);   // VPTR
 }
 
 
@@ -997,7 +1002,7 @@ static void test_traps()
 
 	// Without a handler segment, faults are reported to the caller.
 	CHECK(!h.cpu.traps_enabled());
-	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::unimplemented);
+	CHECK(h.one(u16(1 << 6 | 024)) == exec_trap::unimplemented);
 
 	// Install a Code Segment Table whose entry 1 describes the handler
 	// segment. The system CST pointer lives at absolute location 0.
@@ -1021,7 +1026,7 @@ static void test_traps()
 	h.cpu.r.put(sf::C, 1);                           // must be cleared
 	const u32 q0 = h.cpu.r.q;
 
-	CHECK(h.one(u16(1 << 6 | 000)) == exec_trap::none);   // DTB, unimplemented
+	CHECK(h.one(u16(1 << 6 | 024)) == exec_trap::none);   // CTCB, unimplemented
 	CHECK(h.cpu.last_trap() == trap_cause::unimplemented_instruction);
 
 	// PB and PL come from CST entry 1, and P from the STT entry.
@@ -2045,6 +2050,115 @@ static void test_decimal()
 // ISC (ERS sheet 87). The diagnostics compile it as FIXD,B / ISC / STH:
 // check that a full word integer survives the trip into a halfword, then
 // store it as one.
+// BTD, DTB and POT: the binary/decimal conversions BASIC's number
+// formatter runs on every real value it prints (ERS sheets 84-87).
+// BASIC's numbers are three-word decimal floating point -- a ten-bit
+// exponent and seventeen digits held as a binary integer -- and these are
+// the three instructions that move between that and a double.
+static void test_decimal_conversion()
+{
+	std::printf("BTD, DTB and POT (sheets 84-87)\n");
+	harness h;
+
+	auto pushd = [&](double d) {
+		std::uint64_t b; std::memcpy(&b, &d, 8);
+		h.cpu.push(u32(b >> 32)); h.cpu.push(u32(b));
+	};
+	auto topd = [&]() {
+		const std::uint64_t b = (std::uint64_t(h.cpu.stk(1)) << 32) | h.cpu.stk(0);
+		double d; std::memcpy(&d, &b, 8); return d;
+	};
+	auto reset = [&]() { h.cpu.r.s = h.cpu.r.sb + 3; };
+
+	// ---- BTD,B, the exponent estimate --------------------------------
+	// I is chosen so that N/10^I lands in [1,10).
+	struct { double n; int i; } est[] = {
+		{ 4.0, 0 }, { 9.999, 0 }, { 10.0, 1 }, { 1234.5, 3 },
+		{ 0.5, -1 }, { 0.001, -3 }, { -250.0, 2 },
+	};
+	for (const auto &e : est)
+	{
+		reset(); pushd(e.n);
+		CHECK(h.one(f4(001, true)) == exec_trap::none);
+		CHECK_EQ(s32(h.cpu.stk(0)), e.i);
+		CHECK_EQ(h.cpu.r.s, h.cpu.r.sb + 3 + 4);   // two words in, one out
+	}
+	reset(); pushd(0.0);
+	CHECK(h.one(f4(001, true)) == exec_trap::none);
+	CHECK_EQ(s32(h.cpu.stk(0)), 0);
+
+	// ---- POT: A and B with A/B = 10^I --------------------------------
+	for (int i : { 0, 1, -1, 22, -22, 307, -307 })
+	{
+		reset(); h.cpu.push(u32(i));
+		CHECK(h.one(f4(053)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCG);
+		CHECK_EQ(h.cpu.r.s, h.cpu.r.sb + 3 + 4 * 4);   // one word in, four out
+		const double b = topd();
+		const std::uint64_t ab = (std::uint64_t(h.cpu.stk(3)) << 32) | h.cpu.stk(2);
+		double a; std::memcpy(&a, &ab, 8);
+		CHECK(std::fabs(a / b / std::pow(10.0, double(i)) - 1.0) < 1e-12);
+	}
+	// Outside -308 < I < 308 it is an Exponent Size Trap, and with traps
+	// disabled take_trap returns without touching the stack.
+	reset(); h.cpu.push(u32(400));
+	CHECK(h.one(f4(053)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::exponent_size);
+
+	// ---- BTD then DTB: pack a value and read the digits back ---------
+	// DTB hands back the twenty digits as a value, which is the
+	// mantissa times ten to the nineteenth.
+	for (double n : { 1.0, 4.0, 9.5, 3.25, 1.234567890123456 })
+	{
+		reset();
+		h.cpu.push(0);                                  // I, the exponent
+		pushd(n);
+		CHECK(h.one(f4(001)) == exec_trap::none);       // BTD packs
+		CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+		CHECK_EQ(h.cpu.r.s, h.cpu.r.sb + 3 + 3 * 4);    // still three words
+		CHECK(h.one(f4(000)) == exec_trap::none);       // DTB unpacks
+		CHECK_EQ(h.cpu.r.s, h.cpu.r.sb + 3 + 2 * 4);    // three in, two out
+		CHECK(std::fabs(topd() / (n * 1e19) - 1.0) < 1e-15);
+	}
+
+	// The exponent occupies (S-2)(0:10).
+	reset(); h.cpu.push(3); pushd(4.0);
+	CHECK(h.one(f4(001)) == exec_trap::none);
+	CHECK_EQ((h.cpu.stk(2) >> 22) & 0x3ff, 3u);
+
+	// Out of [1,10) nothing is packed: the value is dropped, the exponent
+	// is corrected, and the caller rescales and comes back.
+	reset(); h.cpu.push(5); pushd(0.5);
+	CHECK(h.one(f4(001)) == exec_trap::none);
+	CHECK_EQ(s32(h.cpu.stk(0)), 4);
+	CHECK_EQ(h.cpu.r.get(sf::CC), CCL);
+
+	reset(); h.cpu.push(5); pushd(50.0);
+	CHECK(h.one(f4(001)) == exec_trap::none);
+	CHECK_EQ(s32(h.cpu.stk(0)), 6);
+	CHECK_EQ(h.cpu.r.get(sf::CC), CCG);
+
+	// Zero packs to a three-word decimal zero and I is ignored.
+	reset(); h.cpu.push(3); pushd(0.0);
+	CHECK(h.one(f4(001)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0u);
+	CHECK_EQ(h.cpu.stk(1), 0u);
+	CHECK_EQ(h.cpu.stk(2), 0u);
+	CHECK_EQ(h.cpu.r.get(sf::CC), CCE);
+
+	// An exponent outside -512 < I < 511 traps.
+	reset(); h.cpu.push(u32(-600)); pushd(4.0);
+	CHECK(h.one(f4(001)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::exponent_size);
+
+	// A negative value keeps its sign through the round trip.
+	reset(); h.cpu.push(0); pushd(-4.0);
+	CHECK(h.one(f4(001)) == exec_trap::none);
+	CHECK(h.one(f4(000)) == exec_trap::none);
+	CHECK(topd() < 0);
+}
+
+
 static void test_isc()
 {
 	std::printf("integer size check (ISC)\n");
@@ -2313,6 +2427,7 @@ int main()
 	test_string_concatenate();
 	test_cpep();
 	test_decimal();
+	test_decimal_conversion();
 	test_isc();
 	test_shift_index();
 	test_sbit();

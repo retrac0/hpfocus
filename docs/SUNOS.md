@@ -554,10 +554,19 @@ and it takes the other path:
 | `DISP 8+2`, `8-2`, `8*2` | prints ` 9` — the spurious literal |
 | `DISP 4.5+1`, `4+1.5`, `2.5*2`, `8/2` | **TRAP 020** — unimplemented `BTD` |
 
-So real arithmetic **already works**. `DISP 8/2` leaves IEEE `40100000
-00000000` = 4.0 on the stack; the compiler, the operand conversion and
-the arithmetic are all correct, and the only thing missing is the
-binary-to-decimal conversion the formatter needs.
+**CORRECTION (same day).** The line above originally read "so real
+arithmetic already works", inferred from `4.5+1` trapping 020 exactly as
+`8/2` did. That inference was wrong, and implementing BTD exposed it:
+breaking at `BTD,B` shows the double it is handed for `DISP 4.5+1` is the
+bit pattern `0000000000000009` -- the integer 9 from the compiler's
+`LDIS #9`, read as a double, which is a denormal. `4.5+1` was never on the
+working path; it fails the same way `8+2` does and only *looks* different
+because a real-typed value sends the 9 through the float formatter.
+
+What is true is narrower: **`/` and the functions compile real arithmetic
+correctly**, and for those `DISP 8/2` really does leave IEEE `40100000
+00000000` = 4.0 on the stack with only the conversion missing. `+`, `-`
+and `*` are broken whatever the operand type.
 
 ### This makes BTD/DTB the highest-value item, not a marginal gap
 
@@ -577,3 +586,60 @@ Two things changed:
 The integer path remains a separate defect: the emitted `LDIS #9` where an
 integer operation belongs, with the 9 shared by `+`, `-` and `*` and so
 not an operator code.
+
+
+---
+
+## 12. BTD, DTB and POT implemented -- BASIC does floating point
+
+With the three conversions in place BASIC prints real numbers:
+
+```
+DISP 8/2      ->  4              DISP SQR(4)  ->  2
+DISP 9/2      ->  4.5            DISP SQR(2)  ->  1.41421356237
+DISP 1/3      ->  .333333333333
+DISP 100/8    ->  12.5
+```
+
+`src/test/basictest.sh` goes from 5 passing to 11, the six new ones all
+real arithmetic. `exectest` gains 101 assertions (758 checks) with the
+recorded 15 failures unchanged.
+
+**POT was required alongside them.** It sits two halfwords past the BTD
+call and was equally unimplemented, so BTD alone would only have moved the
+trap. It also shares its whole body with `DTB,B`: both hand back A and B
+with `A/B = 10^k`, split at 22 -- the largest power of ten a double holds
+exactly -- so both halves stay exact for `|k| <= 44` and in range for the
+whole legal `-308 < k < 308`.
+
+### The packed layout, settled by BASIC rather than by the sheet
+
+The scanned field list `(S-2)(15:17)` is damaged, and two readings of it
+were wrong. Each was caught within one run, because a wrong layout prints
+a wrong digit:
+
+| attempt | what BASIC did |
+|---|---|
+| mantissa as a **binary integer** | `TRAP 032` illegal decimal |
+| **17 BCD digits**, `(S-2)(28:4)` | printed `0.004` for `8/2`, `0.002` for `SQR(4)` |
+| **20 BCD digits**, `(S-2)(16:16)` | correct |
+
+The first is decisive on its own: BASIC runs `DLAD` and `DLSB` straight
+down this mantissa, so it must be BCD -- a nibble above nine faults. The
+second is decisive about the width: right digits with the point three
+places out is exactly the three digits a short field leaves off.
+
+So the format is a ten-bit exponent in `(S-2)(0:10)` and **twenty BCD
+digits** -- four in `(S-2)(16:16)`, eight in each of `(S-1)` and `(S)`,
+most significant first -- with one digit before the point and nineteen
+after. `DTB,B`'s exponent offset is 19 to match, not the sheet's 16; the
+two have to agree or the scaling misses by the difference.
+
+### One deliberate departure
+
+Sheet 86 specifies `BTD,B` as a *fast approximation* to `floor(log10 N)`
+that "will be in error by +1" for about 4% of values, and says the plain
+form corrects it. An exact `floor(log10)` is computed instead. The
+caller's loop adjusts in both directions -- BTD's CCL and CCG arms move
+the exponent by one and retry -- so being right first time only makes it
+converge on the first pass.

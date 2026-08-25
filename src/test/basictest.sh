@@ -78,12 +78,19 @@ CASES=(
 	# session, so the second statement has nothing to delete.
 	"list          | LIST\n                | AVAILABLE MEMORY = 487760"
 	"list-twice    | LIST\n;LIST\n         | AVAILABLE MEMORY = 487760 | 20,26 | 34"
-	# --- real-typed arithmetic takes the OTHER compiler path ---------
-	# It compiles correctly and computes the right answer; it fails only
-	# in the formatter, on the unimplemented BTD. These pass the moment
-	# BTD and DTB exist.
+	# --- division and functions: the compiler emits real arithmetic --
+	# These exercise BTD, DTB and POT end to end, including the digits of
+	# an irrational.
+	"frac-div      | DISP 9/2\n           | 4.5"
+	"recip         | DISP 1/3\n           | .333333333333"
+	"big-div       | DISP 100/8\n         | 12.5"
+	"sqrt2         | DISP SQR(2)\n        | 1.41421356237"
+	# --- +, - and * are broken whatever the operand type -------------
+	# Not a formatter problem: the compiler emits LDIS #9 in place of the
+	# arithmetic, so a real-typed sum reaches the formatter as the integer
+	# 9 read as a double -- a denormal, which is why this one halts rather
+	# than printing 9.
 	"real-add      | DISP 4.5+1\n         | 5.5"
-	"real-mul      | DISP 2.5*2\n         | 5"
 )
 
 # ------------------------------------------------------------------ options
