@@ -828,19 +828,31 @@ private:
 			return exec_trap::none;
 		}
 		case 001: {                                               // DPF
+			// Deposit Field (ERS sheet 74). J = CIR(27:5) is the leftmost
+			// destination bit, K = CIR(22:5) is 32 minus the width, and
+			// the L low bits of the TOS land in bits J..J+L-1 of the word
+			// beneath.
 			u32 fields = d & 0x3ff;
 			if (idx) fields += r.x;
 			const u32 j = fields & 0x1f, k = (fields >> 5) & 0x1f;
 			const u32 len = 32 - k;
 			const u32 src = pop();
 			u32 dst = stk(0);
-			if (len < 32)
-			{
-				const u32 mask = ((u32(1) << len) - 1) << (32 - j - len);
-				dst = (dst & ~mask) | ((src << (32 - j - len)) & mask);
-			}
-			else
+			// "All bits greater than 31 are lost": when J + L runs past
+			// the end of the word the field is truncated there, keeping
+			// the leading bits of the source. Computing the shift as
+			// 32 - J - L and using it unguarded goes negative exactly
+			// then -- an undefined shift -- and the boot image really
+			// does contain such sites, J=20 K=16 and J=2 K=1 among them.
+			const u32 eff = std::min(len, 32 - j);
+			if (eff >= 32)
 				dst = src;
+			else
+			{
+				const u32 mask = ((u32(1) << eff) - 1) << (32 - j - eff);
+				const u32 val = (src >> (len - eff)) << (32 - j - eff);
+				dst = (dst & ~mask) | (val & mask);
+			}
 			set_stk(0, dst); cca(dst);
 			return exec_trap::none;
 		}

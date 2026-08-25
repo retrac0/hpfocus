@@ -2055,6 +2055,65 @@ static void test_decimal()
 // BASIC's numbers are three-word decimal floating point -- a ten-bit
 // exponent and seventeen digits held as a binary integer -- and these are
 // the three instructions that move between that and a double.
+// EXF and DPF: extract and deposit a bit field (ERS sheets 73-74). The
+// compiler leans on these to assemble instruction words, and the boot
+// image drives DPF past the end of the word at six sites.
+static void test_field_ops()
+{
+	std::printf("EXF and DPF (sheets 73-74)\n");
+	harness h;
+
+	// CIR(22:10) carries K in its high five bits and J in its low five,
+	// where J is the leftmost bit and K is 32 minus the width.
+	auto fields = [](u32 j, u32 k) { return (k << 5) | j; };
+
+	// ---- EXF ---------------------------------------------------------
+	// Bits J..J+L-1, right justified. J=8 K=24 -> the third byte.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x12345678);
+	CHECK(h.one(u32_insn(000, 0, fields(8, 24))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x34u);
+
+	// Running off the end reads zeros: J=28, width 8, so bits 28..31 are
+	// the value and the four beyond are 0.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x0000000f);
+	CHECK(h.one(u32_insn(000, 0, fields(28, 24))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0xf0u);
+
+	// ---- DPF ---------------------------------------------------------
+	// The L low bits of the TOS land at J in the word beneath, the rest
+	// of that word untouched.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0xffffffff); h.cpu.push(0x00000034);
+	CHECK(h.one(u32_insn(001, 0, fields(8, 24))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0xff34ffffu);
+	CHECK_EQ(h.cpu.r.s, h.cpu.r.sb + 3 + 4);        // the TOS is deleted
+
+	// A whole-word deposit, K=0 so L=32.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x11111111); h.cpu.push(0xaabbccdd);
+	CHECK(h.one(u32_insn(001, 0, fields(0, 0))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0xaabbccddu);
+
+	// "All bits greater than 31 are lost." J + L past the end truncates
+	// the field there and keeps the leading source bits; computing the
+	// shift as 32 - J - L and using it unguarded is undefined exactly
+	// here. J=20 K=16 gives L=16 with only twelve bits of room, so the
+	// top twelve of the source land in bits 20..31.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x00000000); h.cpu.push(0x0000abcd);
+	CHECK(h.one(u32_insn(001, 0, fields(20, 16))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x00000abcu);
+
+	// The image's other shape: J=2 K=1, so L=31 into thirty bits.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x00000000); h.cpu.push(0x7fffffff);
+	CHECK(h.one(u32_insn(001, 0, fields(2, 1))) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x3fffffffu);
+}
+
+
 static void test_decimal_conversion()
 {
 	std::printf("BTD, DTB and POT (sheets 84-87)\n");
@@ -2427,6 +2486,7 @@ int main()
 	test_string_concatenate();
 	test_cpep();
 	test_decimal();
+	test_field_ops();
 	test_decimal_conversion();
 	test_isc();
 	test_shift_index();
