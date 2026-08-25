@@ -643,3 +643,78 @@ form corrects it. An exact `floor(log10)` is computed instead. The
 caller's loop adjusts in both directions -- BTD's CCL and CCG arms move
 the exponent by one and retry -- so being right first time only makes it
 converge on the first pass.
+
+
+---
+
+## 13. Assignment and `NEW`: two more incomplete emissions
+
+Both fail in the container, neither is an ISA gap, and neither is the
+formatter. They join section 8's missing arithmetic as the same kind of
+fault: the compiler emits a sequence with a piece left out.
+
+### `LET A=6` -- an `INCM` with no pointer
+
+Trap 030 (unexpected pointer type) at container +0x160. The faulting
+instruction is `f4b80003` = **`INCM S-3,I`**, and the stack under it is
+
+```
+S-0 = 00000000   S-1 = 40180000      <- 6.0
+S-2 = 00000000   S-3 = 40180000      <- 6.0 again
+```
+
+`40180000 00000000` is the double 6.0. `INCM ,I` dereferences `(S-3)` as a
+pointer and gets the *high half* of that double, which decodes as an
+external pointer to user segment 3, offset 0 -- hence the trap.
+
+The sequence itself is self-consistent, and stepping the stack through it
+accounts for every word:
+
+```
+PB+0150  PCLS STT[12]      net zero, measured
+PB+0152  LDIS #6
+PB+0154  FLTD              6 becomes the double 6.0
+PB+0156  DDUP
+PB+0158  STD
+PB+015c  DDUP
+PB+0160  INCM S-3,I        <- traps
+```
+
+So nothing put a pointer there. **The container's *other* `INCM S-3,I`,
+at +0x140, works** -- because `e400002c` = `LPP STT[11]` runs immediately
+before it and pushes a program pointer. The one at +0x160 has a `DDUP`
+before it instead. Same instruction, same addressing, one with its pointer
+and one without.
+
+Note what this rules out: `LET` is *not* the `LDIS #9` defect. It emits
+`FLTD` and builds a proper double, so the literal path is fine here.
+
+### `NEW` -- a frame that was never reserved
+
+Trap 001 at container +0x152 on `0x8424` = **`LDDS Q+144`**. With
+Q = 0x8245b that addresses 0x824eb while S = 0x824df -- sixteen bytes above
+the stack top. Our bound is right: ERS sheet 18 section 2.2.5 gives stack
+segments as `SB to S`.
+
+The frame is short from the start, not consumed by anything: S is
+`0x824df` **both before and after** the `PCLS STT[12]` two halfwords
+earlier, so that call is net zero and was never going to supply it. The
+body simply reads a local that the frame does not contain -- 132 bytes of
+frame against a reference at 144.
+
+A tempting explanation, checked and rejected: the container header carries
+a size-shaped word at base+0x38 that differs per statement -- `0x18` (24)
+for LIST, `0x3c` (60) for DISP, `0x40` (64) for NEW -- and 64 words would
+be ample where 33 is not. **It is never read at runtime.** `FOCUS_RWATCH`
+over it across a whole `NEW` records no access, so it is written by the
+compiler and not consulted by anything. It is not the mechanism.
+
+What is left is section 7's re-entry: statements re-enter the body at
++0x130 inside the *session's* activation, with Q fixed and no fresh frame.
+Most statements need little and survive; `NEW` needs 144 bytes and does
+not. That makes `NEW` a second symptom of the missing per-statement
+activation rather than a defect of its own.
+
+Also ruled out for both: `ADDS` and `SUBS`, the instructions that reserve
+a frame, are implemented correctly including the zero-operand form where
+the count comes off the stack.
