@@ -718,3 +718,75 @@ activation rather than a defect of its own.
 Also ruled out for both: `ADDS` and `SUBS`, the instructions that reserve
 a frame, are implemented correctly including the zero-operand form where
 the count comes off the stack.
+
+
+---
+
+## 14. The arithmetic instructions are not the problem
+
+A day spent auditing the instruction set against the sheets found exactly
+one real defect -- `DPF`'s undefined shift, section 15 below -- and it
+changes nothing about BASIC. That is worth stating plainly, because the
+natural assumption is that a compiler emitting wrong code must be sitting
+on a wrong instruction, and the evidence is against it.
+
+**HP's own library exercises the arithmetic far harder than any audit.**
+
+```
+DISP SQR(2)  ->  1.41421356237      (1.4142135623730951)
+DISP 1/3     ->   .333333333333
+DISP 22/7    ->  3.14285714286      (3.142857142857143)
+```
+
+`SQR` is a Newton iteration in segment 3: dozens of `FADD`, `FMPY` and
+`FDIV` in sequence, and it lands correct to all twelve digits BASIC
+displays. Each of these also drives the whole `BTD,B` -> `POT` -> `FDIV`
+digit loop. Compiled HP code doing real floating point gets the right
+answer, repeatedly.
+
+**And the compiler itself works for one operator.** `/` compiles
+`FLTD/FLTD/FDIV` in immediate mode and runs; `+`, `-` and `*` emit
+`LDIS #9` in the same position. The difference is in *what is emitted*,
+not in how it executes -- both would run the same class of instruction.
+An ISA fault cannot select one operator and spare another.
+
+So the remaining BASIC defects are not instruction-set gaps:
+
+| symptom | root |
+|---|---|
+| `+`, `-`, `*` print ` 9` | the immediate-mode statement compiler emits no arithmetic |
+| second statement traps 001 | no per-statement TRY frame (section 7) |
+| `NEW` traps 001 | no per-statement frame reserved (section 13) |
+| `LET` traps 030 | an `INCM` emitted without its pointer (section 13) |
+| `RUN` traps 021 | the short transfer table |
+
+All five live in the same place: the machinery that builds and enters a
+per-statement container. Sections 7, 8 and 13 each arrived there from a
+different direction.
+
+**Where not to look next:** the instruction set. Audited and found correct
+against their sheets this round -- `CMP` (51), `EXF` (73), `LSL`, `LSR`,
+`CSL`, `CSR`, `ASL`, `ASR` (72-73, including the CNT rule where bit 3 adds
+X and the count reaches 63), `ADDS` and `SUBS` (70) -- on top of `TRY` and
+`ESCP` (126), `CRB` (93) and `in_stack` (18) earlier.
+
+One caution about a tempting shortcut: HP's diagnostics suite is **not** a
+CPU test. It is a hardware conformance suite -- KEYBOARD, DISPLAY,
+PRINTER, 9121 -- and its `ERROR 702` comes from the driver's own
+`Clear_screen` setup before any device test runs. It says nothing about
+the instruction set.
+
+## 15. `DPF` deposited past the end of the word
+
+Sheet 74: J = CIR(27:5) is the leftmost destination bit, K = CIR(22:5) is
+32 minus the width, and "all bits greater than 31 are lost". The code
+computed the destination shift as `32 - J - L` and used it unguarded,
+which is negative whenever J > K -- undefined in C++, and on x86 the count
+is masked to five bits so the field lands somewhere unrelated. Six sites
+in the BASIC boot image do it, `J=20 K=16` and `J=2 K=1` among them.
+
+Fixed by truncating at the end of the word: the effective width is
+`min(L, 32 - J)` and the source contributes its leading bits. `EXF` was
+checked at the same time and is correct -- its left shift zero-fills,
+which is exactly the "bits greater than 31 have a value of 0" the sheet
+asks for. Both gained their first test coverage.
