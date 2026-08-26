@@ -725,3 +725,130 @@ All addresses runtime for this configuration.
 | semaphore census | `FOCUS_SEMALL` + `FOCUS_SEMALLMAX`/`FOCUS_SEMALLSKIP` (default cap 400 hides everything past ~1.4 s) |
 | where time goes | `FOCUS_PCPROF` |
 | task blocking | `FOCUS_SEMLOG` (timestamped) |
+
+
+## 8. After the boot report: init and the file system (current frontier)
+
+The machine prints its boot report and then stops. Measured, not inferred.
+
+### It is a hard stop, with one thing still ticking
+
+`FOCUS_STATEAT=8,20,40,58` gives the **identical** state at all four:
+`P=0x182f2` (the dispatcher's `STOP`), `MSG=0`, `I=1`. The only live activity
+is a WIN/H9000 task ping-ponging on semaphore `0xbd798` every 120–240 ms
+(`CORE SYSTEM +0x59ba` / `+0x58f6`), which is a background poller and not
+related.
+
+Two facts settle what has and has not happened:
+
+- **`HP-UX ENTRYPTS` (seg 4, the system-call layer) executes ZERO
+  instructions all boot** (`FOCUS_WATCH=36bcc:3797f`). There is no UNIX
+  process at all.
+- **The `/etc/init` string is never read** (`FOCUS_RWATCH=3ddcc:3ddd4`, 0
+  hits).
+
+### Where it stops, to the instruction
+
+The kernel's own initialisation is two procedures at the very front of
+HP-UX KERNEL, and `FOCUS_WATCH=379b4:37a20` times both:
+
+| image | | measured |
+|---|---|---|
+| `0x22d1c` | phase 1: `TRY`, then ~15 `PCL`s of subsystem init | runs to its `EXIT` at 1.25 s — **completes** |
+| `0x22d64` | phase 2: `LDXI #9; PSHN; LRAS P+54; TRY,B` | starts 2.32 s |
+| `0x22d6c` | `PCL STT[648]` | **executes and never returns** |
+| `0x22d70` | `PCL STT[647]` — CONFIGURATION entry 3 | never reached |
+| `0x22d74` | `PCLS STT[11]` — **start init** | never reached |
+
+`STT[11]` is the procedure at `PB+0x9bc` that builds init's stack, pushes
+`LPPS STT[207]` — the routine at `PB+0x63e8` that `LRAS P+64`s the
+`/etc/init` string and execs it — and hands it to `PCL STT[332]`. It has
+exactly one caller, `0x22d74`, so nothing else can start init.
+
+`0x22d9e`, phase 2's `TRY` handler, is `0x37a38` at runtime: **the site that
+re-raised every fatal escape this boot ever had** (the 66s, then the 91s).
+Those were all this call failing; now it does not fail, it hangs.
+
+### `STT[648]` is the TTY subsystem, and it blocks on a semaphore nobody posts
+
+`STT[648]` = **TTY SUBSYSTEM (seg 11) entry 2**. It configures the console
+through HP27128/30 and then, at **HP27128/30 +0x22cc**, does
+
+    LDXI #108; LDS Q+64,I,X; DOWN,B
+
+on the completion semaphore inside its channel struct at +108 — absolute
+`0x1e8a00`. `FOCUS_SEMALL` censuses the entire boot at ~2000 semaphore
+operations, and **`0x1e8a00` appears exactly once: that `DOWN`, count 0.**
+Nothing ever posts it.
+
+The only code that would is **HP27128/30 +0x152a**:
+
+    LDIS #1; LDXI #112; STS Q+72,I,X     ; result := 1
+    LDXI #108; LDS Q+72,I,X; UP,B        ; post the completion
+
+and the path to it is guarded, at **+0x173c**, by the driver's request code
+in `Q-32` being **10**. Measured (`FOCUS_EATRACE=6f418:14`), the driver is
+entered with **12**, takes the `BCC.GL` to `+0x1990`, and the poster is
+never reached. Watching `0x6f400:0x6f580` confirms it: seven instructions
+execute and stop at the guard.
+
+**So the open question is what is supposed to re-enter this driver with
+request code 10, and why nothing does.** The submission just before the
+`DOWN` goes through `PCL STT[21]` = CORE SYSTEM entry 355 (`PB+0x436c`),
+which looks up driver record `(Q-24)-8 = 0` in the table at `DB+240`
+(`0x1fe86c`), spins on a per-unit lock at record+56, and calls through
+`STT[348]`. No escape 63 is raised, so the record and its procedure exist
+and the call is made.
+
+### The card is not the problem
+
+`FOCUS_ASILOG` gives the whole console bring-up, and every request
+completes: read-card-information sf 253/254/255, write-card-configuration
+sf 5 and sf 0 (58 bytes, twice), control-device sf 5 ("clear the RS modem
+control signal", so no modem link and no solicited event is owed),
+control-card sf 2 — then every banner line as write-device-data on LCN 2,
+80 bytes each, the last 24 bytes, each ending `WD` → `RS` → `RTS` → IDL.
+The card then idles correctly at 1000 status reads a second.
+
+### The file system is never touched — and could not be mounted if it were
+
+`FOCUS_HPIBLOG`: **three HP-IB requests all boot** (`0b`, `03`, `01` — the
+card's go-online/IFC/REN bring-up) and nothing else. SDF_DISC executes only
+at module-init time (1.25 s) and never again. That follows from the hang
+above: the console blocks before anything mounts anything.
+
+Underneath that sits a second, independent blocker. `tools/sdf7914.py`
+establishes that the 7914 unit save is **tape 1 of two**, together holding
+one 130,815-block SDF volume:
+
+    tape 1   disc blocks 1..65,406        offset = (block - 1) * 1024
+    tape 2   disc blocks 65,409..130,814  offset = (block - 3) * 1024
+    never imaged: block 0, and blocks 65,407..65,408
+
+and `-hard1` mounts **tape 1 alone**: 66,975,744 bytes = 261,624 CS/80
+blocks of 256 = SDF blocks 1..65,406, exactly what `cio5` prints. **The FA
+file — the volume's inode table — starts at disc block 69,087, which is on
+tape 2.** So the half of the volume the machine can address contains no
+file-system metadata at all.
+
+Read across both tapes the volume is intact and complete, and everything a
+boot needs is on it:
+
+    /etc/init      33,652   /etc/inittab      826
+    /bin/sh        79,640   /dev/console      character special
+
+So bringing up the file system needs the drive to present the **whole**
+volume — the two tapes joined at their documented origins, with block 0 and
+65,407–65,408 as holes — and block 0 is the SDF volume header, which was
+never imaged and would have to be synthesised from what the FA file already
+pins (`s_blksz` 1024, `s_fa`, `s_maxblk`). Note that today the loader reads
+its boot descriptor from file offset 0, which *is* disc block 1 because the
+image starts there; a whole-volume image shifts that by one block.
+
+### Instrument note
+
+`FOCUS_TRIP` fires correctly on the 540's serial console (it is wired to the
+ASI's `on_char`), but **its stack walk is useless there**: the byte reaches
+the card by IOP DMA while the CPU sits at the dispatcher `STOP`, so the walk
+reports the dispatcher every time. It answers "what was on screen", not
+"who printed it". Same attribution trap as `FOCUS_IOALL`'s `p=`.
