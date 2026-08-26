@@ -925,20 +925,60 @@ idle re-arm to `0x1e9874` from `+0x3be4`.
 That idle re-arm is the interrupt handler's **IDL arm** doing
 `LDS DB+204; LNIS #1; STD DB+144` — about a thousand times a second.
 
-### So the request is queued and never started
+### The busy path is a work queue, and it works
 
-The stuck request **never arms the gate**. It must take one of `STT[348]`'s
-two early exits — the "channel is busy, leave it queued" path — and after
-the banner writes end at t=2.369 nothing ever comes back for it.
-`FOCUS_WWATCH` over its whole channel struct (`1e8994:1e8a3f`) from t=2.35
-catches 69 writes, and every one is the banner's own lock in
-`0x1e8a28..0x1e8a38`; the stuck request's cells are untouched.
+`STT[348]`'s first act is an **atomic test-and-set on the handler's
+in-progress flag** `DB+36`: `LDIS #36; PSLA,B; TEST,B; BCCS.GL`. When the
+handler is already running, the early exit **appends the work to a linked
+list** — head `DB+40` (`0x1e97fc`), tail `DB+44` (`0x1e9800`), link at
+entry+52:
 
-**The question, sharpened: which of the two early exits does it take, and
-what is supposed to re-enter `STT[348]` — or arm the gate directly — when
-the busy condition clears?** The handler runs a thousand times a second and
-its IDL arm only ever re-arms the RTS poll, so whatever restarts queued work
-is somewhere else.
+    LDIS #44; PLDA,B; BCCS.E <empty>   ; tail?
+    LDS Q-16; PSTA                     ; [tail] := new
+    LDIS #44; LDS Q-16; ADDI #52; DUP; ZERO; PSTA; PSTA,B
+
+and the handler's loop head drains it (`LDS DB+40; BRZ`, then `STD DB+40`
+to clear head and tail together). Watched from t=2.33 that queue is
+**healthy**: appended at 2.336 and 2.338, popped by the handler at
+`+0x3b90` in the same millisecond each time — eight writes, four clean
+pairs, nothing left behind.
+
+The popped work is dispatched too. `FOCUS_EATRACE` at the pop shows the SWI
+arm running on it: LCN 2 out of `DB+56`, bounds-checked against `DB+12`,
+channel struct `0x1e9c18` at state 4, the state-4 arm, state := 24, and the
+transfer armed from `DB+72`.
+
+**Correction: that queue holds IOP command-list blocks, not the driver's
+request blocks.** `0x1e98d4` dumps as `00000038 00000000 04000042 …` — a
+command word (`0x42` = `WIF8`). An earlier draft of this section read the
+stuck request as "queued and never started"; the transaction queue is fine
+and the transaction does start.
+
+### The real request block, and what is actually missing
+
+The waiter's request block is found by searching memory for its callback
+label — `FOCUS_FIND=80040020` (seg 32 entry 16) locates it at `0x1e9dbc`, so
+the block is **`0x1e9db4`**:
+
+    +8   80040020    the callback, seg 32 entry 16
+    +12  001e9db4    context: itself
+    +24  00011f04    low nibble 4 -- the type entry 7 set with DPF start=28,width=4
+    +28  0076899c    the channel, a tagged pointer -> 0x1e899c
+
+**`FOCUS_WWATCH=1e9db4:1e9df3` from t=2.35 catches ZERO writes.** The
+transaction completes, and the block is never touched again.
+
+So the missing step is not the queue and not the transaction: it is that
+**nothing walks the outstanding-request list to call each request's callback
+at +8 when a transaction succeeds.** The *failure* path does walk such a
+list — §6's teardown at `+0x4118` stores 66 into every entry's +32, +12 and
++4 — so the success path should walk the same one.
+
+**Next: find the success-side counterpart of that teardown walk, and why it
+either does not run or finds the list empty.** Note that dynamic dispatch
+here cannot be found by scanning for an indirect call — **CORE SYSTEM
+contains no `PCL …,I` at all**; a label taken from data is called by writing
+it into an STT slot at run time and calling that slot by index.
 
 ### The doorbell, and why the obvious knob is not the answer
 
