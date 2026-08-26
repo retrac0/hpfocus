@@ -14,6 +14,17 @@ The goal is to run HP-UX and BASIC.
 
 ## Current state
 
+**HP-UX 5.30 boots** on the emulated 9000/540 and prints its
+AT&T/Regents/HP boot report to the console terminal, with no system error;
+BASIC 2.0 and the 9020 diagnostics environment boot on the 520 to
+"BASIC Ready for use." on a rendered screen with a live command line.
+What HP-UX has not done yet is anything *after* the boot report -- the root
+filesystem and `init`. The console-open work that got it there, and the five
+emulator defects behind it, are in `docs/HPUX.md` section 6.
+
+Much of what follows is a running log and is dated; where it says "the
+current frontier", read it as the frontier at the time it was written.
+
 ### Emulator
 
 There's a sample factorial program in section 7 of the Instruction Set ERS

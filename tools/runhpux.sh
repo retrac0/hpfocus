@@ -14,19 +14,26 @@
 # procedure puts them, and the 7914 unit save mounts as the CS/80 drive on
 # that card. Re-card either slot, or fit more, with -cio0 .. -cio6.
 #
-# Where the boot currently gets to: the loader reads the image off the CS/80
-# disc, the kernel relocates all 27 modules, types both cards, creates its
-# tasks and runs the device world -- SDF_DISC, the TTY subsystem, HP27128/30
-# and HP27110 all execute, and the HP-IB card gets its documented go-online
-# / send-IFC / set-REN bring-up.
+# THE MACHINE BOOTS. The loader reads the image off the CS/80 disc, the
+# kernel relocates all 27 modules, types both cards, creates its tasks and
+# runs the device world -- SDF_DISC, the TTY subsystem, HP27128/30 and
+# HP27110 all execute, the HP-IB card gets its documented go-online /
+# send-IFC / set-REN bring-up, the console driver's open COMPLETES, and the
+# boot report reaches the terminal:
 #
-# THE MACHINE PRINTS TO ITS CONSOLE. What it prints is a panic report --
-# the console driver's own open still times out -- but the whole write path
-# works: CLC order, request block, the card-configuration subfunctions, and
-# 80-column write-device-data, with the message, the register file, the
-# stack, the I/O state and the segment table all reaching the terminal.
-# The open fails because the emulated card answers Read Transparent Status
-# with "nothing to do" and the driver keeps polling. See HARDWARE.md 2.6.3.
+#     (c) Copyright 1983, 1984, 1985, 1986, 1987 Hewlett-Packard Company
+#     (c) Copyright 1979 The Regents of the University of Colorado ...
+#     (c) Copyright 1980, 1984 AT&T Technologies. All Rights Reserved.
+#                         RESTRICTED RIGHTS LEGEND
+#     ...
+#                         HEWLETT-PACKARD COMPANY
+#                             3000 Hanover St.
+#                           Palo Alto, CA  94303
+#     CLOCK AND DATE NOT SET
+#
+# No system error, and the whole escape log is five benign 941s -- the last
+# of which is that last line. What has NOT happened yet is everything after
+# the boot report: the root filesystem and init. See docs/HPUX.md 6.
 
 set -e
 cd "$(dirname "$0")/.."
