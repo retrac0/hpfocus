@@ -190,10 +190,26 @@ inline constexpr spec CATALOGUE[] = {
   "The HP-IB card's identity halfword." },
 { "FOCUS_HPIBLOG", "", group::cards, false,
   "Log the HP-IB card's transactions and bus activity." },
+{ "FOCUS_NOGFX", "", group::cards, true,
+  "Leave select code 1 empty, the way the emulator was before the graphics "
+  "interface was modelled. The A/B control for anything the display changes." },
+{ "FOCUS_SC1FR1", "<hex>", group::cards, true,
+  "The graphics interface's FR1 status word. Four separate gates read it -- "
+  "the powerup scan, the kernel's device typing, its ready poll and its "
+  "bring-up -- and 0x04c0 is the value that passes all four; see "
+  "src/iop/focusgfx.h." },
+{ "FOCUS_SC1ID", "<hex>", group::cards, true,
+  "The graphics interface's FR3. The powerup scan requires the low byte to "
+  "read zero." },
+{ "FOCUS_SC1LOG", "", group::cards, false,
+  "Trace every register access to the graphics interface, with the segment "
+  "and PC that made it." },
 { "FOCUS_PROBE", "<sc>[:<id>][,...]", group::cards, true,
   "Park a logging card in a slot, which is how what a driver expects of a "
   "controller we do not have gets read off a run. Applied after the real "
-  "cards, so a probe can stand in for one of them." },
+  "cards, so a probe can stand in for one of them. With FOCUS_PROBELOG the "
+  "log names the segment and PC behind each access, which is what separates "
+  "one caller's use of a register from another's." },
 { "FOCUS_PROBEFR0", "<hex>", group::cards, true,
   "What a probe card answers to FR0." },
 { "FOCUS_PROBEFR1", "<hex>", group::cards, true,

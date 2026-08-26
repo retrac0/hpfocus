@@ -162,6 +162,34 @@ be a thorough workout of the 6845 and the frame buffer.
 
 ## 3. Where the tests stop now
 
+**2026-08-25: the graphics blocker is gone.** With the display graphics
+interface modelled at select code 1 (`src/iop/focusgfx.h`, HARDWARE.md
+§2.7.4), `Clear_screen` succeeds and HP's driver runs:
+
+```
+                   Welcome to the HP 9000 Test Supervisor
+This program allows you to verify the operation of your computer and its
+peripherial devices.  The test prompts and results may be displayed on
+the CRT display, printed on the internal thermal printer, or printed to
+an external printer.  Type the name of your choice and press RETURN, or
+if you just press RETURN, the CRT display is chosen as a Default.
+Please choose either  DISPLAY, INTERNAL, or EXTERNAL.  (Default=DISPLAY)
+```
+
+Answering `DISPLAY` (with `FOCUS_TYPERATE=250`, or the keystrokes outrun the
+display driver) gets the next error, and it is a **new** one and nothing to
+do with graphics:
+
+    SYMBOL TABLE ENTRIES NOT ALLOWED IN COMPILED ONLY CONTEXT
+
+so the frontier has moved from the display into the interpreter's handling
+of a compiled program's `INPUT`. The graphics *command set* is still not
+modelled -- commands are acknowledged and logged, so the display self test's
+memory check still fails (escape 8) and nothing draws.
+
+The account below is what the situation was before that, kept because the
+measurements in it stand.
+
 They boot, load and run. The environment comes up to `BASIC Ready for use.`,
 `LOAD "TEST"` reads the 31,652-byte driver off the flexible volume with no
 complaint, and `RUN` executes it:
@@ -202,15 +230,31 @@ writes `1<<1` = 2 to FR0, and reads the presence echo back from FR1 — the
 same sequence every other card goes through, and a plain echoing interface
 satisfies all of it. The card is registered.
 
-What follows is the interesting part: the driver then reads FR1 **598,730
+What follows is the interesting part: something then reads FR1 **598,730
 times** and gives up. So `ERROR 702` is not "no card found", it is a
-**timeout waiting on a status bit in FR1** from a card the driver has
-already accepted. The detection half needs nothing; only the status
-semantics are missing.
+**timeout waiting on a status bit in FR1** from a card that has already
+been accepted.
+
+**Both halves of that are now pinned down** (2026-08-25). Giving the probe
+card a hook that reports the processor's segment and PC on every FR access
+attributes all 598,720 of the reads to one instruction — `SUN OS KERNEL`
++0x28fa — and the bit it waits on is **FR1 bit 6**. It is the kernel's
+interface bring-up, not the display driver. Answering with bit 6 set clears
+the timeout on the first read; bit 7 has to be set as well, or the kernel
+takes a reset-and-escape path (`FR1 = 6`, `FR1 = 1`, `ESCP`) instead.
+
+That is not enough to bind the driver, and the reason is now legible too.
+`HP98770`, the 9020C display driver in this very environment (segment 43),
+binds only if the kernel types the device **16 or 17**, and the type comes
+from **FR1 bits 8-11** — a device class — not from the `FR3` identity that
+the earlier sweep of 0-15 was varying. HARDWARE.md §2.7.4 carries the whole
+map. What is still missing is why the kernel's typing pass never visits
+select codes 1-3 at all.
 
 A short sweep of what FR1 answers — 0x0002, 0x0042, 0x0082, 0x00c2, 0x0102
 through `FOCUS_PROBEFR1`, all keeping bit 1 set so the presence echo still
-passes — leaves `ERROR 702` unchanged. That is the expected outcome rather
+passes — leaves `ERROR 702` unchanged. (It would: none of those five is the
+class value bits 8-11 have to carry.) That is the expected outcome rather
 than a discouraging one: §2.7 of HARDWARE.md records that no document in
 the collection gives the meaning of the individual FRs for this interface,
 so the bit is not going to be found by guessing five of them. Reading it

@@ -1007,23 +1007,77 @@ names it that way **[unconfirmed]**. Further DIM tests: frame buffer memory,
 space substitution, display interrupt, synchronous startup, window, reset.
 Graphics side: rubber-band memory, line drawing, erase memory.
 
-> **Observed.** With a logging card parked on select code 1
-> (`FOCUS_PROBE=1 FOCUS_PROBELOG=1`), the powerup scan's whole conversation
-> with the graphics interface is: read `FR1`, read `FR3` three times, and then
-> — only when `FR3` answers **zero** — write the select-code bit pattern
-> `0x0002` to `FR0` and poll `FR1` **598,722 times** before giving up and
-> writing `FR1` = 6, 1, `0x43` to shut the slot down. Any non-zero `FR3` ends
-> the scan after two reads instead. So `FR3` is the identity here as it is
-> everywhere else, and the long poll is the not-present timeout, not a
-> handshake worth answering. Echoing the pattern back on `FR1` does not
-> satisfy it, and no identity from 0 to 15 gets BASIC's graphics driver to
-> bind: with the card registered the driver never touches select code 1
-> again, and `PLOTTER IS`-class statements answer `ERROR 702, No graphics
-> driver/CRT graphics hw failure`. The bind test is therefore inside the
-> `GRAPHICS` binary and not in the powerup scan — which is where to read it
-> off next. Compare the alpha side, which works: it answers `FR1` = `0x0080`
-> and `FR3` = `0x0006`, and the driver then writes the 6845's sixteen
-> registers through `FR5` as address/data pairs.
+> **Read off HP's own software, and now implemented.** Nothing in the
+> collection gives the meaning of these registers, so all of the following
+> was measured on a running machine rather than transcribed. The card is
+> `src/iop/focusgfx.h`, fitted at select code 1 on `hp9020`; `FOCUS_NOGFX`
+> removes it and `FOCUS_SC1LOG` traces every access with the segment and PC
+> that made it.
+>
+> **1. `FR1` is one word read by four different gates**, and a display has
+> to answer all four at once. `0x04c0` does:
+>
+> | reader | test | meaning |
+> |---|---|---|
+> | `SYSTEM POWERUP` +0x525a | `FR1 & 0x0F30 == 0` | **must FAIL** — see below |
+> | `SUN OS KERNEL` +0x1df6 | bits 8–11 | device **class**: 4 or 8 → type 16, 10 → type 17 |
+> | `SUN OS KERNEL` +0x28d6 | bit 6 | ready. Clear spins ~598,700 times and times out |
+> | `SUN OS KERNEL` +0x240e | bit 7 | clear ⇒ the kernel resets (`FR1 = 6`, `FR1 = 1`) and escapes |
+>
+> **The first one is the counter-intuitive one and it is the whole trick.**
+> The powerup scan's gate is a filter, not a presence test: a card with
+> class bits set is *skipped*, its bit left CLEAR in the present bitmap at
+> `DB+152`, and it is precisely that clear bit which sends the kernel's
+> typing pass down the class-based path at +0x1df6. A card that answers the
+> scan the way a generic interface does — echoing the `FR0` select pattern
+> — gets registered, its bit set, and is then skipped by the typing pass
+> forever. That is why a logging card parked on select code 1 never bound a
+> driver whatever identity it answered on `FR3`: `FR3`'s low byte is only
+> the fallback path, taken when the class nibble is zero.
+>
+> **2. The driver.** `HP98770` — segment 43 of the `500ENV` diagnostics
+> environment, the internal display's driver — sets its interface word to
+> **9 (channel 1, PA 1 = select code 1)** and binds only if the device type
+> is **16 or 17**. It then runs HP's own power-up self test for the display
+> (`PWP SELF TEST` local entry 32 for type 16, entry 30 for type 17) and
+> allocates its control block only if that passes. It plants 559 and 454 as
+> the maximum X and Y, and divides them for the aspect ratio — the
+> 560 × 455 raster of §2.7.1.
+>
+> **3. What the self test demands**, in the order it asks (its reset is
+> `PWP SELF TEST` local entry 21, and each failure has its own escape code):
+>
+> | check | requirement | escape |
+> |---|---|---|
+> | `RIST` (read interface status) | odd | 1 |
+> | write `FR1 = 0`, then `RIFG` | **even** — the reset drops the flag | 2 |
+> | `IFPL` (interface poll) | this PA's bit **clear** | 3 |
+> | write `FR1 = 0x100`, then wait | the flag comes back | 5 |
+> | graphics memory, patterns `0xAAAA` / `0xCCCC` | read back what was written | 8 |
+>
+> So `RIFG` is the command handshake — `FR1 = 0` is a reset that drops it,
+> a command raises it again — and the interface poll is separate from the
+> service request, which is where the emulator's default (poll chained to
+> service) had the card asking for attention forever.
+>
+> **4. Completion is an interrupt.** The kernel's wait (entry 21) arms the
+> device record and blocks on a semaphore that only the interrupt service
+> posts, so a card that never raises leaves every command timing out. The
+> card raises on each command write.
+>
+> **5. The register model.** Traffic to the display is `FR0` and `FR1` with
+> the **IC field of the interface address** selecting between them — the
+> kernel's register primitives (entries 17 and 18) build their operand as
+> `select code | register << 6`. So a command goes to `FR1` and its data to
+> `FR0`, and the IOP already routes this correctly (`iop_core::register_of`).
+>
+> **What this bought.** `ERROR 702 IN Clear_screen` is gone: HP's 9020 Test
+> Supervisor loads, runs, prints its banner and takes operator input. The
+> command set itself is not modelled — commands are logged and acknowledged
+> — so the graphics *memory* test still fails with escape 8, and nothing
+> draws yet. The commands seen so far are `0x100` and `0x180` (init),
+> `0x1a8`/`0x1a9`/`0x1a0`/`0x1a1` with `FR0` data (the memory fill), and
+> from the driver `0x100` and `0x12B`.
 
 > **Simulator note.** Both principal parts of the 98760A are standard and already
 > modelled in MAME (`upd7220`, `mc6845`), and the geometry, colour map and

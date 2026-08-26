@@ -193,7 +193,8 @@ struct console_card : public iop_interface
 	bool input_ready() const { return fr0 != 0; }
 	// DMA: the display's frame data arrives this way (the 520 manual:
 	// the DIM frame buffer is written "in DMA or direct I/O modes", and
-	// the boot starts PA 0 DMA with SDC). The card is always ready.
+	// the boot starts PA 0 DMA with SDC). The card is always ready --
+	// The card is always ready.
 	bool service_request() override { return true; }
 	// The interface poll must be quiet on this board: the self test
 	// checks that nothing is requesting service between its steps
@@ -363,6 +364,16 @@ struct probe_card : public iop_interface
 		default: return pattern;
 		}
 	}
+	// Where the processor was when it did this. A card cannot see the
+	// CPU, and for an interface nobody has documented, "which routine
+	// asked" is most of the answer -- the FR number alone says almost
+	// nothing. The machine fills this in; without it the hook is inert.
+	std::function<std::string()> where;
+	// Evaluated only when the log is on: an FR access happens on the
+	// machine's hot path and building a string per access would be felt.
+	std::string site() const
+	{ return (where && log) ? where() : std::string(); }
+
 	u32 read_fr(unsigned n) override
 	{
 		// The powerup scan's presence test: FR3 must read zero after the
@@ -386,7 +397,7 @@ struct probe_card : public iop_interface
 			v = (m_fr1_reads++ == 0) ? fr[0] : fr1_policy(fr[0]);
 		}
 		else             v = fr[n & 15];
-		log("[probe%u R fr%u = %04x]\n", pa, n, v);
+		log("[probe%u R fr%u = %04x%s]\n", pa, n, v, site().c_str());
 		return v;
 	}
 	void write_fr(unsigned n, u32 v) override
@@ -396,7 +407,7 @@ struct probe_card : public iop_interface
 		if (n == 1 || n == 8)
 			was_reset = true;
 		fr[n & 15] = v & 0xffff;
-		log("[probe%u W fr%u = %04x]\n", pa, n, v & 0xffff);
+		log("[probe%u W fr%u = %04x%s]\n", pa, n, v & 0xffff, site().c_str());
 	}
 };
 

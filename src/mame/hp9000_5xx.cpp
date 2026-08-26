@@ -37,6 +37,7 @@
 #include "iop/focusscm.h"
 #include "iop/focuscards.h"
 #include "iop/focusdim.h"
+#include "iop/focusgfx.h"
 #include "iop/focusdisc.h"
 #include "iop/focusasi.h"
 #include "iop/focushpib.h"
@@ -597,6 +598,7 @@ private:
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
 	focus::dim_card m_dim;            // select code 0: the display
+	focus::gfx_card m_gfx;            // select code 1: display graphics
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
@@ -900,6 +902,16 @@ void hp9000_5xx_state::attach_probes()
 		m_probes[sc].log.enable(bool(knob::flag("FOCUS_PROBELOG")));
 		m_probes[sc].fr0_answer = knob::number("FOCUS_PROBEFR0", m_probes[sc].fr0_answer);
 		m_probes[sc].fr1_mode = knob::number("FOCUS_PROBEFR1", m_probes[sc].fr1_mode);
+		// Which routine touched the slot. For an interface no manual
+		// describes this is most of the answer: the FR number says what
+		// register, the caller says what the register is FOR.
+		m_probes[sc].where = [this]() {
+			const focus::cpu_core &c = m_cpu->core();
+			char buf[48];
+			std::snprintf(buf, sizeof buf, "  seg%u+%04x",
+					c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
+			return std::string(buf);
+		};
 		m_iop.attach(sc, &m_probes[sc]);
 		if (!comma)
 			break;
@@ -997,6 +1009,29 @@ void hp9000_5xx_state::machine_start()
 	// fits along with every other card.
 	if (!m_console_is_asi)
 		m_iop.attach(0, &m_dim);
+
+	// Select code 1 is Display Graphics on a machine with the display
+	// built in (520 Service, sheet 2-29). FOCUS_SC1FR1 is the status
+	// word the whole bring-up keys on -- see focusgfx.h, where every
+	// gate that reads it is named; FOCUS_SC1ID is FR3, whose low byte
+	// the powerup scan requires to be zero.
+	m_gfx.fr1 = knob::number("FOCUS_SC1FR1", m_gfx.fr1);
+	m_gfx.id = knob::number("FOCUS_SC1ID", m_gfx.id);
+	m_gfx.log.name("gfx");
+	m_gfx.log.enable(bool(knob::flag("FOCUS_SC1LOG")));
+	m_gfx.where = [this]() {
+		const focus::cpu_core &c = m_cpu->core();
+		char buf[48];
+		std::snprintf(buf, sizeof buf, "  seg%u+%04x",
+				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
+		return std::string(buf);
+	};
+	m_gfx.iop = &m_iop;
+	if (!m_console_is_asi && !knob::flag("FOCUS_NOGFX"))
+	{
+		m_iop.attach(1, &m_gfx);
+		m_iop.enable_interrupt(1);
+	}
 
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr.name("sc", 6);

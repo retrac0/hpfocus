@@ -72,12 +72,16 @@ CASES=(
 	"two-item      | DISP 4,5\n           | 4                   5"
 	"compare       | DISP 1=1\n           | 1"
 	"concat        | DISP \"A\"&\"B\"\n      | AB"
+	# AVAILABLE MEMORY is 64 bytes lower than it was before the graphics
+	# interface was fitted at select code 1: one more registered device is
+	# one more device record. FOCUS_NOGFX restores the old figure, which
+	# is the check that nothing else moved.
 	# --- the second-statement crash, fixed -------------------------
 	# Two LISTs in a row used to halt with TRAP 001 in the container's tail
 	# TRY: the create belongs to the statement's own compiled prologue, and
 	# the compiler was emitting the wrong template (docs/SUNOS.md 16).
-	"list          | LIST\n                | AVAILABLE MEMORY = 487760"
-	"list-twice    | LIST\n;LIST\n         | AVAILABLE MEMORY = 487760 | 20,26 | 34"
+	"list          | LIST\n                | AVAILABLE MEMORY = 487696"
+	"list-twice    | LIST\n;LIST\n         | AVAILABLE MEMORY = 487696 | 20,26 | 34"
 	# --- division and functions: the compiler emits real arithmetic --
 	# These exercise BTD, DTB and POT end to end, including the digits of
 	# an irrational.
