@@ -570,6 +570,8 @@ private:
 	}
 
 	TIMER_CALLBACK_MEMBER(iop_tick);
+	TIMER_CALLBACK_MEMBER(iop_poll_tick);
+	void deliver_iop_interrupts();
 	TIMER_CALLBACK_MEMBER(rtc_tick);
 	TIMER_CALLBACK_MEMBER(type_tick);
 	TIMER_CALLBACK_MEMBER(type_start);
@@ -645,6 +647,7 @@ private:
 	TIMER_CALLBACK_MEMBER(poke_tick);
 	TIMER_CALLBACK_MEMBER(state_tick);
 	emu_timer *m_iop_timer = nullptr;
+	emu_timer *m_iop_poll_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
 	emu_timer *m_type_timer = nullptr;
 	std::string m_type_text;
@@ -1217,6 +1220,10 @@ void hp9000_5xx_state::machine_start()
 			// pass before a completion event is announced.
 			asi->card.event_delay_ms =
 					unsigned(knob::number("FOCUS_ASIEVDELAY", asi->card.event_delay_ms));
+			// FOCUS_ASIPAUSE sets how long a Pause order pauses, which
+			// is what paces the driver's polling loop.
+			asi->card.pause_ms =
+					unsigned(knob::number("FOCUS_ASIPAUSE", asi->card.pause_ms));
 			asi->card.clc_report =
 					u8(knob::number("FOCUS_ASICLCRTS", asi->card.clc_report));
 			asi->card.lcn_force =
@@ -1642,6 +1649,18 @@ void hp9000_5xx_state::machine_start()
 	// moving. Real timings are in the I/O ERS section 7.
 	m_iop_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_tick), this);
 	m_iop_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
+	// FOCUS_IOPPOLL=<us> is how close to "continuously" the interface
+	// poll runs, and the default is the middle of a band with a measured
+	// edge at each end. Slower than about 700 us and HP-UX's console open
+	// starts losing its hand-offs again (2x56 and a 66 return at 900);
+	// faster than about 200 us and the 520's boot stops reaching its
+	// banner at all -- 150 and 100 both fail, 200 does not, and what it
+	// is that the 520 cannot take at that rate is NOT yet known. So 400
+	// us, roughly a factor of two clear either way.
+	m_iop_poll_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_poll_tick), this);
+	const unsigned poll_us = unsigned(knob::number("FOCUS_IOPPOLL", 400));
+	m_iop_poll_timer->adjust(attotime::from_usec(poll_us), 0,
+			attotime::from_usec(poll_us));
 	m_rtc_timer = timer_alloc(FUNC(hp9000_5xx_state::rtc_tick), this);
 	m_rtc_timer->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
 
@@ -1787,9 +1806,58 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 }
 
 
-TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
+// The IOP is a processor of its own and it polls the interfaces
+// CONTINUOUSLY (I/O ERS figure 2.1). Running that poll on the same 1 ms
+// beat as the cards' own timekeeping made it a visitor instead: the CPU
+// got a whole millisecond -- tens of thousands of instructions -- between
+// one command-list entry and the next, and every protocol in which the
+// two processors hand something to each other broke on it.
+//
+// Measured, all three from the console open: the driver arms its
+// transaction by writing a branch target into its command list and the
+// interrupt handler overwrote it again before the IOP ever read it; the
+// list parked one entry short of the Read Transparent Status that
+// refreshes the report buffer, so the handler dispatched a stale report
+// against a channel its own completion had just closed; and a status
+// block's completion interrupt arrived before the status block's own
+// list had finished. None of those is a race on real hardware, where the
+// IOP answers in microseconds.
+//
+// So the poll -- and the interrupts it produces -- run on their own fast
+// timer, and the millisecond tick keeps what is genuinely millisecond
+// business: the cards' internal clocks, the interval timer, the pacing
+// of a Pause order.
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_poll_tick)
 {
 	m_iop.poll_and_service();
+	deliver_iop_interrupts();
+}
+
+
+// Every accepted device raise is one message at 16 + its level (the
+	// microcode handler maps it back and pulls the device from the
+	// level's list). The attention poll reaches the CPU as message 14
+	// (I/O ERS section 2.1).
+// is one message at 16 + its level (the microcode handler maps it back and
+// pulls the device from the level's list). The attention poll reaches the
+// CPU as message 14 (I/O ERS section 2.1).
+void hp9000_5xx_state::deliver_iop_interrupts()
+{
+	const u32 raised = m_iop.take_raise_events();
+	for (unsigned pa = 0; pa < 8; pa++)
+		if (raised & (1u << pa))
+			m_cpu->core().raise_message(16 + m_iop.interrupt_level(pa));
+	if (m_iop.take_attention_event())
+		m_cpu->core().raise_message(14);
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
+{
+	// The transfers the fast poll leaves alone, at the rate the devices
+	// driving them expect.
+	m_iop.pace_uncounted_dma();
+	deliver_iop_interrupts();
 	m_disc.tick();
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 		if (m_cio[sc])
@@ -1819,16 +1887,6 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 		}
 	}
 
-	// Every accepted device raise is one message at 16 + its level (the
-	// microcode handler maps it back and pulls the device from the
-	// level's list). The attention poll reaches the CPU as message 14
-	// (I/O ERS section 2.1).
-	const u32 raised = m_iop.take_raise_events();
-	for (unsigned pa = 0; pa < 8; pa++)
-		if (raised & (1u << pa))
-			m_cpu->core().raise_message(16 + m_iop.interrupt_level(pa));
-	if (m_iop.take_attention_event())
-		m_cpu->core().raise_message(14);
 }
 
 

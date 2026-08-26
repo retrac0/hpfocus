@@ -647,7 +647,7 @@ public:
 		}
 
 		for (unsigned pa = 0; pa < CHANNELS; pa++)
-			run_dma(pa);
+			run_dma(pa, false);
 
 		// A command list suspended on ICEI resumes when its interface
 		// responds to the poll.
@@ -698,7 +698,17 @@ public:
 		return on.on();
 	}
 
-	void run_dma(unsigned pa)
+	// `uncounted` says whether a transfer with no count may advance. A
+	// COUNTED transfer completes inside one call whatever the poll rate,
+	// so polling faster changes only how promptly it finishes -- which is
+	// the whole point. An UNCOUNTED one moves a unit per call, so its
+	// throughput IS the poll rate, and the interfaces that use one -- the
+	// display's line DMA, the internal disc -- are paced by the device
+	// rather than by how often the IOP happens to look. Those advance on
+	// the millisecond beat instead (pace_uncounted_dma), which is what
+	// keeps the 520's boot identical while the console's counted legs
+	// finish in microseconds.
+	void run_dma(unsigned pa, bool uncounted = true)
 	{
 		channel_state &c = m_chan[pa];
 		if (!c.iface)
@@ -708,6 +718,8 @@ public:
 		// active state and the DMA mask bit.
 		const bool burst = c.dma_count != 0 && c.iface->burst_request();
 		if (!burst && (!c.dma_active || !(m_dma_mask & (1u << pa))))
+			return;
+		if (!uncounted && c.dma_count == 0)
 			return;
 
 		memory_interface &mem = m_host.iop_memory();
@@ -867,6 +879,36 @@ public:
 				// poll_and_service starts the list again when the card
 				// answers. Stopping dead here is what left the console's
 				// transaction half-issued.
+				// ...and if the interface is ALREADY responding there
+				// is nothing to suspend for. The IOP polls continuously
+				// (I/O ERS figure 2.1); this one polls once an emulated
+				// millisecond, which is three orders of magnitude slower
+				// than the bus, and the gap is long enough for the CPU
+				// to run its whole interrupt service inside it. That is
+				// what killed HP-UX's console open: the RS leg's DMA
+				// completion is an accepted interrupt, the list parks
+				// one entry short of the Read Transparent Status that
+				// would refresh the report buffer, and the driver's
+				// handler -- whose every arm ends "ICEI; IXIT", one
+				// interrupt per freshly-DMA'd report -- dispatches the
+				// SWI still standing in that buffer against a channel
+				// its own completion has just closed. State 0 is the
+				// error arm, so the transaction that had already earned
+				// status 55 is torn down with 66.
+				{
+					// FOCUS_IOPPARKALWAYS restores the always-park
+					// behaviour, which is the A/B control for everything
+					// this changes.
+					static const knob::flag park("FOCUS_IOPPARKALWAYS");
+					const channel_state &ic = m_chan[pa & 7];
+					if (!park.on() && ic.iface && ic.iface->poll_request())
+					{
+						if (log)
+							log("[iop ICEI pa=%u poll already up, "
+									"resume=%08x]\n", pa, ptr);
+						continue;
+					}
+				}
 				m_chan[pa & 7].await_poll = true;
 				if (log)
 					log("[iop ICEI pa=%u suspend, resume=%08x]\n",
@@ -950,6 +992,15 @@ public:
 			}
 			(void)ok;
 		}
+	}
+
+	// One millisecond's worth of the transfers the poll deliberately
+	// leaves alone: see run_dma's `uncounted`.
+	void pace_uncounted_dma()
+	{
+		for (unsigned pa = 0; pa < CHANNELS; pa++)
+			if (m_chan[pa].dma_count == 0)
+				run_dma(pa, true);
 	}
 
 	// Advance the interval timer by `units` counts (one count is

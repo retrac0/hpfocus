@@ -146,6 +146,12 @@ struct asi_card : public iop_interface
 	// that nibble. FOCUS_ASICFGEVENT sweeps it.
 	u8 event_configured = EVENT_CONFIGURED;
 	unsigned event_delay_ms = 2;
+	// How long a Pause order pauses for, in milliseconds. The driver's
+	// idle loop is PAU then read transparent status, so this sets its
+	// cadence: 1 ms reproduces the ~1000 status reads a second the real
+	// driver makes (999 in the second before the console open).
+	// FOCUS_ASIPAUSE sweeps it.
+	unsigned pause_ms = 1;
 
 	// The halfword the identify transaction answers, which is what types
 	// the slot -- and the CARD ID goes in its HIGH byte. Read off the
@@ -299,7 +305,7 @@ struct asi_card : public iop_interface
 	{
 		return m_order == ORD_WD || m_order == ORD_WC
 				|| m_order == ORD_WTC || m_order == ORD_CLC
-				|| !m_out.empty();
+				|| !out_now().empty();
 	}
 
 	// Device End: the answer this command prepared has been read out in
@@ -307,7 +313,15 @@ struct asi_card : public iop_interface
 	// give -- 17 bytes for transparent status, of which an idle card has
 	// 3 to say -- so ending the leg here is the normal case, not an
 	// error.
-	bool data_end() override { return m_answering && m_out.empty(); }
+	bool data_end() override { return m_answering && out_now().empty(); }
+
+	// Which outbound queue the order in progress is reading. Everything
+	// that moves bytes to the host -- the DMA leg, FR0 and the panic
+	// printer's byte-at-a-time FR6 -- goes through here, so a status
+	// read and a data phase cannot reach into each other's bytes.
+	std::deque<u8> &out_now() { return m_order == ORD_RTS ? m_report : m_out; }
+	const std::deque<u8> &out_now() const
+	{ return m_order == ORD_RTS ? m_report : m_out; }
 
 	// The interface poll must be quiet unless the card wants the channel
 	// to start something, as on the 520's boards -- the powerup self
@@ -494,7 +508,7 @@ struct asi_card : public iop_interface
 		// another leg.
 		if (!output && m_answering)
 		{
-			m_out.clear();
+			out_now().clear();
 			m_answering = false;
 		}
 		// A data phase that has just finished owes the host an EDD:
@@ -539,6 +553,10 @@ struct asi_card : public iop_interface
 			// clock running so nothing is stranded.
 			start_event_timer();
 		}
+		// The pause the PAU order asked for, counted out; when it runs
+		// down the card asks for its next order.
+		if (m_pause_ticks && --m_pause_ticks == 0)
+			m_want_order = true;
 		if (!m_rx.empty() && !m_status_posted && m_arq_enabled)
 		{
 			// "If no read request is pending, and the card has a record
@@ -654,7 +672,7 @@ private:
 			// (CORE SYSTEM +0x384c, arms 0..5). FOCUS_ASIRTS forces the
 			// opcode and FOCUS_ASIEVENT2 the event code under AES, which
 			// is how the arms get identified.
-			m_out.clear();
+			m_report.clear();
 			{
 			// A report the card owes the host takes precedence over the
 			// swept default, and is consumed by the read.
@@ -664,16 +682,16 @@ private:
 				dbg()("[%8.3fs asi%u RTS reports %u lcn=%u]\n",
 						stamp(), pa, op,
 						op == RTS_AES ? 0u : unsigned(rts_lcn));
-			m_out.push_back(op);
+			m_report.push_back(op);
 			if (op == RTS_AES)
 			{
-				m_out.push_back(rts_event);    // event code
-				m_out.push_back(0);            // port ID: the ASI has one
+				m_report.push_back(rts_event);    // event code
+				m_report.push_back(0);            // port ID: the ASI has one
 			}
 			else
 			{
-				m_out.push_back(u8(rts_lcn >> 8));
-				m_out.push_back(u8(rts_lcn));
+				m_report.push_back(u8(rts_lcn >> 8));
+				m_report.push_back(u8(rts_lcn));
 			}
 			}
 			answer();
@@ -684,9 +702,20 @@ private:
 			// dma_complete hands it to take_request_block.
 			break;
 		case ORD_PAU:
-			// Pause. Nothing is in flight afterwards, so the card is
-			// asking for its next order -- see poll_request().
-			m_want_order = true;
+			// Pause, and it is a WAIT, not a no-op: the driver's polling
+			// list is PAU, read transparent status, repeat, and the only
+			// thing that decides how fast that loop runs is how long the
+			// card takes to ask for its next order afterwards. Answering
+			// instantly used to be harmless because the IOP's poll ran
+			// once a millisecond and set the cadence; once a list may
+			// resume the moment the poll is up (focusiop.h, CMD_ICEI),
+			// an instant answer turns the loop into a tight ring of
+			// interrupt, ICEI, status, interrupt -- and the console
+			// driver's own task never runs, so its open times out.
+			// Measured: the whole open moved from 2.32 s to 4.42 s and
+			// the machine went from 147% speed to 75%.
+			m_want_order = false;
+			m_pause_ticks = pause_ms ? pause_ms : 1;
 			break;
 		default:
 			// The card "will accept and discard (thus effectively
@@ -897,6 +926,15 @@ private:
 		// and re-dispatches whatever that buffer still holds.
 		m_request = 0;
 		m_want_order = true;
+		// ...and it owes the host NOTHING further. dma_complete arms EDD
+		// when the data phase ends, which is right between the data and
+		// the status block; once the status block has been read the
+		// transaction is over and the next transparent status must read
+		// IDL. Leaving EDD standing makes the driver's handler take its
+		// EDD arm, which is not an acknowledgement -- it ARMS A TRANSFER
+		// (CORE SYSTEM +0x3c88, CRB against states 4..16, state := 24) --
+		// against a channel the completion has already closed.
+		m_rts_report = 0;
 	}
 
 	// Read Card Information (request code 4, 27128A 4-38..4-41). The
@@ -990,16 +1028,18 @@ private:
 		// address" (27110A 4-6).
 		m_in.clear();
 		m_out.clear();
+		m_report.clear();
 		m_status_posted = false;
 		m_order = 0xff;
 	}
 
 	u8 pop_out()
 	{
-		if (m_out.empty())
+		std::deque<u8> &q = out_now();
+		if (q.empty())
 			return 0;
-		const u8 b = m_out.front();
-		m_out.pop_front();
+		const u8 b = q.front();
+		q.pop_front();
 		return b;
 	}
 
@@ -1016,6 +1056,18 @@ private:
 	unsigned m_event_timer = 0;
 	std::deque<u8> m_rx;        // characters typed at the terminal
 	std::deque<u8> m_out;       // what the host reads next
+	// Read Transparent Status answers out of its OWN buffer, and has to.
+	// RTS is the card's out-of-band channel -- "what do you want next?"
+	// -- asked between the legs of a transaction the card is already in
+	// the middle of, and answering it used to `m_out.clear()`. So the
+	// console open went: CLC prepares the switch byte subfunction 253
+	// asks for; the driver's polling list reads transparent status and
+	// throws that byte away; the RD leg that should have carried it then
+	// has nothing to give, does not assert Device End, and never
+	// completes at all -- measured, no DMA-done and no raise for the
+	// whole leg. The guard in ORD_RD below was written to protect that
+	// byte and cannot, because it is already gone by the time RD runs.
+	std::deque<u8> m_report;    // ...and what it reads for an RTS
 	std::vector<u8> m_in;       // what the host has written
 
 	u32 m_fr[16] = {};
@@ -1026,6 +1078,7 @@ private:
 	bool m_keep_record = false; // the request block's S bit
 	bool m_block = false;       // ...and BLK
 	u8 m_card_status = 0;       // what subfunction 254 reports
+	unsigned m_pause_ticks = 0; // milliseconds left of a PAU order
 	u8 m_rts_report = 0;        // a report owed to the host, or 0
 	u8 m_request_status = 0;    // byte 0 of the read-status block
 	u16 m_transferred = 0;      // ...and its length-of-transfer field

@@ -93,7 +93,144 @@ The one DB is shared by all privileged code. Known cells (byte offsets):
 | 2080 | last recorded boot error (941 = clock not set) | BASIC work |
 | 4416 | a kernel semaphore (SEML DB+4416 in the callout daemon) | 0x33f10 |
 
-## 6. The console-open machinery (current frontier)
+## 6. The console open — SOLVED, and what it cost
+
+**As of 2026-08-25 the console open completes.** The `7x66` cascade and the
+"System halted due to system error / 00000042" that this file spent most of
+its length circling are gone; the boot's whole escape log is now five benign
+`941`s and three `91`s, and the `91` is a new frontier, not this one.
+
+The cause was never in the kernel. It was **three defects in the emulated
+ASI card and one in how the IOP is clocked**, and the reason every
+single-axis sweep recorded below traded one failure for another is that all
+four had to go together.
+
+### What the kernel is actually doing (settled from the disassembly)
+
+Runtime = image + `0x14c98`; CORE SYSTEM PB = `0x23934`.
+
+`BR P+8,I,X` takes its table at *instruction address + 8*, and each entry is
+**self-relative** — the target is the entry's own address plus its value.
+Two independent checks pin both conventions, and with them the handler
+decodes cleanly:
+
+| image | runtime | |
+|---|---|---|
+| `0x12804` | `0x2749c` | `STS DB+0,X` — the completion closes the channel, state := 0 |
+| `0x12810` | `0x274a8` | loop head, `SEML DB+0` |
+| `0x1281a` | `0x274b2` | `LDS DB+40; BRZ` — work queue empty, fall through |
+| `0x12838` | `0x274d0` | `LDS DB+52` → `STAX; LSXL 2; CMPI #5; BR P+8,I,X` |
+
+The six arms are the card's six report opcodes, in order:
+
+| `DB+52` | runtime | |
+|---|---|---|
+| 0 IDL | `0x27500` | −1 into the result cells, clear `DB+36`/`DB+0`, `ICEI`, `IXIT` — **the clean exit** |
+| 1 SWI | `0x27530` | LCN bounds-check, then dispatch on the channel state |
+| 2 EDD | `0x275bc` | same shape, `CRB` requires state ∈ [4,16] |
+| 3/4/5 | | LCD / AES / ERT |
+
+The SWI arm's inner state table (base `0x128b8`, index = the state word, so
+states run 0,4,8,…): state 4 → `0x128d4`, which sets state := 24 and arms
+the transfer; **state 0 → `0x276c8`, the error entry** that calls `STT[353]`
+and tears the channel down, stamping 66 over the 55 the transaction had
+already earned.
+
+**`DB+52` is not a variable.** No `STS`/`STD` anywhere in the image writes
+it: it is the low byte of the 17-byte report block the list DMAs to
+`0x1e980b`, so it changes only when a Read Transparent Status actually runs.
+(`DB` for this handler is `0x1e97d4`, not the `0x11bb8` of §5.)
+
+And **every arm ends `... IOC io=0x38; IXIT`** — release the lock, re-issue
+ICEI to fetch the next report, return. The design gives the CPU exactly one
+interrupt per freshly-DMA'd report. Every failure below is that invariant
+being broken.
+
+### The four defects
+
+1. **Read Transparent Status destroyed the transaction's data.** `ORD_RTS`
+   cleared the card's one outbound queue, throwing away the switch byte the
+   CLC's `read_card_information()` had prepared for subfunction 253. The
+   guard in `ORD_RD` written to protect that byte could not: it was already
+   gone. Measured — the `RD` leg logged no `DMA-done`, no `DMA-dend` and no
+   raise at all. RTS now answers out of its own buffer (`m_report`), chosen
+   by `out_now()`.
+2. **The status block left a report owed.** `dma_complete()` arms `EDD`
+   when the data phase ends; `read_status_block()` cleared `m_request` but
+   not `m_rts_report`, so the next RTS said EDD about a finished
+   transaction — and the kernel's EDD arm does not acknowledge anything, it
+   *arms a transfer*. It now clears the owed report, so the next RTS reads
+   IDL.
+3. **Pause did not pause.** `ORD_PAU` set `m_want_order` immediately. That
+   was invisible while the IOP polled once a millisecond, because the poll
+   set the cadence; the moment a list could resume promptly it turned the
+   driver's PAU/RTS loop into a tight ring of interrupt-ICEI-status and the
+   driver's own task never ran. PAU is now a real wait (`FOCUS_ASIPAUSE`,
+   1 ms), and the idle loop measures **exactly 1000 status reads a second**
+   — the cadence the real driver shows (999 in the second before the open).
+4. **The IOP was a visitor, not a processor.** This is the structural one.
+   `poll_and_service()` ran on the same 1 ms beat as the cards' own
+   timekeeping, so the CPU got tens of thousands of instructions between
+   one command-list entry and the next, and every hand-off between the two
+   processors was a race the CPU always won. Three of them, all measured:
+   the driver writes its transaction's branch target into the list at
+   `0x1e9864` and the interrupt handler overwrote it again before the IOP
+   ever read it; the list parked one entry short of the RTS that refreshes
+   the report buffer; and a leg's completion interrupt arrived before that
+   leg's own list had finished. The poll now runs on its own timer
+   (`FOCUS_IOPPOLL`), and `CMD_ICEI` does not suspend for a poll the
+   interface is already answering.
+
+### The sequence, before and after
+
+```
+before                              after
+2.322  CLC                          2.318  CLC
+2.323  RTS -> SWI, data destroyed    2.319  RTS -> SWI
+2.323  RD  -> nothing, no completion 2.319  RD  -> DMA-done, the switch byte
+2.324  RS  -> raise ACCEPTED         2.319  RS  -> status block
+       list parked, RTS never runs   2.319  RTS -> IDL, then DCEI
+       stale SWI vs state 0          2.320  handler takes arm 0, clean
+       -> teardown -> 7x66           2.320  CLC -- a SECOND transaction,
+                                            with a WD that puts a character
+                                            on the terminal
+```
+
+### The poll rate is a band with a measured edge at each end
+
+`FOCUS_IOPPOLL` defaults to **400 us**, in the middle of it:
+
+| us | HP-UX console open | 520 boot |
+|---|---|---|
+| 900, 1000 | `2x56 + 66` return | fine |
+| 700 … 200 | **clean** | **fine** |
+| 150, 100 | clean | **never reaches its banner** |
+
+What the 520 cannot take below ~200 us is **not yet known** and is the one
+loose end of this work. It is not the uncounted-DMA pacing — that was
+suspected, fixed anyway (`run_dma`'s `uncounted` argument, so an uncounted
+transfer advances on the millisecond beat and its throughput does not follow
+the poll rate), and the 520 still failed at 100 us afterwards.
+
+### Where the boot is now
+
+`5x941` (benign) then `3x91`. The console driver completes its
+read-card-information transaction, runs a second transaction whose `WD`
+reaches the terminal, and then HP27128/30 `+0x1822` finds a result it wants
+to be 1 (`LDS Q-20,I; CMPN #1; BCCS.E`) and raises what it got — 91 —
+through the same three propagation sites the 66 used. That is the next
+thread.
+
+### A/B controls for all of it
+
+`FOCUS_IOPPOLL=1000` and `FOCUS_IOPPARKALWAYS=1` together restore the old
+IOP behaviour; `FOCUS_ASIPAUSE` sweeps the Pause. Both IOP knobs on gives
+back the original `7x66`, which is how each change above was shown to be
+load-bearing.
+
+---
+
+## 6b. The hunt, as it was recorded before the answer (kept for the dead ends)
 
 All addresses runtime for this configuration.
 

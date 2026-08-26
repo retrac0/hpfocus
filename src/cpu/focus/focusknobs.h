@@ -118,6 +118,19 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_IOPDBG", "", group::iop, false,
   "Log the IOP's internal decisions -- channel selection, poll rounds, "
   "suspension and resumption." },
+{ "FOCUS_IOPPOLL", "<us>", group::iop, true,
+  "How often the IOP polls the interfaces, in microseconds. The ERS has it "
+  "polling continuously; this is the emulated stand-in, and it has to be "
+  "short compared with what the CPU does between two entries of a command "
+  "list or the two processors race over the list itself. Default 400 us, "
+  "the middle of a measured band: above ~700 the console open loses its "
+  "hand-offs again, below ~200 the 520 stops reaching its banner." },
+{ "FOCUS_IOPPARKALWAYS", "", group::iop, true,
+  "Suspend a command list on every ICEI, even when the interface is already "
+  "answering the poll. The A/B control for the continuous-poll model: with "
+  "it on, a list resumes no sooner than the next millisecond tick, which is "
+  "long enough for the CPU to run a whole interrupt service between two "
+  "entries of one transaction." },
 { "FOCUS_IOPDEFER", "", group::iop, true,
   "Make a start command arm its transfer for the next poll round instead of "
   "moving the data inside the command. Closer to real timing, and it breaks "
@@ -162,6 +175,11 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_ASIMPX", "<0|1|2>", group::cards, true,
   "The multiplexing capability in the identity block: 0 subchannel only, "
   "1 in-channel only, 2 both (27128A 4-67; the ASI ships configured with 1)." },
+{ "FOCUS_ASIPAUSE", "<ms>", group::cards, true,
+  "How long the ASI's Pause order pauses before the card asks for its next "
+  "order. The driver's idle loop is PAU then read transparent status, so "
+  "this is what paces it; 1 ms reproduces the ~1000 status reads a second "
+  "the real driver makes." },
 { "FOCUS_ASIRTS", "<n>", group::cards, true,
   "The opcode the card reports through Read Transparent Status." },
 { "FOCUS_ASISWITCHES", "<hex>", group::cards, true,
