@@ -211,6 +211,11 @@ programs obey.
 
 ## 6. Every operator goes through a container, and that is one bug, not two
 
+> **SUPERSEDED by section 16.** The container is real and this map of it is
+> accurate, but the cause is not here: the compiler was being handed the
+> wrong code template by an addressing defect. Read section 16 first.
+
+
 The trap-021 investigation above treats runtime-built containers as a
 stored-program problem. They are not. **Any expression with an operator in
 it, typed at the prompt, is executed out of a container** — which puts the
@@ -400,6 +405,12 @@ is worth knowing. It is a mask, not a fix, and it does not generalise:
 
 ## 8. The compiler emits arithmetic for `/` and nothing for `+`, `-`, `*`
 
+> **SUPERSEDED by section 16.** The measurements below are right and the
+> conclusion is wrong. `LDIS #9` is not "nothing emitted": it is the first
+> halfword of template 0, which `LRAS P+n,X` handed the compiler for every
+> operator because it dropped its index.
+
+
 `DISP 5` prints ` 5`; `DISP 4+1` prints ` 9`. The container is a red
 herring for this one — the fault is in what the **BASIC COMPILER**
 (segment 4) writes into it.
@@ -450,6 +461,11 @@ diff the compiler's own execution for `+` against `/` and find where the
 operator dispatch diverges.
 
 ## 9. `NEW` is a third, separate defect: a frame too shallow
+
+> **SUPERSEDED by section 16.** Not a third defect and not separate: the
+> sixteen bytes are the four words of the `TRY,B` in the statement template
+> that was never copied.
+
 
 `NEW` traps 001 at container +0x152 (`PB=0x7657c`), and the frame chain is
 intact at that point (head still `0xbf`), so it is **not** the
@@ -529,6 +545,13 @@ region is behaving differently from the hardware.
 ---
 
 ## 11. Two arithmetic paths: the integer one is broken, the real one needs BTD
+
+> **PARTLY SUPERSEDED by section 16.** The BTD/DTB/POT work stands and so
+> does everything measured about the real path. The "integer path is
+> broken" reading does not: all four operators were being served template 0
+> by an addressing defect. Why `/` alone still emitted correct arithmetic
+> under that defect was never established and no longer matters.
+
 
 Section 8 showed the compiler emitting `FLTD/FLTD/FDIV` for `/` and a bare
 `LDIS #9` for `+`, `-`, `*`. The fork is now identified, and it is
@@ -648,6 +671,11 @@ converge on the first pass.
 ---
 
 ## 13. Assignment and `NEW`: two more incomplete emissions
+
+> **SUPERSEDED by section 16.** "The compiler emits a sequence with a piece
+> left out" was the right shape and the wrong culprit: the compiler emitted
+> a complete sequence, of the wrong template.
+
 
 Both fail in the container, neither is an ISA gap, and neither is the
 formatter. They join section 8's missing arithmetic as the same kind of
@@ -790,3 +818,118 @@ Fixed by truncating at the end of the word: the effective width is
 checked at the same time and is correct -- its left shift zero-fills,
 which is exactly the "bits greater than 31 have a value of 0" the sheet
 asks for. Both gained their first test coverage.
+
+
+---
+
+## 16. One instruction: `LRAS P+n,X` dropped its index
+
+Sections 6 through 14 describe five BASIC defects -- the missing arithmetic
+for `+`, `-` and `*`, the second statement's trap 1, `NEW`'s short frame,
+`LET`'s absent pointer, and `RUN`'s short transfer table -- and conclude that
+they all live in "the machinery that builds and enters a per-statement
+container". They do not. **They are one defect, and it is in the instruction
+set after all.**
+
+`LRA`/`LRAS` with a **P-relative base, direct addressing and the index bit
+set** must push `E - PB`, where `E` is the *indexed* effective address. The
+implementation formed the address without `X` and pushed that, so every such
+instruction yielded a pointer to element **zero** of whatever table it
+addressed.
+
+### The site
+
+BASIC's compiler assembles each statement by block-moving a template out of a
+pool in its own code segment, and it selects the template with exactly that
+instruction. At COMPILER +0x2084 (`0x15160` at run time):
+
+```
+LDH  P+586,X      end offset of template i
+LDH  P+580,X      start offset of template i
+STAX              X := that start offset
+SUB               length = end - start
+LRAS P+14,X       the source pointer: pool base (P+14) + X
+...
+MVB  3            copy the template into the compile buffer at DB+4564
+2c09 3209 2c01…   the pool itself starts here, at P+14
+```
+
+`FOCUS_BREAK=1516c` reports **X = 0x138** at the `LRAS` when compiling `LIST`.
+The template it wanted was at pool+0x138; the one it got was pool+0.
+
+| | first halfwords | |
+|---|---|---|
+| template 0 | `2c09 3209 2c01` | `LDIS #9; PCLS STT[9]; LDIS #1` |
+| pool+0x138 | `2c6e 1060 0000 6000` | `LDIS #110; **TRY,B**; NOP; LRAS P+0` |
+
+`LDIS #9; PCLS STT[9]` is the sequence sections 6-13 kept finding at the head
+of every compiled statement, and it is the "spurious literal 9" that every
+operator printed. It was never an incomplete emission. It was template 0,
+copied into every slot.
+
+### Why that produced each symptom
+
+The statement epilogue the compiler emits is `TRY` (delete) then
+`BR -> container +0x64`. The matching **create** is the first instruction of
+the statement's own template -- `LDIS #<recovery>; TRY,B` -- which is what
+was never copied. So:
+
+- **the second statement trapped 1** -- statement one's epilogue ate the
+  session frame the container's prologue made at +0x62, and statement two's
+  delete met an empty chain. `TRY` was right all along (sheet 126);
+  a create really was missing;
+- **`NEW` trapped 1** -- the absent `TRY,B` also never pushed its four words,
+  leaving the statement's activation sixteen bytes short of the `LDDS Q+144`
+  its own compiled code emits;
+- **`+`, `-`, `*` printed 9, and `LET` trapped 30** -- other slots of the same
+  pool, all served template 0;
+- **`RUN` trapped 21** -- the composed scaffold is built through the same
+  template copier, which is why its body called `PCLS STT[9]`.
+
+### The sheet
+
+Sheet 61, item 10, gives the direct P-relative arm as `(S+1) := E - PB`, and
+the prose says "a pointer to the computed address (**using byte indexing**)".
+Section 2.2.4 defines the computed address as base + offset + `X`. The
+explicit `If indexed then (S+1):=(S+1)+X` line appears only in the DB/DL/SB
+arms because those build a *tagged* pointer from base and offset and never
+form `E`; the P-relative arm takes the index inside `E`. That is the arm the
+implementation dropped.
+
+The fix is one expression in `do_lra`
+([focusexec_mem.ipp](../src/cpu/focus/focusexec_mem.ipp)). `LRA` and `LRAS`
+had **no test coverage at all**, which is how this survived the instruction
+audit of section 14 -- that section's reasoning was sound and its conclusion
+about the arithmetic instructions stands; the fault was in what was emitted,
+exactly as it argued, and the emitter was being fed the wrong bytes by an
+addressing bug one level down.
+
+### What it bought
+
+`src/test/basictest.sh` goes from 11 passing to **22 of 24**. Arithmetic,
+`LET`, `NEW`, consecutive statements and `LIST` twice all work, and a typed-in
+program runs:
+
+```
+10 A=3
+20 B=4
+30 DISP A*B+2
+40 END
+RUN      ->   14
+```
+
+`src/test/golden.sh` reports **16 of 17 probes byte-identical**, including two
+multi-million-line boot traces and all three MAME boots; the one that differs
+is `exectest`, whose own output changed because the new test was added to it.
+So nothing on the boot path used an indexed P-relative `LRAS`, and the whole
+effect of the change is the one described here.
+
+### What is left
+
+Two cases still fail, and neither is this bug:
+
+- `DISP "A"&"B"` halts with trap 1. String concatenation.
+- `DISP 4.5+1` prints `5.49999999907` rather than `5.5` -- the real add now
+  compiles and runs, and comes back a few ulp low. This is a wrong answer
+  where it used to be a halt, so it is a fresh and much sharper frontier than
+  anything sections 6-14 had.

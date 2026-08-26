@@ -113,82 +113,34 @@ variable forms of `ADDS`/`SUBS` being silent no-ops, a byte lost in
 `PSHR`/`SETR`'s S form, and `IXIT` mistaking the bottom of the interrupt
 stack for an empty one. See [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
-**What still fails: a program typed at the keyboard.** `10 DISP 5` /
-`20 END` / `RUN` traps 021, STT Violation, in the program scaffold. A
-statement typed *without* a line number is a useful control: `DISP 5` and
-EXECUTE prints ` 5`. (Note which key ends the line: in `FOCUS_TYPE`, `\n` is
-EXECUTE and `\r` STORE, and a numbered line needs `\r` or BASIC answers
-`IMPROPER COMMAND`.)
+**A program typed at the keyboard runs.** `10 A=3` / `20 B=4` /
+`30 DISP A*B+2` / `40 END` / `RUN` prints ` 14`, and immediate-mode
+arithmetic, `LET`, `NEW` and consecutive statements all work.
 
-**But that control is narrower than it looks, and it was over-read.** Trying
-a range of immediate statements says what actually works:
+Getting there took one fix, not the five the notes below had expected.
+`LRAS P+n,X` with a P-relative base and direct addressing was dropping its
+index, so it pushed a pointer to element **zero** of its table. BASIC's
+compiler selects the code template for every statement and every operator
+with exactly that instruction, so every statement was compiled from template
+0 — `LDIS #9; PCLS STT[9]`. That is the ` 9` every operator printed, the
+`TRY,B` prologue whose absence trapped the second statement and starved
+`NEW`'s frame, and the `PCLS STT[9]` that `RUN` trapped on. `src/test/basictest.sh`
+went from 11 passing to 22 of 24; the account is below and in
+[docs/SUNOS.md](docs/SUNOS.md) section 16.
 
-| typed | result |
-|---|---|
-| `DISP 7`, `DISP 9` | ` 7`, ` 9` — correct |
-| `DISP "HI"` | `HI` — correct |
-| `DISP (7)` | ` 7` — correct |
-| `DISP 1+1` | **` 9`** |
-| `DISP 2+3`, `DISP 3*4`, `DISP 2+3*4` | **` 9`** each |
-| `DISP -5` | **` 9`** |
-| `LET A=6` | **TRAP 030** |
-| `NEW` | **TRAP 001** |
+(Note which key ends a line: in `FOCUS_TYPE`, `\n` is EXECUTE and `\r`
+STORE, and a numbered line needs `\r` or BASIC answers `IMPROPER COMMAND`.)
 
-So a *literal* prints, and so does a parenthesised one, but **any expression
-containing an operator — binary or unary — silently prints ` 9`** whatever
-its operands, with no trap at all. `LET` and `NEW` fault outright. What the
-`DISP 5` control demonstrates is therefore much less than "compiling and
-running one statement works": it shows that displaying a constant works.
+Two cases still fail, and neither is that bug: `DISP "A"&"B"` halts on
+string concatenation, and `DISP 4.5+1` answers `5.49999999907` — a wrong
+answer where it used to be a halt.
 
-Two further things fall out. **The interactive loop survives exactly two
-statements**, then takes a bounds violation unprompted — reproducible across
-runs and true even when both statements succeeded, as `DISP "HI"` followed by
-`DISP 9` shows. And the constant ` 9`, tempting as it is next to the
-scaffold's `LDIS #9`, is **not** that: `FOCUS_SEGCALL` over an expression run
-against a literal run shows about 66 extra transfers, all HUMAN INTERFACE
-into the kernel at entries 81, 83, 209, 210 and 400-408, with no new
-call targets and nothing reaching a user container. The expression path never
-goes near `STT[9]`.
-
-These are much cheaper reproducers than anything above: `DISP 1+1` needs no
-disc, no `LOAD`, and no patched image.
-
-Every trap used to return past the instruction that caused it. The ERS
-splits its causes into two groups (sheet 52, notes 1 and 2): note 1 is
-detected "at the end of an instruction and the offset in the stack marker
-points to the next instruction", note 2 "during an instruction ... points
-to this instruction", and only the debug and arithmetic traps are note 1.
-`take_trap` used `m_next` for all of them, so no note-2 trap was ever
-resumable. That is fixed; it is a prerequisite for the scaffold rather than
-a cure for it, and the trap is still fatal.
-
-What the scaffold path actually does, read off a run:
-
-- The boot builds **two** scaffold code segments from one ten-word image on
-  the stack. Segment 3076 gets all ten words — nine STT entries plus the
-  length word `0x24` — by a 40-byte `MVB`; segment 3077 gets only the top
-  seven (six entries, length `0x18`) by a 28-byte one from a source twelve
-  bytes higher. Both counts are literal immediates in BASIC's own code.
-- At `RUN` the compiler *composes* the 40-byte scaffold into a buffer at
-  `DB+4564` — it is not stored in the boot image — emitting `LDIS #9;
-  PCLS STT[9]` twice, then copies it into segment **3077** and sets that
-  segment's `STT[1]` to `0x80`. Six entries, and the code calls the ninth.
-- The trap is not a linking mechanism here: BASIC's CS1 sends causes
-  021, 022 and 023 to one common internal-error reporter (the vector stub
-  pushes the cause and branches to the routine the panic printer sits in),
-  so it halts.
-- Segment 3077 is 208 bytes and its code sits at `0x7c`, which leaves room
-  for a nine-entry table with four bytes to spare — it is sized for nine.
-  Segment 3076's entries 7/8/9 are `80340006`, `802f4006`, `80360006`
-  (segment 6, entries 208/189/216).
-
-Stamping those three into 3077 and raising its length word to `0x24` does
-get the call through, and the failure moves on to a trap 030 two
-instructions later — the same place the earlier attempt with `MAIN`'s
-table reached, now from a second, independent source. So slots 7-9 have to
-be linked *for this program*, and the open question is which of the two
-segments the composed scaffold belongs in: the destination comes from field
-`+60` of the object at `DB+384`.
+> **The rest of this subsection is a superseded log.** Everything from here
+> to "Recovered software" is the investigation that chased the symptoms of
+> the `LRAS P+n,X` defect above -- short transfer tables, empty container
+> slots, composed scaffolds, the `LDIS #9` that every operator printed. The
+> measurements in it are sound and worth keeping; the diagnoses are not.
+> It is left in place because it is the record of how the bug was cornered.
 
 **A cheaper bench, and what it shows.** A stored program off the demo discs
 fails in exactly the same instruction, which makes HP's `MASTERMIND` — 3,780
@@ -801,7 +753,52 @@ python3 tools/check_opcodes.py
 
 See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
 
+## Interactive BASIC and `RUN` both work: `LRAS P+n,X` had lost its index
+
+*2026-08-25.* Everything below this section about scaffolds, short transfer
+tables, missing arithmetic and shallow frames describes the symptoms of **one
+emulator bug**, now fixed. Read this first; the sections that follow are kept
+because their measurements are sound and their conclusions are not.
+
+`LRA`/`LRAS` with a **P-relative base, direct addressing and the index bit
+set** pushes `E - PB`, and `E` is the *indexed* effective address (ERS sheet
+61: "a pointer to the computed address, using byte indexing"). The
+implementation formed the address without `X`, so every such instruction
+pointed at element **zero** of its table.
+
+BASIC's compiler picks the code template for each statement and each operator
+with exactly that instruction — `LRAS P+14,X` over a pool in its own code
+segment, at COMPILER +0x2090 — so it compiled **every statement from template
+0**, which is `LDIS #9; PCLS STT[9]`. That single sequence is the "spurious
+literal 9" every operator printed, the missing `TRY,B` statement prologue
+behind the second statement's trap 1 and `NEW`'s sixteen-byte-short frame,
+`LET`'s absent pointer, and the `PCLS STT[9]` that `RUN` trapped on.
+
+The fix is one expression in `do_lra`. `LRA` and `LRAS` had no test coverage
+at all, which is how it survived a full audit of the instruction set.
+
+```
+10 A=3
+20 B=4
+30 DISP A*B+2
+40 END
+RUN      ->   14
+```
+
+`src/test/basictest.sh` goes from 11 passing to **22 of 24** — arithmetic,
+`LET`, `NEW`, consecutive statements, `LIST` twice, and `RUN` of a typed-in
+program. `src/test/golden.sh` reports 16 of 17 probes byte-identical,
+including two multi-million-line boot traces and all three MAME boots, so
+nothing on the boot path was touched. Full account in
+[docs/SUNOS.md](docs/SUNOS.md) section 16.
+
+Still failing, and unrelated: `DISP "A"&"B"` halts (string concatenation),
+and `DISP 4.5+1` answers `5.49999999907` — a wrong answer where it used to be
+a halt, which is a far sharper frontier than anything below.
+
 ## `RUN` of a typed program: the short table, confirmed by experiment
+
+*Superseded by the section above: the short table is a symptom, not the cause.*
 
 `10 DISP 5` / `20 END` / `RUN` halts with `TRAP:00000021`. The causes are
 numbered in octal, so that is **`021` = `stt_violation`**, and
@@ -843,6 +840,8 @@ at field `+60` of the object at `DB+384`.
 **Not yet fixed.** A keyboard-entered program still does not run.
 
 ## The scaffold machinery, mapped
+
+*Superseded: the container map is accurate, the diagnosis is not.*
 
 Watching the containers, their tables and the user DST turns the two
 BASIC failures into one mechanism. Two things previously written here
@@ -986,6 +985,8 @@ one measurement.
 
 ## `RUN` of a typed program: the short table, confirmed by experiment
 
+*Superseded by the section above: the short table is a symptom, not the cause.*
+
 `10 DISP 5` / `20 END` / `RUN` halts with `TRAP:00000021`. The causes are
 numbered in octal, so that is **`021` = `stt_violation`**, and
 `FOCUS_TRAPLOG` gives its parameter as **`0x24`** — the code executed
@@ -1026,6 +1027,8 @@ at field `+60` of the object at `DB+384`.
 **Not yet fixed.** A keyboard-entered program still does not run.
 
 ## The scaffold machinery, mapped (2026-08-23)
+
+*Superseded: the container map is accurate, the diagnosis is not.*
 
 A day of watching the containers, their tables and the user DST turns
 the two BASIC failures from mysteries into one mechanism with one
@@ -1084,6 +1087,9 @@ divergence — whether on real hardware the startup context uses a
 different container and 3077 stays virgin for RUN.
 
 ## Interactive BASIC: why only the first statement runs
+
+*Superseded: the missing per-statement create is the statement template's
+own `TRY,B`, never copied.*
 
 `DISP 5` alone prints ` 5`. `DISP 5` then `DISP 6` halts with
 `TRAP:00000001`. Measured, the cause is a split scaffold, and it is the

@@ -1077,7 +1077,9 @@ private:
 	//   DB or DL relative -> base + offset - DB, tagged 10
 	//   stack relative    -> base + offset - SB, tagged 11
 	//
-	// Indexing is applied to the resulting pointer, not to the address.
+	// For the two tagged forms indexing is applied to the resulting pointer
+	// rather than to the address; the P-relative form takes it in E, before
+	// PB is subtracted. Either way the index lands in the pushed value.
 	// In indirect mode the word at base + offset is fetched and pushed as
 	// it stands.
 	exec_trap do_lra(base_reg base, u32 offset, bool ind, bool idx)
@@ -1089,7 +1091,25 @@ private:
 		{
 			if (p_rel)
 			{
-				push(addr - r.pb);
+				// Sheet 61 gives this arm as (S+1) := E - PB, and E is the
+				// INDEXED effective address -- the prose says "a pointer to
+				// the computed address (using byte indexing)" and section
+				// 2.2.4 defines the computed address as base + offset + X.
+				// The tagged arms below add X to the pointer they build
+				// because they never form E; this arm has to add it to the
+				// address, and did not.
+				//
+				// The cost of the omission was every indexed P-relative LRAS
+				// pointing at element ZERO of its table. BASIC's compiler
+				// picks the code template for each statement and each
+				// operator with exactly this instruction (COMPILER +0x2090,
+				// `LRAS P+14,X` over the pool at +0x209e), so every statement
+				// it compiled was template 0 -- `LDIS #9; PCLS STT[9]`. That
+				// is the "spurious literal 9" every operator printed, and the
+				// missing `TRY,B` statement prologue behind the second
+				// statement's trap 1, NEW's short frame and LET's absent
+				// pointer.
+				push(addr + (idx ? r.x : 0) - r.pb);
 				return exec_trap::none;
 			}
 			const bool global = (base == BASE_DB_PLUS || base == BASE_DL_MINUS);

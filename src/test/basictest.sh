@@ -13,8 +13,8 @@
 #   src/test/basictest.sh --keep       keep the raw logs and say where
 #
 # Each case gets its own boot. That is slow -- about 35 s of wall clock per
-# case -- but BASIC dies on the third statement of a session today, so a
-# shared boot would make later cases fail for a reason that is not theirs.
+# case -- but a case that halts must not take the ones after it with it, and
+# a shared boot would make later cases fail for a reason that is not theirs.
 #
 # The prompt arrives around 15 emulated seconds; keystrokes go in at 20 and
 # the run stops at 30. FOCUS_TRAPLOG is armed from 19 s so a case that faults
@@ -45,37 +45,37 @@ STOP=${FOCUS_BASICTEST_STOP:-30}
 # it becomes a pass.
 #
 # Cases marked WORKS are regression guards -- they pass today and must go on
-# passing. The rest are the work list.
+# passing. 22 of the 24 do; `concat` and `real-add` are the work list.
 CASES=(
 	# --- these pass today ------------------------------------- WORKS
 	"disp-int      | DISP 7\n              | 7"
 	"disp-string   | DISP \"HI\"\n         | HI"
 	"disp-paren    | DISP (7)\n            | 7"
 	"disp-neg-lit  | DISP -7\n             | -7"
-	# --- arithmetic: every one of these prints 9 today --------- BROKEN
+	# --- arithmetic ------------------------------------------- WORKS
 	"add           | DISP 1+1\n            | 2"
 	"add-zero      | DISP 1+0\n            | 1"
 	"add-big       | DISP 100+200\n        | 300"
 	"sub           | DISP 9-8\n            | 1"
 	"mul           | DISP 3*4\n            | 12"
 	"div           | DISP 8/2\n            | 4"
-	# --- functions: BTD is unimplemented, so this traps 020 ---- BROKEN
+	# --- functions -------------------------------------------- WORKS
 	"sqr           | DISP SQR(4)\n         | 2"
-	# --- statements ------------------------------------------- BROKEN
+	# --- statements ------------------------------------------- WORKS
 	"let           | LET A=6\nDISP A\n     | 6"
 	"new           | NEW\nDISP 7\n         | 7"
 	"two-stmt      | DISP 1\nDISP 2\nDISP 3\n | 3"
-	# --- these three separate the failure modes ----------------------
-	# DISP 4,5 works: two literals, no operator, so no container is
-	# compiled. DISP 1=1 answers 0, not 9 -- the wrong answer is not one
-	# constant. String concatenation faults outright.
+	# --- these three separated the failure modes ---------------------
+	# They were the sharpest discriminators while every operator printed 9.
+	# Two now pass; string concatenation still faults outright and is the
+	# one remaining statement-level defect.
 	"two-item      | DISP 4,5\n           | 4                   5"
 	"compare       | DISP 1=1\n           | 1"
 	"concat        | DISP \"A\"&\"B\"\n      | AB"
-	# --- the second-statement crash --------------------------------
-	# One LIST is fine; two in a row halt with TRAP 001 in the
-	# container's tail TRY. The frame it deletes is created once per
-	# session, so the second statement has nothing to delete.
+	# --- the second-statement crash, fixed -------------------------
+	# Two LISTs in a row used to halt with TRAP 001 in the container's tail
+	# TRY: the create belongs to the statement's own compiled prologue, and
+	# the compiler was emitting the wrong template (docs/SUNOS.md 16).
 	"list          | LIST\n                | AVAILABLE MEMORY = 487760"
 	"list-twice    | LIST\n;LIST\n         | AVAILABLE MEMORY = 487760 | 20,26 | 34"
 	# --- division and functions: the compiler emits real arithmetic --
@@ -85,11 +85,10 @@ CASES=(
 	"recip         | DISP 1/3\n           | .333333333333"
 	"big-div       | DISP 100/8\n         | 12.5"
 	"sqrt2         | DISP SQR(2)\n        | 1.41421356237"
-	# --- +, - and * are broken whatever the operand type -------------
-	# Not a formatter problem: the compiler emits LDIS #9 in place of the
-	# arithmetic, so a real-typed sum reaches the formatter as the integer
-	# 9 read as a double -- a denormal, which is why this one halts rather
-	# than printing 9.
+	# --- real addition: a wrong answer, not a halt -------------------
+	# This now compiles and runs and comes back a few ulp low
+	# (5.49999999907). The remaining question is FADD or the BTD digit
+	# loop, and it is a much sharper one than the halt it replaced.
 	"real-add      | DISP 4.5+1\n         | 5.5"
 )
 

@@ -2343,6 +2343,87 @@ static void test_shift_index()
 	CHECK_EQ(h.cpu.r.x, 8);
 }
 
+// LRA and LRAS (ERS sheet 61), which had no coverage at all until the day a
+// P-relative indexed one was found dropping its index.
+//
+// The sheet gives three direct forms. P-relative pushes `E - PB` untagged,
+// where E is the effective address and so already carries X; the two tagged
+// forms build their pointer from base + offset and then add X to the pointer,
+// which the pseudocode spells out because those never form E. The
+// implementation added X in the tagged arms and not in the P-relative one, so
+// every `LRAS P+n,X` pushed a pointer to element zero of its table.
+//
+// The site that made it matter is BASIC's compiler: it selects the code
+// template for each statement and each operator with `LRAS P+14,X` over a
+// pool in its own code segment, so with X lost it compiled every statement
+// from template 0.
+static void test_lra_index()
+{
+	std::printf("LRA/LRAS, and the index the P-relative form takes in E\n");
+	harness h;
+
+	const u32 base = h.cpu.r.sb + 3;
+	auto lras = [&](bool i, bool x, u8 b, u8 off) {
+		h.cpu.r.s = base;
+		CHECK(h.one(f1(3, i, x, b, off)) == exec_trap::none);
+	};
+
+	// Direct P-relative: a PB-relative byte offset, untagged. P is 0x1000
+	// and so is PB, so the offset is the answer.
+	h.cpu.r.x = 0;
+	lras(false, false, 0, 14);
+	CHECK_EQ(h.cpu.stk(0), 14);
+
+	// The index bit, with the compiler's own value. Before the fix this
+	// pushed 14.
+	h.cpu.r.x = 0x138;
+	lras(false, true, 0, 14);
+	CHECK_EQ(h.cpu.stk(0), 14 + 0x138);
+
+	// It is a two's complement byte index, and the backward base works the
+	// same way.
+	h.cpu.r.x = u32(-6);
+	lras(false, true, 0, 14);
+	CHECK_EQ(h.cpu.stk(0), 8);
+	h.cpu.r.x = 0x20;
+	lras(false, true, 1, 8);                  // P-8 + 0x20
+	CHECK_EQ(h.cpu.stk(0), u32(-8) + 0x20);
+
+	// The 32-bit form, same arm: 111 OP2(3:5) I(8) X(9) BASE(10:3) OFFSET.
+	h.cpu.r.s = base;
+	h.cpu.r.x = 0x138;
+	CHECK(h.one(u32_insn(036, 0, 14) | 0x00400000u) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 14 + 0x138);
+
+	// The tagged arms are unchanged: the index goes into the pointer, and
+	// the tag is 10 for the global segment and 11 for the stack.
+	h.cpu.r.x = 4;
+	lras(false, true, 2, 16);                 // DB+16
+	CHECK_EQ(h.cpu.stk(0), 0x80000000u | (16 + 4));
+	lras(false, true, 6, 16);                 // SB+16
+	CHECK_EQ(h.cpu.stk(0), 0xc0000000u | (16 + 4));
+	h.cpu.r.x = 0;
+	lras(false, false, 2, 16);
+	CHECK_EQ(h.cpu.stk(0), 0x80000000u | 16);
+
+	// Indirect P-relative goes through a self-relative pointer and POST-
+	// indexes, per sheet 17's rule that only branches preindex. The word at
+	// P+16 is a byte offset from its own location.
+	h.mem.write32(0x1000 + 16, 0x40);         // -> 0x1050
+	h.cpu.r.x = 0;
+	lras(true, false, 0, 16);
+	CHECK_EQ(h.cpu.stk(0), 0x50);
+	h.cpu.r.x = 8;
+	lras(true, true, 0, 16);                  // ... + X, after resolution
+	CHECK_EQ(h.cpu.stk(0), 0x58);
+
+	// Indirect through the stack pushes the word as it stands, indexed.
+	h.mem.write32(h.cpu.r.sb + 32, 0xc0000010u);
+	h.cpu.r.x = 2;
+	lras(true, true, 6, 32);
+	CHECK_EQ(h.cpu.stk(0), 0xc0000012u);
+}
+
 // SBIT (ERS sheet 66). Its operands run the opposite way up to LBIT's: the
 // bit value is on top, the offset beneath it, the pointer below that. The
 // powerup device scan builds its present bitmap with one, so getting the
@@ -2490,6 +2571,7 @@ int main()
 	test_decimal_conversion();
 	test_isc();
 	test_shift_index();
+	test_lra_index();
 	test_sbit();
 	test_up_down();
 	test_factorial();
