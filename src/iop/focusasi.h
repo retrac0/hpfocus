@@ -487,8 +487,28 @@ struct asi_card : public iop_interface
 
 	// DMA moves the data part of a transaction: the request block and
 	// the write data go out, records and identity blocks come back.
-	u8 dma_read() override { m_transferred++; return pop_out(); }
-	void dma_write(u8 b) override { m_transferred++; take_data(b); }
+	// The read-status block reports "the length in bytes of the data
+	// transfer initiated by the card for the host read or write request"
+	// (27128A 4-64), so only the DATA PHASE counts. Counting every leg
+	// put the three bytes of a transparent-status read into it, and the
+	// console open's read-card-information then reported a transfer of
+	// four bytes where the driver asked for one -- HP27128/30 +0x5d8
+	// compares the field against the requested length and, on a
+	// mismatch, writes 91 into the request's result cell, which +0x1822
+	// then raises because it wanted 1.
+	bool data_phase() const { return m_order == ORD_RD || m_order == ORD_WD; }
+	u8 dma_read() override
+	{
+		if (data_phase())
+			m_transferred++;
+		return pop_out();
+	}
+	void dma_write(u8 b) override
+	{
+		if (data_phase())
+			m_transferred++;
+		take_data(b);
+	}
 	u16 dma_read16() override { return u16((dma_read() << 8) | dma_read()); }
 	void dma_write16(u16 v) override { dma_write(u8(v >> 8)); dma_write(u8(v)); }
 

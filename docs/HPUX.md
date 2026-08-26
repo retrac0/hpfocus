@@ -57,7 +57,12 @@ Known meanings:
 | 66 | console/device open failed — CORE SYSTEM converts a 56 into it (raise at CORE SYSTEM +0x3fd2, run 0x27906) | observed cascade |
 | 116 | request sent to the NULL driver (the NO_CARD stub at CORE SYSTEM +0x7f82, run 0x2b8b6) → "System halted due to system error." | last session |
 | 30 | select-code scan: identify byte out of range 1..7 | card-typing work |
-| −1 | generic re-raise/abort argument, 22 sites | escmap |
+| 91 | **out of range / not supported** — used as a *returned result*, not only a raise. CORE SYSTEM +0xf0f4 raises it on a `CRB` against 0..43; HP27128/30 +0x5d8 *writes* it into a request's result cell when the RS block's transfer length does not match what was asked | §6 |
+| 353 | HP27128/30 +0x5b0 writes it into the same result cell on its other failure arm | disasm |
+| −1 | generic re-raise/abort argument, 22 sites; also the "unset" value of a request result cell | escmap |
+
+A result cell is read back through `Q-20,I` and compared with **1**, not 55
+— a different vocabulary from the completion statuses above.
 
 The TRY-handler idiom: `SB+12` holds the escape being handled (the
 reports print it twice — head word 0 and 3). Handlers compare it against
@@ -93,19 +98,71 @@ The one DB is shared by all privileged code. Known cells (byte offsets):
 | 2080 | last recorded boot error (941 = clock not set) | BASIC work |
 | 4416 | a kernel semaphore (SEML DB+4416 in the callout daemon) | 0x33f10 |
 
-## 6. The console open — SOLVED, and what it cost
+## 6. HP-UX BOOTS — the console open, and the five defects behind it
 
-**As of 2026-08-25 the console open completes.** The `7x66` cascade and the
-"System halted due to system error / 00000042" that this file spent most of
-its length circling are gone; the boot's whole escape log is now five benign
-`941`s and three `91`s, and the `91` is a new frontier, not this one.
+**As of 2026-08-25 HP-UX 5.30 boots and prints its banner to the console.**
 
-The cause was never in the kernel. It was **three defects in the emulated
-ASI card and one in how the IOP is clocked**, and the reason every
-single-axis sweep recorded below traded one failure for another is that all
-four had to go together.
+```
+(c) Copyright 1983, 1984, 1985, 1986, 1987 Hewlett-Packard Company
+(c) Copyright 1979 The Regents of the University of Colorado, a body corporate
+(c) Copyright 1979, 1980, 1983 The Regents of the University of California
+(c) Copyright 1980, 1984 AT&T Technologies. All Rights Reserved.
+                    RESTRICTED RIGHTS LEGEND
+          Use,  duplication,  or disclosure by the Government  is
+          subject to restrictions as set forth in subdivision (b)
+          (3)  (ii)  of the Rights in Technical Data and Computer
+          Software clause at 52.227-7013.
+                    HEWLETT-PACKARD COMPANY
+                        3000 Hanover St.
+                      Palo Alto, CA  94303
+CLOCK AND DATE NOT SET
+```
 
-### What the kernel is actually doing (settled from the disassembly)
+No "System halted", no escape 66, 56 or 91 — the whole escape log is the
+five benign `941`s, and the last of them is the message printed above. The
+machine then idles for sixty emulated seconds at 123% speed. Run it with
+`tools/runhpux.sh -str 60 -video none`.
+
+**Next frontier: what comes after the boot report** — root filesystem and
+`init`. Nothing further reaches the console yet.
+
+### The last defect: the length of data transfer
+
+The driver's status-block check is at HP27128/30 **+0x5d8** (image
+`0x59968`). It reads the block through the pointer at `Q+24`, and the
+pointer measures **`0x1e9de0`, word-aligned, while the card's bytes DMA to
+`0x1e9de1`** — so the driver's struct has a leading pad byte and the
+manual's byte 0 lands at struct byte 1. With that, the check is exactly the
+27128A's RS block (4-64):
+
+| byte | | |
+|---|---|---|
+| 0 | card dependent request status | must be 0 |
+| 1-2 | length of data transfer | must equal the length requested |
+| 3-4 | length of data remaining in the record | |
+| 5-6 | message type, text terminator | read device data only |
+
+Traced with `FOCUS_EATRACE=6e600:26`: the status byte **passed**, the
+expected length at `Q-44` was **1**, and the length compare **failed**. On
+a mismatch +0x5d8 writes **91** into the request's result cell, and
++0x1822 reads that cell (`LDS Q-20,I; CMPN #1`), wants 1, and raises what
+it found.
+
+`m_transferred` counted **every** leg, because `dma_read`/`dma_write`
+incremented unconditionally. The three bytes of a transparent-status read
+went into it, so read-card-information reported a four-byte transfer where
+one byte was asked for. The manual defines the field as "the data transfer
+initiated by the card for the host read or write request", so only `RD` and
+`WD` count now.
+
+### The four before it
+
+The `7x66` cascade this file spent most of its length circling was **not in
+the kernel**. It was three defects in the emulated ASI card and one in how
+the IOP is clocked, and every single-axis sweep recorded in §6b traded one
+failure for another because all four had to go together.
+
+#### What the kernel is doing (settled from the disassembly)
 
 Runtime = image + `0x14c98`; CORE SYSTEM PB = `0x23934`.
 
@@ -137,16 +194,14 @@ and tears the channel down, stamping 66 over the 55 the transaction had
 already earned.
 
 **`DB+52` is not a variable.** No `STS`/`STD` anywhere in the image writes
-it: it is the low byte of the 17-byte report block the list DMAs to
+it: it is the low byte of the 17-byte report block the command list DMAs to
 `0x1e980b`, so it changes only when a Read Transparent Status actually runs.
 (`DB` for this handler is `0x1e97d4`, not the `0x11bb8` of §5.)
 
 And **every arm ends `... IOC io=0x38; IXIT`** — release the lock, re-issue
 ICEI to fetch the next report, return. The design gives the CPU exactly one
-interrupt per freshly-DMA'd report. Every failure below is that invariant
+interrupt per freshly-DMA'd report. Each defect below is that invariant
 being broken.
-
-### The four defects
 
 1. **Read Transparent Status destroyed the transaction's data.** `ORD_RTS`
    cleared the card's one outbound queue, throwing away the switch byte the
@@ -188,12 +243,11 @@ before                              after
 2.322  CLC                          2.318  CLC
 2.323  RTS -> SWI, data destroyed    2.319  RTS -> SWI
 2.323  RD  -> nothing, no completion 2.319  RD  -> DMA-done, the switch byte
-2.324  RS  -> raise ACCEPTED         2.319  RS  -> status block
+2.324  RS  -> raise ACCEPTED         2.319  RS  -> status block, length 1
        list parked, RTS never runs   2.319  RTS -> IDL, then DCEI
        stale SWI vs state 0          2.320  handler takes arm 0, clean
-       -> teardown -> 7x66           2.320  CLC -- a SECOND transaction,
-                                            with a WD that puts a character
-                                            on the terminal
+       -> teardown -> 7x66           2.320  the open completes; the boot
+                                            report reaches the terminal
 ```
 
 ### The poll rate is a band with a measured edge at each end
@@ -211,15 +265,6 @@ loose end of this work. It is not the uncounted-DMA pacing — that was
 suspected, fixed anyway (`run_dma`'s `uncounted` argument, so an uncounted
 transfer advances on the millisecond beat and its throughput does not follow
 the poll rate), and the 520 still failed at 100 us afterwards.
-
-### Where the boot is now
-
-`5x941` (benign) then `3x91`. The console driver completes its
-read-card-information transaction, runs a second transaction whose `WD`
-reaches the terminal, and then HP27128/30 `+0x1822` finds a result it wants
-to be 1 (`LDS Q-20,I; CMPN #1; BCCS.E`) and raises what it got — 91 —
-through the same three propagation sites the 66 used. That is the next
-thread.
 
 ### A/B controls for all of it
 
