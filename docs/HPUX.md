@@ -891,19 +891,65 @@ Two of those are now known:
   argument, checks the halfword at +24 against 1, and is the path that
   reaches the poster at `+0x152a`.
 
+### What `STT[348]` does, and the queue it arms
+
+`CORE SYSTEM STT[348]` is the routine the submission ends in, and its shape
+is:
+
+    +0x3e9e  PSLA,B; TEST,B;            BCCS.GL 0x12bd0   ; EARLY EXIT 1
+    +0x3ea4  LDIS #136; PLDA,B; TEST,B; BCCS.E  0x12bd0   ; EARLY EXIT 2
+    +0x3eac  LDIS #116; PLDA,B;         BRO     0x12b72   ; pick which list
+    +0x3eb2  LDIS #144 ... PSTA,B                         ; ARM the gate
+    +0x3ec2  LDIS #4; PLDA,B; ANDI #7; ADDI #64; IOW io=0x4a   ; kick the card
+    +0x3ed4  EXIT N=1
+
+**`IOW io=0x4a` is not a doorbell.** Opcode `0x4a` is octal **0112**, and
+`(op & 7) == 2` makes it **`WIF 9`** — write interface register 9 — on the
+card named by the word beneath, with the value `pa + 64`. It is the FR9
+config write, the card kick, and on the ASI it arms event `0x30`. *(An
+earlier draft of this section read it as `SMSG` raising the doorbell. That
+was wrong.)*
+
+That path is **completely healthy**: over a boot, `FOCUS_ASIDBG` counts 14
+FR9 events armed, 14 queued and **14 read** — every one consumed, the last
+at t=2.369.
+
+The "queue" the routine arms is the **IOP command-list gate**. With the
+driver's data base at `0x1e97d4`, `base+144`/`base+152` are `0x1e9864` and
+`0x1e986c` — the very gate cells §6 spent a day on. Watching them
+(`FOCUS_WWATCH=1e9860:1e986f` from t=2.33) shows it working: armed with
+`0x1e9948` at 2.331–2.334 (the console open) and with `0x1e9c50` from 2.336
+(the banner writes), all from `CORE SYSTEM +0x3ec0`, interleaved with the
+idle re-arm to `0x1e9874` from `+0x3be4`.
+
+That idle re-arm is the interrupt handler's **IDL arm** doing
+`LDS DB+204; LNIS #1; STD DB+144` — about a thousand times a second.
+
+### So the request is queued and never started
+
+The stuck request **never arms the gate**. It must take one of `STT[348]`'s
+two early exits — the "channel is busy, leave it queued" path — and after
+the banner writes end at t=2.369 nothing ever comes back for it.
+`FOCUS_WWATCH` over its whole channel struct (`1e8994:1e8a3f`) from t=2.35
+catches 69 writes, and every one is the banner's own lock in
+`0x1e8a28..0x1e8a38`; the stuck request's cells are untouched.
+
+**The question, sharpened: which of the two early exits does it take, and
+what is supposed to re-enter `STT[348]` — or arm the gate directly — when
+the busy condition clears?** The handler runs a thousand times a second and
+its IDL arm only ever re-arms the RTS poll, so whatever restarts queued work
+is somewhere else.
+
 ### The doorbell, and why the obvious knob is not the answer
 
-`CORE SYSTEM STT[348]` — the routine the submission ends in — finishes with
-`LDIS #4; PLDA,B; ANDI #7; ADDI #64; IOW io=0x4a`: it **rings the doorbell**
-by broadcasting a message that raises **MSG bit 10**. Every state report
-during the console work shows `MSG=0x00200000` standing, and HP-UX's
-`MASK=0x08000000` leaves that bit unmasked.
-
+Separately, `MSG=0x00200000` — bit 10, the doorbell — stands set through the
+console work, and HP-UX's `MASK=0x08000000` leaves it unmasked.
 `src/cpu/focus/focusexec.h` deliberately excludes bit 10 from message-trap
-delivery, and **`FOCUS_MSG10TRAP=1` is not the fix**: with it on the boot
-produces no banner, no escapes and no output at all — worse, not better,
-exactly as the 2026-08-20 note recorded. The poll-only reading is right,
-and the dispatcher's own handshake is visible at TRAP HANDLERS `+0x148`:
+delivery, and **`FOCUS_MSG10TRAP=1` is not the fix**: re-tested 2026-08-26,
+with it on the boot produces no banner, no escapes and no output at all —
+worse, not better, exactly as the 2026-08-20 note recorded. The poll-only
+reading is right, and the dispatcher's own handshake is visible at
+TRAP HANDLERS `+0x148`:
 
     PSEB; INCM DB+908
     LDI #0x200000; SMPB 2        ; consume MSG bit 10
@@ -918,17 +964,6 @@ one operation all boot** — the `DOWN` at t=1.220 — and nothing posts it.
 But it parked *before* the console work, and the whole console open, the
 card configuration and the banner all completed with it parked, so it is
 probably not on this critical path.
-
-### So the question, precisely
-
-The doorbell is rung and the dispatcher consumes it, but the queued request
-is never serviced and its callback (entry 16) never runs. The next step is
-to find what `CORE SYSTEM STT[348]` (`PB+0x3e9c`, run `0x277d0`) actually
-queues the request onto, and who is supposed to drain that queue — and to
-check that against the wake path at CORE SYSTEM `+0x4680`, which is the
-routine that does post a unit's server (`LRAS Q+37,I,X; UP` on the unit
-record's +8 and +16, seen posting `0xabde4`/`0xabe14` up to event 1499 of
-the boot and never again).
 
 ### Instrument note
 
