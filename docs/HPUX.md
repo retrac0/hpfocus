@@ -788,9 +788,10 @@ The only code that would is **HP27128/30 +0x152a**:
 
 and the path to it is guarded, at **+0x173c**, by the driver's request code
 in `Q-32` being **10**. Measured (`FOCUS_EATRACE=6f418:14`), the driver is
-entered with **12**, takes the `BCC.GL` to `+0x1990`, and the poster is
-never reached. Watching `0x6f400:0x6f580` confirms it: seven instructions
-execute and stop at the guard.
+entered with **12**, takes the `BCC.GL` at **+0x13d4** to `+0x1990`, and the
+poster is never reached. Watching `0x6f400:0x6f580` confirms it: seven
+instructions execute and stop at the guard. *(That guard is at +0x13d0 /
++0x13d4; an earlier draft of this section said +0x173c, which was wrong.)*
 
 **So the open question is what is supposed to re-enter this driver with
 request code 10, and why nothing does.** The submission just before the
@@ -844,6 +845,90 @@ never imaged and would have to be synthesised from what the FA file already
 pins (`s_blksz` 1024, `s_fa`, `s_maxblk`). Note that today the loader reads
 its boot descriptor from file offset 0, which *is* disc block 1 because the
 image starts there; a whole-volume image shifts that by one block.
+
+### The completion path, decoded (2026-08-26)
+
+The waiter's own procedure is **seg 32 entry 7** (`PB+0x2208`), and what it
+builds before submitting says exactly how the wait is meant to end:
+
+    +0x2250  LDS Q+68; LPPS STT[16]; LDXI #8;  PSTA,B   ; req+8  := a CALLBACK
+    +0x2256  ... LDXI #124 ...      LDXI #12; PSTA,B   ; req+12 := context
+    +0x2260  LDS Q+68; ADDI #24; PLDA; LDIS #4
+             DPF start=28,width=4; PSTA                ; req+24 bits 28:4 := 4
+    +0x22cc  PCL STT[21]; ... DOWN,B                   ; submit, then wait
+
+**`STT[16]` is seg 32 entry 16 (`PB+0x21f4`), eleven instructions long, and
+it is the whole answer to "who posts the semaphore":**
+
+    LDS Q-20; LDXI #28; PLDA,B      ; the channel struct out of the request
+    LDXI #108; LSI,B                ; form [chan]+108  -- which IS 0x1e8a00
+    PCL STT[51]                     ; = CORE SYSTEM entry 35, the post
+    EXIT N=3
+
+So the design is: submit a request carrying its own completion callback; the
+I/O system calls that callback; the callback posts `chan+108`; the waiter
+wakes. **Nothing ever calls the callback**, which is why `0x1e8a00` has one
+operation in the whole boot.
+
+### How the driver is reached at all, and what the request codes are
+
+**No STT in any segment names segment 32.** (The four apparent hits from a
+byte-aligned scan are all coincidental instruction words at odd offsets —
+check alignment before believing such a scan.) The driver is reached only
+through **procedure labels held in data**: its own entry 1 (`PB+0x2fc8`)
+registers the name **"HP-UX-TERMINAL"** together with `LPPS STT[2]` through
+`PCL STT[59]` = CORE SYSTEM entry 317. Entry 2 is the published DDM
+procedure, and its single `PCLS STT[11]` at `+0x2672` is what reaches the
+dispatcher whose request-code chain runs 8, 10, 12, 13, 14, 16, 18, 24, 26.
+
+Two of those are now known:
+
+- **12 is an informational query.** It stores 960, a constant from the
+  pool, 0 and 1 into the caller's structure and returns. No I/O, no
+  completion. The "entered with 12" measurement above is this call, and it
+  is unrelated to the stuck wait.
+- **10 is the completion/event arm** — it reads the channel out of its
+  argument, checks the halfword at +24 against 1, and is the path that
+  reaches the poster at `+0x152a`.
+
+### The doorbell, and why the obvious knob is not the answer
+
+`CORE SYSTEM STT[348]` — the routine the submission ends in — finishes with
+`LDIS #4; PLDA,B; ANDI #7; ADDI #64; IOW io=0x4a`: it **rings the doorbell**
+by broadcasting a message that raises **MSG bit 10**. Every state report
+during the console work shows `MSG=0x00200000` standing, and HP-UX's
+`MASK=0x08000000` leaves that bit unmasked.
+
+`src/cpu/focus/focusexec.h` deliberately excludes bit 10 from message-trap
+delivery, and **`FOCUS_MSG10TRAP=1` is not the fix**: with it on the boot
+produces no banner, no escapes and no output at all — worse, not better,
+exactly as the 2026-08-20 note recorded. The poll-only reading is right,
+and the dispatcher's own handshake is visible at TRAP HANDLERS `+0x148`:
+
+    PSEB; INCM DB+908
+    LDI #0x200000; SMPB 2        ; consume MSG bit 10
+    PMPB 1; LDI #0x200000; NOT; AND
+    STOP,B                       ; stop, with bit 10 left enabled to wake it
+
+Our `PMPB`/`SMPB` (`focusexec_mem.ipp` cases 031/032) match the ERS, and the
+dispatcher is measurably cycling through this loop rather than wedged.
+
+**Semaphore 920 (absolute 0x398), the doorbell server's park, has exactly
+one operation all boot** — the `DOWN` at t=1.220 — and nothing posts it.
+But it parked *before* the console work, and the whole console open, the
+card configuration and the banner all completed with it parked, so it is
+probably not on this critical path.
+
+### So the question, precisely
+
+The doorbell is rung and the dispatcher consumes it, but the queued request
+is never serviced and its callback (entry 16) never runs. The next step is
+to find what `CORE SYSTEM STT[348]` (`PB+0x3e9c`, run `0x277d0`) actually
+queues the request onto, and who is supposed to drain that queue — and to
+check that against the wake path at CORE SYSTEM `+0x4680`, which is the
+routine that does post a unit's server (`LRAS Q+37,I,X; UP` on the unit
+record's +8 and +16, seen posting `0xabde4`/`0xabe14` up to event 1499 of
+the boot and never again).
 
 ### Instrument note
 
