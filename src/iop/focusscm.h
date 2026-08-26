@@ -32,6 +32,7 @@
 #pragma once
 
 #include "focusiop.h"
+#include "focusrtc.h"
 
 #include <cstdio>
 
@@ -60,39 +61,24 @@ public:
 		m_rom_addr = 0xffff;
 		m_dma_enabled = false;
 		m_self_test = false;
-		m_battery_fail = false;
 		m_power_fail = false;
 		m_service_word = 0;
-		m_addr_latch = 0;
 		m_bytes_read = 0;
 		// The RTC and NVM keep their contents across a reset -- that is
-		// what the battery is for.
+		// what the battery is for; power_on_reset() clears the run state
+		// and nothing else.
+		m_nv.power_on_reset();
 	}
 
-	// One second of wall time for the RTC. The cell layout is the one the
-	// HP-UX 5.30 clock driver defines by its own writes, read under the
-	// uniform complemented address decode below: initializing an unset
-	// clock it stores second, minute, hour, day, month, year at cells
-	// 15, 13, 11, 8, 7, 6 -- 0, 0, 0, 1, 1, 70: midnight, 1 January
-	// 1970 -- and its date validator (CORE SYSTEM +0x7b7c, the Julian
-	// arithmetic with the 1461 and 153 constants) rejects anything
-	// outside day 1-31 and month 1-12 with escape 254.
-	void rtc_second_tick()
-	{
-		auto bump = [this](unsigned loc, u8 wrap, u8 floor = 0) -> bool {
-			m_rtc[loc] = u8(m_rtc[loc] + 1);
-			if (m_rtc[loc] < wrap)
-				return false;
-			m_rtc[loc] = floor;
-			return true;
-		};
-		if (!bump(15, 60)) return;        // second
-		if (!bump(13, 60)) return;        // minute
-		if (!bump(11, 24)) return;        // hour
-		if (!bump(8, 32, 1)) return;      // day of month (approximate)
-		if (!bump(7, 13, 1)) return;      // month
-		bump(6, 100);                     // year
-	}
+	// One second of wall time for the RTC. Which cells that touches is the
+	// shared part's business now: they are the map offsets second, minute,
+	// hour, day of month, month and year, decoded through rtc_decode::scm().
+	// What the OS puts there was read off a running HP-UX 5.30 -- its
+	// clock-set path latches what look like plain 0, 2, 4, 7, 8, 9 -- and
+	// its date validator (CORE SYSTEM +0x7b7c, the Julian arithmetic with
+	// the 1461 and 153 constants) rejects anything outside day 1-31 and
+	// month 1-12 with escape 254, which is why those two wrap to 1 here.
+	void rtc_second_tick() { m_nv.tick_second(); }
 
 	// The RTC and NVM are battery-backed: their contents survive power
 	// off, for ten days at least, and that persistence is load-bearing --
@@ -100,27 +86,11 @@ public:
 	// default configuration into the NVM, and only a later boot, finding
 	// them already valid, takes the configured paths. A file stands in
 	// for the battery.
-	bool load_nv(const char *path)
-	{
-		FILE *f = std::fopen(path, "rb");
-		if (!f)
-			return false;
-		const bool ok = std::fread(m_rtc, 1, sizeof m_rtc, f) == sizeof m_rtc
-				&& std::fread(m_nvm, 1, sizeof m_nvm, f) == sizeof m_nvm;
-		std::fclose(f);
-		return ok;
-	}
+	bool load_nv(const char *path) { return m_nv.load(path); }
+	bool save_nv(const char *path) const { return m_nv.save(path); }
 
-	bool save_nv(const char *path) const
-	{
-		FILE *f = std::fopen(path, "wb");
-		if (!f)
-			return false;
-		const bool ok = std::fwrite(m_rtc, 1, sizeof m_rtc, f) == sizeof m_rtc
-				&& std::fwrite(m_nvm, 1, sizeof m_nvm, f) == sizeof m_nvm;
-		std::fclose(f);
-		return ok;
-	}
+	// The counterpart of FOCUS_RAMFILL for non-volatile storage.
+	void fill_nvm(u8 v) { m_nv.fill_nvm(v); }
 
 	// Supply a loader ROM image if one is ever dumped.
 	void set_rom(const u8 *data, unsigned len)
@@ -134,7 +104,7 @@ public:
 	unsigned bytes_read() const { return m_bytes_read; }
 
 	void set_power_fail(bool state) { m_power_fail = state; }
-	void set_battery_fail(bool state) { m_battery_fail = state; }
+	void set_battery_fail(bool state) { m_nv.battery_fail = state; }
 
 	//----------------------------------------------------------------
 	//  registers
@@ -152,7 +122,7 @@ public:
 			// power-up and is only valid if read within four seconds.
 			return (m_power_fail ? (1u << 1) : 0)
 					| (m_self_test ? (1u << 3) : 0)
-					| (m_battery_fail ? (1u << 5) : 0);
+					| (m_nv.battery_fail_visible() ? (1u << 5) : 0);
 
 		case 3:
 			// The self-identity code, 4007 hex (Service Manual 2-29). Bit
@@ -176,7 +146,7 @@ public:
 			return m_service_word;
 
 		case 12:
-			return m_addr_latch;
+			return m_nv.read_latch();
 
 		default:
 			return 0;
@@ -204,7 +174,7 @@ public:
 		case 12:
 			// The service manual notes the address is written in
 			// complemented form.
-			m_addr_latch = (~data) & 0xffff;
+			m_nv.write_latch((~data) & 0xffff);
 			break;
 
 		default:
@@ -228,26 +198,32 @@ public:
 
 	// The RTC and NVM behind the register file, as the HP-UX 5.30 clock
 	// driver actually drives them (read off the running system; the shapes
-	// match the Service Manual's register allocations, 2-29/2-30):
+	// match the Service Manual's register allocations, 2-29/2-30). The
+	// decode itself lives in focusrtc.h; what belongs here is which register
+	// carries what:
 	//
 	//   W R12   RTC/NVM address latch. The address travels COMPLEMENTED
-	//           (Service Manual 2-30), and uniformly: the clock-set
-	//           sweep writes what look like plain 0, 2, 4... and the
-	//           clock-check path writes ffff, fff1... -- only one
-	//           inversion applied to both makes the reader find the
-	//           writer's cells, and the date validator agrees
+	//           (Service Manual 2-30), and uniformly: the clock-set sweep
+	//           writes what look like plain 0, 2, 4... and the clock-check
+	//           path writes ffff, fff1... -- only one inversion applied to
+	//           both makes the reader find the writer's cells
 	//   W R9    RTC data for the latched location, COMPLEMENTED on the bus
-	//           -- the unset-clock path writes ~0, ~0, ~0, ~1, ~1, ~70:
-	//           midnight, 1 January 1970
 	//   R R9    RTC data back, complemented likewise
 	//   R R1    polled before every exchange; bit 7 = ready, as on the
 	//           520's keyboard-board RTC (R1 has no documented read side)
 	//   R/W R11 the boot's 2 KB configuration readout -- NVM data for the
 	//           latched address (the manual assigns NVM to R13; the driver
 	//           reads its bulk configuration through R11, so both answer)
-	//   R/W R13 NVM data byte (Service Manual: address in complemented
-	//           form -- but the driver latches plain ascending addresses,
-	//           so the latch is taken as written)
+	//   R/W R13 NVM data byte
+	//
+	// WHAT IT ACTUALLY STORES. An earlier note here said the unset-clock
+	// path writes midnight, 1 January 1970 into second, minute, hour, day,
+	// month and year. A battery file written by a real run does not bear
+	// that out: the month and year locations are still zero, while the NVM
+	// holds century 19 and year 70 at the map's own offsets 5 and 9. So the
+	// date comes out of the NVM copy and only the time of day out of the
+	// clock -- which is also why the map in focusrtc.h serves both parts.
+	// The 4 that ends up at map offset 5 of the RTC is unexplained.
 	u32 read_fr(unsigned n) override
 	{
 		switch (n)
@@ -257,23 +233,15 @@ public:
 		case 3:  return read_register(3);
 		case 4:  return read_register(4);
 		case 6:  return read_register(6);
-		case 9:
-		{
-			const u32 v = u32(~m_rtc[(~m_addr_latch) & 15]) & 0xff;
-			// "Succeeding reads or writes cause automatic increments of
-			// the address (address is complemented)" -- the complemented
-			// value counts down so the decoded location counts up.
-			m_addr_latch = (m_addr_latch & ~15u) | ((m_addr_latch - 1) & 15);
-			return v;
-		}
+		case 9:  return m_nv.read_rtc();
 		case 10: return m_service_word;
 		// "Writing a 16-bit address to R12 in complemented form loads the
 		// address of the NVM location" (Service Manual 2-30). The boot
 		// bears it out: it sweeps R12 from ffff down through fff800, which
 		// complemented is 0 through 07ff -- the whole 2 KB part, in order.
 		case 11:
-		case 13: return m_nvm[(~m_addr_latch) & (NVM_SIZE - 1)];
-		case 12: return m_addr_latch;          // data-bus test: echo
+		case 13: return m_nv.read_nvm();
+		case 12: return m_nv.read_latch();     // data-bus test: echo
 		default: return m_scratch[n & 15];
 		}
 	}
@@ -284,14 +252,11 @@ public:
 		switch (n)
 		{
 		case 1:  write_register(1, v); break;
-		case 9:
-			m_rtc[(~m_addr_latch) & 15] = u8(~v);
-			m_addr_latch = (m_addr_latch & ~15u) | ((m_addr_latch - 1) & 15);
-			break;
+		case 9:  m_nv.write_rtc(v); break;
 		case 10: m_service_word = v; break;
 		case 11:
-		case 13: m_nvm[(~m_addr_latch) & (NVM_SIZE - 1)] = u8(v); break;
-		case 12: m_addr_latch = v; break;
+		case 13: m_nv.write_nvm(v); break;
+		case 12: m_nv.write_latch(v); break;
 		default: m_scratch[n & 15] = v; break;
 		}
 	}
@@ -311,21 +276,19 @@ private:
 	}
 
 	u8 m_rom[ROM_SIZE] = {};
-	u8 m_nvm[NVM_SIZE] = {};
-	// The battery-backed clock. All-zero is "midnight, clock never set",
-	// which the unset-clock path detects and initializes.
-	u8 m_rtc[64] = {};
+	// The clock and the configuration memory, shared with the 520's keyboard
+	// board (focusrtc.h). All-zero is "midnight, clock never set", which the
+	// unset-clock path detects and initializes.
+	rtc_nvm m_nv{rtc_decode::scm()};
 	// Registers with no modelled behaviour remember what was written, as
 	// the keyboard board's self test taught.
 	u32 m_scratch[16] = {};
 	u32 m_rom_addr = 0xffff;
 	u32 m_service_word = 0;
-	u32 m_addr_latch = 0;
 	unsigned m_bytes_read = 0;
 	bool m_rom_present = false;
 	bool m_dma_enabled = false;
 	bool m_self_test = false;
-	bool m_battery_fail = false;
 	bool m_power_fail = false;
 };
 

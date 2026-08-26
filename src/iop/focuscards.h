@@ -21,6 +21,7 @@
 
 #include "focusiop.h"
 #include "focusprint.h"
+#include "focusrtc.h"
 
 #include <cstdio>
 #include <deque>
@@ -116,43 +117,33 @@ struct console_card : public iop_interface
 	// gives it its shape.
 	u32 flag() override
 	{ return printer ? (printer->flag() ? 1u : 0u) : 1u; }   // NOLINT
-	u32 latch12 = 0;           // last R12 write: RTC location / NVM address
-	// All-zero powers up as "midnight, clock never set", which the
-	// driver accepts. Control register 10's bit 7 is a busy bit the
-	// driver polls until CLEAR before each rollover-consistent read
-	// burst (trap seg 0x484f8: it spins on FR12=0x0a / ~FR9 while bit 7
-	// is set), so it must stay 0 here.
-	u8 rtc[64] = {};
-	// The clock must actually run: the boot synchronises its software
-	// clock to the next second boundary by polling the seconds location
-	// between 100 ms sleeps (trap seg 0x476ec..0x47798), and a frozen
-	// RTC parks the boot there forever. The host calls this once per
-	// emulated second.
-	// Values count in binary (the boot's clock-sync completed with a
-	// binary-counting seconds field; a BCD experiment stalled it).
-	void rtc_second_tick()
-	{
-		auto bump = [this](unsigned loc, u8 wrap) -> bool {
-			rtc[loc] = u8(rtc[loc] + 1);
-			if (rtc[loc] < wrap)
-				return false;
-			rtc[loc] = 0;
-			return true;
-		};
-		if (!bump(0, 60)) return;         // second
-		if (!bump(2, 60)) return;         // minute
-		if (!bump(4, 24)) return;         // hour
-		rtc[6] = u8((rtc[6] + 1) % 7);    // day of week
-		if (!bump(7, 31)) return;         // day of month (approximate)
-		if (!bump(8, 12)) return;         // month
-		bump(9, 100);                     // year
-	}
-	// The board's non-volatile memory. The boot reads it out in full at
-	// powerup -- four thousand accesses, descending through complemented
-	// addresses -- so this is where its configuration lives. What the
-	// system expects to find is not known; an erased part reads 0xff.
-	u8 nvm[2048] = {};
-	void fill_nvm(u8 v) { for (u8 &b : nvm) b = v; }
+	// The clock and the 2 KB of configuration memory, shared with the
+	// 530/540's SCM (focusrtc.h). The board's own decode: R12 latches an
+	// RTC location plainly and an NVM address complemented, R9 carries RTC
+	// data complemented, R13 NVM data plain.
+	//
+	// All-zero powers up as "midnight, clock never set", which the driver
+	// accepts. Control register 10's bit 7 is a busy bit the driver polls
+	// until CLEAR before each rollover-consistent read burst (trap seg
+	// 0x484f8: it spins on FR12=0x0a / ~FR9 while bit 7 is set), so it must
+	// stay 0 here.
+	//
+	// The clock must actually run: the boot synchronises its software clock
+	// to the next second boundary by polling the seconds location between
+	// 100 ms sleeps (trap seg 0x476ec..0x47798), and a frozen RTC parks the
+	// boot there forever. The host calls rtc_second_tick() once per emulated
+	// second, and the values count in binary -- the boot's clock-sync
+	// completed with a binary-counting seconds field, and a BCD experiment
+	// stalled it.
+	//
+	// The NVM is read out in full at powerup -- four thousand accesses,
+	// descending through complemented addresses -- so this is where the
+	// board's configuration lives; the map in focusrtc.h says what HP put
+	// where. An erased part reads 0xff.
+	rtc_nvm nv{rtc_decode::keyboard()};
+	void rtc_second_tick() { nv.tick_second(); }
+	void fill_nvm(u8 v) { nv.fill_nvm(v); }
+
 	// Registers the board implements but whose behaviour is not modelled
 	// individually. The powerup self test walks a bit through R15 and
 	// requires an exact read-back (its escape code 1 is the "Self test
@@ -195,10 +186,7 @@ struct console_card : public iop_interface
 		// RTC data, complemented on the bus; reads auto-increment the
 		// location (manual 2-34). The rollover triple-read never relies
 		// on the increment because it re-latches every field.
-		case 9:
-			v = u32(~rtc[latch12 & 63]) & 0xff;
-			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
-			break;
+		case 9:  v = nv.read_rtc(); break;
 		case 10:
 			// Taking the keycode clears the board's pending flag, which
 			// is bit 0 of the status register: leaving it set reads as a
@@ -217,7 +205,7 @@ struct console_card : public iop_interface
 					iop->raise(pa);
 			}
 			break;
-		case 13: v = nvm[(~latch12) & 2047]; break;
+		case 13: v = nv.read_nvm(); break;
 		default: v = scratch[n & 15]; break;
 		}
 		log_fr("[sc%u R fr%u=%04x%s]\n", pa, n, v & 0xffff, site().c_str());
@@ -370,20 +358,24 @@ struct console_card : public iop_interface
 		case 9:            // RTC data write to the latched location,
 			// complemented like the reads (the OS's clock-set sweep at
 			// trap seg ~0x480fc writes every location through here).
-			rtc[latch12 & 63] = u8(~v);
-			latch12 = (latch12 & ~63u) | ((latch12 + 1) & 63);
+			//
+			// UNREACHABLE: an early return above intercepts register 9
+			// before this switch, so the 520's clock cannot be set. Left
+			// standing here; removing that return changes what a booting
+			// guest sees and belongs in its own commit.
+			nv.write_rtc(v);
 			return;
 		case 12:           // RTC location / complemented NVM address.
 			// Just an address latch: it does NOT interrupt. (A legacy
 			// raise here kept a stale request queued at the keyboard's
 			// level, and the real keystroke's request then made no fresh
 			// edge for the host to forward.)
-			latch12 = v & 0xffff;
+			nv.write_latch(v);
 			out.push_back(char(v & 0xff));
 			log_fr("[%u:%02x]", pa, v & 0xff);
 			return;
 		case 13:           // NVM data byte
-			nvm[(~latch12) & 2047] = u8(v);
+			nv.write_nvm(v);
 			return;
 		default:
 			return;        // R10 LEDs/auto-repeat, R11 beeper: accepted
