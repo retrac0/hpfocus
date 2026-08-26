@@ -128,7 +128,7 @@ peripherals are built in *(520 Service, sheet 2-29)*:
 | 0 | Display Alphanumeric (§2.7) |
 | 1 | Display Graphics (§2.7) |
 | 2–5 | I/O backplane slots 2–5 (the only four available to the user) |
-| 6 | keyboard, printer, real-time clock, beeper, optional input device — one interface, one RX register or more per device |
+| 6 | keyboard, printer (§2.9), real-time clock, beeper, optional input device — one interface, one RX register or more per device |
 | 7 | internal mass storage (fixed and flexible disc share the select code, one at a time, switched by the IOP) |
 
 Additional IOPs take 8–15 and 16–23 as on the 540, and reach the outside world
@@ -175,9 +175,28 @@ one per FR register: `RIF n = 8n+1`, `WIF n = 8n+2` octal — so `011` is
 `RIF 1` (read FR1) and `0172` is `WIF 15` (write FR15) *(sheet 34)*. Every
 other entry above is a single fixed opcode.
 
-> **`DTMI` and `RINT` are ERS-documented (sheets 33/31) but not modelled.**
-> Nothing in the emulator implements Disable Timer Interrupt or Request
-> Interrupt; real boot code has not been observed to need either yet.
+> **`RINT` is implemented; `DTMI` still is not.** Request Interrupt sets
+> "the bit corresponding to the PA in the channel address ... in the
+> Interrupt Request register" (sheet 31) -- the exact mirror of `CIRQ`, and
+> two lines beside it. Nothing needed it until the internal thermal printer
+> was fitted (§2.9): the keyboard board's register exchange takes the
+> interrupt-driven path when the interface flag does not come back on its
+> own, and an unimplemented command there is a message trap that kills the
+> boot. Disable Timer Interrupt is still unmodelled and still unneeded.
+
+> **The DMA current count is biased by two, and this cost a day.** ERS
+> §5.2: "Current count is **two less than the number of transfers
+> remaining** once a Start DMA has been issued. If DMA terminates on count
+> ... count will be **-2** ... If DMA terminates on Device End, the number
+> not transferred is **count+2**." So `RDCS` must hand back `remaining - 2`,
+> and a transfer that completed reads back as -2, not 0. The kernel's
+> transfer report (entry 14) adds exactly that 2 back to get "how many did
+> not go", and a count that reached plain zero therefore told every driver
+> that two transfers had failed. The internal thermal printer showed it
+> first -- a line that printed perfectly came back as `ERROR 81:
+> Device/Interface hardware failure` -- but it was never a printer defect:
+> the same wrong count sat in the disc path's transfer reports too, where
+> nothing had happened to look at it.
 
 **Five more are list-only.** The ERS's command table has a final group headed
 `IOP COMMAND EXECUTION` — opcodes legal only *inside* an ICEI command list,
@@ -1204,6 +1223,130 @@ recovered from the running system and is recorded in the emulator source
 (`src/iop/focusdisc.h`), not any manual in hand.
 
 ---
+
+### 2.9 Internal thermal printer *(520 Service 2-41…2-44; CE Handbook 5-6)*
+
+The one peripheral in this machine whose programming interface the manuals
+give outright, rather than leaving to be read off HP's binaries.
+
+An optional module on the 9020A/B and standard on the 9020C, with its own
+logic board: an 8039-class microprocessor, 64 bytes of internal RAM, 8 KB of
+external ROM (4 KB firmware, 4 KB fonts — 512 characters of 8 bytes, Roman
+Extended and Katakana) and a 256-byte print RAM. **Its font ROM is not
+dumped**, the same position §2.5 records for the display's.
+
+**It is not a text device.** The CE Handbook calls it an Internal Thermal
+*Graphics* Printer: true overprinting; inverse, underline, overline and 150%
+tall in any combination; pixel-by-pixel graphics dump from the CRT at 560
+dots/line, 77 dpi; seven user-definable characters; US ASCII **and Line
+Drawing**, Roman Extension **or** Katakana; programmable vertical pitch,
+lines per page and margins. 80 columns, 5 × 7 characters in a 7 × 12 field.
+
+#### 2.9.1 The register interface
+
+It **shares select code 6** with the keyboard, RTC/NVM, beeper and the
+optional input device — one interface, one or more registers per device.
+
+| | |
+|---|---|
+| enabled for | R0, R1, R2, R4, R5, R6, R7 |
+| R1 | **shared**; the printer drives only its upper 4 bits |
+| writes to R0, R2, R4, R6 | clock data into the printer's data register |
+| writes to R5 | **interface command**; its parameters go to R7 |
+| reads of R0, R2, R4, R5, R6, R7 | present the **status byte** |
+
+Data is a stream of ASCII bytes: characters fill an 80-byte line buffer,
+printed on the 81st or on a control code; a subset of control codes acts
+immediately; escape sequences start with code 27 and normally end with a
+capital letter, and the ones that do not apply are ignored. The escape set
+itself is **not** in either manual — these are hardware books — so it has to
+come off a run, which is what `FOCUS_PRINTLOG` is for.
+
+The status byte, MSB first, is `PSFL DSTF MSTF OOPP HDFL VHLO PTTH HDTH`:
+power supply failure, dangerous self-test failure, don't care, out of paper,
+printhead control line failure, head voltage low, power transistor hot,
+printhead hot. **A healthy printer with paper reads 0x00.**
+
+#### 2.9.2 What the powerup self test requires
+
+`PWP SELF TEST` +0x47c is the printer's test (DA 6, SA 0), and the CE
+Handbook's failure list turns each of its escapes into a requirement. Read
+off a running machine:
+
+- **R1 bit 15 is PRESENT.** The test's first act is `RIF 1`, `LSR 15`; clear
+  and it skips the printer entirely — which is exactly a machine without the
+  option. Bit 12 must be clear (failure 09, "enabled for poll response after
+  reset").
+- **01** — after a five-second wait it waits on the interface flag.
+- **02** — "flag did not go false after reading FR0": taking the status
+  drops the flag, and it has to come back or 01 fires instead. A flag that
+  only fell, or only stood, fails one or the other.
+- **04** — the **loopback**: write R5 = 1, then write and read R0 for each of
+  1, 2, 4 … 128. In loopback the data register reads back instead of the
+  status byte.
+- **05 / 07** — the interface poll must be **set** after the loopback and
+  **clear** after `FR1 = 0`, the interface reset. Select code 6 has one poll
+  line and the keyboard shares it, so a printer that polls at any other time
+  costs the machine its keystrokes.
+
+#### 2.9.3 What is modelled
+
+`src/iop/focusprint.h`, reached through `console_card` — select code 6 is one
+interface with several devices behind it, so the keyboard board owns the slot
+and routes the printer's registers. `FOCUS_PRINTER` fits it (off by default:
+it is an option, and fitting it registers another device),
+`FOCUS_PRINTLOG` traces it, `FOCUS_PRINTSTATUS` injects fault bits,
+`FOCUS_PRINTPRESENT` withholds the R1 presence bit.
+
+The presence bit, the flag handshake, the loopback and the poll are all in
+and graded by HP's own test, which gets as far as **failure 08, "printer
+status false"**.
+
+**It prints.** `PRINTER IS 6` then `PRINT` puts the line on paper:
+
+```
+$ ... -prin paper.bin        FOCUS_PRINTTEXT=paper.txt
+$ od -c paper.bin
+H E L L O   W O R L D \r \n   4 2   \r \n T H I R D \r \n
+```
+
+The path is **DMA, not byte writes**, and four things had to be right:
+
+- **R1 bit 12 arms the transfer.** The driver sets it at HUMAN INTERFACE
+  +0x40a4 immediately before starting the block.
+- **The card must not accept data until then.** Taking it earlier let the
+  IOP run the whole block at set-up time, before the count was programmed,
+  and the residual count the driver reads back was never zero.
+- **R1 bit 13 must be SET.** The driver builds `status | (R1 & 0xF000)` at
+  +0x40d8 and takes it apart at +0x4144: status bit 4 (out of paper) escapes
+  133, and bit 13 clear escapes 126 — the `ERROR 81: Device/Interface
+  hardware failure` a printer without it reports after printing the line
+  perfectly well.
+- **Bit 12 must still be standing at completion.** The interrupt service
+  picks the printer out of select code 6's several devices by ANDing R1 with
+  0x1000 (+0x3d68) and skips the whole completion path when it reads zero.
+  Clearing it at completion left the driver blocked on a semaphore nobody
+  posted. "Armed for data" and "poll enabled" are therefore separate states;
+  conflating them made the IOP start a second transfer over the first.
+
+The last of those was the one that mattered beyond the printer: the driver
+reads a residual DMA count back and requires it zero, and it read the full
+transfer length. That was **not** a printer defect but the IOP's `RDCS`
+count, which the I/O ERS biases by two (§2.2). Fixing it silenced `ERROR 81`
+and corrected the same wrong count in the disc path.
+
+**What is still wrong.** The powerup self test stops at failure 08, "printer
+status false", so the boot carries one `Self test error 1: IO address 6, 0`
+line. Printing itself is unaffected. The escape sequences are still only
+logged, not interpreted, and nothing renders the 560-dot raster.
+
+**R0 is contested and the manual wins.** This model used it for the
+keyboard's pending keycode, which the 520 manual does not assign to the
+keyboard at all; with a printer fitted it presents the printer's status. It
+costs nothing either way at powerup — the only read of R0 in a whole boot is
+the self test's, before any key is pressed, and "no key pending" and
+"printer healthy" are both 0x00.
+
 
 ## 3. Boot media
 

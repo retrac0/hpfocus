@@ -20,6 +20,7 @@
 #pragma once
 
 #include "focusiop.h"
+#include "focusprint.h"
 
 #include <cstdio>
 #include <deque>
@@ -76,6 +77,18 @@ struct console_card : public iop_interface
 	iop_core *iop = nullptr;
 	unsigned pa = 0;
 	knob::device_log log_fr;   // trace every register access
+	// Which routine touched the board. Select code 6 carries several
+	// devices -- keyboard, RTC/NVM, beeper, and the thermal printer --
+	// on one interface, so the register number alone does not say whose
+	// access this is. The machine fills this in; without it, inert.
+	std::function<std::string()> where;
+	std::string site() const
+	{ return (where && log_fr) ? where() : std::string(); }
+	// The optional internal thermal printer sits on this same interface
+	// (520 Service 2-43: it shares select code 6 and its bus drivers are
+	// enabled for R0, R1, R2, R4, R5, R6 and R7). Null when none is
+	// fitted, which is the machine HP shipped without the option.
+	printer_device *printer = nullptr;
 	unsigned writes = 0;       // register writes so far, for ordering logs
 	u32 fr1_base = 0x80;       // the status bits above the pending flag
 	// Where display characters go: the panic reporter (and, on the
@@ -96,7 +109,13 @@ struct console_card : public iop_interface
 	// RIFG, the interface flag: the board has finished what it was asked
 	// to do. The self test's wait helper polls this, and a card that
 	// never sets it makes that wait time out (escape 2).
-	u32 flag() override { return 1; }
+	//
+	// One interface, one flag line: with a printer fitted it is the
+	// printer's PFLG, and the CE Handbook's printer failure 02 -- "flag
+	// did not go false after reading FR0" -- is the requirement that
+	// gives it its shape.
+	u32 flag() override
+	{ return printer ? (printer->flag() ? 1u : 0u) : 1u; }   // NOLINT
 	u32 latch12 = 0;           // last R12 write: RTC location / NVM address
 	// All-zero powers up as "midnight, clock never set", which the
 	// driver accepts. Control register 10's bit 7 is a busy bit the
@@ -151,13 +170,27 @@ struct console_card : public iop_interface
 	u32 read_fr(unsigned n) override
 	{
 		u32 v = 0;
+		// With a printer fitted, R0/R2/R4/R5/R6/R7 present its status
+		// byte (520 Service 2-43). R0 is the one that overlaps: this
+		// model uses it for the keyboard's pending keycode, which the
+		// manual does not assign to the keyboard at all. It costs
+		// nothing either way at powerup -- the only read of R0 in a
+		// whole boot is the self test's, before any key is pressed, and
+		// "no key pending" and "printer healthy" are both 0x00 -- but
+		// the printer's claim is the documented one, so it wins when
+		// there is a printer to make it.
+		if (printer && printer_device::is_status_register(n) && n != 1)
+			return printer->read_status(n);
 		switch (n)
 		{
 		case 0:  v = fr0; fr0 = 0; break;
 		// Status: bit 7 selects the direct RTC read flavor in the
 		// driver's exchange helper (trap seg 0x48066); bit 0 is the
 		// keyboard-interrupt-pending bit from the manual.
-		case 1:  v = fr1_base | (fr0 ? 1 : 0); break;
+		// R1 is shared, "with the printer driving only the upper 4
+		// bits of R1" (520 Service 2-43).
+		case 1:  v = fr1_base | (fr0 ? 1 : 0)
+				| (printer ? printer->r1_bits() : 0); break;
 		case 3:  v = (was_reset && reset_clears_id) ? 0 : id; break;
 		// RTC data, complemented on the bus; reads auto-increment the
 		// location (manual 2-34). The rollover triple-read never relies
@@ -187,21 +220,37 @@ struct console_card : public iop_interface
 		case 13: v = nvm[(~latch12) & 2047]; break;
 		default: v = scratch[n & 15]; break;
 		}
-		log_fr("[sc%u R fr%u=%04x]\n", pa, n, v & 0xffff);
+		log_fr("[sc%u R fr%u=%04x%s]\n", pa, n, v & 0xffff, site().c_str());
 		return v;
 	}
 	bool input_ready() const { return fr0 != 0; }
 	// DMA: the display's frame data arrives this way (the 520 manual:
 	// the DIM frame buffer is written "in DMA or direct I/O modes", and
 	// the boot starts PA 0 DMA with SDC). The card is always ready --
-	// The card is always ready.
-	bool service_request() override { return true; }
+	// except that a printer takes its transfer only once armed, and this
+	// is the line the IOP asks.
+	bool service_request() override
+	{ return printer ? printer->accepts_data() : true; }
+	void dma_complete(bool) override
+	{ if (printer) printer->transfer_complete(); }
 	// The interface poll must be quiet on this board: the self test
 	// checks that nothing is requesting service between its steps
-	// (escape 7). Transfers are a separate line, above.
-	bool poll_request() override { return false; }
+	// (escape 7). Transfers are a separate line, above. The printer, when
+	// fitted, has its own say -- its self test requires the poll after
+	// the loopback (its escape 5).
+	bool poll_request() override
+	{ return printer && printer->poll_request(); }
 	void dma_write(u8 c) override
 	{
+		// A line of print arrives this way. The driver arms the printer
+		// (R1 bit 12) and starts a transfer rather than writing the
+		// bytes one at a time, so on a board with a printer fitted this
+		// is the paper, not the console.
+		if (printer)
+		{
+			printer->dma_byte(c);
+			return;
+		}
 		if (on_char)
 			on_char(c);
 		// Not a log: this is the machine's own console output, which is
@@ -245,7 +294,19 @@ struct console_card : public iop_interface
 	void write_fr(unsigned n, u32 v) override
 	{
 		writes++;
-		log_fr("[sc%u W fr%u=%04x]\n", pa, n, v & 0xffff);
+		log_fr("[sc%u W fr%u=%04x%s]\n", pa, n, v & 0xffff, site().c_str());
+		// "Writes to R0, R2, R4, R5, R6 and R7 clock data from the IOP
+		// into the data register. Interface commands are specified by
+		// writes to R5 ... parameters are written to R7" (520 Service
+		// 2-43). R1 stays the shared control register and is not the
+		// printer's to take.
+		if (printer && printer_device::is_status_register(n) && n != 1)
+		{
+			printer->write_register(n, v);
+			return;
+		}
+		if (n == 1 && printer)
+			printer->control(v);
 		if (n == 1 || n == 8)   // the scan's reset pair, and the ARD
 		{
 			was_reset = true;

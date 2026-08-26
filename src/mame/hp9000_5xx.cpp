@@ -38,6 +38,7 @@
 #include "iop/focuscards.h"
 #include "iop/focusdim.h"
 #include "iop/focusgfx.h"
+#include "iop/focusprint.h"
 #include "iop/focusdisc.h"
 #include "iop/focusasi.h"
 #include "iop/focushpib.h"
@@ -49,6 +50,7 @@
 
 #include <map>
 #include <tuple>
+#include "imagedev/printer.h"
 #include "screen.h"
 
 // The run-time knobs: one catalogue, printed by FOCUS_HELP=1.
@@ -513,6 +515,7 @@ public:
 		, m_terminal(*this, "terminal")
 		, m_keyboard(*this, "keyboard")
 		, m_screen(*this, "screen")
+		, m_prn(*this, "printer")
 		, m_floppy(*this, "floppy%u", 1U)
 		, m_hard(*this, "harddisc")
 		, m_mpb(*this, "mpb%u", 3U)
@@ -577,6 +580,7 @@ private:
 	optional_device<generic_terminal_device> m_terminal;
 	optional_device<generic_keyboard_device> m_keyboard;
 	optional_device<screen_device> m_screen;
+	optional_device<printer_image_device> m_prn;
 	optional_device_array<hp_focus_media_device, 3> m_floppy;
 	optional_device<hp_focus_media_device> m_hard;
 	optional_device_array<mpb_slot_device, 10> m_mpb;
@@ -599,6 +603,7 @@ private:
 	focus::scm_device m_scm;
 	focus::dim_card m_dim;            // select code 0: the display
 	focus::gfx_card m_gfx;            // select code 1: display graphics
+	focus::printer_device m_printer;   // the optional internal thermal printer
 	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
@@ -632,6 +637,8 @@ private:
 	std::array<std::pair<u32, u32>, 48> m_trail{};
 	size_t m_trail_at = 0;
 	void trip_watch(u8 c);
+	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
+	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
 	void memory_find();
 	TIMER_CALLBACK_MEMBER(find_tick);
@@ -1042,6 +1049,55 @@ void hp9000_5xx_state::machine_start()
 		m_console6.st = knob::number("FOCUS_KBDST", m_console6.st);
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
+	// The internal thermal printer is an option (CE Handbook 1-2), so it
+	// is fitted only when asked for. It hangs off the keyboard board's
+	// interface rather than a slot of its own -- select code 6 carries
+	// both -- and FOCUS_PRINTTEXT takes the lossy text extraction while
+	// the -prin image device takes the raw byte stream, which is the
+	// artefact that actually represents what a graphics printer printed.
+	if (knob::flag("FOCUS_PRINTER"))
+	{
+		m_printer.status = u8(knob::number("FOCUS_PRINTSTATUS", 0));
+		m_printer.present = knob::number("FOCUS_PRINTPRESENT", 1) != 0;
+		m_printer.log.name("prn");
+		m_printer.log.enable(bool(knob::flag("FOCUS_PRINTLOG")));
+		m_printer.where = [this]() {
+			const focus::cpu_core &c = m_cpu->core();
+			char buf[48];
+			std::snprintf(buf, sizeof buf, "  seg%u+%04x",
+					c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
+			return std::string(buf);
+		};
+		m_printer.on_byte = [this](u8 b) {
+			if (m_prn)
+				m_prn->output(b);
+		};
+		if (const char *e = knob::text("FOCUS_PRINTTEXT").get())
+		{
+			m_print_text = std::fopen(e, "w");
+			if (!m_print_text)
+				osd_printf_warning("printer: cannot write %s\n", e);
+			else
+				machine().add_notifier(MACHINE_NOTIFY_EXIT,
+						machine_notify_delegate(
+								&hp9000_5xx_state::close_print_text, this));
+		}
+		m_printer.on_line = [this](const std::string &line) {
+			if (m_print_text)
+			{
+				std::fprintf(m_print_text, "%s\n", line.c_str());
+				std::fflush(m_print_text);
+			}
+		};
+		m_console6.printer = &m_printer;
+	}
+	m_console6.where = [this]() {
+		const focus::cpu_core &c = m_cpu->core();
+		char buf[48];
+		std::snprintf(buf, sizeof buf, "  seg%u+%04x",
+				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
+		return std::string(buf);
+	};
 	m_iop.attach(6, &m_console6);
 	// SC6 keyboard interrupts are enabled by the hardware itself; the
 	// internal disc's select code is armed the same way when present.
@@ -2573,6 +2629,14 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 
 	// The 520's integrated display, as its own CRTC programs it: 80
 	// columns by 26 rows of 15-scanline characters.
+	// The paper. MAME's image device writes the bytes straight through to
+	// a file (-printer out.bin), which is the right artefact for this
+	// device: it does overprinting, underline, inverse, 150% tall and
+	// pixel-by-pixel graphics dumps, and its font ROM is not dumped, so
+	// a text file cannot represent what it printed. FOCUS_PRINTTEXT takes
+	// the lossy readable version alongside.
+	PRINTER(config, m_prn, 0);
+
 	SCREEN(config, m_screen);
 	m_screen->set_refresh_hz(60);
 	m_screen->set_size(focus::dim_card::COLUMNS * CELL_WIDTH,

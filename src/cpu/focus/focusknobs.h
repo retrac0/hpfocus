@@ -204,6 +204,26 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_SC1LOG", "", group::cards, false,
   "Trace every register access to the graphics interface, with the segment "
   "and PC that made it." },
+{ "FOCUS_PRINTER", "", group::cards, true,
+  "Fit the internal thermal printer, which shares select code 6 with the "
+  "keyboard (520 Service 2-43). An option on the machine and off by default "
+  "here, since fitting it registers another device." },
+{ "FOCUS_PRINTLOG", "", group::cards, false,
+  "Trace the printer: every register access, the commands written to R5 and "
+  "their R7 parameters, control codes, escape sequences and completed "
+  "lines. This is how the undocumented escape set gets enumerated." },
+{ "FOCUS_PRINTPRESENT", "<0|1>", group::cards, true,
+  "Whether the printer announces itself in R1 bit 15, which is what makes "
+  "the powerup self test run its printer test at all. R1 is shared with the "
+  "keyboard, so this is the control for telling the two apart." },
+{ "FOCUS_PRINTTEXT", "<file>", group::cards, true,
+  "Write the printer's completed lines to a file as plain text. Explicitly "
+  "lossy -- it drops the attributes, the graphics dumps and the upper half "
+  "of the character set. The raw byte stream is what -printer captures." },
+{ "FOCUS_PRINTSTATUS", "<hex>", group::cards, true,
+  "Override the printer's status byte, whose bits the CE Handbook names "
+  "PSFL DSTF MSTF OOPP HDFL VHLO PTTH HDTH -- 0x10 is out of paper. Zero is "
+  "a healthy printer and the default." },
 { "FOCUS_PROBE", "<sc>[:<id>][,...]", group::cards, true,
   "Park a logging card in a slot, which is how what a driver expects of a "
   "controller we do not have gets read off a run. Applied after the real "

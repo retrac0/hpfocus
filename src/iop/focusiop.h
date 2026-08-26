@@ -54,6 +54,7 @@ enum iop_cmd : u8
 	// Interrupts
 	CMD_WIMK  = 025,   // W  write interrupt mask
 	CMD_RIMK  = 026,   // R  read interrupt mask
+	CMD_RINT  = 027,   // C  request interrupt
 	CMD_CIRQ  = 030,   // C  clear interrupt request
 	CMD_WIMG  = 033,   // W  write interrupt message
 	CMD_RIRQ  = 034,   // R  read interrupt request
@@ -378,7 +379,18 @@ public:
 			// class 4 -- bits 13:15 = 1, "terminated on count" -- while
 			// its ISR treats bits 15, 14 and 0 as errors. The old
 			// status-high/count-low reading came from a poor scan.
-			data = ((c.dma_count & 0xffff) << 16) | c.term;
+			//
+			// And the count is BIASED BY TWO. I/O ERS sheet 5.2: "Current
+			// count is two less than the number of transfers remaining
+			// once a Start DMA has been issued. If DMA terminates on
+			// count ... count will be -2 ... If DMA terminates on Device
+			// End, the number not transferred is count+2." The kernel's
+			// transfer report (entry 14) adds exactly that 2 back, so a
+			// count that reaches plain zero tells the driver two
+			// transfers never happened -- which is how a thermal printer
+			// line that printed perfectly still came back as "ERROR 81:
+			// Device/Interface hardware failure".
+			data = (((c.dma_count - 2) & 0xffff) << 16) | c.term;
 			return true;
 		case CMD_RDMK: data = m_dma_mask; return true;
 		case CMD_RIMK: data = m_int_mask; return true;
@@ -472,6 +484,19 @@ public:
 		case CMD_EDMA: m_dma_mask |= (1u << t.pa); return true;
 		case CMD_DDMA: m_dma_mask &= ~(1u << t.pa); c.dma_active = false; return true;
 		case CMD_CDMK: m_dma_mask = 0; return true;
+		case CMD_RINT:
+			// "The bit corresponding to the PA in the channel address is
+			// set in the Interrupt Request register" (I/O ERS sheet 31)
+			// -- the exact mirror of CIRQ below, and a driver's way of
+			// raising a service request for a device that cannot. The
+			// keyboard board's register exchange takes this path when
+			// the interface flag does not come back on its own, which
+			// is what the internal printer makes it do.
+			m_int_request |= (1u << t.pa);
+			update_interrupt();
+			if (ioplog())
+				ioplog()("[iop RINT pa=%u]\n", t.pa);
+			return true;
 		case CMD_CIRQ:
 			m_int_request &= ~(1u << t.pa);
 			m_int_posted  &= ~(1u << t.pa);

@@ -184,7 +184,7 @@ do with graphics:
 
 so the frontier has moved from the display into the interpreter's handling
 of a compiled program's `INPUT`. The graphics *command set* is still not
-modelled -- commands are acknowledged and logged, so the display self test's
+modelled — commands are acknowledged and logged, so the display self test's
 memory check still fails (escape 8) and nothing draws.
 
 The account below is what the situation was before that, kept because the
