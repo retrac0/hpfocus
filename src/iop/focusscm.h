@@ -172,9 +172,12 @@ public:
 			break;
 
 		case 12:
-			// The service manual notes the address is written in
-			// complemented form.
-			m_nv.write_latch((~data) & 0xffff);
+			// The address is written in complemented form (Service Manual
+			// 2-30) -- and the inversion belongs to the decode, which
+			// applies it on every access. Latching the complement HERE as
+			// well inverted it twice, so this entry point disagreed with
+			// the FR path every guest actually uses.
+			m_nv.write_latch(data);
 			break;
 
 		default:

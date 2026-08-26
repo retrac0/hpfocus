@@ -58,7 +58,6 @@ namespace focus {
 // the driver undoes the inversion with NOT (trap seg 0x48072).
 struct console_card : public iop_interface
 {
-	std::string out;
 	std::string report;    // panic text, see write_fr
 	// The powerup device scan (image offset 0x656) reads FR3 and only
 	// counts a card present when it reads zero. A card answering exactly
@@ -143,6 +142,24 @@ struct console_card : public iop_interface
 	rtc_nvm nv{rtc_decode::keyboard()};
 	void rtc_second_tick() { nv.tick_second(); }
 	void fill_nvm(u8 v) { nv.fill_nvm(v); }
+
+	// A machine reset. Only the RUN state goes: not the identity, the
+	// status bits or the printer the machine configured, and not the clock
+	// or the configuration memory, which is what the battery is for. The
+	// SCM has had this since it was written; the keyboard board never did,
+	// so a reset left it holding whatever key and whatever panic text the
+	// run before it had.
+	void reset()
+	{
+		fr0 = 0;
+		keycode = 0;
+		pending.clear();
+		ard = false;
+		was_reset = false;
+		writes = 0;
+		report.clear();
+		nv.power_on_reset();
+	}
 
 	// Registers the board implements but whose behaviour is not modelled
 	// individually. The powerup self test walks a bit through R15 and
@@ -371,7 +388,6 @@ struct console_card : public iop_interface
 			// level, and the real keystroke's request then made no fresh
 			// edge for the host to forward.)
 			nv.write_latch(v);
-			out.push_back(char(v & 0xff));
 			log_fr("[%u:%02x]", pa, v & 0xff);
 			return;
 		case 13:           // NVM data byte

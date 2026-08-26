@@ -200,6 +200,11 @@ int main(int argc, char **argv)
 	// --tick N: raise MSG bit 13 -- the I/O ERS's "13 for timer
 	// interrupt" -- every N steps, once the boot has settled.
 	unsigned long long tick_period = 0;
+	// --rtcsteps N: how many instructions stand for one second of the
+	// real-time clock. This harness has no clock of its own, so the
+	// heartbeat the boot's clock-sync waits on is counted in steps; the
+	// MAME driver runs the same tick off an emulated-time timer instead.
+	unsigned long long rtc_steps = 2000000;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -250,6 +255,8 @@ int main(int argc, char **argv)
 			++i;                       // retired: FR9 is the RTC now
 		else if (!std::strcmp(argv[i], "--tick") && i + 1 < argc)
 			tick_period = strtoull(argv[++i], nullptr, 0);
+		else if (!std::strcmp(argv[i], "--rtcsteps") && i + 1 < argc)
+			rtc_steps = strtoull(argv[++i], nullptr, 0);
 		else if (!std::strcmp(argv[i], "--poke") && i + 3 < argc)
 		{
 			poke_step = strtoull(argv[++i], nullptr, 0);
@@ -262,7 +269,8 @@ int main(int argc, char **argv)
 	if (!path)
 	{
 		std::fprintf(stderr, "usage: bootrun <image.bin> [--p64 N] "
-				"[--steps N] [--load ADDR] [--trace]\n");
+				"[--steps N] [--load ADDR] [--trace] "
+				"[--rtcsteps N]\n");
 		return 2;
 	}
 
@@ -524,7 +532,7 @@ int main(int argc, char **argv)
 		}
 		// Diagnostic RTC heartbeat while bootrun is phased out: the boot
 		// synchronises to a seconds edge before launching BASIC.
-		if (steps % 2000000 == 0)
+		if (rtc_steps && steps % rtc_steps == 0)
 			console6.rtc_second_tick();
 		// Feed keystrokes: once the machine has idled (the dispatcher's
 		// STOP with nothing ready), type the next character into the
