@@ -22,3 +22,8 @@ software/cct/scm.nv
 # Built fixed-disc images -- tools/mkharddisc.py + tools/installbasic.py
 # reproduce them from the shipped discs in two commands
 software/hd/*.img
+
+# Disassembly listings -- tools/mkdisasm.sh reproduces all of it from the
+# shipped 500ENV discs in one command, so only the README is tracked
+disasm/*
+!disasm/README.md

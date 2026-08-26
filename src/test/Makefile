@@ -31,7 +31,8 @@ dsttest: dsttest.cpp $(SRCDIR)/focusdst.h $(SRCDIR)/focusaddr.h $(SRCDIR)/focuss
 exectest: exectest.cpp $(CORE)
 	$(CXX) $(CXXFLAGS) exectest.cpp -o $@
 
-ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h $(CORE)
+ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h ../iop/focusgfx.h \
+         ../iop/focuscards.h ../iop/focusprint.h ../iop/focusrtc.h $(CORE)
 	$(CXX) $(CXXFLAGS) ioptest.cpp -o $@
 
 # Not a test: an experiment harness for locating a boot module's entry point.

@@ -723,11 +723,28 @@ public:
 			return;
 
 		memory_interface &mem = m_host.iop_memory();
-		// Direction and width come from the DMA status word (Table
-		// 5.1): bit 27 (F1) set = output, memory to the card; bit 29
-		// set = byte transfers, clear = halfword. The count is "the
-		// length of the DMA block transfer in transfers".
-		const bool output = ers32::get(c.dma_status, 27, 1) != 0;
+		// Direction and width come from the DMA status word. Bit 29 set
+		// is byte transfers, clear halfword, and the count is "the
+		// length of the DMA block transfer in transfers". The direction
+		// is bits 27 and 28 TOGETHER, and Table 5.1 spells out all four
+		// combinations -- only one of which is an output:
+		//
+		//     F1=0 F2=0  Input
+		//     F1=0 F2=1  Input, terminate on Match
+		//     F1=1 F2=0  Output
+		//     F1=1 F2=1  Input, Verify
+		//
+		// Reading F1 alone as the direction, which is what this did,
+		// turns the last of those into an output: the card is never
+		// asked for a word and the transfer moves nothing. That is how
+		// the display's memory test read back 98,304 bytes of nothing
+		// and still passed -- the comparison is the IOP's job here, not
+		// the software's, which is why PWP SELF TEST does not do it.
+		const bool f1 = ers32::get(c.dma_status, 27, 1) != 0;
+		const bool f2 = ers32::get(c.dma_status, 28, 1) != 0;
+		const bool output = f1 && !f2;
+		const bool verify = f1 && f2;         // compare, do not store
+		const bool on_match = !f1 && f2;      // compare, stop when equal
 		const bool bytes  = ers32::get(c.dma_status, 29, 1) != 0;
 		u32 left = c.dma_count ? c.dma_count : 1;
 		while (left--)
@@ -760,12 +777,23 @@ public:
 				}
 				break;
 			}
+			bool stop = false;
+			u32 got_v = 0, want_v = 0;
 			if (bytes)
 			{
 				if (output)
 					c.iface->dma_write(mem.read8(c.dma_current));
 				else
-					mem.write8(c.dma_current, c.iface->dma_read());
+				{
+					const u8 got = c.iface->dma_read();
+					if (verify || on_match)
+					{
+						got_v = got; want_v = mem.read8(c.dma_current);
+						stop = (got_v == want_v) == on_match;
+					}
+					else
+						mem.write8(c.dma_current, got);
+				}
 				c.dma_current++;
 			}
 			else
@@ -773,8 +801,36 @@ public:
 				if (output)
 					c.iface->dma_write16(mem.read16(c.dma_current));
 				else
-					mem.write16(c.dma_current, c.iface->dma_read16());
+				{
+					const u16 got = c.iface->dma_read16();
+					if (verify || on_match)
+					{
+						got_v = got; want_v = mem.read16(c.dma_current);
+						stop = (got_v == want_v) == on_match;
+					}
+					else
+						mem.write16(c.dma_current, got);
+				}
 				c.dma_current += 2;
+			}
+
+			// A verify that disagrees, or a search that agrees, ends the
+			// transfer where it stands. Bit 17 of the status half is
+			// "DMA Terminated on Match or Verify Error" (Table 5.1),
+			// which is 0x4000 in the word RDCS returns.
+			if (stop)
+			{
+				if (c.dma_count)
+					c.dma_count--;
+				c.dma_active = false;
+				c.term = 0x4000;
+				if (ioplog())
+					ioplog()("[iop DMA-%s pa=%u at=%08x got=%04x want=%04x "
+							"left=%u]\n", verify ? "verifyfail" : "match",
+							pa, c.dma_current, got_v, want_v, c.dma_count);
+				c.iface->dma_complete(false);
+				raise(pa);
+				break;
 			}
 
 			if (c.dma_count && --c.dma_count == 0)

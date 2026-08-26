@@ -557,6 +557,7 @@ private:
 			const char *what);
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
+	void gfx_dump(screen_device &screen);
 
 	// focus::iop_core::host -- the IOP reaches memory and the CPU through
 	// these. The CPU device already implements focus::memory_interface.
@@ -667,6 +668,13 @@ private:
 	bool m_console_is_asi = false;
 	void term_put(u8 data);
 	void save_nv();
+	void seed_clocks();
+	void load_battery(focus::rtc_nvm &part, const char *knobname, unsigned sc);
+	void save_battery(focus::rtc_nvm &part, const char *knobname, unsigned sc,
+			const char *why, bool loud);
+	knob::device_log m_nv_log;
+	unsigned m_nv_save_period = 0;   // seconds between write-backs
+	unsigned m_nv_save_phase = 0;
 };
 
 
@@ -676,6 +684,23 @@ private:
 static constexpr unsigned CELL_WIDTH = 8;
 static constexpr unsigned CELL_HEIGHT = 15;
 static constexpr unsigned SCREEN_ROWS = 26;
+
+// The screen holds both planes at once. The alphanumeric one is 80 cells
+// of 8 x 15 -- 640 x 390, and the 8-wide cell is this emulator's, not the
+// machine's, because the character ROM is not dumped (focusfont.h); the
+// graphics raster is the 560 x 455 HP98770's own bind plants as its
+// maximum X and Y. So the screen is as wide as the alpha plane and as
+// tall as the graphics one, with the narrower graphics raster centred
+// across it.
+//
+// Where the two line up vertically is a PRESENTATION CHOICE and not a
+// measurement: 26 rows of 15 scan lines is 390 and the graphics raster is
+// 455, and nothing in the collection says how a real display registers
+// one against the other -- that is in 98770-90031, which nobody has. Both
+// start at the top.
+static constexpr unsigned SCREEN_WIDTH = focus::dim_card::COLUMNS * CELL_WIDTH;
+static constexpr unsigned SCREEN_HEIGHT = focus::gfx_card::HEIGHT;
+static constexpr unsigned GFX_LEFT = (SCREEN_WIDTH - focus::gfx_card::WIDTH) / 2;
 
 void hp9000_5xx_state::mem_map(address_map &map)
 {
@@ -989,16 +1014,41 @@ void hp9000_5xx_state::machine_start()
 	// so it is the default. Select code 6 is the keyboard board.
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	// FOCUS_SCMNV=<file> is the battery behind the SCM's clock and
-	// configuration memory: loaded here, written back at exit. Without
-	// it every boot is a first boot, and HP-UX treats an unset clock as
-	// reason to abandon its device bring-up.
-	if (const char *e = knob::text("FOCUS_SCMNV").get())
+	// configuration memory, and FOCUS_KBDNV=<file> the same for the 520's
+	// keyboard board: loaded here, written back at exit and periodically.
+	// Without one every boot is a first boot, and HP-UX treats an unset
+	// clock as reason to abandon its device bring-up.
+	m_nv_log.name("nv");
+	m_nv_log.enable(bool(knob::flag("FOCUS_NVLOG")));
+	m_nv_save_period = knob::number("FOCUS_NVSAVE", 30);
+	// The manuals' four-second window on the battery-fail bit, off by
+	// default because the emulator has always latched it for the run.
+	const bool window = bool(knob::flag("FOCUS_RTCWINDOW"));
+	m_scm.nv().battery_window = window;
+	m_console6.nv.battery_window = window;
+	load_battery(m_scm.nv(), "FOCUS_SCMNV", focus::scm_device::SELECT_CODE);
+	load_battery(m_console6.nv, "FOCUS_KBDNV", 6);
+	// A no-battery first run raises the fail bit on the SCM, which is what
+	// the manual says the OS reads to decide to restore its configuration.
+	// On the KEYBOARD board it must not be raised implicitly: the 520's own
+	// power-up self test fails on it -- "Self test error 1: IO address
+	// 006,0002", escape 4, "Battery low condition detected" (520 Service,
+	// table C-1) -- so a first run there reports a good battery and an
+	// unset clock, and FOCUS_RTCBATFAIL is how the other case gets tested.
+	m_console6.nv.battery_fail = false;
+	if (const char *e = knob::text("FOCUS_RTCBATFAIL").get())
 	{
-		if (m_scm.load_nv(e))
-			osd_printf_info("SCM RTC/NVM restored from %s\n", e);
-		machine().add_notifier(MACHINE_NOTIFY_EXIT,
-				machine_notify_delegate(&hp9000_5xx_state::save_nv, this));
+		const bool both = (*e == 0) || !std::strcmp(e, "both");
+		if (both || !std::strcmp(e, "7")) m_scm.nv().battery_fail = true;
+		if (both || !std::strcmp(e, "6")) m_console6.nv.battery_fail = true;
 	}
+	seed_clocks();
+	// Written back at exit and at a reset, as well as periodically. Not
+	// conditional on a knob: save_battery asks for itself.
+	machine().add_notifier(MACHINE_NOTIFY_EXIT,
+			machine_notify_delegate(&hp9000_5xx_state::save_nv, this));
+	machine().add_notifier(MACHINE_NOTIFY_RESET,
+			machine_notify_delegate(&hp9000_5xx_state::save_nv, this));
 	m_dim.id = knob::number("FOCUS_SC0ID", m_dim.id);
 	m_dim.log_fr.name("dim");
 	m_dim.log_fr.enable(bool(knob::flag("FOCUS_SC0LOG")));
@@ -1036,6 +1086,19 @@ void hp9000_5xx_state::machine_start()
 				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
 		return std::string(buf);
 	};
+	// The memory behind the commands, and the raster its words mean.
+	// Both numbers came off the self test's own transfer lengths rather
+	// than a manual, so both stay sweepable: 3 planes of 36-word lines
+	// is the 98770A colour display, 1 plane of 35-word lines the 98780A
+	// monochrome one.
+	m_gfx.planes = std::min<unsigned>(
+			knob::number("FOCUS_GFXPLANES", m_gfx.planes),
+			focus::gfx_card::MAX_PLANES);
+	if (!m_gfx.planes)
+		m_gfx.planes = 1;
+	m_gfx.stride = knob::number("FOCUS_GFXSTRIDE", m_gfx.stride);
+	m_gfx.origin = knob::number("FOCUS_GFXORIGIN", m_gfx.origin, 16);
+	m_gfx.nomem = bool(knob::flag("FOCUS_GFXNOMEM"));
 	m_gfx.iop = &m_iop;
 	if (!m_console_is_asi && !knob::flag("FOCUS_NOGFX"))
 	{
@@ -1046,10 +1109,17 @@ void hp9000_5xx_state::machine_start()
 	m_console6.id = 2;   // keyboard ID register: data bus bit 1
 	m_console6.log_fr.name("sc", 6);
 	m_console6.log_fr.enable(bool(knob::flag("FOCUS_KBDLOG")));
-			if (const knob::number v{"FOCUS_NVMFILL", 0}; v.set())
-			m_console6.fill_nvm(u8(v));
-		m_console6.fr1_base = knob::number("FOCUS_SC6FR1", m_console6.fr1_base);
-		m_console6.st = knob::number("FOCUS_KBDST", m_console6.st);
+	// Poison the configuration memory on BOTH boards that carry one: the
+	// 520 keeps it on the keyboard board and the 530/540 on the SCM, and
+	// the knob has always claimed to reach the SCM's while reaching only
+	// the keyboard board's.
+	if (const knob::number v{"FOCUS_NVMFILL", 0}; v.set())
+	{
+		m_console6.fill_nvm(u8(v));
+		m_scm.fill_nvm(u8(v));
+	}
+	m_console6.fr1_base = knob::number("FOCUS_SC6FR1", m_console6.fr1_base);
+	m_console6.st = knob::number("FOCUS_KBDST", m_console6.st);
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
 	// The internal thermal printer is an option (CE Handbook 1-2), so it
@@ -1894,14 +1964,175 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::rtc_tick)
 {
 	m_console6.rtc_second_tick();
 	m_scm.rtc_second_tick();
+	// Write the batteries back every so often. Saving only at exit meant a
+	// run that was killed -- which is how most of them end here, with -str
+	// or a ^C -- lost everything the guest had put in the clock and the
+	// configuration memory.
+	if (m_nv_save_period && ++m_nv_save_phase >= m_nv_save_period)
+	{
+		m_nv_save_phase = 0;
+		save_battery(m_scm.nv(), "FOCUS_SCMNV",
+				focus::scm_device::SELECT_CODE, "periodic", false);
+		save_battery(m_console6.nv, "FOCUS_KBDNV", 6, "periodic", false);
+	}
+}
+
+
+// Write a battery back if it is configured and something has changed it.
+// `why` names the occasion for the log; a periodic save is silent unless
+// FOCUS_NVLOG asks, so a long run does not narrate itself every 30 seconds.
+void hp9000_5xx_state::save_battery(focus::rtc_nvm &part, const char *knobname,
+		unsigned sc, const char *why, bool loud)
+{
+	const char *const path = knob::text(knobname).get();
+	if (!path || !part.dirty)
+		return;
+	if (part.save(path, sc))
+	{
+		if (loud)
+			std::printf("[select code %u RTC/NVM saved to %s]\n", sc, path);
+		m_nv_log("[nv sc%u saved to %s (%s)]\n", sc, path, why);
+	}
+	else
+		osd_printf_error("nv: cannot write select code %u battery to %s\n",
+				sc, path);
+}
+
+
+// FOCUS_RTCTIME seeds the clock the way a real machine powers up holding
+// the time. The default is none: all-zero, "clock never set", which is the
+// path HP-UX's first boot takes (boot error 941) and what BASIC reports as
+// "Clock and date not set" -- and it is the only setting under which two
+// runs of the same image produce the same output, which is what golden.sh
+// needs. "now" takes the host's wall clock; a fixed moment is what a
+// reproducible run wants.
+//
+// WHAT THIS DOES NOT YET DO. Seeding puts the moment in both parts -- the
+// clock and the NVM's copy of the same map -- and HP-UX 5.30 then clears
+// the century and the year again during its bring-up and sets its own. So
+// this seeds the HARDWARE, and the OS does not yet accept what it finds.
+// The likely gate is map offset 1, the manuals' "Clock Check Byte", whose
+// value is not known: a battery a real run wrote holds 1 in the clock and
+// 14 in the NVM there, and nothing here writes either. Until that is read
+// off a run, do not expect a seeded date to reach the OS's own clock.
+void hp9000_5xx_state::seed_clocks()
+{
+	const char *const e = knob::text("FOCUS_RTCTIME").get();
+	if (!e || !*e || !std::strcmp(e, "none"))
+		return;
+	focus::calendar c;
+	if (!std::strcmp(e, "now"))
+	{
+		const std::time_t t = std::time(nullptr);
+		if (knob::flag("FOCUS_RTCUTC"))
+			c = focus::calendar::from_epoch((long long)t);
+		else
+		{
+			// Local time, via the host's own broken-down conversion: the
+			// offset is the platform's business, not this file's.
+			const std::tm *lt = std::localtime(&t);
+			if (!lt)
+				return;
+			c.year = lt->tm_year + 1900; c.month = u8(lt->tm_mon + 1);
+			c.day = u8(lt->tm_mday); c.hour = u8(lt->tm_hour);
+			c.minute = u8(lt->tm_min);
+			c.second = u8(lt->tm_sec > 59 ? 59 : lt->tm_sec);
+		}
+	}
+	else if (std::strchr(e, '-'))
+	{
+		// ISO 8601, as much of it as a clock with one-second resolution
+		// can hold: YYYY-MM-DD[Thh:mm:ss], the T interchangeable with a
+		// space so a shell need not quote it.
+		int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
+		const int n = std::sscanf(e, "%d-%d-%d%*[T ]%d:%d:%d",
+				&y, &mo, &d, &h, &mi, &se);
+		if (n < 3)
+		{
+			osd_printf_error("FOCUS_RTCTIME=%s is not a date\n", e);
+			return;
+		}
+		c.year = y; c.month = u8(mo); c.day = u8(d);
+		c.hour = u8(h); c.minute = u8(mi); c.second = u8(se);
+	}
+	else
+		c = focus::calendar::from_epoch(strtoll(e, nullptr, 0));
+
+	if (!c.valid())
+	{
+		osd_printf_error("FOCUS_RTCTIME=%s is not a moment a clock can "
+				"hold\n", e);
+		return;
+	}
+	m_scm.nv().set_time(c);
+	m_scm.nv().set_time_mirror(c);
+	m_console6.nv.set_time(c);
+	m_console6.nv.set_time_mirror(c);
+	osd_printf_info("clock seeded to %04d-%02d-%02d %02d:%02d:%02d\n",
+			c.year, c.month, c.day, c.hour, c.minute, c.second);
 }
 
 
 void hp9000_5xx_state::save_nv()
 {
-	if (const char *e = knob::text("FOCUS_SCMNV").get())
-		if (m_scm.save_nv(e))
-			std::printf("[SCM RTC/NVM saved to %s]\n", e);
+	save_battery(m_scm.nv(), "FOCUS_SCMNV", focus::scm_device::SELECT_CODE,
+			"exit", true);
+	save_battery(m_console6.nv, "FOCUS_KBDNV", 6, "exit", true);
+}
+
+
+// Read a battery in, say what happened, and decide what the machine should
+// believe about it. A load that fails is a flat battery: the manuals make
+// that a status bit (R2 bit 5 on the SCM), and say the OS restores its
+// configuration when it sees one. It used to fail in silence.
+void hp9000_5xx_state::load_battery(focus::rtc_nvm &part, const char *knobname,
+		unsigned sc)
+{
+	const char *const path = knob::text(knobname).get();
+	if (!path)
+		return;
+	const focus::nv_load_result r = part.load(path, sc);
+	if (r.ok)
+	{
+		// The battery kept the clock running while the machine was off --
+		// off by default, because it makes a run depend on when it started.
+		if (const char *b = knob::text("FOCUS_RTCBATTERY").get())
+			if (std::strcmp(b, "off") != 0)
+			{
+				const long long days = (std::strcmp(b, "on") == 0)
+						? focus::rtc_nvm::BATTERY_DAYS
+						: strtoll(b, nullptr, 0);
+				focus::nv_load_result rr = r;
+				part.run_battery(rr, days);
+				if (rr.battery_expired)
+					osd_printf_info("select code %u battery was flat: %lld "
+							"days off, past the %lld it holds for\n",
+							sc, rr.off_seconds / 86400, days);
+				else if (rr.off_seconds > 0)
+					osd_printf_info("select code %u clock advanced %lld s "
+							"over the time the machine was off\n",
+							sc, rr.off_seconds);
+			}
+		osd_printf_info("select code %u RTC/NVM restored from %s%s\n",
+				sc, path, r.legacy ? " (headerless, pre-format)" : "");
+	}
+	else if (r.error == focus::nv_error::no_file)
+	{
+		// The ordinary first run. Not an error, but the machine must know:
+		// no battery is a flat battery.
+		part.battery_fail = true;
+		osd_printf_info("select code %u has no battery file yet (%s); "
+				"the clock reads as never set\n", sc, path);
+	}
+	else
+	{
+		part.battery_fail = true;
+		osd_printf_error("nv: %s: %s -- select code %u keeps the clock it "
+				"had and reports a flat battery\n",
+				path, focus::nv_error_text(r.error), sc);
+	}
+	m_nv_log("[nv sc%u load %s: ok=%d legacy=%d saved_at=%lld board=%u]\n",
+			sc, path, int(r.ok), int(r.legacy), r.saved_at, r.board);
 }
 
 
@@ -1973,6 +2204,7 @@ void hp9000_5xx_state::machine_reset()
 	// interface attachments; hook everything back up afterwards.
 	m_iop.reset();
 	m_scm.reset();
+	m_console6.reset();
 	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	if (!m_console_is_asi)
 	{
@@ -2643,7 +2875,30 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 		std::fflush(stdout);
 	}
 
+	gfx_dump(screen);
+
+	// The graphics plane first, because the alphanumeric one goes over
+	// it: "alpha pixels are dominant over graphics -- wherever an alpha
+	// pixel is present, the graphics pixel at the same location is
+	// suppressed" (HARDWARE.md 2.7.2). Three memory planes drive the
+	// guns directly, which is what the 9020C's "8 pure" colours are;
+	// a display with one plane lights the same phosphor the text does.
 	bitmap.fill(rgb_t::black(), cliprect);
+	if (!m_console_is_asi)
+		for (unsigned y = 0; y < focus::gfx_card::HEIGHT; y++)
+		{
+			u32 *p = &bitmap.pix(y, GFX_LEFT);
+			for (unsigned x = 0; x < focus::gfx_card::WIDTH; x++)
+			{
+				const unsigned v = m_gfx.pixel(x, y);
+				*p++ = v ? (m_gfx.planes > 1
+						? rgb_t((v & 1) ? 0xff : 0, (v & 2) ? 0xff : 0,
+								(v & 4) ? 0xff : 0)
+						: phosphor)
+						: rgb_t::black();
+			}
+		}
+
 	for (unsigned row = 0; row < rows; row++)
 		for (unsigned col = 0; col < focus::dim_card::COLUMNS; col++)
 		{
@@ -2659,11 +2914,81 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 			{
 				const u8 gfx = focus::font8x16[((v & 0xff) << 4) | line];
 				u32 *p = &bitmap.pix(row * CELL_HEIGHT + line, col * CELL_WIDTH);
-				for (unsigned bit = 0; bit < CELL_WIDTH; bit++)
-					*p++ = (BIT(gfx, 7 - bit) != invert) ? phosphor : rgb_t::black();
+				// An alpha pixel is present where the font bit is set,
+				// and over the whole cell where it is inverse video --
+				// an inverse cell's lit background is alpha too. Where
+				// neither, the graphics plane already painted below and
+				// must be left alone.
+				for (unsigned bit = 0; bit < CELL_WIDTH; bit++, p++)
+				{
+					const bool on = BIT(gfx, 7 - bit) != invert;
+					if (on)
+						*p = phosphor;
+					else if (invert)
+						*p = rgb_t::black();
+				}
 			}
 		}
 	return 0;
+}
+
+
+// The graphics plane as text, the way FOCUS_DIMDUMP gives the
+// alphanumeric one: a digit per pixel holding its three plane bits, and
+// only the lines with something on them, so an empty raster costs a line
+// and a drawn one reads at a glance. tools/gfxscreen.py turns it back
+// into a picture. FOCUS_GFXPGM writes the same frame as a PPM.
+void hp9000_5xx_state::gfx_dump(screen_device &screen)
+{
+	static const knob::number gfxdump("FOCUS_GFXDUMP", 0);
+	static const knob::text gfxpgm("FOCUS_GFXPGM");
+	if (!gfxdump.set() && !bool(gfxpgm))
+		return;
+	const unsigned every = gfxdump.set() ? gfxdump.get() : 60;
+	if (!every || (screen.frame_number() % every))
+		return;
+
+	if (gfxdump.set())
+	{
+		std::printf("--- gfx frame %d planes %u stride %u origin %04x\n",
+				int(screen.frame_number()), m_gfx.planes, m_gfx.stride,
+				m_gfx.origin);
+		for (unsigned y = 0; y < focus::gfx_card::HEIGHT; y++)
+		{
+			std::string line;
+			bool any = false;
+			for (unsigned x = 0; x < focus::gfx_card::WIDTH; x++)
+			{
+				const unsigned v = m_gfx.pixel(x, y);
+				any |= v != 0;
+				line.push_back(char('0' + v));
+			}
+			// The "g" is load-bearing: tools/screen.py reads the
+			// alphanumeric dump's |<row> <text>| lines out of the same
+			// stream, and an unmarked raster line looks exactly like one.
+			if (any)
+				std::printf("|g%3u %s|\n", y, line.c_str());
+		}
+		std::fflush(stdout);
+	}
+
+	if (bool(gfxpgm))
+		if (FILE *f = std::fopen(gfxpgm.get(), "wb"))
+		{
+			std::fprintf(f, "P6\n%u %u\n255\n",
+					focus::gfx_card::WIDTH, focus::gfx_card::HEIGHT);
+			for (unsigned y = 0; y < focus::gfx_card::HEIGHT; y++)
+				for (unsigned x = 0; x < focus::gfx_card::WIDTH; x++)
+				{
+					const unsigned v = m_gfx.pixel(x, y);
+					const unsigned char px[3] = {
+						(unsigned char)((v & 1) ? 0xff : 0),
+						(unsigned char)((v & 2) ? 0xff : 0),
+						(unsigned char)((v & 4) ? 0xff : 0) };
+					std::fwrite(px, 1, 3, f);
+				}
+			std::fclose(f);
+		}
 }
 
 
@@ -2697,8 +3022,7 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 
 	SCREEN(config, m_screen);
 	m_screen->set_refresh_hz(60);
-	m_screen->set_size(focus::dim_card::COLUMNS * CELL_WIDTH,
-			SCREEN_ROWS * CELL_HEIGHT);
+	m_screen->set_size(SCREEN_WIDTH, SCREEN_HEIGHT);
 	m_screen->set_visarea_full();
 	m_screen->set_screen_update(FUNC(hp9000_5xx_state::screen_update));
 

@@ -114,10 +114,13 @@ Functional Tests come with their own environment -- `500ENV1-3` are a
 three-volume boot image, not a filesystem, and they carry a `GRAPHICS`
 binary that appears on no option disc -- so `tools/mkdiagdisc.sh` installs
 that instead of BASIC 2.0, and the 31,652-byte `TEST` driver then loads off
-the test disc and runs. It stops in its first subprogram with `ERROR 702,
-No graphics driver/CRT graphics hw failure`, which is HP's program working
-correctly on a machine that has no graphics display modelled (HARDWARE.md
-2.7). Five emulator defects had to go first, none of which anything else in
+the test disc and runs, up to the Test Supervisor's menu. It used to stop in
+its first subprogram with `ERROR 702, No graphics driver/CRT graphics hw
+failure`; **the graphics display is modelled now** and the display draws --
+`PLOTTER IS 1,"INTERNAL"` then `FRAME` puts a rectangle round the raster.
+Its command set is undocumented everywhere, and was read off the machine's
+own power-up self test, `PWP SELF TEST`, which turned out to be the smallest
+segment in the boot image (HARDWARE.md 2.7.4, DIAGNOSTICS.md 3). Five emulator defects had to go first, none of which anything else in
 the project exercised -- a loader stack that sat inside any boot image over
 half a megabyte, `PSHN` running past `SL` instead of trapping at it, the
 variable forms of `ADDS`/`SUBS` being silent no-ops, a byte lost in
@@ -696,6 +699,10 @@ through a great many real regressions:
 not a formality: the dump prints the frame buffer in vram order, while the
 6845 scrolls by moving its start address, so past the first screenful the
 dumped row numbers no longer name displayed lines.
+
+`tools/gfxscreen.py` does the same for the graphics plane and a
+`FOCUS_GFXDUMP` log -- 560 x 455 pixels, a digit per pixel holding its three
+plane bits, with `--plane` for one plane and `--ppm` for a picture.
 
 ## Documentation
 

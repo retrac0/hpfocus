@@ -84,10 +84,18 @@ inline constexpr spec CATALOGUE[] = {
   "Disable the external-program-label fallback in pointer resolution, so a "
   "pointer that fails its DB-relative bounds check traps instead. Turns off "
   "a hypothesis under test (BASIC's DISP output path)." },
-{ "FOCUS_NOMEMMOVE", "", group::cpu, true,
-  "Make MVB copy ascending even when the regions overlap, the way it did "
-  "before the overlap fix. Reproduces the smear that killed any stored "
-  "program two statements in." },
+{ "FOCUS_MVBLOG", "", group::cpu, false,
+  "Report every MVB whose source and target overlap, with the direction, "
+  "the gap between them, the count and the caller. The one place the two "
+  "readings of the instruction disagree: FOCUS.md says byte-at-a-time in "
+  "the chosen direction, which makes a target of source+n a self-propagating "
+  "fill. See FOCUS_MVBMEMMOVE." },
+{ "FOCUS_MVBMEMMOVE", "", group::cpu, true,
+  "Make an overlapping MVB behave like memmove instead of copying byte at a "
+  "time in the chosen direction. That was the default for a while, on a "
+  "diagnosis that turned out to name the wrong instruction; it breaks the "
+  "self-propagating fill HP's display self test depends on. Kept as the A/B "
+  "control -- see the comment on do_mvb, and FOCUS_MVBLOG." },
 { "FOCUS_SEGCALL", "", group::cpu, false,
   "Log every inter-segment transfer as caller segment, target segment and "
   "STT entry. The static form of the same information is in the boot image "
@@ -208,6 +216,30 @@ inline constexpr spec CATALOGUE[] = {
   "The HP-IB card's identity halfword." },
 { "FOCUS_HPIBLOG", "", group::cards, false,
   "Log the HP-IB card's transactions and bus activity." },
+{ "FOCUS_GFXDUMP", "<n>", group::cards, false,
+  "Dump the graphics memory as text every n frames, the way FOCUS_DIMDUMP "
+  "dumps the alphanumeric one. tools/gfxscreen.py turns the log back into a "
+  "picture." },
+{ "FOCUS_GFXNOMEM", "", group::cards, true,
+  "Keep the graphics interface fitted but give it no memory and no command "
+  "decode -- the acknowledge-and-log card the emulator had before the "
+  "command set was read off PWP SELF TEST. The fine-grained A/B control; "
+  "FOCUS_NOGFX removes the slot entirely and is too blunt to bisect with." },
+{ "FOCUS_GFXORIGIN", "<hex>", group::cards, true,
+  "The word offset within a plane that the visible raster starts at. Zero "
+  "until something says otherwise." },
+{ "FOCUS_GFXPGM", "<file>", group::cards, false,
+  "Write the graphics plane to a PPM image on the same schedule as "
+  "FOCUS_GFXDUMP, or every 60 frames on its own -- for looking at rather "
+  "than diffing. tools/gfxscreen.py --ppm makes the same picture from a log." },
+{ "FOCUS_GFXPLANES", "<n>", group::cards, true,
+  "How many memory planes the display has: 3 for the 98770A colour display, "
+  "1 for the 98780A monochrome one. Pairs with the class nibble of "
+  "FOCUS_SC1FR1, which is what picks the type-16 or type-17 self test." },
+{ "FOCUS_GFXSTRIDE", "<n>", group::cards, true,
+  "Words per raster line: 36 for the colour display (576 pixels, 560 of "
+  "them displayed) and 35 for the monochrome one. The one number the raster "
+  "interpretation hangs on, so it is sweepable." },
 { "FOCUS_NOGFX", "", group::cards, true,
   "Leave select code 1 empty, the way the emulator was before the graphics "
   "interface was modelled. The A/B control for anything the display changes." },
@@ -254,6 +286,17 @@ inline constexpr spec CATALOGUE[] = {
   "What a probe card answers to FR1." },
 { "FOCUS_PROBELOG", "", group::cards, false,
   "Log every register access a probe card sees." },
+{ "FOCUS_RTCBATFAIL", "[6|7|both]", group::cards, true,
+  "Force the battery-fail bit: R2 bit 5 on the SCM, R1 bit 3 on the "
+  "keyboard board. The manuals say the OS restores its configuration when "
+  "it sees this. NOTE that the 520's power-up self test FAILS on the "
+  "keyboard bit -- \"Self test error 1: IO address 006,0002\", escape 4, "
+  "\"Battery low condition detected\" (520 Service, table C-1) -- which is "
+  "why a missing battery file does not raise it there by itself." },
+{ "FOCUS_RTCWINDOW", "", group::cards, true,
+  "Clear the battery-fail bit four seconds after power-up, as both manuals "
+  "require it to be read within (530/540 Service 2-30, 520 Service 2-34). "
+  "Off by default: the emulator has always latched it for the whole run." },
 { "FOCUS_SC0FR1", "<hex>", group::cards, true,
   "Force the display card's FR1 status word." },
 { "FOCUS_SC0ID", "<n>", group::cards, true,
@@ -294,20 +337,51 @@ inline constexpr spec CATALOGUE[] = {
   "Raise the interval-timer message on a fixed beat whether or not the OS "
   "armed the timer. The start delay exists because injecting during powerup "
   "panics a machine that is not ready." },
+{ "FOCUS_KBDNV", "<file>", group::machine, true,
+  "The battery behind the KEYBOARD board's clock and configuration memory "
+  "(select code 6), the counterpart of FOCUS_SCMNV for the 520. Without it "
+  "the 520's clock is volatile, so what BASIC's SET TIMEDATE writes dies "
+  "with the run." },
 { "FOCUS_HDNOSAVE", "", group::machine, true,
   "Do not write the fixed disc back to its file at exit. A run that must "
   "not change what the next run starts from." },
+{ "FOCUS_NVLOG", "", group::machine, false,
+  "Report every battery load, save and battery-fail decision, with the "
+  "file's header fields." },
 { "FOCUS_NVMFILL", "<hex byte>", group::machine, true,
-  "Poison the SCM's configuration memory before the boot, the counterpart "
-  "of FOCUS_RAMFILL for non-volatile storage." },
+  "Poison the configuration memory on both boards that carry one -- the "
+  "520's keyboard board and the 530/540's SCM -- the counterpart of "
+  "FOCUS_RAMFILL for non-volatile storage." },
+{ "FOCUS_NVSAVE", "<seconds>", group::machine, true,
+  "How often a changed clock or configuration memory is written back, so a "
+  "run that is killed does not lose it (default 30). 0 saves only at exit, "
+  "which is what it used to do." },
 { "FOCUS_RAMFILL", "<hex byte>", group::machine, true,
   "Poison all of RAM before the boot, standing in for the garbage a real "
   "machine powers up with. A boot that behaves differently under poison is "
   "depending on a read of memory nothing initialised." },
+{ "FOCUS_RTCBATTERY", "off|on|<days>", group::machine, true,
+  "Let the battery advance the clock over the time the emulator was NOT "
+  "running, from the save time in the battery file. 'on' is the manuals' "
+  "ten days worst case; past the limit the battery is treated as flat and "
+  "the battery-fail bit goes up instead. Default off, because it makes a "
+  "run's output depend on when it was started." },
+{ "FOCUS_RTCTIME", "none|now|<ISO 8601>|<epoch>", group::machine, true,
+  "Seed the clock at power-up. Default none: it powers up all-zero, "
+  "\"never set\", which is the path HP-UX's first boot takes (error 941) "
+  "and what BASIC reports as \"Clock and date not set\". 'now' takes the "
+  "host's wall clock; a fixed moment is what a reproducible run wants. "
+  "This seeds the HARDWARE: HP-UX 5.30 still clears the century and year "
+  "during bring-up and sets its own, and the clock check byte that "
+  "probably gates that is not known." },
+{ "FOCUS_RTCUTC", "", group::machine, true,
+  "Take FOCUS_RTCTIME=now as UTC rather than as the host's local time." },
 { "FOCUS_SCMNV", "<file>", group::machine, true,
-  "The battery behind the SCM's clock and configuration memory: loaded at "
-  "start, written back at exit. Without it every boot is a first boot, and "
-  "HP-UX treats an unset clock as reason to abandon its device bring-up." },
+  "The battery behind the SCM's clock and configuration memory (select code "
+  "7): loaded at start, written back at exit and every FOCUS_NVSAVE "
+  "seconds. Without it every boot is a first boot, and HP-UX treats an "
+  "unset clock as reason to abandon its device bring-up. Files written "
+  "before the format carried a header are still read." },
 
 // ---- watching a run -----------------------------------------------------
 { "FOCUS_BREAK", "<hex addr>", group::watch, false,

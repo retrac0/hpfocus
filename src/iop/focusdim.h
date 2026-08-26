@@ -134,6 +134,20 @@ struct dim_card : public iop_interface
 	void dma_write16(u16 v) override { put(v); }
 	void dma_write(u8 v) override { put(u16(0x2000 | v)); }
 
+	// The frame buffer is "written from the IOP by DMA or direct I/O;
+	// readable back for diagnostics" (HARDWARE.md 2.7.3), and the power-up
+	// self test takes it at its word: its loopback leg is an Input-Verify
+	// transfer (I/O ERS Table 5.1) that reads the buffer back and compares
+	// it against what it sent. A card with no read path answers zero and
+	// fails, which is "Self test error 1: IO address 0, 0 STATUS: 8".
+	u16 dma_read16() override
+	{
+		const u16 v = vram[m_addr];
+		m_addr = (m_addr + 1) & (CELLS - 1);
+		return v;
+	}
+	u8 dma_read() override { return u8(dma_read16()); }
+
 	// What the screen shows: the CRTC's display start (R12/R13) plus the
 	// cell offset, and its cursor address (R14/R15).
 	u16 cell(unsigned offset) const

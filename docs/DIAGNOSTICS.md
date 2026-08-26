@@ -143,6 +143,24 @@ real-time clock and the 2 KB of battery-backed NVM — exercised register by
 register against HP's expectations. If the complement-decode of the RTC
 nibbles or the NVM addressing is wrong anywhere, this test names it.
 
+It is the arbiter for two things the manuals leave open (HARDWARE.md §2.4.1):
+whether an RTC location is four bits or eight, and whether the 520's `R12`
+latches 8 bits or 16. It also grades the select-code-6 clock WRITE, which was
+dead code until an early return above the register switch was removed. Its
+escapes come from the 520 Service manual's table C-1, reported as
+`Self test error 1: IO address 006,0002`:
+
+| Escape | Meaning |
+|---|---|
+| 1 | Failed loopback to FR15 |
+| 2 | Keyboard not responding to poll |
+| 3 | Keyboard failed self test |
+| 4 | **Battery low condition detected** |
+| 5 | Keyboard not responding with SRQ bit |
+| 6 | Keyboard not forcing status false |
+| 7 | Reading FR10 did not clear keyboard poll response |
+| 8 | Power fail warning bit set |
+
 **`(6)STATUS`** walks the machine inventory: what it reports about the card
 cage is directly comparable with what the driver's fake cards claim.
 
@@ -183,9 +201,56 @@ do with graphics:
     SYMBOL TABLE ENTRIES NOT ALLOWED IN COMPILED ONLY CONTEXT
 
 so the frontier has moved from the display into the interpreter's handling
-of a compiled program's `INPUT`. The graphics *command set* is still not
-modelled — commands are acknowledged and logged, so the display self test's
-memory check still fails (escape 8) and nothing draws.
+of a compiled program's `INPUT`.
+
+**2026-08-26: the command set is modelled and the display draws.** The
+specification turned out to be on the disc all along, in the one segment
+`tools/mkdisasm.sh` was not extracting: **`PWP SELF TEST`**, segment 13 of
+the boot image, 3,712 bytes, the smallest segment there is. Its local
+entries 17–32 are HP's own power-up self test for the display and they name
+every command, every parameter count and both display memory sizes. That
+listing, plus the traffic `HP98770` generates when BASIC is told to draw,
+is the whole of HARDWARE.md §2.7.4 — which is now the only description of
+this interface that exists anywhere.
+
+Reading a module for its register protocol is a method worth repeating, and
+it beats sweeping values at a card: extract with `tools/mkdisasm.sh`, find
+the entry points with `tools/stt.py --segment N`, and read the `LDI`
+constant that sits in front of each `PCLS` to the register primitive.
+
+What works now, on the diagnostics environment:
+
+    PLOTTER IS 1,"INTERNAL"
+    FRAME
+
+puts a rectangle round the whole 560 × 455 raster, and `MOVE`/`DRAW` place
+lines where BASIC's coordinate system says they belong — `MOVE 0,0` lands
+at raster (0, 454), the bottom left. `FOCUS_GFXDUMP=<n>` prints the raster
+as text and `tools/gfxscreen.py` turns it back into a picture or a PPM; the
+screen composites the graphics plane under the alphanumeric one, which is
+dominant over it.
+
+**Three emulator defects were found on the way there**, none of them in the
+display, and all three are fixed — after which HP's power-up self test for
+the whole display subsystem passes clean for the first time:
+
+- the IOP read F1 alone as the DMA direction, so Table 5.1's "Input,
+  Verify" ran as an output and the memory test verified nothing;
+- the alphanumeric card had no read-back path, though its frame buffer is
+  documented as readable back for diagnostics;
+- `MVB` moved overlapping regions like `memmove`, which breaks the
+  self-propagating buffer fill HP's test depends on. That workaround was on
+  a diagnosis that named the wrong instruction — the real cause was `LRAS
+  P+n,X`, fixed separately — and `FOCUS_MVBLOG` shows the only overlapping
+  moves in a whole BASIC boot are the four the display self test makes.
+  HARDWARE.md §2.7.4 item 11 has the argument; `FOCUS_MVBMEMMOVE` is the
+  A/B control.
+
+**The demonstration discs are still out of reach**, and for a reason that
+has nothing to do with graphics: `LOAD "DEMO/func_3d"` answers `ERROR 62:
+File is protected or wrong PROTECT code`, the same as every other demo
+program (§1). Those are the natural workout for a graphics display and they
+are blocked one layer below it.
 
 The account below is what the situation was before that, kept because the
 measurements in it stand.

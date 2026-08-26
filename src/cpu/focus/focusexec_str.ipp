@@ -144,21 +144,43 @@ private:
 		if (!te.ok()) return exec_trap::address_error;
 		u32 tba = te.addr;
 
-		// The move must behave like memmove, not memcpy: BASIC's line
-		// editor slides a stack frame sixteen bytes upward over itself
-		// (SETR 2 points Q at the new spot, then MVB 7 with count 0x108
-		// moves the frame -- source SB+0xb0, target SB+0xc0 -- so the
-		// stack marker lands at the new Q for the EXIT that follows). A
-		// naive ascending copy smears the first sixteen bytes across the
-		// whole region, the EXIT restores a marker made of the smear, and
-		// the machine dies two statements into any stored program. When
-		// the regions overlap so that a straight copy would read bytes
-		// already written, the copy runs from the far end instead.
+		// An overlapping move runs BYTE AT A TIME in the chosen
+		// direction, which is what FOCUS.md says of this instruction and
+		// what makes a target of source+n a self-propagating fill: the
+		// bytes just written are read again, and a four-byte pattern
+		// replicates through the whole region. HP's software uses that
+		// on purpose -- PWP SELF TEST (segment 13, local 20) fills its
+		// DMA buffer with exactly this idiom before the display's memory
+		// test sends it, and nothing else in the collection needs an
+		// overlapping move at all.
+		//
+		// This read `memmove` for a while, on the diagnosis that BASIC's
+		// line editor slid a stack frame sixteen bytes over itself and a
+		// naive ascending copy smeared it, killing any stored program
+		// two statements in. That was the wrong instruction: the real
+		// cause was `LRAS P+n,X` dropping its index, so the compiler
+		// built every statement from code template 0, and the sixteen
+		// bytes were a missing `TRY,B`'s four words. Fixing LRAS fixed
+		// BASIC, and FOCUS_MVBLOG says the rest -- across a whole BASIC
+		// boot and a stored program that runs correctly, the ONLY
+		// overlapping moves are the four the display self test makes.
 		s32 x = 0;
-		static const knob::flag no_memmove("FOCUS_NOMEMMOVE");
-		const bool overlap = !no_memmove && (d > 0)
+		static const knob::flag as_memmove("FOCUS_MVBMEMMOVE");
+		const bool clash = (d > 0)
 				? (tba > sba && tba < sba + u32(count))
 				: (tba < sba && sba < tba + u32(-count));
+		// Which way an overlapping move has to run is the one place the
+		// two readings of this instruction disagree, so every instance
+		// is reportable: FOCUS.md says byte-at-a-time in the chosen
+		// direction, which makes a target of source+n a self-propagating
+		// fill, and that is what HP's display self test relies on.
+		static knob::channel mvblog("FOCUS_MVBLOG");
+		if (clash && mvblog)
+			mvblog("[mvb %s src=%08x dst=%08x n=%d gap=%+d p=%08x seg=%u]\n",
+					d > 0 ? "fwd" : "back", sba, tba, count,
+					int(s32(tba) - s32(sba)), r.p - r.pb,
+					r.get(sf::CSN));
+		const bool overlap = clash && bool(as_memmove);
 		if (overlap)
 		{
 			// Same bytes, opposite order: start at the last element and

@@ -71,8 +71,9 @@ cd mame
 # Video backend. MAME defaults to opengl, and a driver that cannot present
 # through it leaves a window that renders the blinking cursor and never
 # updates the text -- the machine running perfectly behind a screen that
-# looks dead. This display is 640x390 of character cells, so the software
-# renderer costs nothing and always works. A -video on the command line
+# looks dead. This display is 640x455 -- 80x26 character cells over the
+# 560x455 graphics raster, centred -- so the software renderer costs
+# nothing and always works. A -video on the command line
 # comes after this one and wins, so any backend can still be asked for.
 # A headless run has no business opening a window. MAME initialises SDL's
 # video subsystem even for -video none, which costs real time on a loaded

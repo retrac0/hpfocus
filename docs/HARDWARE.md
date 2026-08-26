@@ -329,6 +329,95 @@ shutdown, and the bit self-clears if power returns.
 > start; before that the kernel spun on it 200,000 times in three emulated
 > seconds. `R11` answers NVM data alongside `R13` in the running system.
 
+#### 2.4.1 What the clock and the NVM hold
+
+The 520 Service manual (3-16), the 530/540 Service manual (3-19) and the
+9030/40 CE Handbook (chapter 10) all print the same table, under one heading —
+**Real-Time Clock/Non-Volatile Memory Contents**. Offsets 0–15 are the clock's
+sixteen locations; 16–63 are NVM bytes:
+
+| Offset | Contents | Offset | Contents |
+|---|---|---|---|
+| 0 | Second | 16 | Keyboard Initialization Data |
+| 1 | **Clock Check Byte** | 17–24 | Default System Startup Subsystem |
+| 2 | Minute | 25–44 | Default Mass Storage Unit Specifier |
+| 3 | Stack Size (2 × finstrates) | 45 | Size of System I/O Buffer |
+| 4 | Hour | 46–47 | NVM Checksum |
+| 5 | Century | 48–53 | Healer CAM Overflow Counter |
+| 6 | Day of Week | 54–57 | Last Double Bit Memory Failure Data |
+| 7 | Day of Month | 58–60 | Number of 10-Minute Periods Computer is On |
+| 8 | Month | 61 | Number of Overheat Cycles |
+| 9 | Year | 62–63 | Number of Power-On Cycles |
+| 10–13 | Control Registers | | |
+| 14 | Timer Resolution | | |
+| 15 | Timeout Scan Resolution | | |
+
+> **Observed.** The map is **one field numbering answered by both parts**, not
+> a split down the middle. A battery file HP-UX 5.30 wrote holds the time of
+> day in the clock and, at the map's own offsets *in the NVM*, clock check 14,
+> stack size 6, century 19 and year 70. Both parts carry the low sixteen. That
+> is why [`src/iop/focusrtc.h`](../src/iop/focusrtc.h) states the map once and
+> both boards decode through it.
+
+> **Open question — how wide is a location?** Both manuals say "16 four-bit
+> locations", and in the same breath "a 4-bit multiplexed address/data bus
+> provides I/O for the chip". A nibble cannot hold the 59 HP-UX stores in a
+> minute location or the 70 it stores in a year, and BASIC's driver undoes the
+> bus inversion with a byte-wide `NOT` (trap seg 0x48072). So the emulator
+> reads the four bits as the **bus** and a location as a byte, which is what
+> boots — but that is an inference, not a quotation. HP's own `(7)KEYBOARD`
+> diagnostic (`Rtc_update`, `Reset_time`) settles it, and has never been run.
+
+> **Open question — the clock check byte.** Nothing known writes offset 1, and
+> nothing here does. `FOCUS_RTCTIME` seeds a moment into both parts and HP-UX
+> clears the century and the year again during bring-up and installs its own,
+> so the OS does not accept a clock it did not set itself. The check byte is
+> the likely gate: a real run's battery holds 1 there in the clock and 14 in
+> the NVM.
+
+#### 2.4.2 The same part on the 520 *(520 Service, sheets 2-32/2-34)*
+
+On the 520 there is no SCM. The clock and the NVM sit on the **keyboard
+electronics board at select code 6**, sharing one interface with the key
+matrix, the beeper, the optional input device and the thermal printer (§2.9).
+The part and its protocol are the same; the registers it answers are the
+keyboard's:
+
+| | |
+|---|---|
+| `R1` read | bit 0 keyboard interrupt pending, 1 power-fail warning, **3 battery failure** |
+| `R3` read | keyboard ID, data bus bit 1 set = present |
+| `R9` read/write | RTC data for the location latched through `R12` |
+| `R10` | keycode holding register / LEDs and auto-repeat |
+| `R11` write | beeper divide-down |
+| `R12` write | RTC location; the NVM takes a 16-bit address in complemented form |
+| `R13` read/write | NVM data byte |
+
+To avoid bus conflicts the keyboard drives the bus only for `R1`, `R3`, `R9`,
+`R10`, `R11`, `R12` and `R15`; the printer drives `R0`, `R1`, `R2`, `R4`–`R7`.
+`R1` is shared, the keyboard taking the lower 12 bits. The manual adds that
+**for `R12` only the lower 8-bit buffer is enabled on the keyboard** — which
+cannot reach more than 256 of the 2048 NVM bytes, so either the manual or that
+reading is wrong; the emulator latches 16 bits, which is what boots.
+
+The battery-fail bit is **not** raised here by a missing battery file, because
+HP's own power-up self test fails on it: *Self test error 1: IO address
+006,0002*, escape `4`, "Battery low condition detected" (520 Service, table
+C-1). `FOCUS_RTCBATFAIL=6` is how that case gets tested deliberately.
+
+#### 2.4.3 The battery, in the emulator
+
+`FOCUS_SCMNV=<file>` and `FOCUS_KBDNV=<file>` stand in for the NiCad. The file
+carries a magic, a format version, the select code it came from, the save time
+and a CRC-32 over the payload; a load is all-or-nothing, so a short or corrupt
+battery leaves the machine on the clock it had and reports a flat one rather
+than half-loading. A save goes through a temporary and a rename, and runs every
+`FOCUS_NVSAVE` seconds as well as at exit, because most runs here end in a
+`-str` or a `^C`. Files written before the format carried a header — 2112 raw
+bytes — are still read. `FOCUS_RTCBATTERY` lets the battery advance the clock
+over the time the emulator was **not** running, up to the manuals' ten days,
+and is off by default because it makes a run depend on when it was started.
+
 ### 2.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 
 The 8 KB loader ROM lives on the SCM, addressed through the same locations as
@@ -907,6 +996,11 @@ the individual FRs (§2.7.4).
 | 9020B | **98780A** Monochromatic, 12.2 in | Display Interface Module (DIM) | 560 × 455 | mono |
 | 9020C | **98770A** High-Performance Color, 13 in | Display Interface Module (DIM) | 560 × 455 | "8 pure, 4913" |
 
+The 9020C's eight pure colours are **three memory planes of 32,768 bytes**,
+measured off the self test's own transfer length rather than any manual — see
+§2.7.4 item 8, which also gets the 98780A's single plane out of the same
+place.
+
 All three give 26 lines × 80 characters. The 98760A runs at 50 or 60 Hz; the
 other two are 60 Hz only *(520 CE Handbook, sheets 1-2/1-3)*.
 
@@ -1027,11 +1121,19 @@ space substitution, display interrupt, synchronous startup, window, reset.
 Graphics side: rubber-band memory, line drawing, erase memory.
 
 > **Read off HP's own software, and now implemented.** Nothing in the
-> collection gives the meaning of these registers, so all of the following
-> was measured on a running machine rather than transcribed. The card is
+> collection gives the meaning of these registers. What follows was read
+> off HP's own code and measured on a running machine. The card is
 > `src/iop/focusgfx.h`, fitted at select code 1 on `hp9020`; `FOCUS_NOGFX`
-> removes it and `FOCUS_SC1LOG` traces every access with the segment and PC
-> that made it.
+> removes it, `FOCUS_GFXNOMEM` keeps it fitted but gives it no memory or
+> command decode, and `FOCUS_SC1LOG` traces every access with the segment
+> and PC that made it.
+>
+> **The specification is `PWP SELF TEST`** — segment 13 of the boot image,
+> 3,712 bytes, the smallest segment there is. Its local entries 17–32 are
+> HP's power-up self test for the display and they name every command, its
+> parameter count and both display memory sizes.
+> [`tools/mkdisasm.sh`](../tools/mkdisasm.sh) extracts it; a local at
+> `PB+X` is at `X - 0x24` in the extracted `.bin`.
 >
 > **1. `FR1` is one word read by four different gates**, and a display has
 > to answer all four at once. `0x04c0` does:
@@ -1057,46 +1159,185 @@ Graphics side: rubber-band memory, line drawing, erase memory.
 > **2. The driver.** `HP98770` — segment 43 of the `500ENV` diagnostics
 > environment, the internal display's driver — sets its interface word to
 > **9 (channel 1, PA 1 = select code 1)** and binds only if the device type
-> is **16 or 17**. It then runs HP's own power-up self test for the display
-> (`PWP SELF TEST` local entry 32 for type 16, entry 30 for type 17) and
-> allocates its control block only if that passes. It plants 559 and 454 as
-> the maximum X and Y, and divides them for the aspect ratio — the
-> 560 × 455 raster of §2.7.1.
+> is **16 or 17**. It then runs the self test (`PWP SELF TEST` local entry
+> 32 for type 16, entry 30 for type 17) and allocates its control block
+> only if that passes. It plants 559 and 454 as the maximum X and Y, and
+> divides them for the aspect ratio — the 560 × 455 raster of §2.7.1.
 >
-> **3. What the self test demands**, in the order it asks (its reset is
-> `PWP SELF TEST` local entry 21, and each failure has its own escape code):
+> **3. The register model.** A command goes to `FR1` and its data to `FR0`,
+> with the **IC field of the interface address** selecting between them —
+> the kernel's register primitives (entries 17 and 18) build their operand
+> as `select code | register << 6`, and the IOP already routes this
+> correctly (`iop_core::register_of`). `RIFG` is the completion handshake.
+> The driver adds one thing the self test does not: it writes each data
+> word to `FR0` and then **`FR3` = 0**, which acts as the strobe.
+>
+> **4. Completion is an interrupt.** The kernel's wait (entry 21) arms the
+> device record and blocks on a semaphore that only the interrupt service
+> posts, so a card that never raises leaves every command timing out. The
+> card raises on each command write. `FR1 = 0` is the reset that drops the
+> flag; the kernel's escape path writes `FR1 = 6` and `FR1 = 1`, and
+> neither of those is a command.
+>
+> **5. The reset, entry 21 (`PB+0x764`)**, instruction for instruction.
+> Note the order — the interface poll is checked **after** the first wait —
+> and the escape codes, which run 1, 2, 4, 3, 5:
 >
 > | check | requirement | escape |
 > |---|---|---|
 > | `RIST` (read interface status) | odd | 1 |
 > | write `FR1 = 0`, then `RIFG` | **even** — the reset drops the flag | 2 |
+> | write `FR1 = 0x100`, then wait | the flag comes back | 4 |
 > | `IFPL` (interface poll) | this PA's bit **clear** | 3 |
-> | write `FR1 = 0x100`, then wait | the flag comes back | 5 |
-> | graphics memory, patterns `0xAAAA` / `0xCCCC` | read back what was written | 8 |
+> | write `FR1 = 0x180`, then wait | the flag comes back | 5 |
+> | graphics memory, patterns `0xAAAA` / `0xCCCC` / `0xF0F0` | read back what the mode says | 8 |
 >
-> So `RIFG` is the command handshake — `FR1 = 0` is a reset that drops it,
-> a command raises it again — and the interface poll is separate from the
-> service request, which is where the emulator's default (poll chained to
-> service) had the card asking for attention forever.
+> The three register primitives have escapes of their own: 10 for the `FR1`
+> write (local 17), 11 for the `FR0` write (18), 12 for the `FR0` read
+> (19). The DMA helper (local 22) escapes 13, 14 and **6** on a bad channel
+> status.
 >
-> **4. Completion is an interrupt.** The kernel's wait (entry 21) arms the
-> device record and blocks on a semaphore that only the interrupt service
-> posts, so a card that never raises leaves every command timing out. The
-> card raises on each command write.
+> **6. The command set.** Every value below is an `LDI` constant sitting
+> immediately in front of a `PCLS STT[17]`, with the local that issues it:
 >
-> **5. The register model.** Traffic to the display is `FR0` and `FR1` with
-> the **IC field of the interface address** selecting between them — the
-> kernel's register primitives (entries 17 and 18) build their operand as
-> `select code | register << 6`. So a command goes to `FR1` and its data to
-> `FR0`, and the IOP already routes this correctly (`iop_core::register_of`).
+> | cmd | data | meaning | where |
+> |---|---|---|---|
+> | `0x100` | 0 | reset, phase 1 | entry 21 |
+> | `0x180` | 0 | reset, phase 2 | entry 21 |
+> | `0x181` | 4 | region: `(a, x, y0, y1)`, the y's biased `+0x800` | local 23 `PB+0x830` |
+> | `0x186` | 1 | set mode, type 17 | local 29 |
+> | `0x187` | 2 | write mask, type 17 (`0, 0`) | local 25 |
+> | `0x188` | — | **write** memory, type 17 (DMA out) | local 27 |
+> | `0x189` | — | **read** memory, type 17 (DMA in) | locals 26, 29 |
+> | `0x18a` | 1 | plane select, `0x38` OR `1<<plane` | locals 29, 31 |
+> | `0x18d` | 0 | *[unread]* — issued before a read | local 30 |
+> | `0x1a0` | — | **write** memory, type 16 (DMA out) | local 27 `PB+0x91c` |
+> | `0x1a1` | — | **read** memory, type 16 (DMA in) | local 26, entry 32 |
+> | `0x1a8` | 1 | write mask A, type 16 (`-1`) | local 25 `PB+0x8b0` |
+> | `0x1a9` | 1 | write mask B, type 16 (`-1`) | local 25 |
+> | `0x1ab` | 1 | set mode, type 16 | local 31 |
+> | `0x1ad` | 4 | window: `1023, 1023, 2047, 2031` | local 31 |
 >
-> **What this bought.** `ERROR 702 IN Clear_screen` is gone: HP's 9020 Test
-> Supervisor loads, runs, prints its banner and takes operator input. The
-> command set itself is not modelled — commands are logged and acknowledged
-> — so the graphics *memory* test still fails with escape 8, and nothing
-> draws yet. The commands seen so far are `0x100` and `0x180` (init),
-> `0x1a8`/`0x1a9`/`0x1a0`/`0x1a1` with `FR0` data (the memory fill), and
-> from the driver `0x100` and `0x12B`.
+> The 16/17 pairing is systematic — `0x186`↔`0x1ab`, `0x187`↔`0x1a8`+`0x1a9`,
+> `0x188`↔`0x1a0`, `0x189`↔`0x1a1` — so bit 5 of the low byte reads as the
+> colour display's flavour of the same order **[inferred]**: four pairs, no
+> counter-example, but nothing states it.
+>
+> **The driver's own commands are a different family**, and `PWP SELF TEST`
+> issues none of them. These were read off `HP98770` (segment 43) and
+> `HUMAN INTERFACE` (segment 7) driving a live machine:
+>
+> | cmd | data | meaning |
+> |---|---|---|
+> | `0x12a` | 1 | pen colour, a plane mask: `0x3f` is all three |
+> | `0x12b` | 1 | background colour, `0x38` is none |
+> | `0x12d` | 2 | a point of a polyline — see below |
+> | `0x280` | 0 | the driver's idle poll |
+> | `0x402`, `0x403` | 1 | `0x400` and `0x3b0`, written by `HUMAN INTERFACE` at boot *[unread]* |
+>
+> and `0x12c`, `0x12e`, `0x12f` and `0x400` go by at boot carrying nothing.
+>
+> **7. How a point is encoded.** Both words of `0x12d` are the one's
+> complement of a field whose low ten bits are the coordinate and whose bit
+> 10 lifts the pen, and `HP98770` emits it from three places that between
+> them pin the encoding down:
+>
+> | offset in `HP98770.bin` | what it writes | pen |
+> |---|---|---|
+> | `+0x7ea` | `NOT(((up ^ 1) << 10)` OR `coord)` | the caller's own flag |
+> | `+0x1c12` | `NOT(coord)` | always down |
+> | `+0x1a60` | `1023 - coord` | always up |
+>
+> So with `u = ~w`, the coordinate is `u & 0x3ff` and the pen is bit 10 of
+> `u`, **set meaning up**. The first word is Y and the second X, and
+> `FRAME` reads out of that as move (454, 0), draw (0, 0), (0, 559),
+> (454, 559), (454, 0) — the four sides of the raster, closed. BASIC's
+> `MOVE 0,0` lands at raster (0, 454), so **Y grows downward** and BASIC's
+> origin is the bottom left. What the display's vector generator does
+> *between* two points is not observable from the register traffic; the
+> emulator draws a Bresenham line.
+>
+> **8. How big the memory is.** Two length constants, one per display type,
+> and both come out exact:
+>
+> | type | constant | what it is |
+> |---|---|---|
+> | 17 — 98780A mono | `LDI #31850` | 560 × 455 / 8 **exactly**; one plane, 35 words a line |
+> | 16 — 98770A colour | `LDI #98304` | 3 × 32,768; three planes of 16,384 words |
+>
+> 455 lines of **36** words is 16,380, four words spare. 36 words is 576
+> pixels of which 560 are displayed — the same 576 × 455 the 97060A
+> documents (§2.7.5), and the 16-pixel margin `0x1ad`'s `2031 = 2047 − 16`
+> also names. Three planes is the 9020C's "8 pure" colours (§2.7.1).
+>
+> The read/write command itself rewinds the pointer: the self test issues
+> one and then transfers the whole memory, and the two lengths only agree
+> to the byte if it starts at zero. Planes are interleaved a word at a time
+> rather than stored one after another **[inferred]** — the DMA totals fit
+> either layout, but the read order in item 9 does not.
+>
+> **9. The memory test reads a pattern, not memory.** Entry 32 zeroes all
+> 98,304 bytes, sets three planes to three modes, then reads three words
+> and wants `0xAAAA`, `0xCCCC`, `0xF0F0`. Those are generated — which is
+> the display's own self test, entered "by pushbutton S1 or by software"
+> and emitting a test pattern (§2.7.3). What selects which is disambiguated
+> by the type-17 test (local 29), which holds the plane at 0 and varies the
+> rest:
+>
+> | `0x181` x | mode n | reads back |
+> |---|---|---|
+> | 1 | 0 | `0x5555` — the x offset **rotates** it |
+> | 0 | 0 | `0xAAAA` |
+> | 0 | 1 | `0xCCCC` — the mode **selects** it |
+> | 0 | 3 | `0xF0F0` |
+>
+> The mode word is `(n << 5) + 17`, and its low five bits are 17 in every
+> one of these. `HP98770` never issues `0x1ab` or `0x18a` at all, so a
+> display in ordinary use is never in this mode and reads its real memory;
+> the emulator drops the mode on `FR1 = 0`.
+>
+> **10. The read leg is an Input-Verify transfer**, not a read into memory.
+> Its DMA status word is F1=1 **F2=1**, which Table 5.1 of the I/O ERS
+> calls "Input, Verify" — the IOP reads the card and compares against the
+> same buffer rather than storing, which is why `PWP SELF TEST` does no
+> comparison of its own. Reading F1 alone as the direction, which
+> `iop_core::run_dma` did, turns that into an output: the card is never
+> asked for a word and the test passes on nothing. The DIM's own loopback
+> leg (select code 0) is the same kind of transfer, which is why
+> `dim_card` needs a read-back path too — its frame buffer is "readable
+> back for diagnostics" (§2.7.3).
+>
+> **What this bought.** `ERROR 702 IN Clear_screen` is gone, HP's 9020 Test
+> Supervisor loads and runs, the display's memory test is a real test, and
+> **the display draws**: `PLOTTER IS 1,"INTERNAL"` then `FRAME` puts a
+> rectangle round the 560 × 455 raster, and `MOVE`/`DRAW` place lines where
+> BASIC's coordinate system says they belong. `FOCUS_GFXDUMP` and
+> [`tools/gfxscreen.py`](../tools/gfxscreen.py) read the raster back as
+> text or a PPM. What is still unread: `0x1ad`'s four numbers fit a window,
+> a clip rectangle and a pan origin equally well; `0x1ab`'s mode is only
+> ever seen carrying 17; `0x402`/`0x403`'s two numbers are unaccounted for;
+> and nothing anywhere touches a colour map.
+>
+> **11. The self test found an `MVB` defect on the way.** `PWP SELF TEST`
+> fills its DMA buffer with the self-propagating idiom — a forward `MVB`
+> whose target is its own source plus four — which works because FOCUS.md
+> says "overlapping moves are well-defined byte-at-a-time in the chosen
+> direction": the bytes just written are read again and a four-byte pattern
+> replicates. The emulator moved overlapping regions like `memmove`
+> instead, so only the first eight bytes carried the pattern and the
+> Input-Verify leg failed on the fifth word — `Self test error 1: IO
+> address 1, 0 STATUS: 00000006` at boot.
+>
+> That `memmove` was there on a diagnosis that named the wrong instruction:
+> BASIC's line editor was said to slide a stack frame sixteen bytes over
+> itself and be smeared by an ascending copy. The real cause of that was
+> `LRAS P+n,X` dropping its index, fixed separately, and the sixteen bytes
+> were a missing `TRY,B`'s four words. `FOCUS_MVBLOG` settles it from the
+> other side: across a whole BASIC boot **and** a stored program that runs
+> correctly, the only overlapping moves in the machine are the four the
+> display self test makes. The default is now the ERS reading;
+> `FOCUS_MVBMEMMOVE` restores the old one, and with it **HP's power-up self
+> test for the whole display subsystem passes clean for the first time.**
 
 > **Simulator note.** Both principal parts of the 98760A are standard and already
 > modelled in MAME (`upd7220`, `mc6845`), and the geometry, colour map and
