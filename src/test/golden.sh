@@ -40,6 +40,11 @@ MEDIA="$GOLDEN/media"
 # enough that a check costs a couple of seconds.
 STEPS=${FOCUS_GOLDEN_STEPS:-2000000}
 
+# Nothing here may read the host's wall clock: a probe that does can never be
+# compared against a recording. Both are off by default; saying so explicitly
+# means a later change of default cannot quietly make every probe unstable.
+export FOCUS_RTCTIME=none FOCUS_RTCBATTERY=off
+
 ONLY=""
 QUICK=0
 MODE=""
@@ -62,6 +67,18 @@ want() { [ -z "$ONLY" ] || [ "${ONLY#*,$1,}" != "$ONLY" ]; }
 # so anything invoking ./focus directly has to be there. tools/runbasic-hd.sh
 # already does this for itself; the HP-UX boot below is driven directly.
 in_mame() { ( cd "$ROOT/mame" && exec "$@" ); }
+
+# The HP-UX probes write their battery back, and HP-UX keeps counters in the
+# NVM that go up every boot -- power-on cycles at 62-63, the checksum at
+# 46-47. run() re-runs a probe that differs, so the battery has to be reset
+# for EVERY attempt, not once per probe: a retry that inherits the first
+# attempt's counters differs again by construction, and the probe can never
+# come back identical. Each probe gets its own file for the same reason.
+with_nv() {
+	local dst=$1; shift
+	cp "$ROOT/software/cct/scm.nv" "$dst" 2>/dev/null || rm -f "$dst"
+	"$@"
+}
 
 fail=0
 pass=0
@@ -210,14 +227,20 @@ else
 			-- -mpb3 1m -mpb4 1m \
 			-flop1 "$ROOT/software/test/500MFTST.TD0" -str 20 -video none
 
-		# HP-UX writes the SCM battery file, so it runs against a copy.
-		# A first boot and a later boot behave differently -- HP-UX wants
-		# a set clock -- so the copy is taken fresh each time from the
-		# repo's, and the run's writes are thrown away.
+		# HP-UX writes the SCM battery file, so it runs against a copy
+		# (with_nv, above, resets it for every attempt). A first boot and a
+		# later boot behave differently -- HP-UX wants a set clock -- so
+		# both are probed: mame-hpux against a battery, and
+		# mame-hpux-firstboot against none, which is the path that sets the
+		# clock and writes the default configuration.
 		HPUX_DISC="$ROOT/software/cct/7914_unitSave_hpux4.0.bin"
-		if want mame-hpux && [ -f "$HPUX_DISC" ]; then
-			cp "$ROOT/software/cct/scm.nv" "$WORK/scm.nv" 2>/dev/null || :
-			run mame-hpux in_mame env FOCUS_SCMNV="$WORK/scm.nv" \
+		if { want mame-hpux || want mame-hpux-firstboot; } \
+				&& [ -f "$HPUX_DISC" ]; then
+			run mame-hpux with_nv "$WORK/hpux-mame.nv" \
+				in_mame env FOCUS_SCMNV="$WORK/hpux-mame.nv" \
+				./focus hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
+				-nothrottle -video none -sound none -str 20
+			run mame-hpux-firstboot in_mame env -u FOCUS_SCMNV \
 				./focus hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
 				-nothrottle -video none -sound none -str 20
 		elif want mame-hpux; then
@@ -285,8 +308,8 @@ else
 	# The 540 reaches what the 520 never does: the serial console card,
 	# HP-IB, the ICEI command lists and the hardware semaphores.
 	if want knobs-hpux && [ -f "$ROOT/software/cct/7914_unitSave_hpux4.0.bin" ]; then
-		cp "$ROOT/software/cct/scm.nv" "$WORK/scm.nv" 2>/dev/null || :
-		run knobs-hpux in_mame env FOCUS_SCMNV="$WORK/scm.nv" \
+		run knobs-hpux with_nv "$WORK/hpux-knobs.nv" \
+			in_mame env FOCUS_SCMNV="$WORK/hpux-knobs.nv" \
 			FOCUS_HPIBLOG=1 FOCUS_ASIDBG=1 FOCUS_ASILOG=1 FOCUS_SEMLOG=1 \
 			FOCUS_SEMALL=1 FOCUS_ICEILOG=1 FOCUS_IOALL=1 FOCUS_ESCLOG=1 \
 			./focus hp9040 -mpb3 1m -mpb4 1m \

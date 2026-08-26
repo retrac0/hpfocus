@@ -359,8 +359,15 @@ conventionally with bit 0 least significant, the opposite of the Instruction
 Set ERS. Both conventions now live in the codebase, each documented where it
 applies.
 
-**Remaining:** the real-time clock and the 2 KB of battery-backed memory are
-stubbed, and the high-level loader itself is not written — the mechanism will
+The real-time clock and the 2 KB of battery-backed memory are **done, and
+shared** with the 520's keyboard board, which carries the same part at select
+code 6: [`src/iop/focusrtc.h`](../src/iop/focusrtc.h) holds the manuals'
+64-byte contents map once, a per-board `rtc_decode` naming the only two things
+the two boards differ in, one calendar with real month lengths and leap years,
+and a versioned battery file with an all-or-nothing load and an atomic save.
+See [HARDWARE.md](HARDWARE.md) §2.4.1–§2.4.3.
+
+**Remaining:** the high-level loader itself is not written — the mechanism will
 serve a ROM image the moment one is dumped, but with none available the
 loader's *effect* still has to be synthesised. That depends on the
 `SYSTEM POWERUP` handoff contract, which is the next thing to reverse

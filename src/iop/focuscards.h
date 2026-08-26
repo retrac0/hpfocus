@@ -142,6 +142,12 @@ struct console_card : public iop_interface
 	rtc_nvm nv{rtc_decode::keyboard()};
 	void rtc_second_tick() { nv.tick_second(); }
 	void fill_nvm(u8 v) { nv.fill_nvm(v); }
+	// The 520's battery. The SCM's has stood in for one since FOCUS_SCMNV;
+	// this board -- the one BASIC and the diagnostics actually drive -- had
+	// none, so what SET TIMEDATE wrote died with the run.
+	nv_load_result load_nv(const char *path) { return nv.load(path, 6); }
+	bool save_nv(const char *path) { return nv.save(path, 6); }
+	bool nv_dirty() const { return nv.dirty; }
 
 	// A machine reset. Only the RUN state goes: not the identity, the
 	// status bits or the printer the machine configured, and not the clock
@@ -197,7 +203,13 @@ struct console_card : public iop_interface
 		// keyboard-interrupt-pending bit from the manual.
 		// R1 is shared, "with the printer driving only the upper 4
 		// bits of R1" (520 Service 2-43).
+		// Bit 3 is the battery failure the 520 manual assigns to this
+		// register (2-32), the keyboard board's counterpart of the SCM's
+		// R2 bit 5. Nothing raises it by itself -- HP's own power-up self
+		// test reports escape 4, "Battery low condition detected", when it
+		// is set -- so it is FOCUS_RTCBATFAIL that puts it up.
 		case 1:  v = fr1_base | (fr0 ? 1 : 0)
+				| (nv.battery_fail_visible() ? (1u << 3) : 0)
 				| (printer ? printer->r1_bits() : 0); break;
 		case 3:  v = (was_reset && reset_clears_id) ? 0 : id; break;
 		// RTC data, complemented on the bus; reads auto-increment the
@@ -339,8 +351,6 @@ struct console_card : public iop_interface
 			}
 			return;
 		}
-		if (n == 9)
-			return;             // command parameter; acted on silently
 		if (n >= 14)
 		{
 			scratch[n & 15] = v & 0xffff;
@@ -376,10 +386,11 @@ struct console_card : public iop_interface
 			// complemented like the reads (the OS's clock-set sweep at
 			// trap seg ~0x480fc writes every location through here).
 			//
-			// UNREACHABLE: an early return above intercepts register 9
-			// before this switch, so the 520's clock cannot be set. Left
-			// standing here; removing that return changes what a booting
-			// guest sees and belongs in its own commit.
+			// This was dead code: an early return above this switch
+			// swallowed register 9 as an unmodelled "command parameter",
+			// so the 520's clock could not be set at all and BASIC's
+			// SET TIME / SET TIMEDATE -- the remedy the CE Handbook
+			// prescribes for "Clock and date not set" -- wrote nowhere.
 			nv.write_rtc(v);
 			return;
 		case 12:           // RTC location / complemented NVM address.

@@ -86,8 +86,11 @@ public:
 	// default configuration into the NVM, and only a later boot, finding
 	// them already valid, takes the configured paths. A file stands in
 	// for the battery.
-	bool load_nv(const char *path) { return m_nv.load(path); }
-	bool save_nv(const char *path) const { return m_nv.save(path); }
+	nv_load_result load_nv(const char *path)
+	{ return m_nv.load(path, SELECT_CODE); }
+	bool save_nv(const char *path) { return m_nv.save(path, SELECT_CODE); }
+	bool nv_dirty() const { return m_nv.dirty; }
+	rtc_nvm &nv() { return m_nv; }
 
 	// The counterpart of FOCUS_RAMFILL for non-volatile storage.
 	void fill_nvm(u8 v) { m_nv.fill_nvm(v); }

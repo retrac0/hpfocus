@@ -50,6 +50,8 @@
 #include "../cpu/focus/focusstate.h"
 
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 
 namespace focus {
 
@@ -108,6 +110,114 @@ inline constexpr unsigned RTC_LOCATIONS    = 16;  // what the chip really has
 } // namespace nvloc
 
 //**************************************************************************
+//  THE CALENDAR
+//**************************************************************************
+
+// A moment, kept apart from the storage so the arithmetic can be tested
+// without a board. The map splits the year across two locations -- century
+// at offset 5 and year at 9 -- so 1985 is century 19, year 85, which is
+// exactly what a battery file written by HP-UX holds (19 and 70).
+struct calendar
+{
+	int year   = 0;      // full, e.g. 1985; 0 with month 0 means "never set"
+	u8  month  = 0;      // 1-12
+	u8  day    = 0;      // 1-31
+	u8  hour   = 0, minute = 0, second = 0;
+	u8  weekday = 0;     // 0 = Sunday; derived, never trusted from storage
+
+	static bool leap(int y)
+	{ return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+	// The length of a month, and 31 for a month number that is not one --
+	// an unset clock reads month 0, and it still has to count.
+	static u8 month_length(int y, unsigned m)
+	{
+		static const u8 len[12] =
+				{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+		if (m < 1 || m > 12)
+			return 31;
+		return (m == 2 && leap(y)) ? 29 : len[m - 1];
+	}
+
+	bool valid() const
+	{
+		return month >= 1 && month <= 12
+				&& day >= 1 && day <= month_length(year, month)
+				&& hour < 24 && minute < 60 && second < 60;
+	}
+
+	// Sakamoto's method, proleptic Gregorian. 0 = Sunday.
+	u8 day_of_week() const
+	{
+		static const int t[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+		if (month < 1 || month > 12)
+			return 0;
+		const int y = year - (month < 3 ? 1 : 0);
+		return u8((((y + y / 4 - y / 100 + y / 400 + t[month - 1] + day) % 7)
+				+ 7) % 7);
+	}
+
+	// Broken-down UTC from a Unix timestamp, and back. std::gmtime would do
+	// it, but this header is used by harnesses that want no locale and no
+	// static buffer, and the arithmetic is four lines either way.
+	static calendar from_epoch(long long t)
+	{
+		calendar c;
+		long long days = t / 86400, rem = t % 86400;
+		if (rem < 0) { rem += 86400; days--; }
+		c.hour = u8(rem / 3600);
+		c.minute = u8((rem / 60) % 60);
+		c.second = u8(rem % 60);
+		c.year = 1970; c.month = 1; c.day = 1;
+		while (days < 0 || days >= (leap(c.year) ? 366 : 365))
+		{
+			const int len = leap(c.year) ? 366 : 365;
+			if (days < 0) { c.year--; days += leap(c.year) ? 366 : 365; }
+			else          { days -= len; c.year++; }
+		}
+		while (days >= month_length(c.year, c.month))
+		{
+			days -= month_length(c.year, c.month);
+			c.month++;
+		}
+		c.day = u8(days + 1);
+		c.weekday = c.day_of_week();
+		return c;
+	}
+
+	long long to_epoch() const
+	{
+		long long days = 0;
+		for (int y = 1970; y < year; y++) days += leap(y) ? 366 : 365;
+		for (int y = year; y < 1970; y++) days -= leap(y) ? 366 : 365;
+		for (unsigned m = 1; m < month; m++) days += month_length(year, m);
+		days += (day ? day : 1) - 1;
+		return days * 86400 + hour * 3600LL + minute * 60LL + second;
+	}
+
+	// One second on. The date fields roll by real month lengths and real
+	// leap years -- the two boards used to wrap the day at 31 or 32 and the
+	// month at 12 or 13, which put 31 February on the clock every year.
+	void advance(long long seconds)
+	{
+		long long s = second + 60LL * minute + 3600LL * hour + seconds;
+		long long days = s / 86400;
+		s %= 86400;
+		if (s < 0) { s += 86400; days--; }
+		hour = u8(s / 3600); minute = u8((s / 60) % 60); second = u8(s % 60);
+		if (day < 1) day = 1;
+		if (month < 1 || month > 12) month = 1;
+		while (days-- > 0)
+		{
+			if (day < month_length(year, month)) { day++; continue; }
+			day = 1;
+			if (++month > 12) { month = 1; year++; }
+		}
+		weekday = day_of_week();
+	}
+};
+
+//**************************************************************************
 //  ADDRESS DECODE
 //**************************************************************************
 
@@ -134,16 +244,6 @@ struct rtc_decode
 {
 	bool     rtc_addr_complement = true;
 	unsigned rtc_addr_mask       = 15;
-	bool     has_day_of_week     = false;
-
-	// The wrap constants the two boards' second ticks used before there was
-	// a calendar here. They differ -- the SCM wraps the day at 32 and the
-	// month at 13 with a floor of 1, because HP-UX's date validator rejects
-	// a zero of either, while the keyboard board wraps at 31 and 12 with a
-	// floor of 0 -- and they are kept only so this refactor changes nothing.
-	// A real calendar replaces them.
-	u8 day_wrap    = 32, day_floor   = 1;
-	u8 month_wrap  = 13, month_floor = 1;
 
 	static rtc_decode scm()
 	{
@@ -155,12 +255,109 @@ struct rtc_decode
 		rtc_decode d;
 		d.rtc_addr_complement = false;
 		d.rtc_addr_mask       = 63;
-		d.has_day_of_week     = true;
-		d.day_wrap = 31; d.day_floor = 0;
-		d.month_wrap = 12; d.month_floor = 0;
 		return d;
 	}
 };
+
+//**************************************************************************
+//  THE BATTERY FILE
+//**************************************************************************
+
+// The contents survive power off for ten days at least (30 nominal), and
+// that persistence is load-bearing: the first boot's clock-not-set path SETS
+// the clock and writes a default configuration into the NVM, and only a
+// later boot, finding them already valid, takes the configured paths. A file
+// stands in for the battery.
+//
+// The first version of this wrote the two arrays raw and read them back the
+// same way. That is fine until the file is short, at which point the first
+// fread has already overwritten the clock and the second fails -- a half
+// loaded battery, reported by a bool the caller ignored. So the file carries
+// a header now, the load is all-or-nothing, and the save goes through a
+// temporary and a rename so a run killed mid-write cannot leave a torn one.
+//
+//   off  size  contents
+//     0     8  magic "FOCUSNV\0"
+//     8     2  format version, little-endian
+//    10     1  the select code the file came from, 6 or 7
+//    11     1  flags: bit 0 = the battery was good when this was saved
+//    12     2  RTC cell count
+//    14     2  reserved
+//    16     4  NVM size
+//    20     8  save time, Unix epoch seconds -- the battery's reference for
+//              how long the machine was off
+//    28     4  CRC-32 of the payload
+//    32  2112  payload: the RTC cells, then the NVM
+//
+// A file of exactly 2112 bytes that does not start with the magic is one of
+// the old headerless ones and is read as the payload alone.
+
+enum class nv_error
+{
+	none, no_file, unreadable, bad_size, bad_version, bad_crc,
+};
+
+inline const char *nv_error_text(nv_error e)
+{
+	switch (e)
+	{
+	case nv_error::none:        return "no error";
+	case nv_error::no_file:     return "no such file";
+	case nv_error::unreadable:  return "cannot be read";
+	case nv_error::bad_size:    return "not the size of a battery file";
+	case nv_error::bad_version: return "written by a newer format";
+	case nv_error::bad_crc:     return "checksum mismatch, contents corrupt";
+	}
+	return "unknown";
+}
+
+struct nv_load_result
+{
+	bool      ok       = false;
+	nv_error  error    = nv_error::no_file;
+	bool      legacy   = false;   // headerless, from before the format
+	long long saved_at = 0;       // Unix epoch seconds; 0 when unknown
+	unsigned  board    = 0;       // the select code the file claims
+	long long off_seconds = 0;    // how long the battery had to hold
+	bool      battery_expired = false;
+};
+
+// CRC-32, the zip and PNG polynomial, table-less so this header keeps its
+// short dependency list.
+inline u32 nv_crc32(const u8 *p, unsigned n)
+{
+	u32 c = 0xffffffffu;
+	for (unsigned i = 0; i < n; i++)
+	{
+		c ^= p[i];
+		for (int k = 0; k < 8; k++)
+			c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
+	}
+	return ~c;
+}
+
+namespace nvfile {
+
+inline constexpr char     MAGIC[8]    = { 'F','O','C','U','S','N','V','\0' };
+inline constexpr unsigned HEADER      = 32;
+inline constexpr unsigned VERSION     = 1;
+inline constexpr unsigned RTC_CELLS   = 64;
+inline constexpr unsigned NVM_SIZE    = 2048;
+inline constexpr unsigned PAYLOAD     = RTC_CELLS + NVM_SIZE;   // 2112
+inline constexpr unsigned SIZE        = HEADER + PAYLOAD;       // 2144
+
+// Little-endian by hand, so a battery written on one host reads on another.
+inline void put_le(u8 *p, unsigned long long v, unsigned n)
+{ for (unsigned i = 0; i < n; i++) p[i] = u8(v >> (8 * i)); }
+
+inline unsigned long long get_le(const u8 *p, unsigned n)
+{
+	unsigned long long v = 0;
+	for (unsigned i = 0; i < n; i++) v |= (unsigned long long)(p[i]) << (8 * i);
+	return v;
+}
+
+} // namespace nvfile
 
 //**************************************************************************
 //  THE PART
@@ -181,6 +378,16 @@ struct rtc_nvm
 	u8  nvm[NVM_SIZE]  = {};
 	u32 latch = 0;
 	bool battery_fail = false;
+	// Whether the battery-fail bit self-clears. "This bit must be read
+	// within four seconds of powerup" (530/540 Service 2-30, 520 Service
+	// 2-34) -- so on real hardware it is a sample-and-hold that goes away.
+	// The emulator has always latched it for the whole run; FOCUS_RTCWINDOW
+	// turns the real behaviour on.
+	bool battery_window = false;
+	unsigned seconds_since_power_on = 0;
+	// Whether anything has been written since the last save, so a periodic
+	// write-back can skip a part nobody has touched.
+	bool dirty = false;
 
 	//----------------------------------------------------------------
 	//  the map
@@ -245,44 +452,112 @@ struct rtc_nvm
 	void write_rtc(u32 v)
 	{
 		rtc[rtc_index()] = u8(~v);
+		dirty = true;
 		step();
 	}
 
 	// R13, and R11 alongside it on the SCM. The address is complemented and
 	// the data is not, and neither board steps the latch for NVM.
 	u8   read_nvm() const { return nvm[nvm_index()]; }
-	void write_nvm(u32 v) { nvm[nvm_index()] = u8(v); }
+	void write_nvm(u32 v) { nvm[nvm_index()] = u8(v); dirty = true; }
 
 	//----------------------------------------------------------------
 	//  the clock
 	//----------------------------------------------------------------
 
+	// What the map says the clock reads. The century and year locations
+	// are separate, so a battery holding 19 and 70 reads as 1970.
+	calendar time() const
+	{
+		calendar c;
+		c.year    = int(at(nvloc::CENTURY)) * 100 + int(at(nvloc::YEAR));
+		c.month   = at(nvloc::MONTH);
+		c.day     = at(nvloc::DAY_OF_MONTH);
+		c.hour    = at(nvloc::HOUR);
+		c.minute  = at(nvloc::MINUTE);
+		c.second  = at(nvloc::SECOND);
+		c.weekday = at(nvloc::DAY_OF_WEEK);
+		return c;
+	}
+
+	void set_time(const calendar &c)
+	{
+		put(nvloc::CENTURY,      u8(c.year / 100));
+		put(nvloc::YEAR,         u8(c.year % 100));
+		put(nvloc::MONTH,        c.month);
+		put(nvloc::DAY_OF_MONTH, c.day);
+		put(nvloc::HOUR,         c.hour);
+		put(nvloc::MINUTE,       c.minute);
+		put(nvloc::SECOND,       c.second);
+		put(nvloc::DAY_OF_WEEK,  c.day_of_week());
+		dirty = true;
+	}
+
+	// The same moment into the NVM's copy of the low sixteen. The map is
+	// one field numbering answered by both parts, and a battery file a real
+	// HP-UX run wrote holds the century and the year HERE (offsets 5 and 9)
+	// while the clock part holds only the time of day -- so a seeded clock
+	// that writes the RTC alone leaves the OS reading its own date as zero.
+	void set_time_mirror(const calendar &c)
+	{
+		nvm[nvloc::CENTURY]      = u8(c.year / 100);
+		nvm[nvloc::YEAR]         = u8(c.year % 100);
+		nvm[nvloc::MONTH]        = c.month;
+		nvm[nvloc::DAY_OF_MONTH] = c.day;
+		nvm[nvloc::HOUR]         = c.hour;
+		nvm[nvloc::MINUTE]       = c.minute;
+		nvm[nvloc::SECOND]       = c.second;
+		nvm[nvloc::DAY_OF_WEEK]  = c.day_of_week();
+		dirty = true;
+	}
+
+	// All-zero is "midnight, clock never set", which both operating systems
+	// detect: HP-UX reports boot error 941 and BASIC "Clock and date not
+	// set", and each then sets the clock and writes a default configuration.
+	bool clock_set() const { return time().valid(); }
+
 	// One second of wall time. The boot synchronises its software clock to
-	// the next second boundary by polling the seconds location between 100 ms
-	// sleeps (trap seg 0x476ec..0x47798), so a frozen clock parks it there
-	// forever. Values count in binary: the boot's clock-sync completed with a
-	// binary-counting seconds field, and a BCD experiment stalled it.
+	// the next second boundary by polling the seconds location between
+	// 100 ms sleeps (trap seg 0x476ec..0x47798), so a frozen clock parks it
+	// there forever. Values count in binary: the boot's clock-sync completed
+	// with a binary-counting seconds field, and a BCD experiment stalled it.
+	//
+	// The seconds, minutes and hours are bumped in place, which is all a run
+	// short of a day ever touches. Only a day rollover pays for the date
+	// arithmetic -- and it is real arithmetic now: the two boards used to
+	// wrap the day at 31 or 32 and the month at 12 or 13, so February had 31
+	// days on one and the month could reach 0 on the other.
 	void tick_second()
 	{
-		auto bump = [this](unsigned off, u8 wrap, u8 floor) -> bool {
+		if (seconds_since_power_on < ~0u)
+			seconds_since_power_on++;
+		auto bump = [this](unsigned off, u8 wrap) -> bool {
 			const unsigned i = index_for(off);
 			rtc[i] = u8(rtc[i] + 1);
 			if (rtc[i] < wrap)
 				return false;
-			rtc[i] = floor;
+			rtc[i] = 0;
 			return true;
 		};
-		if (!bump(nvloc::SECOND, 60, 0)) return;
-		if (!bump(nvloc::MINUTE, 60, 0)) return;
-		if (!bump(nvloc::HOUR, 24, 0)) return;
-		if (d.has_day_of_week)
+		dirty = true;
+		if (!bump(nvloc::SECOND, 60)) return;
+		if (!bump(nvloc::MINUTE, 60)) return;
+		if (!bump(nvloc::HOUR, 24)) return;
+		calendar c = time();
+		c.hour = c.minute = c.second = 0;   // already carried, above
+		c.advance(0);                       // normalise, then roll one day
+		if (c.day < calendar::month_length(c.year, c.month))
+			c.day++;
+		else
 		{
-			const unsigned i = index_for(nvloc::DAY_OF_WEEK);
-			rtc[i] = u8((rtc[i] + 1) % 7);
+			c.day = 1;
+			if (++c.month > 12) { c.month = 1; c.year++; }
 		}
-		if (!bump(nvloc::DAY_OF_MONTH, d.day_wrap, d.day_floor)) return;
-		if (!bump(nvloc::MONTH, d.month_wrap, d.month_floor)) return;
-		bump(nvloc::YEAR, 100, 0);
+		put(nvloc::MONTH,        c.month);
+		put(nvloc::DAY_OF_MONTH, c.day);
+		put(nvloc::CENTURY,      u8(c.year / 100));
+		put(nvloc::YEAR,         u8(c.year % 100));
+		put(nvloc::DAY_OF_WEEK,  c.day_of_week());
 	}
 
 	//----------------------------------------------------------------
@@ -295,42 +570,143 @@ struct rtc_nvm
 	{
 		latch = 0;
 		battery_fail = false;
+		seconds_since_power_on = 0;
 	}
 
 	void fill_rtc(u8 v) { for (u8 &b : rtc) b = v; }
 	void fill_nvm(u8 v) { for (u8 &b : nvm) b = v; }
 
-	bool battery_fail_visible() const { return battery_fail; }
+	// The bit as the OS can actually see it: latched for the run, or, with
+	// the manuals' rule turned on, only for the first four seconds.
+	bool battery_fail_visible() const
+	{
+		return battery_fail
+				&& (!battery_window || seconds_since_power_on < 4);
+	}
 
 	//----------------------------------------------------------------
 	//  the battery
 	//----------------------------------------------------------------
 
-	// The contents survive power off for ten days at least, and that
-	// persistence is load-bearing: the first boot's clock-not-set path SETS
-	// the clock and writes a default configuration into the NVM, and only a
-	// later boot, finding them already valid, takes the configured paths. A
-	// file stands in for the battery.
-	bool load(const char *path)
+	// All-or-nothing: the file is read whole and checked whole before a
+	// single byte of the live part is touched, so a short or corrupt
+	// battery leaves the machine on the clock it already had rather than on
+	// half of somebody else's.
+	nv_load_result load(const char *path, unsigned select_code)
 	{
+		nv_load_result r;
 		FILE *f = std::fopen(path, "rb");
 		if (!f)
-			return false;
-		const bool ok = std::fread(rtc, 1, sizeof rtc, f) == sizeof rtc
-				&& std::fread(nvm, 1, sizeof nvm, f) == sizeof nvm;
+		{
+			r.error = nv_error::no_file;
+			return r;
+		}
+		u8 buf[nvfile::SIZE];
+		const unsigned n = unsigned(std::fread(buf, 1, sizeof buf, f));
+		const bool more = std::fgetc(f) != EOF;
 		std::fclose(f);
-		return ok;
+
+		const u8 *payload = nullptr;
+		if (n == nvfile::PAYLOAD && !more
+				&& std::memcmp(buf, nvfile::MAGIC, sizeof nvfile::MAGIC) != 0)
+		{
+			// One of the old headerless files.
+			r.legacy = true;
+			r.board = select_code;
+			payload = buf;
+		}
+		else if (n == nvfile::SIZE && !more
+				&& std::memcmp(buf, nvfile::MAGIC, sizeof nvfile::MAGIC) == 0)
+		{
+			const unsigned ver = unsigned(nvfile::get_le(buf + 8, 2));
+			if (ver > nvfile::VERSION)
+			{
+				r.error = nv_error::bad_version;
+				return r;
+			}
+			r.board = buf[10];
+			r.saved_at = (long long)nvfile::get_le(buf + 20, 8);
+			const u32 want = u32(nvfile::get_le(buf + 28, 4));
+			if (nv_crc32(buf + nvfile::HEADER, nvfile::PAYLOAD) != want)
+			{
+				r.error = nv_error::bad_crc;
+				return r;
+			}
+			payload = buf + nvfile::HEADER;
+		}
+		else
+		{
+			r.error = n ? nv_error::bad_size : nv_error::unreadable;
+			return r;
+		}
+
+		std::memcpy(rtc, payload, sizeof rtc);
+		std::memcpy(nvm, payload + sizeof rtc, sizeof nvm);
+		dirty = false;
+		r.ok = true;
+		r.error = nv_error::none;
+		return r;
 	}
 
-	bool save(const char *path) const
+	// Through a temporary and a rename, so a run that is killed while this
+	// is running cannot leave a torn battery behind.
+	bool save(const char *path, unsigned select_code)
 	{
-		FILE *f = std::fopen(path, "wb");
+		u8 buf[nvfile::SIZE] = {};
+		std::memcpy(buf, nvfile::MAGIC, sizeof nvfile::MAGIC);
+		nvfile::put_le(buf + 8, nvfile::VERSION, 2);
+		buf[10] = u8(select_code);
+		buf[11] = battery_fail ? 0 : 1;
+		nvfile::put_le(buf + 12, sizeof rtc, 2);
+		nvfile::put_le(buf + 16, sizeof nvm, 4);
+		nvfile::put_le(buf + 20, (unsigned long long)std::time(nullptr), 8);
+		std::memcpy(buf + nvfile::HEADER, rtc, sizeof rtc);
+		std::memcpy(buf + nvfile::HEADER + sizeof rtc, nvm, sizeof nvm);
+		nvfile::put_le(buf + 28,
+				nv_crc32(buf + nvfile::HEADER, nvfile::PAYLOAD), 4);
+
+		char tmp[1024];
+		std::snprintf(tmp, sizeof tmp, "%s.new", path);
+		FILE *f = std::fopen(tmp, "wb");
 		if (!f)
 			return false;
-		const bool ok = std::fwrite(rtc, 1, sizeof rtc, f) == sizeof rtc
-				&& std::fwrite(nvm, 1, sizeof nvm, f) == sizeof nvm;
-		std::fclose(f);
-		return ok;
+		const bool ok = std::fwrite(buf, 1, sizeof buf, f) == sizeof buf;
+		const bool closed = std::fclose(f) == 0;
+		if (!ok || !closed || std::rename(tmp, path) != 0)
+		{
+			std::remove(tmp);
+			return false;
+		}
+		dirty = false;
+		return true;
+	}
+
+	// How long the battery was asked to hold, and whether it could. The
+	// manuals promise 30 days nominal and 10 days worst case; past the
+	// limit the contents "may be invalid and should be restored by the
+	// operating system", which is what the battery-fail bit says.
+	static constexpr long long BATTERY_DAYS = 10;
+
+	void run_battery(nv_load_result &r, long long limit_days)
+	{
+		if (!r.ok || r.saved_at <= 0)
+			return;
+		const long long now = (long long)std::time(nullptr);
+		r.off_seconds = now - r.saved_at;
+		if (r.off_seconds <= 0)
+			return;
+		if (limit_days > 0 && r.off_seconds > limit_days * 86400)
+		{
+			r.battery_expired = true;
+			battery_fail = true;
+			return;
+		}
+		calendar c = time();
+		if (!c.valid())
+			return;              // a clock that was never set stays unset
+		c.advance(r.off_seconds);
+		set_time(c);
+		dirty = true;
 	}
 };
 
