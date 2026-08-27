@@ -111,18 +111,15 @@ struct disc_card : public iop_interface
 			// scan gives up on a slot that answers anything else. The
 			// test then writes a pattern to FR0 and reads it straight
 			// back here, and only afterwards is this the status.
-			if (m_echo_pending)
+			if (!m_echo.take(v))
 			{
-				v = m_last_fr0;
-				m_echo_pending = false;
-				m_present = true;
+				if (!m_echo.present())
+					v = 0;
+				else if (m_busy_left)
+					v = 0x80;
+				else
+					v = 0xc0 | (m_events.empty() ? 0 : 1);
 			}
-			else if (!m_present)
-				v = 0;
-			else if (m_busy_left)
-				v = 0x80;
-			else
-				v = 0xc0 | (m_events.empty() ? 0 : 1);
 			break;
 		case 0:
 		case 6:
@@ -159,11 +156,7 @@ struct disc_card : public iop_interface
 			// waits on that between the write and the read-back. The
 			// powerup presence test's FR1 echo is armed only until the
 			// slot has answered it once.
-			if (!m_present)
-			{
-				m_last_fr0 = v & 0xffff;
-				m_echo_pending = true;
-			}
+			m_echo.note_write(v);
 			m_fr0 = v & 0xffff;
 			m_announce = true;
 			break;
@@ -688,10 +681,8 @@ public:
 	std::vector<u8> m_image;    // the flexible medium, one byte per byte
 	std::vector<u8> m_fixed;    // the fixed disc, when one is fitted
 private:
-	u32 m_last_fr0 = 0;
 	u32 m_config = 0;
-	bool m_echo_pending = false;
-	bool m_present = false;
+	presence_echo m_echo;
 	bool m_configured = false;
 	std::deque<u8> m_events;
 	std::deque<u8> m_out;       // bytes the next DMA read leg supplies

@@ -384,18 +384,16 @@ struct hpib_card : public iop_interface
 			v = m_out.empty() ? 0 : m_out.front();
 			break;
 		case 1:
-			if (m_echo_pending)
+			// The powerup presence echo, then the status this becomes.
+			if (!m_echo.take(v))
 			{
-				v = m_last_fr0;
-				m_echo_pending = false;
-				m_present = true;
+				if (!m_echo.present())
+					v = 0;
+				else
+					// The house status register: bit 7 configured, bit 6
+					// self test complete, bit 0 an event waiting.
+					v = 0xc0 | (m_events.empty() ? 0 : 0x01);
 			}
-			else if (!m_present)
-				v = 0;
-			else
-				// The house status register: bit 7 configured, bit 6
-				// self test complete, bit 0 an event waiting.
-				v = 0xc0 | (m_events.empty() ? 0 : 0x01);
 			break;
 		case 3:
 			// The registration gate wants zero here.
@@ -435,11 +433,7 @@ struct hpib_card : public iop_interface
 		switch (n)
 		{
 		case 0:
-			if (!m_present)
-			{
-				m_last_fr0 = v;
-				m_echo_pending = true;
-			}
+			m_echo.note_write(v);   // the powerup presence echo
 			break;
 		case 1:
 			if (v == 2 && !m_events.empty())
@@ -634,9 +628,7 @@ private:
 	unsigned m_event_timer = 0;
 	bool m_want_in = false;
 	bool m_ard = false;
-	bool m_present = false;
-	bool m_echo_pending = false;
-	u32 m_last_fr0 = 0;
+	presence_echo m_echo;
 };
 
 } // namespace focus

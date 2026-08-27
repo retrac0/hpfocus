@@ -383,32 +383,31 @@ struct asi_card : public iop_interface
 			// The presence test writes a pattern to FR0 and reads it
 			// straight back here before this is a status register at
 			// all, exactly as on the disc controller.
-			if (m_echo_pending)
+			if (!m_echo.take(v))
 			{
-				v = m_last_fr0;
-				m_echo_pending = false;
-				m_present = true;
+				if (fr1_force)
+					// FOCUS_ASIFR1: a constant answer, for finding which
+					// bit a driver is really waiting on. It is tested
+					// before the presence gate below, because a forced
+					// constant the gate can still override is not a
+					// constant.
+					v = fr1_force & 0xffff;
+				else if (!m_echo.present())
+					v = 0;
+				else
+					// The house status register of this machine's CIO
+					// cards, established by sweeping constants past the
+					// HP-UX 5.30 driver: it polls here and only proceeds
+					// when bit 7 AND bit 6 are set, which is the internal
+					// disc controller's register exactly (bit 7 configured
+					// / self test passed, bit 6 self test complete, bit 0
+					// an event waiting). With 0x80 alone the driver polls
+					// forever; with 0xc0 it goes on to write FR8 and FR9
+					// -- and the FR9 value it writes, 0x20 = (2 << 4) | pa,
+					// is the same configuration word LCS80 sends the disc.
+					// One protocol, two cards.
+					v = 0xc0 | (m_events.empty() ? 0 : 0x01);
 			}
-			else if (fr1_force)
-				// FOCUS_ASIFR1: a constant answer, for finding which bit a
-				// driver is really waiting on. It is tested before the
-				// presence gate below, because a forced constant that
-				// the gate can still override is not a constant.
-				v = fr1_force & 0xffff;
-			else if (!m_present)
-				v = 0;
-			else
-				// The house status register of this machine's CIO cards,
-				// established by sweeping constants past the HP-UX 5.30
-				// driver: it polls here and only proceeds when bit 7 AND
-				// bit 6 are set, which is the internal disc controller's
-				// register exactly (bit 7 configured / self test passed,
-				// bit 6 self test complete, bit 0 an event waiting). With
-				// 0x80 alone the driver polls forever; with 0xc0 it goes
-				// on to write FR8 and FR9 -- and the FR9 value it writes,
-				// 0x20 = (2 << 4) | pa, is the same configuration word
-				// LCS80 sends the disc. One protocol, two cards.
-				v = 0xc0 | (m_events.empty() ? 0 : 0x01);
 			break;
 		case 3:
 			v = card_id;
@@ -468,11 +467,7 @@ struct asi_card : public iop_interface
 		switch (n)
 		{
 		case 0:
-			if (!m_present)      // the powerup presence echo
-			{
-				m_last_fr0 = v;
-				m_echo_pending = true;
-			}
+			m_echo.note_write(v);   // the powerup presence echo
 			take_data(u8(v));
 			break;
 		case 1:
@@ -1272,9 +1267,7 @@ private:
 	u16 m_length = 0;
 
 	// The powerup presence test's echo, as on every other card here.
-	bool m_present = false;
-	bool m_echo_pending = false;
-	u32 m_last_fr0 = 0;
+	presence_echo m_echo;
 };
 
 } // namespace focus

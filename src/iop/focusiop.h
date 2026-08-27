@@ -183,6 +183,55 @@ public:
 };
 
 //**************************************************************************
+//  PRESENCE ECHO
+//**************************************************************************
+
+// The powerup presence test, which every card in the backplane answers
+// the same way. Before a slot has proven itself FR1 reads zero -- the
+// scan gives up on one that answers anything else. The scan then writes
+// a pattern to the card's data latch and reads it straight back from
+// FR1, and only after that echo is FR1 a status register at all.
+//
+// Three cards carried their own copy of the handshake, down to the same
+// three members; the comment on the ASI's copy read "exactly as on the
+// disc controller". This is that one copy. A card keeps it as a plain
+// member and asks it first in FR1, so what the register means for the
+// rest of its life is the card's own business.
+class presence_echo
+{
+public:
+	// The write side: arm the echo, but only until the slot has
+	// answered one. A card that has proven itself latches nothing.
+	void note_write(u32 v)
+	{
+		if (!m_present)
+		{
+			m_last = v & 0xffff;
+			m_pending = true;
+		}
+	}
+
+	// The read side: true when this FR1 read is the echo, which leaves
+	// the value to answer in `v` and the card present from here on.
+	bool take(u32 &v)
+	{
+		if (!m_pending)
+			return false;
+		v = m_last;
+		m_pending = false;
+		m_present = true;
+		return true;
+	}
+
+	bool present() const { return m_present; }
+
+private:
+	bool m_present = false;
+	bool m_pending = false;
+	u32 m_last = 0;
+};
+
+//**************************************************************************
 //  IOP
 //**************************************************************************
 
