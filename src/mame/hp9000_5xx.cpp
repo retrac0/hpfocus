@@ -57,6 +57,59 @@
 // See src/cpu/focus/focusknobs.h.
 namespace knob = focus::knob;
 
+// Which of the four ways of saying something this file uses, and when:
+//
+//   knob::channel, knob::device_log  a diagnostic behind a knob, with a
+//                                    budget. Everything gated belongs here.
+//   osd_printf_error / _info         user-facing reporting -- a bad knob
+//                                    value, a file that will not open, what
+//                                    was fitted where. MAME's own voice.
+//   std::printf                      the debug probes' raw stdout. golden.sh
+//                                    byte-compares this, so the text of an
+//                                    existing report is frozen: changing one
+//                                    is a deliberate act with a re-capture,
+//                                    never a tidy-up.
+//   logerror                         MAME's -log stream, for the machine's
+//                                    own faults rather than the emulator's.
+
+// Every device log is armed the same way: it wears the card's short tag
+// and turns on with that card's own knob. The knob names stay written
+// out at each call, which is what tools/check_knobs.py reads them from.
+static void arm_log(knob::device_log &log, const char *tag, const char *knobname)
+{
+	log.name(tag);
+	log.enable(bool(knob::flag(knobname)));
+}
+
+// The same, for a card that sits in a numbered slot.
+static void arm_log(knob::device_log &log, const char *tag, unsigned unit,
+		const char *knobname)
+{
+	log.name(tag, unit);
+	log.enable(bool(knob::flag(knobname)));
+}
+
+// Reading a whole file into memory, which two knobs do. False if the
+// file would not open. `short_read` reports one that opened but gave up
+// fewer bytes than its size promised: the callers word that differently
+// and answer it differently too -- FOCUS_FLOPPY drops the medium, while
+// FOCUS_HPIBDISC keeps however much arrived -- so it comes back as a
+// flag rather than a failure.
+static bool read_file(const char *path, std::vector<u8> &out, bool &short_read)
+{
+	short_read = false;
+	FILE *const f = fopen(path, "rb");
+	if (!f)
+		return false;
+	fseek(f, 0, SEEK_END);
+	const long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	out.assign(size_t(n), 0);
+	short_read = fread(out.data(), 1, size_t(n), f) != size_t(n);
+	fclose(f);
+	return true;
+}
+
 //**************************************************************************
 //  MEDIA
 //**************************************************************************
@@ -638,6 +691,18 @@ private:
 	bool m_runaway = false, m_ran_away = false;
 	std::array<std::pair<u32, u32>, 48> m_trail{};
 	size_t m_trail_at = 0;
+	// Which routine touched the card: segment and offset, for the device
+	// logs. For an interface no manual describes this is most of the
+	// answer -- the FR number says what register, the caller says what
+	// the register is FOR. Four cards ask for it, all the same way.
+	std::string where_now() const
+	{
+		const focus::cpu_core &c = m_cpu->core();
+		char buf[48];
+		std::snprintf(buf, sizeof buf, "  seg%u+%04x",
+				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
+		return std::string(buf);
+	}
 	void trip_watch(u8 c);
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
 	std::FILE *m_print_text = nullptr;
@@ -936,20 +1001,10 @@ void hp9000_5xx_state::attach_probes()
 		m_probes[sc].id = (colon && (!comma || colon < comma))
 				? strtoul(colon + 1, nullptr, 0) : 0;
 		m_probes[sc].pa = sc;
-		m_probes[sc].log.name("probe", sc);
-		m_probes[sc].log.enable(bool(knob::flag("FOCUS_PROBELOG")));
+		arm_log(m_probes[sc].log, "probe", sc, "FOCUS_PROBELOG");
 		m_probes[sc].fr0_answer = knob::number("FOCUS_PROBEFR0", m_probes[sc].fr0_answer);
 		m_probes[sc].fr1_mode = knob::number("FOCUS_PROBEFR1", m_probes[sc].fr1_mode);
-		// Which routine touched the slot. For an interface no manual
-		// describes this is most of the answer: the FR number says what
-		// register, the caller says what the register is FOR.
-		m_probes[sc].where = [this]() {
-			const focus::cpu_core &c = m_cpu->core();
-			char buf[48];
-			std::snprintf(buf, sizeof buf, "  seg%u+%04x",
-					c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
-			return std::string(buf);
-		};
+		m_probes[sc].where = [this]() { return where_now(); };
 		m_iop.attach(sc, &m_probes[sc]);
 		if (!comma)
 			break;
@@ -1021,8 +1076,7 @@ void hp9000_5xx_state::machine_start()
 	// keyboard board: loaded here, written back at exit and periodically.
 	// Without one every boot is a first boot, and HP-UX treats an unset
 	// clock as reason to abandon its device bring-up.
-	m_nv_log.name("nv");
-	m_nv_log.enable(bool(knob::flag("FOCUS_NVLOG")));
+	arm_log(m_nv_log, "nv", "FOCUS_NVLOG");
 	m_nv_save_period = knob::number("FOCUS_NVSAVE", 30);
 	// The manuals' four-second window on the battery-fail bit, off by
 	// default because the emulator has always latched it for the run.
@@ -1080,15 +1134,8 @@ void hp9000_5xx_state::machine_start()
 	// the powerup scan requires to be zero.
 	m_gfx.fr1 = knob::number("FOCUS_SC1FR1", m_gfx.fr1);
 	m_gfx.id = knob::number("FOCUS_SC1ID", m_gfx.id);
-	m_gfx.log.name("gfx");
-	m_gfx.log.enable(bool(knob::flag("FOCUS_SC1LOG")));
-	m_gfx.where = [this]() {
-		const focus::cpu_core &c = m_cpu->core();
-		char buf[48];
-		std::snprintf(buf, sizeof buf, "  seg%u+%04x",
-				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
-		return std::string(buf);
-	};
+	arm_log(m_gfx.log, "gfx", "FOCUS_SC1LOG");
+	m_gfx.where = [this]() { return where_now(); };
 	// The memory behind the commands, and the raster its words mean.
 	// Both numbers came off the self test's own transfer lengths rather
 	// than a manual, so both stay sweepable: 3 planes of 36-word lines
@@ -1135,15 +1182,8 @@ void hp9000_5xx_state::machine_start()
 	{
 		m_printer.status = u8(knob::number("FOCUS_PRINTSTATUS", 0));
 		m_printer.present = knob::number("FOCUS_PRINTPRESENT", 1) != 0;
-		m_printer.log.name("prn");
-		m_printer.log.enable(bool(knob::flag("FOCUS_PRINTLOG")));
-		m_printer.where = [this]() {
-			const focus::cpu_core &c = m_cpu->core();
-			char buf[48];
-			std::snprintf(buf, sizeof buf, "  seg%u+%04x",
-					c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
-			return std::string(buf);
-		};
+		arm_log(m_printer.log, "prn", "FOCUS_PRINTLOG");
+		m_printer.where = [this]() { return where_now(); };
 		m_printer.on_byte = [this](u8 b) {
 			if (m_prn)
 				m_prn->output(b);
@@ -1167,13 +1207,7 @@ void hp9000_5xx_state::machine_start()
 		};
 		m_console6.printer = &m_printer;
 	}
-	m_console6.where = [this]() {
-		const focus::cpu_core &c = m_cpu->core();
-		char buf[48];
-		std::snprintf(buf, sizeof buf, "  seg%u+%04x",
-				c.r.get(focus::sf::CSN), c.r.p - c.r.pb);
-		return std::string(buf);
-	};
+	m_console6.where = [this]() { return where_now(); };
 	m_iop.attach(6, &m_console6);
 	// SC6 keyboard interrupts are enabled by the hardware itself; the
 	// internal disc's select code is armed the same way when present.
@@ -1187,8 +1221,7 @@ void hp9000_5xx_state::machine_start()
 	if (!m_console_is_asi)
 	{
 		m_disc.iop = &m_iop;
-		m_disc.log.name("disc");
-		m_disc.log.enable(bool(knob::flag("FOCUS_DISCLOG")));
+		arm_log(m_disc.log, "disc", "FOCUS_DISCLOG");
 		// FOCUS_DISCID: the halfword the identify transaction answers;
 		// 1..6 map to internal device types, anything else types the
 		// slot 29 (the kernel's default).
@@ -1210,22 +1243,16 @@ void hp9000_5xx_state::machine_start()
 				list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
 				if (path.empty())
 					continue;
-				if (FILE *f = fopen(path.c_str(), "rb"))
-				{
-					fseek(f, 0, SEEK_END);
-					const long n = ftell(f);
-					fseek(f, 0, SEEK_SET);
-					std::vector<u8> medium(size_t(n), 0);
-					if (fread(medium.data(), 1, size_t(n), f) == size_t(n))
-						m_media.push_back(std::move(medium));
-					else
-						osd_printf_error("FOCUS_FLOPPY: short read on %s\n",
-								path.c_str());
-					fclose(f);
-				}
-				else
+				std::vector<u8> medium;
+				bool short_read = false;
+				if (!read_file(path.c_str(), medium, short_read))
 					osd_printf_error("FOCUS_FLOPPY: cannot open %s\n",
 							path.c_str());
+				else if (short_read)
+					osd_printf_error("FOCUS_FLOPPY: short read on %s\n",
+							path.c_str());
+				else
+					m_media.push_back(std::move(medium));
 			}
 		if (!m_media.empty())
 			m_disc.mount(m_media.front());
@@ -1260,8 +1287,7 @@ void hp9000_5xx_state::machine_start()
 		{
 			asi->card.iop = &m_iop;
 			asi->card.pa = sc;
-			asi->card.log.name("asi", sc);
-			asi->card.log.enable(bool(knob::flag("FOCUS_ASILOG")));
+			arm_log(asi->card.log, "asi", sc, "FOCUS_ASILOG");
 			// FOCUS_ASILOGMAX raises the line cap: a driver polling
 			// status outruns 2000 lines long before the interesting
 			// part of a dialogue.
@@ -1337,8 +1363,7 @@ void hp9000_5xx_state::machine_start()
 		{
 			hpib->card.iop = &m_iop;
 			hpib->card.pa = sc;
-			hpib->card.log.name("hpib", sc);
-			hpib->card.log.enable(bool(knob::flag("FOCUS_HPIBLOG")));
+			arm_log(hpib->card.log, "hpib", sc, "FOCUS_HPIBLOG");
 			hpib->card.identity =
 					u16(knob::number("FOCUS_HPIBIDENT", hpib->card.identity));
 			hpib->card.device_address =
@@ -1350,20 +1375,11 @@ void hp9000_5xx_state::machine_start()
 				hpib->card.disc.image = hpib->media().data();
 			if (const char *v = knob::text("FOCUS_HPIBDISC").get())
 			{
-				if (FILE *f = fopen(v, "rb"))
-				{
-					fseek(f, 0, SEEK_END);
-					const long n = ftell(f);
-					fseek(f, 0, SEEK_SET);
-					hpib->card.disc.image.assign(size_t(n), 0);
-					if (fread(hpib->card.disc.image.data(), 1, size_t(n), f)
-							!= size_t(n))
-						osd_printf_error(
-								"FOCUS_HPIBDISC: short read on %s\n", v);
-					fclose(f);
-				}
-				else
+				bool short_read = false;
+				if (!read_file(v, hpib->card.disc.image, short_read))
 					osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
+				else if (short_read)
+					osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
 			}
 			if (hpib->card.disc.loaded())
 				osd_printf_info("cio%u: CS/80 drive at HP-IB address %u, "
