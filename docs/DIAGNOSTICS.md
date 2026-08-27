@@ -282,11 +282,53 @@ one of them is **unprotected**. Nothing has to be patched to reach them:
 
 `QIX` loads, runs, prints its partition table and takes all three of its
 answers; `SPIRAL_CONTROL` loads and runs. Both then stop on something that
-is neither the file system nor the display: `SPIRAL_CONTROL` reports
-`ERROR 504 IN 110: Partition(s) must be in the STOP state`, and `QIX`
-reaches its own draw loop without issuing a graphics command. The frontier
-here is now **partitions**, and a default `PLOTTER IS` — a program that
-does not assign one draws nothing, which a real 520 would not do.
+is neither the file system nor the display.
+
+**The prompts want the CONTINUE key, and it is keycode `0x1d`.** `CONT` as
+a command answers `CONT NOT ALLOWED WHILE WAITING FOR INPUT`, so these are
+`INPUT` statements whose "(CONT = 100)" means the key. It has no ASCII of
+its own; `FOCUS_TYPE`'s `\x1d` presses it. Found by bisecting the keycodes
+`0x00`–`0x7f` against "does the next question appear", which is what the
+`\xNN` escape is for.
+
+**`SPIRAL_CONTROL`** reports `ERROR 504 IN 110: Partition(s) must be in the
+STOP state` — it wants to `GET "SP1",1,1` into partitions, so partitions
+are its frontier and nothing to do with graphics.
+
+**`QIX` halts with `TRAP:00000021`, an STT Violation**, and the rule behind
+it is clean. A stored program's file carries a transfer table, and the
+count is normally one per subprogram plus one — but some files ship with
+**zero** entries, and those trap the moment they call a subprogram:
+
+| file | subprograms | table | what happens |
+|---|---:|---:|---|
+| `TEST` | 19 | 20 | runs; the Test Supervisor is this program |
+| `func_3d` | 1 | 2 | runs, reaches its own `ERROR 56` |
+| `SPIRAL_CONTROL` | 1 | **0** | runs, reaches its own `ERROR 504` |
+| `QIX` | 2 | **0** | **trap 021** when `MAIN` calls `Picknewpt` |
+| `MAIN_MENU` | 15 | **0** | runs and produces nothing |
+
+A zero-entry table is only fatal when the program actually makes a
+cross-subprogram call, which is why `SPIRAL_CONTROL` gets past it and `QIX`
+does not. Localised: the trap fires at **`BASIC` (segment 6) `+0x1702`**,
+which is `PCLS STT[0]` — an indirect call through a routine pointer that
+BASIC has just loaded from a linked list with `LDS Q+4,I,X`, X = 8. The
+pointer is zero, so the transfer lands at the segment's own base and the
+hardware calls it what it is. HP shipped these programs, so BASIC must
+build that list at `LOAD` time for a file that carries no table, and it is
+that path — not the graphics, not the file system — that is wrong here.
+
+A locally typed program with a subprogram (`10 CALL Foo / 30 SUB Foo /
+40 DISP 7`) runs and prints ` 7`, so `CALL` itself is sound; this is
+specific to a program loaded from disc.
+
+> **A correction.** An earlier note here said a program that does not
+> issue `PLOTTER IS` draws nothing, and guessed at a missing default
+> plotter. That was measured before the keyboard was fixed, when typed
+> lines were being mangled. It is wrong: `GINIT` then `FRAME`, with no
+> `PLOTTER IS` at all, draws the same seven vectors as `PLOTTER IS
+> 1,"INTERNAL"` then `FRAME`. The default plotter works. `QIX` draws
+> nothing because it never reaches its draw loop.
 
 **Getting there needed two things in the emulator**, both fixed:
 

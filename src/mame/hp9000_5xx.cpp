@@ -2843,6 +2843,13 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// `/DEMO/DIR/others/QIX` could not be typed at all until this was
 	// right.
 	//
+	// Keys with no character of their own are not in the table at all and
+	// are reached with FOCUS_TYPE's \xNN. The ones identified so far:
+	// 0x48 EXECUTE (what `\n` sends), 0x60 STORE (`\r`), 0x70 clears the
+	// input line, 0x7f is the space bar, and **0x1d is CONTINUE** -- the
+	// key an INPUT that offers a default is asking for, found by
+	// bisecting 0x00-0x7f against a demo program's next question.
+	//
 	static const knob::flag rawkeys("FOCUS_RAWKEYS");
 	u8 code = rawkeys ? data : KEYCODES[data & 0x7f];
 	if (!rawkeys && data >= 'a' && data <= 'z')
