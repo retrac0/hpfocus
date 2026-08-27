@@ -683,6 +683,12 @@ private:
 	unsigned m_traps_seen = 0, m_escapes = 0;
 	u32 m_ea_at = 0;
 	unsigned m_ea_want = 6;
+	// What FOCUS_EATRACE's count is refilled to before every
+	// instruction, which is why the trace does not stop after n
+	// addresses. See where it is used: the refill is a bug this pass
+	// preserved rather than fixed, because fixing it changes what the
+	// knob prints.
+	unsigned m_ea_refill = 0;
 	bool m_ea_armed = false;
 	u32 m_watch_lo = 0, m_watch_hi = 0;
 	double m_watch_from = 0.0;
@@ -1443,6 +1449,132 @@ void hp9000_5xx_state::machine_start()
 	// that has jumped to nowhere cannot say where it came from, and the
 	// stack marker is usually gone too, so the trail has to be kept.
 	m_runaway = knob::flag("FOCUS_RUNAWAY").on();
+
+	// The hooks the core calls when something happens, rather than on
+	// every instruction: a fault taken, an address computed, a semaphore
+	// blocked, an escape raised. Each is installed once, here, from the
+	// knob that asks for it.
+	//
+	// They used to sit inside the pre-step lambda below, one tab short of
+	// the code around them, which is how they got there: an edit landed
+	// them a level out and the compiler had no reason to object. The
+	// machine could not tell -- they build the same closures from the
+	// same environment however often they run, and nothing executes
+	// between here and the first instruction -- but the processor paid
+	// for five std::function allocations and a re-read of the
+	// environment before every instruction it ever executed.
+	// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
+	// processor is in, which names the code that faulted. A number sets
+	// how many reports to print (default 6); FOCUS_TRAPFROM=<seconds>
+	// skips the boot's own faults, which otherwise eat the whole budget
+	// before the interesting one arrives.
+	if (const char *e = knob::text("FOCUS_TRAPLOG").get())
+	{
+		// "1" is the historical on-switch, not a budget of one.
+		const unsigned long n = strtoul(e, nullptr, 0);
+		const unsigned cap = n > 1 ? unsigned(n) : 6;
+		const double from = knob::seconds("FOCUS_TRAPFROM", 0.0);
+		m_cpu->core().on_trap =
+				[this, cap, from](focus::trap_cause cause, u32 parameter) {
+			if (machine().time().as_double() < from)
+				return;
+			if (m_traps_seen++ < cap)
+			{
+				std::printf("\n[trap %u parameter=%08x t=%.3f]\n",
+						unsigned(cause), parameter,
+						machine().time().as_double());
+				report_state("trap");
+			}
+		};
+	}
+
+	// FOCUS_EATRACE=<addr>[:<n>] prints the next n data addresses the
+	// processor computes once it reaches that instruction, with what it
+	// found there.
+	//
+	// Except that it does not stop after n. This installer used to run
+	// inside the pre-step hook, so the count below was written afresh
+	// before every instruction and the trace ran until the machine did.
+	// Installing once would have ended it after n addresses -- the
+	// documented behaviour, and a different one: FOCUS_EATRACE=x:20
+	// prints twenty lines instead of the half million golden.sh has
+	// recorded since the knob was written. That is a fix, not a move,
+	// so it is not made here; m_ea_refill keeps the refill exactly
+	// where it was and README/knob docs stay true to the code.
+	if (const char *e = knob::text("FOCUS_EATRACE").get())
+	{
+		m_ea_at = strtoul(e, nullptr, 16);
+		if (const char *colon = strchr(e, ':'))
+			m_ea_want = m_ea_refill = strtoul(colon + 1, nullptr, 0);
+		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
+			if (!m_ea_armed || !m_ea_want)
+				return;
+			m_ea_want--;
+			std::printf("[ea pc=%08x addr=%08x = %08x]\n", pc, addr,
+					m_cpu->core().read_mem32(addr & ~3u));
+			std::fflush(stdout);
+		};
+	}
+
+	// FOCUS_EAWATCH=<lo>:<hi> logs every data address the processor
+	// computes inside a range, with the instruction that did it -- the
+	// definitive record of which words of a structure are actually read
+	// or written, where a static scan of the code can misjudge.
+	if (const char *e = knob::text("FOCUS_EAWATCH").get())
+	{
+		static u32 lo = strtoul(e, nullptr, 16);
+		static u32 hi = strchr(e, ':')
+				? strtoul(strchr(e, ':') + 1, nullptr, 16) : lo + 4;
+		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
+			static knob::channel ea("FOCUS_EAWATCH", 400);
+			if (addr >= lo && addr <= hi && ea)
+				ea("[ea p=%08x addr=%08x = %08x]\n", pc, addr,
+						m_cpu->core().read_mem32(addr & ~3u));
+		};
+	}
+
+	// FOCUS_SEMLOG traces the hardware semaphores: which one a task blocks
+	// on and which one wakes it. An idle kernel that has stopped short
+	// says so here -- the semaphore it parked on names what it is waiting
+	// for.
+	if (knob::flag("FOCUS_SEMLOG"))
+		m_cpu->core().sem_hook = [this](bool block, u32 sem, u32 tcb, u32 pc) {
+			std::printf("[%8.3fs sem %s sem=%08x tcb=%08x at P=%08x]\n",
+					machine().time().as_double(),
+					block ? "DOWN-block" : "UP-wake  ", sem, tcb, pc);
+			std::fflush(stdout);
+		};
+
+	if (knob::flag("FOCUS_ESCLOG"))
+		m_cpu->core().on_escape = [this](u32 p, u32 value) {
+			// FOCUS_ESCVAL=<hex> logs only that escape value, uncapped;
+			// otherwise the first 400.
+			if (const char *e = knob::text("FOCUS_ESCVAL").get())
+			{
+				if (*e == '*')      // log everything, uncapped
+				{
+					std::printf("[%.2fs escape at %08x value=%08x q=%08x]\n",
+							machine().time().as_double(), p, value,
+							m_cpu->core().r.q);
+					std::fflush(stdout);
+					return;
+				}
+				if (value == strtoul(e, nullptr, 16) && m_escapes++ < 40)
+				{
+					std::printf("[escape at %08x value=%08x q=%08x]\n",
+							p, value, m_cpu->core().r.q);
+					report_state("escval");
+				}
+				return;
+			}
+			if (m_escapes++ < 400)
+			{
+				std::printf("[escape at %08x value=%08x q=%08x]\n",
+						p, value, m_cpu->core().r.q);
+				std::fflush(stdout);
+			}
+		};
+
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
 		// FOCUS_PCPROF buckets the program counter by 4 KB and prints the
 		// busiest buckets every 40M instructions, so "where is the
@@ -1523,109 +1655,13 @@ void hp9000_5xx_state::machine_start()
 				&& machine().time().as_double() >= m_watch_from)
 			watch("[%.2fs watch %08x  Q=%08x]\n",
 					machine().time().as_double(), core.r.p, core.r.q);
-	// FOCUS_TRAPLOG reports each fault as it is taken, with the state the
-	// processor is in, which names the code that faulted. A number sets
-	// how many reports to print (default 6); FOCUS_TRAPFROM=<seconds>
-	// skips the boot's own faults, which otherwise eat the whole budget
-	// before the interesting one arrives.
-	if (const char *e = knob::text("FOCUS_TRAPLOG").get())
-	{
-		// "1" is the historical on-switch, not a budget of one.
-		const unsigned long n = strtoul(e, nullptr, 0);
-		const unsigned cap = n > 1 ? unsigned(n) : 6;
-		const double from = knob::seconds("FOCUS_TRAPFROM", 0.0);
-		m_cpu->core().on_trap =
-				[this, cap, from](focus::trap_cause cause, u32 parameter) {
-			if (machine().time().as_double() < from)
-				return;
-			if (m_traps_seen++ < cap)
-			{
-				std::printf("\n[trap %u parameter=%08x t=%.3f]\n",
-						unsigned(cause), parameter,
-						machine().time().as_double());
-				report_state("trap");
-			}
-		};
-	}
-
-	// FOCUS_EATRACE=<addr>[:<n>] prints the next n data addresses the
-	// processor computes once it reaches that instruction, with what it
-	// found there.
-	if (const char *e = knob::text("FOCUS_EATRACE").get())
-	{
-		m_ea_at = strtoul(e, nullptr, 16);
-		if (const char *colon = strchr(e, ':'))
-			m_ea_want = strtoul(colon + 1, nullptr, 0);
-		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
-			if (!m_ea_armed || !m_ea_want)
-				return;
-			m_ea_want--;
-			std::printf("[ea pc=%08x addr=%08x = %08x]\n", pc, addr,
-					m_cpu->core().read_mem32(addr & ~3u));
-			std::fflush(stdout);
-		};
-	}
-
-	// FOCUS_EAWATCH=<lo>:<hi> logs every data address the processor
-	// computes inside a range, with the instruction that did it -- the
-	// definitive record of which words of a structure are actually read
-	// or written, where a static scan of the code can misjudge.
-	if (const char *e = knob::text("FOCUS_EAWATCH").get())
-	{
-		static u32 lo = strtoul(e, nullptr, 16);
-		static u32 hi = strchr(e, ':')
-				? strtoul(strchr(e, ':') + 1, nullptr, 16) : lo + 4;
-		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
-			static knob::channel ea("FOCUS_EAWATCH", 400);
-			if (addr >= lo && addr <= hi && ea)
-				ea("[ea p=%08x addr=%08x = %08x]\n", pc, addr,
-						m_cpu->core().read_mem32(addr & ~3u));
-		};
-	}
-
-	// FOCUS_SEMLOG traces the hardware semaphores: which one a task blocks
-	// on and which one wakes it. An idle kernel that has stopped short
-	// says so here -- the semaphore it parked on names what it is waiting
-	// for.
-	if (knob::flag("FOCUS_SEMLOG"))
-		m_cpu->core().sem_hook = [this](bool block, u32 sem, u32 tcb, u32 pc) {
-			std::printf("[%8.3fs sem %s sem=%08x tcb=%08x at P=%08x]\n",
-					machine().time().as_double(),
-					block ? "DOWN-block" : "UP-wake  ", sem, tcb, pc);
-			std::fflush(stdout);
-		};
-
-	if (knob::flag("FOCUS_ESCLOG"))
-		m_cpu->core().on_escape = [this](u32 p, u32 value) {
-			// FOCUS_ESCVAL=<hex> logs only that escape value, uncapped;
-			// otherwise the first 400.
-			if (const char *e = knob::text("FOCUS_ESCVAL").get())
-			{
-				if (*e == '*')      // log everything, uncapped
-				{
-					std::printf("[%.2fs escape at %08x value=%08x q=%08x]\n",
-							machine().time().as_double(), p, value,
-							m_cpu->core().r.q);
-					std::fflush(stdout);
-					return;
-				}
-				if (value == strtoul(e, nullptr, 16) && m_escapes++ < 40)
-				{
-					std::printf("[escape at %08x value=%08x q=%08x]\n",
-							p, value, m_cpu->core().r.q);
-					report_state("escval");
-				}
-				return;
-			}
-			if (m_escapes++ < 400)
-			{
-				std::printf("[escape at %08x value=%08x q=%08x]\n",
-						p, value, m_cpu->core().r.q);
-				std::fflush(stdout);
-			}
-		};
-
-	// FOCUS_WPOINT=<addr> reports every change of one memory word with
+		// FOCUS_EATRACE's count, refilled where the installer that used
+		// to write it stood. Keeping it here is what makes hoisting the
+		// installers a move rather than a change; see the installer for
+		// why the refill is left in place.
+		if (m_ea_refill)
+			m_ea_want = m_ea_refill;
+		// FOCUS_WPOINT=<addr> reports every change of one memory word with
 		// the instruction that made it, which is how a table's builder is
 		// found when the table is all there is to go on.
 		if (m_wpoint && machine().time().as_double() >= m_wp_from)
