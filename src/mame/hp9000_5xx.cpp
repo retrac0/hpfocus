@@ -577,6 +577,7 @@ public:
 	{
 	}
 
+	void add_processor_stack(machine_config &config) ATTR_COLD;
 	void hp9020(machine_config &config) ATTR_COLD;
 	void hp9040(machine_config &config) ATTR_COLD;
 
@@ -713,6 +714,16 @@ private:
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
+	// machine_start, in the order it does them.
+	void install_ram_boards();
+	void load_batteries();
+	void configure_display();
+	void configure_peripherals();
+	void configure_backplane();
+	void parse_debug_knobs();
+	void install_debug_hooks();
+	void start_timers();
+	void schedule_scripts();
 	static bool debug_armed();
 	void debug_pre_step(focus::cpu_core &core);
 	// Whether any instrument asked to run, settled once at machine_start.
@@ -1253,14 +1264,11 @@ void hp9000_5xx_state::debug_pre_step(focus::cpu_core &core)
 }
 
 
-void hp9000_5xx_state::machine_start()
+// The RAM boards, wired into the address space from the bottom of the
+// processor stack upward. What is fitted decides where a boot image
+// can land, so this runs before anything asks how much there is.
+void hp9000_5xx_state::install_ram_boards()
 {
-	// FOCUS_HELP=1 lists every knob and what it does. Printed here
-	// rather than at exit so it lands before the machine's own output.
-	knob::handle_help();
-	machine().add_notifier(MACHINE_NOTIFY_EXIT,
-			machine_notify_delegate(&hp9000_5xx_state::machine_stop, this));
-
 	// Wire the RAM boards into the address space, bottom of the stack
 	// first, each at the next free address -- and apply the manuals'
 	// population rules as warnings, since a wrong stack on the real
@@ -1302,6 +1310,15 @@ void hp9000_5xx_state::machine_start()
 		// No lower bound is enforced here: install_boot_image() places
 		// the image to fit the fitted RAM and says so when it cannot.
 	}
+}
+
+
+// The two battery-backed parts -- the SCM's clock and NVM at select
+// code 7, and the keyboard board's -- and the knobs that poison or
+// preserve them. FOCUS_TRIP is read here because it is a string the
+// console watch compares against, not a hook.
+void hp9000_5xx_state::load_batteries()
+{
 	// The System Control Module answers select code 7, which is IOP
 	// channel 1, peripheral address 7. The consoles: select code 0 is
 	// the display -- the panic reporter writes there, and so does the
@@ -1360,6 +1377,13 @@ void hp9000_5xx_state::machine_start()
 		m_dim.on_cell = [this](u16 v) { trip_watch(u8(v)); };
 	}
 	m_dim.fr1 = knob::number("FOCUS_SC0FR1", m_dim.fr1);
+}
+
+
+// Select code 0 and 1 on a machine that has them: the display
+// alphanumeric and Display Graphics.
+void hp9000_5xx_state::configure_display()
+{
 	// Select code 0 is the display alphanumeric on the 520. On the
 	// 530/540 it is a backplane slot like any other and the console
 	// serial card lives in it, which the loop over the backplane below
@@ -1412,6 +1436,13 @@ void hp9000_5xx_state::machine_start()
 	m_console6.st = knob::number("FOCUS_KBDST", m_console6.st);
 	m_console6.iop = &m_iop;
 	m_console6.pa = 6;
+}
+
+
+// The printer, the keyboard board and the internal disc: the
+// peripherals built into a 520 rather than plugged into it.
+void hp9000_5xx_state::configure_peripherals()
+{
 	// The internal thermal printer is an option (CE Handbook 1-2), so it
 	// is fitted only when asked for. It hangs off the keyboard board's
 	// interface rather than a slot of its own -- select code 6 carries
@@ -1509,6 +1540,13 @@ void hp9000_5xx_state::machine_start()
 		m_iop.attach(7, &m_disc);
 	}
 
+}
+
+
+// The I/O backplane. One loop serves both machines because a card is
+// a card wherever it is plugged in.
+void hp9000_5xx_state::configure_backplane()
+{
 	// The I/O backplane. One loop serves both machines because a card is
 	// one MAME device family in either: the array is indexed by select
 	// code, so a 520 finds cards in 2-5 and a 540 in 0-6, and the same
@@ -1637,6 +1675,14 @@ void hp9000_5xx_state::machine_start()
 	m_iop.trace_time = [this]() { return machine().time().as_double(); };
 
 
+}
+
+
+// The knobs the pre-step hook tests every instruction, read once into
+// the members it tests. Their hooks go in next; debug_armed() decides
+// whether any of it runs at all.
+void hp9000_5xx_state::parse_debug_knobs()
+{
 	// FOCUS_BREAK=<absolute address> reports the same state as the trip
 	// wire the first time the processor reaches that instruction, with a
 	// window of the current stack frame -- enough to read the arguments a
@@ -1684,6 +1730,13 @@ void hp9000_5xx_state::machine_start()
 	// stack marker is usually gone too, so the trail has to be kept.
 	m_runaway = knob::flag("FOCUS_RUNAWAY").on();
 
+}
+
+
+// The hooks the core calls when something happens, and the pre-step
+// hook that runs the instruments.
+void hp9000_5xx_state::install_debug_hooks()
+{
 	// The hooks the core calls when something happens, rather than on
 	// every instruction: a fault taken, an address computed, a semaphore
 	// blocked, an escape raised. Each is installed once, here, from the
@@ -1821,6 +1874,12 @@ void hp9000_5xx_state::machine_start()
 			core.enable_traps(true);
 	});
 
+}
+
+
+// The timers that keep the IOP polling and the clock running.
+void hp9000_5xx_state::start_timers()
+{
 	// The IOP polls its interfaces continuously and runs the interval
 	// timer; one emulated tick per millisecond is enough to get both
 	// moving. Real timings are in the I/O ERS section 7.
@@ -1841,6 +1900,14 @@ void hp9000_5xx_state::machine_start()
 	m_rtc_timer = timer_alloc(FUNC(hp9000_5xx_state::rtc_tick), this);
 	m_rtc_timer->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
 
+}
+
+
+// The scripted knobs: keystrokes to type, words to poke, memory to
+// search, state to report -- each one an alarm set for an emulated
+// moment rather than something done now.
+void hp9000_5xx_state::schedule_scripts()
+{
 	// FOCUS_TYPE=<text> feeds keystrokes through the keyboard board once
 	// the boot has settled -- the headless way to drive the command line.
 	// \n becomes EXECUTE. FOCUS_TYPEAT=<emulated seconds> delays the
@@ -1940,6 +2007,26 @@ void hp9000_5xx_state::machine_start()
 			t->adjust(attotime::from_double(at), int(i));
 		}
 	}
+}
+
+
+void hp9000_5xx_state::machine_start()
+{
+	// FOCUS_HELP=1 lists every knob and what it does. Printed here
+	// rather than at exit so it lands before the machine's own output.
+	knob::handle_help();
+	machine().add_notifier(MACHINE_NOTIFY_EXIT,
+			machine_notify_delegate(&hp9000_5xx_state::machine_stop, this));
+
+	install_ram_boards();
+	load_batteries();
+	configure_display();
+	configure_peripherals();
+	configure_backplane();
+	parse_debug_knobs();
+	install_debug_hooks();
+	start_timers();
+	schedule_scripts();
 }
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
@@ -2331,8 +2418,27 @@ void hp9000_5xx_state::write_back(const std::vector<u8> &now,
 
 void hp9000_5xx_state::machine_reset()
 {
-	// iop_core::reset() rebuilds every channel_state, which drops the
-	// interface attachments; hook everything back up afterwards.
+	// iop_core::reset() rebuilds every channel_state but carries the
+	// interface pointers across (focusiop.h): what is in a slot stays
+	// there. So the attaches below are not the repair this comment used
+	// to claim they were -- they are stores of the pointers already in
+	// place, kept because they cost nothing and because a slot list that
+	// exists in one place only is a slot list that gets forgotten in the
+	// other.
+	//
+	// What reset DOES clear is every channel's interrupt enable, which is
+	// why the enables are here at all. They are deliberately not the same
+	// set machine_start arms: this path enables select code 6 and every
+	// populated backplane slot, and machine_start also enables 1 and 7.
+	// MAME runs reset after start, so this is the set the running machine
+	// actually has. Which of the two is right for the hardware is an
+	// emulation question and not a tidying one; the difference is left
+	// standing and written down rather than unified by hand.
+	//
+	// The order matters and is shared with machine_start: the SCM claims
+	// select code 7 and the internal disc claims it back, so on a 520 the
+	// disc is what answers there. A 530/540 has no internal disc, does not
+	// reach that line, and leaves the SCM in place.
 	m_iop.reset();
 	m_scm.reset();
 	m_console6.reset();
@@ -3121,9 +3227,12 @@ void hp9000_5xx_state::gfx_dump(screen_device &screen)
 }
 
 
-void hp9000_5xx_state::hp9020(machine_config &config)
+// The processor stack both machines are built on: the same 18 MHz CPU
+// (55 ns microinstruction time, Hardware Technical Data) and the same
+// twelve-slot MPB backplane. A 520 and a 540 differ in what hangs off
+// it, not in this.
+void hp9000_5xx_state::add_processor_stack(machine_config &config)
 {
-	// 18 MHz, 55 ns microinstruction time (Hardware Technical Data).
 	FOCUS(config, m_cpu, 18_MHz_XTAL);
 	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
 	m_cpu->set_mpb_channel(1);
@@ -3138,6 +3247,12 @@ void hp9000_5xx_state::hp9020(machine_config &config)
 	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "512k");
 	for (unsigned k = 2; k < 10; k++)
 		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
+}
+
+
+void hp9000_5xx_state::hp9020(machine_config &config)
+{
+	add_processor_stack(config);
 
 	// The 520's integrated display, as its own CRTC programs it: 80
 	// columns by 26 rows of 15-scanline characters.
@@ -3192,20 +3307,7 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 	// serial interface card in slot 0 -- the CE handbook's installation
 	// procedure names the card and sets the terminal to 9600 baud, 8
 	// bits, no parity, ENQ/ACK and XON/XOFF (9030/40 CE Handbook, 2-3).
-	FOCUS(config, m_cpu, 18_MHz_XTAL);
-	m_cpu->set_addrmap(AS_PROGRAM, &hp9000_5xx_state::mem_map);
-	m_cpu->set_mpb_channel(1);
-
-	// The MPB stack's RAM slots. Slot 1 is the CPU and slot 2 the IOP;
-	// boards go in the ten remaining slots as -mpb3 .. -mpb12, each
-	// "256k", "512k" or "1m" (1 MB boards in pairs). The default is the
-	// base machine HP shipped: 1 MB as two 512 KB boards (HARDWARE.md
-	// §1.2). Fit more with e.g. -mpb3 1m -mpb4 1m; the boot loads the
-	// image adaptively, so small machines boot whatever fits.
-	MPB_SLOT(config, m_mpb[0], mpb_ram_cards, "512k");
-	MPB_SLOT(config, m_mpb[1], mpb_ram_cards, "512k");
-	for (unsigned k = 2; k < 10; k++)
-		MPB_SLOT(config, m_mpb[k], mpb_ram_cards, nullptr);
+	add_processor_stack(config);
 	m_console_is_asi = true;
 
 	GENERIC_TERMINAL(config, m_terminal, 0);
