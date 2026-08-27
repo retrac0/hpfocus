@@ -664,40 +664,52 @@ private:
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots
-	std::string m_trip, m_trip_seen;
-	bool m_tripped = false;
-	bool m_qcheck_hit = false;
-	std::array<std::pair<u32, u32>, 10> m_qtrail{};
-	size_t m_qtrail_at = 0;
-	u32 m_qtrail_last = 0, m_qtrail_prev_p = 0;
-	// The instructions just executed, with the stack pointer each one
-	// left behind. A trap reports the instruction it stopped BEFORE --
-	// the end-of-instruction conditions are tested between instructions
-	// -- so the one that actually caused it is the entry above the last.
-	std::array<std::pair<u32, u32>, 12> m_pctrail{};
-	size_t m_pctrail_at = 0;
-	u32 m_break_at = 0;
-	unsigned m_break_hits = 0, m_break_max = 1;
-	bool m_traced = false;
-	u32 m_trace_left = 0;
-	u32 m_wpoint = 0, m_wpoint_last = 0;
-	unsigned m_traps_seen = 0, m_escapes = 0;
-	u32 m_ea_at = 0;
-	unsigned m_ea_want = 6;
-	// What FOCUS_EATRACE's count is refilled to before every
-	// instruction, which is why the trace does not stop after n
-	// addresses. See where it is used: the refill is a bug this pass
-	// preserved rather than fixed, because fixing it changes what the
-	// knob prints.
-	unsigned m_ea_refill = 0;
-	bool m_ea_armed = false;
-	u32 m_watch_lo = 0, m_watch_hi = 0;
-	double m_watch_from = 0.0;
-	double m_break_from = 0.0;
-	double m_wp_from = 0.0;
-	bool m_runaway = false, m_ran_away = false;
-	std::array<std::pair<u32, u32>, 48> m_trail{};
-	size_t m_trail_at = 0;
+	// Everything the driver keeps for its own instruments and none of it
+	// the machine: the trails a report is written from, the addresses and
+	// moments the knobs are waiting for, and whether any of them asked to
+	// run at all. debug_pre_step() is what fills it; report_state() and
+	// trip_watch() are what read it.
+	struct focus_debug
+	{
+		bool armed = false;
+		std::string trip, trip_seen;
+		bool tripped = false;
+		bool qcheck_hit = false;
+		std::array<std::pair<u32, u32>, 10> qtrail{};
+		size_t qtrail_at = 0;
+		u32 qtrail_last = 0, qtrail_prev_p = 0;
+		// The instructions just executed, with the stack pointer each one
+		// left behind. A trap reports the instruction it stopped BEFORE --
+		// the end-of-instruction conditions are tested between instructions
+		// -- so the one that actually caused it is the entry above the last.
+		std::array<std::pair<u32, u32>, 12> pctrail{};
+		size_t pctrail_at = 0;
+		u32 break_at = 0;
+		unsigned break_hits = 0, break_max = 1;
+		bool traced = false;
+		u32 trace_left = 0;
+		u32 wpoint = 0, wpoint_last = 0;
+		unsigned traps_seen = 0, escapes = 0;
+		u32 ea_at = 0;
+		unsigned ea_want = 6;
+		// What FOCUS_EATRACE's count is refilled to before every
+		// instruction, which is why the trace does not stop after n
+		// addresses. See where it is used: the refill is a bug this pass
+		// preserved rather than fixed, because fixing it changes what the
+		// knob prints.
+		unsigned ea_refill = 0;
+		bool ea_armed = false;
+		u32 watch_lo = 0, watch_hi = 0;
+		double watch_from = 0.0;
+		double break_from = 0.0;
+		double wp_from = 0.0;
+		bool runaway = false, ran_away = false;
+		std::array<std::pair<u32, u32>, 48> trail{};
+		size_t trail_at = 0;
+		// FOCUS_POKE requests, fired by a timer rather than the hook.
+		std::vector<std::pair<u32, u32>> pokes;
+	};
+	focus_debug m_dbg;
 	// Which routine touched the card: segment and offset, for the device
 	// logs. For an interface no manual describes this is most of the
 	// answer -- the FR number says what register, the caller says what
@@ -727,7 +739,6 @@ private:
 	static bool debug_armed();
 	void debug_pre_step(focus::cpu_core &core);
 	// Whether any instrument asked to run, settled once at machine_start.
-	bool m_dbg_armed = false;
 	void memory_find();
 	TIMER_CALLBACK_MEMBER(find_tick);
 	TIMER_CALLBACK_MEMBER(poke_tick);
@@ -746,7 +757,6 @@ private:
 	// boot image is a set, and the operator feeds the volumes one by one.
 	std::vector<std::vector<u8>> m_media;
 	unsigned m_boot_volumes = 0;   // how many of them the image needed
-	std::vector<std::pair<u32, u32>> m_pokes;   // FOCUS_POKE requests
 	// The 530/540 have no integrated display: select code 0 carries a
 	// serial interface card and the console is a terminal on the end of
 	// it. The 520 puts its display alphanumeric there instead.
@@ -806,16 +816,16 @@ void hp9000_5xx_state::mem_map(address_map &map)
 // so the chain walks back a frame at a time.
 void hp9000_5xx_state::trip_watch(u8 c)
 {
-	if (m_tripped || m_trip.empty())
+	if (m_dbg.tripped || m_dbg.trip.empty())
 		return;
-	m_trip_seen.push_back(char(c));
-	if (m_trip_seen.size() > m_trip.size())
-		m_trip_seen.erase(0, m_trip_seen.size() - m_trip.size());
-	if (m_trip_seen != m_trip)
+	m_dbg.trip_seen.push_back(char(c));
+	if (m_dbg.trip_seen.size() > m_dbg.trip.size())
+		m_dbg.trip_seen.erase(0, m_dbg.trip_seen.size() - m_dbg.trip.size());
+	if (m_dbg.trip_seen != m_dbg.trip)
 		return;
 
-	m_tripped = true;
-	report_state(m_trip.c_str());
+	m_dbg.tripped = true;
+	report_state(m_dbg.trip.c_str());
 }
 
 
@@ -891,9 +901,9 @@ void hp9000_5xx_state::report_state(const char *why)
 	// what a trap cannot say for itself: the end-of-instruction conditions
 	// are tested before the NEXT instruction, so the trap reports that one.
 	std::printf("  last instructions (P, S on entry to it):");
-	for (size_t i = 0; i < m_pctrail.size(); i++)
+	for (size_t i = 0; i < m_dbg.pctrail.size(); i++)
 	{
-		const auto &e = m_pctrail[(m_pctrail_at + i) % m_pctrail.size()];
+		const auto &e = m_dbg.pctrail[(m_dbg.pctrail_at + i) % m_dbg.pctrail.size()];
 		if (e.first)
 			std::printf("%s    %08x S=%08x", (i % 3) ? "" : "\n",
 					e.first, e.second);
@@ -1099,81 +1109,81 @@ void hp9000_5xx_state::debug_pre_step(focus::cpu_core &core)
 	}
 	// A short trail of Q changes: which instruction moved Q last is
 	// the question every corrupted-marker hunt ends at.
-	if (core.r.q != m_qtrail_last)
+	if (core.r.q != m_dbg.qtrail_last)
 	{
-		m_qtrail[m_qtrail_at] = std::make_pair(m_qtrail_prev_p, core.r.q);
-		m_qtrail_at = (m_qtrail_at + 1) % m_qtrail.size();
-		m_qtrail_last = core.r.q;
+		m_dbg.qtrail[m_dbg.qtrail_at] = std::make_pair(m_dbg.qtrail_prev_p, core.r.q);
+		m_dbg.qtrail_at = (m_dbg.qtrail_at + 1) % m_dbg.qtrail.size();
+		m_dbg.qtrail_last = core.r.q;
 	}
-	m_qtrail_prev_p = core.r.p;
-	m_pctrail[m_pctrail_at] = std::make_pair(core.r.p, core.r.s);
-	m_pctrail_at = (m_pctrail_at + 1) % m_pctrail.size();
+	m_dbg.qtrail_prev_p = core.r.p;
+	m_dbg.pctrail[m_dbg.pctrail_at] = std::make_pair(core.r.p, core.r.s);
+	m_dbg.pctrail_at = (m_dbg.pctrail_at + 1) % m_dbg.pctrail.size();
 	// FOCUS_QCHECK reports the first instruction that runs with a
 	// misaligned Q or a STATUS whose CSN field is impossible -- the
 	// wreckage of a corrupted stack marker, caught at the moment of
 	// restoration rather than at the crash it causes later.
 	static const knob::flag qcheck("FOCUS_QCHECK");
-	if (qcheck && !m_qcheck_hit && core.r.q != 0
+	if (qcheck && !m_dbg.qcheck_hit && core.r.q != 0
 			&& ((core.r.q & 3) != 3 || core.r.status == 0xfffffffcu))
 	{
-		m_qcheck_hit = true;
+		m_dbg.qcheck_hit = true;
 		std::printf("[qcheck: Q=%08x STATUS=%08x]\n",
 				core.r.q, core.r.status);
 		report_state("qcheck");
 	}
-	if (m_runaway)
+	if (m_dbg.runaway)
 	{
-		if (!m_ran_away && (core.r.p >= m_ram_total || core.r.pb >= m_ram_total))
+		if (!m_dbg.ran_away && (core.r.p >= m_ram_total || core.r.pb >= m_ram_total))
 		{
-			m_ran_away = true;
+			m_dbg.ran_away = true;
 			std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
 					machine().time().as_double(), core.r.p, core.r.pb);
 			std::printf("  last %u instructions, oldest first:\n",
-					unsigned(m_trail.size()));
-			for (size_t i = 0; i < m_trail.size(); i++)
+					unsigned(m_dbg.trail.size()));
+			for (size_t i = 0; i < m_dbg.trail.size(); i++)
 			{
-				const size_t k = (m_trail_at + i) % m_trail.size();
-				if (m_trail[k].first)
+				const size_t k = (m_dbg.trail_at + i) % m_dbg.trail.size();
+				if (m_dbg.trail[k].first)
 					std::printf("    P=%08x PB=%08x\n",
-							m_trail[k].first, m_trail[k].second);
+							m_dbg.trail[k].first, m_dbg.trail[k].second);
 			}
 			report_state("runaway");
 		}
-		m_trail[m_trail_at] = std::make_pair(core.r.p, core.r.pb);
-		m_trail_at = (m_trail_at + 1) % m_trail.size();
+		m_dbg.trail[m_dbg.trail_at] = std::make_pair(core.r.p, core.r.pb);
+		m_dbg.trail_at = (m_dbg.trail_at + 1) % m_dbg.trail.size();
 	}
 	static knob::channel watch("FOCUS_WATCH", 12, "FOCUS_WATCHN");
-	if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
+	if (m_dbg.watch_hi && core.r.p >= m_dbg.watch_lo && core.r.p <= m_dbg.watch_hi
 			&& watch
-			&& machine().time().as_double() >= m_watch_from)
+			&& machine().time().as_double() >= m_dbg.watch_from)
 		watch("[%.2fs watch %08x  Q=%08x]\n",
 				machine().time().as_double(), core.r.p, core.r.q);
 	// FOCUS_EATRACE's count, refilled where the installer that used
 	// to write it stood. Keeping it here is what makes hoisting the
 	// installers a move rather than a change; see the installer for
 	// why the refill is left in place.
-	if (m_ea_refill)
-		m_ea_want = m_ea_refill;
+	if (m_dbg.ea_refill)
+		m_dbg.ea_want = m_dbg.ea_refill;
 	// FOCUS_WPOINT=<addr> reports every change of one memory word with
 	// the instruction that made it, which is how a table's builder is
 	// found when the table is all there is to go on.
-	if (m_wpoint && machine().time().as_double() >= m_wp_from)
+	if (m_dbg.wpoint && machine().time().as_double() >= m_dbg.wp_from)
 	{
-		const u32 now = core.read_mem32(m_wpoint);
-		if (now != m_wpoint_last)
+		const u32 now = core.read_mem32(m_dbg.wpoint);
+		if (now != m_dbg.wpoint_last)
 		{
 			static knob::channel wp("FOCUS_WPOINT", 20);
 			if (wp)
 			{
 				wp("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
-						m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
+						m_dbg.wpoint, m_dbg.wpoint_last, now, core.r.p, core.r.pb);
 				// FOCUS_WPSTACK adds the call chain, which is how the
 				// code that asked for a write gets named when the
 				// writer itself is a shared helper.
 				if (knob::flag("FOCUS_WPSTACK"))
 					report_state("wp");
 			}
-			m_wpoint_last = now;
+			m_dbg.wpoint_last = now;
 			std::fflush(stdout);
 		}
 	}
@@ -1222,26 +1232,26 @@ void hp9000_5xx_state::debug_pre_step(focus::cpu_core &core)
 				pk.first = 0;
 			}
 	}
-	if (m_ea_at && core.r.p == m_ea_at
+	if (m_dbg.ea_at && core.r.p == m_dbg.ea_at
 			&& machine().time().as_double() >= ea_from)
-		m_ea_armed = true;
-	if (m_traced && m_trace_left)
+		m_dbg.ea_armed = true;
+	if (m_dbg.traced && m_dbg.trace_left)
 	{
-		m_trace_left--;
+		m_dbg.trace_left--;
 		std::printf("[t %08x pb=%08x q=%08x]\n", core.r.p, core.r.pb, core.r.q);
-		if (!m_trace_left)
+		if (!m_dbg.trace_left)
 			std::fflush(stdout);
 	}
-	if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max
-			&& machine().time().as_double() >= m_break_from)
+	if (m_dbg.break_at && core.r.p == m_dbg.break_at && m_dbg.break_hits < m_dbg.break_max
+			&& machine().time().as_double() >= m_dbg.break_from)
 	{
-		m_traced = true;
-		m_break_hits++;
-		std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
+		m_dbg.traced = true;
+		m_dbg.break_hits++;
+		std::printf("\n[break %08x hit %u]\n", m_dbg.break_at, m_dbg.break_hits);
 		std::printf("  last Q changes (instruction that moved it -> new Q):\n");
-		for (size_t i = 0; i < m_qtrail.size(); i++)
+		for (size_t i = 0; i < m_dbg.qtrail.size(); i++)
 		{
-			const auto &e = m_qtrail[(m_qtrail_at + i) % m_qtrail.size()];
+			const auto &e = m_dbg.qtrail[(m_dbg.qtrail_at + i) % m_dbg.qtrail.size()];
 			if (e.second)
 				std::printf("    P=%08x -> Q=%08x\n", e.first, e.second);
 		}
@@ -1373,7 +1383,7 @@ void hp9000_5xx_state::load_batteries()
 	// the code behind a message -- an error report, say -- gets found.
 	if (const char *e = knob::text("FOCUS_TRIP").get())
 	{
-		m_trip = e;
+		m_dbg.trip = e;
 		m_dim.on_cell = [this](u16 v) { trip_watch(u8(v)); };
 	}
 	m_dim.fr1 = knob::number("FOCUS_SC0FR1", m_dim.fr1);
@@ -1689,46 +1699,46 @@ void hp9000_5xx_state::parse_debug_knobs()
 	// routine was called with.
 	if (const char *e = knob::text("FOCUS_BREAK").get())
 	{
-		m_break_at = strtoul(e, nullptr, 16);
+		m_dbg.break_at = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
-			m_break_max = strtoul(colon + 1, nullptr, 0);
+			m_dbg.break_max = strtoul(colon + 1, nullptr, 0);
 		// FOCUS_BREAKFROM=<emulated seconds>, as for the watch: ignore
 		// the boot's own visits to the address.
-		m_break_from = knob::seconds("FOCUS_BREAKFROM", m_break_from);
+		m_dbg.break_from = knob::seconds("FOCUS_BREAKFROM", m_dbg.break_from);
 	}
 	// FOCUS_TRACEN=<n> lists the next n instructions after the breakpoint,
 	// which is how a call gets followed into whatever it reaches.
 	if (const char *e = knob::text("FOCUS_WPOINT").get())
 	{
-		m_wpoint = strtoul(e, nullptr, 16);
+		m_dbg.wpoint = strtoul(e, nullptr, 16);
 		// FOCUS_WPFROM=<emulated seconds> arms the watch late, as for the
 		// execution watch: heap memory is recycled, and a write seen
 		// before the interesting object exists at the address belongs to
 		// some earlier tenant, not to the code being hunted.
-		m_wp_from = knob::seconds("FOCUS_WPFROM", m_wp_from);
+		m_dbg.wp_from = knob::seconds("FOCUS_WPFROM", m_dbg.wp_from);
 	}
-	m_trace_left = knob::number("FOCUS_TRACEN", m_trace_left);
+	m_dbg.trace_left = knob::number("FOCUS_TRACEN", m_dbg.trace_left);
 
 	// FOCUS_WATCH=<lo>:<hi> reports the first instructions executed inside
 	// an address range, which answers whether a driver is ever entered.
 	if (const char *e = knob::text("FOCUS_WATCH").get())
 	{
-		m_watch_lo = strtoul(e, nullptr, 16);
+		m_dbg.watch_lo = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
-			m_watch_hi = strtoul(colon + 1, nullptr, 16);
+			m_dbg.watch_hi = strtoul(colon + 1, nullptr, 16);
 		// FOCUS_WATCHN=<n> sets how many hits to report; the channel that
 		// prints them owns that budget.
 		// FOCUS_WATCHFROM=<emulated seconds> ignores everything before that
 		// moment, which is how activity from a typed command gets separated
 		// from the boot's own.
-		m_watch_from = knob::seconds("FOCUS_WATCHFROM", m_watch_from);
+		m_dbg.watch_from = knob::seconds("FOCUS_WATCHFROM", m_dbg.watch_from);
 	}
 
 	// FOCUS_RUNAWAY reports the moment the processor leaves real memory,
 	// with the last instructions it executed before it did. A machine
 	// that has jumped to nowhere cannot say where it came from, and the
 	// stack marker is usually gone too, so the trail has to be kept.
-	m_runaway = knob::flag("FOCUS_RUNAWAY").on();
+	m_dbg.runaway = knob::flag("FOCUS_RUNAWAY").on();
 
 }
 
@@ -1765,7 +1775,7 @@ void hp9000_5xx_state::install_debug_hooks()
 				[this, cap, from](focus::trap_cause cause, u32 parameter) {
 			if (machine().time().as_double() < from)
 				return;
-			if (m_traps_seen++ < cap)
+			if (m_dbg.traps_seen++ < cap)
 			{
 				std::printf("\n[trap %u parameter=%08x t=%.3f]\n",
 						unsigned(cause), parameter,
@@ -1786,17 +1796,17 @@ void hp9000_5xx_state::install_debug_hooks()
 	// documented behaviour, and a different one: FOCUS_EATRACE=x:20
 	// prints twenty lines instead of the half million golden.sh has
 	// recorded since the knob was written. That is a fix, not a move,
-	// so it is not made here; m_ea_refill keeps the refill exactly
+	// so it is not made here; m_dbg.ea_refill keeps the refill exactly
 	// where it was and README/knob docs stay true to the code.
 	if (const char *e = knob::text("FOCUS_EATRACE").get())
 	{
-		m_ea_at = strtoul(e, nullptr, 16);
+		m_dbg.ea_at = strtoul(e, nullptr, 16);
 		if (const char *colon = strchr(e, ':'))
-			m_ea_want = m_ea_refill = strtoul(colon + 1, nullptr, 0);
+			m_dbg.ea_want = m_dbg.ea_refill = strtoul(colon + 1, nullptr, 0);
 		m_cpu->core().on_ea = [this](u32 pc, u32 addr) {
-			if (!m_ea_armed || !m_ea_want)
+			if (!m_dbg.ea_armed || !m_dbg.ea_want)
 				return;
-			m_ea_want--;
+			m_dbg.ea_want--;
 			std::printf("[ea pc=%08x addr=%08x = %08x]\n", pc, addr,
 					m_cpu->core().read_mem32(addr & ~3u));
 			std::fflush(stdout);
@@ -1846,7 +1856,7 @@ void hp9000_5xx_state::install_debug_hooks()
 					std::fflush(stdout);
 					return;
 				}
-				if (value == strtoul(e, nullptr, 16) && m_escapes++ < 40)
+				if (value == strtoul(e, nullptr, 16) && m_dbg.escapes++ < 40)
 				{
 					std::printf("[escape at %08x value=%08x q=%08x]\n",
 							p, value, m_cpu->core().r.q);
@@ -1854,7 +1864,7 @@ void hp9000_5xx_state::install_debug_hooks()
 				}
 				return;
 			}
-			if (m_escapes++ < 400)
+			if (m_dbg.escapes++ < 400)
 			{
 				std::printf("[escape at %08x value=%08x q=%08x]\n",
 						p, value, m_cpu->core().r.q);
@@ -1864,9 +1874,9 @@ void hp9000_5xx_state::install_debug_hooks()
 
 	// The instruments run only when something has asked for them; see
 	// debug_armed(). The traps check below is not one of them.
-	m_dbg_armed = debug_armed();
+	m_dbg.armed = debug_armed();
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
-		if (m_dbg_armed)
+		if (m_dbg.armed)
 			debug_pre_step(core);
 		// Traps vector through CST entry 1 once the powerup module has
 		// built the tables and pointed dedicated location 0 at them.
@@ -1932,10 +1942,10 @@ void hp9000_5xx_state::schedule_scripts()
 			const u32 val = colon ? strtoul(colon + 1, nullptr, 16) : 1;
 			const char *colon2 = colon ? strchr(colon + 1, ':') : nullptr;
 			const double at = colon2 ? strtod(colon2 + 1, nullptr) : 3.0;
-			m_pokes.push_back(std::make_pair(addr, val));
+			m_dbg.pokes.push_back(std::make_pair(addr, val));
 			emu_timer *const t =
 					timer_alloc(FUNC(hp9000_5xx_state::poke_tick), this);
-			t->adjust(attotime::from_double(at), int(m_pokes.size() - 1));
+			t->adjust(attotime::from_double(at), int(m_dbg.pokes.size() - 1));
 		}
 	if (const char *e = knob::text("FOCUS_STATEAT").get())
 		for (std::string list(e); !list.empty(); )
@@ -2037,7 +2047,7 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::poke_tick)
 {
-	const auto &req = m_pokes[size_t(param)];
+	const auto &req = m_dbg.pokes[size_t(param)];
 	const u32 before = m_cpu->core().read_mem32(req.first);
 	m_cpu->memory().write32(req.first, req.second);
 	std::printf("[poke %08x: %08x -> %08x at %.2fs]\n",
