@@ -607,7 +607,6 @@ private:
 	focus::dim_card m_dim;            // select code 0: the display
 	focus::gfx_card m_gfx;            // select code 1: display graphics
 	focus::printer_device m_printer;   // the optional internal thermal printer
-	focus::console_card m_console0;   // select code 0 on models without one
 	focus::console_card m_console6;   // select code 6: keyboard board
 	focus::disc_card m_disc;          // select code 7: the internal disc
 	focus::probe_card m_probes[8];    // logging stand-ins for empty slots

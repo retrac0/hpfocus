@@ -1199,7 +1199,6 @@ public:
 	// True once per attention the poll latched; the host forwards it to
 	// the CPU as message 14.
 	bool take_attention_event() { const bool e = m_attn_event; m_attn_event = false; return e; }
-	u32 attention_log() const { return m_attn_log; }
 
 	// The interrupt level a device's requests are recorded at, which is
 	// also which message bit (16 + level) announces them.

@@ -470,8 +470,6 @@ struct hpib_card : public iop_interface
 		return b;
 	}
 	void dma_write(u8 b) override { m_in.push_back(b); }
-	u16 dma_read16() override { return u16((dma_read() << 8) | dma_read()); }
-	void dma_write16(u16 v) override { dma_write(u8(v >> 8)); dma_write(u8(v)); }
 
 	void dma_complete(bool output) override
 	{

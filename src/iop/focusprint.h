@@ -224,10 +224,6 @@ struct printer_device
 		}
 		return true;
 	}
-	// PSTS. A healthy printer asserts status; the self test's escape 08
-	// is "printer status false".
-	bool asserts_status() const { return status == 0; }
-
 	// The interface poll. The self test brackets it: after the loopback
 	// it requires this printer's bit SET (failure 05, "not responding to
 	// poll"), then writes FR1 = 0 and requires it CLEAR (failure 07,

@@ -660,11 +660,6 @@ private:
 		return false;
 	}
 
-	void post_event(u8 code)
-	{
-		m_events.push_back(code);
-	}
-
 	u32 m_fr[16] = {};
 	u32 m_fr0 = 0;              // the data latch behind FR0/FR6
 	// The service manual says interface clear leaves device 1 (the fixed

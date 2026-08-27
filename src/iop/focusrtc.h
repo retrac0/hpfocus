@@ -573,7 +573,6 @@ struct rtc_nvm
 		seconds_since_power_on = 0;
 	}
 
-	void fill_rtc(u8 v) { for (u8 &b : rtc) b = v; }
 	void fill_nvm(u8 v) { for (u8 &b : nvm) b = v; }
 
 	// The bit as the OS can actually see it: latched for the run, or, with

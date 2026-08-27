@@ -326,7 +326,6 @@ struct gfx_card : public iop_interface
 	// to service_request, had it asking for attention forever.
 	bool poll_request() override { return m_poll; }
 
-	u32 last_command() const { return m_command; }
 	unsigned dma_words() const { return m_dma; }
 	unsigned plane_words() const { return planes * PLANE_WORDS; }
 	// How far the current transfer has got, in words. The only measure of
