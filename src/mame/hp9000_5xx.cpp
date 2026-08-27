@@ -1306,6 +1306,11 @@ void hp9000_5xx_state::machine_start()
 					u8(knob::number("FOCUS_ASIRTS", asi->card.rts_opcode));
 			asi->card.rts_event =
 					u8(knob::number("FOCUS_ASIEVENT2", asi->card.rts_event));
+			// FOCUS_ASINOASYNC silences the asynchronous events the
+			// firmware senses -- the transmit-buffer-empty the console
+			// drain waits for, and the data-available a typed record
+			// raises. The A/B control for docs/HPUX.md 8.
+			asi->card.no_async = knob::flag("FOCUS_ASINOASYNC").on();
 			// FOCUS_ASIMPX sweeps the multiplexing capability in the
 			// identity block: 0 subchannel only, 1 in-channel only,
 			// 2 both (27128A 4-67; the ASI ships configured with 1).

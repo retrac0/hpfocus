@@ -727,96 +727,89 @@ All addresses runtime for this configuration.
 | task blocking | `FOCUS_SEMLOG` (timestamped) |
 
 
-## 8. After the boot report: init and the file system (current frontier)
+## 8. The console drain, and how it stopped the boot (SOLVED 2026-08-26)
 
-The machine prints its boot report and then stops. Measured, not inferred.
+For months the machine printed its boot report and stopped dead. It was one
+missing thing, and it was in the card, not the kernel: **the emulated ASI
+never sensed the "transmit buffer is empty" asynchronous event**, so nothing
+ever told the console driver that its output had drained. The tty subsystem
+drains the console as the last act of printing the boot report, and a drain
+that never completes is a boot that never starts `init`.
 
-### It is a hard stop, with one thing still ticking
+With the event modelled, `PCL STT[648]` returns, `PCL STT[647]` runs, and the
+machine goes on to the whole device configuration pass. `FOCUS_ASINOASYNC=1`
+is the A/B control: with it the boot stops after the banner again, exactly as
+it did.
 
-`FOCUS_STATEAT=8,20,40,58` gives the **identical** state at all four:
-`P=0x182f2` (the dispatcher's `STOP`), `MSG=0`, `I=1`. The only live activity
-is a WIN/H9000 task ping-ponging on semaphore `0xbd798` every 120–240 ms
-(`CORE SYSTEM +0x59ba` / `+0x58f6`), which is a background poller and not
-related.
+### The chain, from the stop back to the card
 
-Two facts settle what has and has not happened:
+Every link measured, none inferred:
 
-- **`HP-UX ENTRYPTS` (seg 4, the system-call layer) executes ZERO
-  instructions all boot** (`FOCUS_WATCH=36bcc:3797f`). There is no UNIX
-  process at all.
-- **The `/etc/init` string is never read** (`FOCUS_RWATCH=3ddcc:3ddd4`, 0
-  hits).
+| | |
+|---|---|
+| `HP-UX KERNEL +0x22d6c` | `PCL STT[648]` = TTY SUBSYSTEM entry 2. `FOCUS_WATCH=37a04:37a20`: reached at 2.32 s, never returns; `+0x22d70` (CONFIGURATION entry 3) and `+0x22d74` (start init) never run |
+| TTY SUBSYSTEM entry 2 (`PB+0x708`) | prints the report line by line — request code **17** through the driver — then issues code **24**, waits 400 ms (`PCL STT[76]` = CORE SYSTEM entry 228) and issues code **10**. `FOCUS_WATCH=5e654:5e67a`: nothing after the code-24 call ever executes |
+| HP27128/30 `+0x2160`..`+0x2174` | the code-24 arm: if `chan+140` is non-zero it **sleeps on `chan+160`** at priority 73 through HP-UX KERNEL entry 51 |
+| HP-UX KERNEL entry 51 → CORE SYSTEM entry 89 | the kernel's `sleep()`: `PSLA` test-and-set on two objects, decrement, and `DISP` at `+0x54aa`. The task parks there and the dispatcher never brings it back |
+| `chan+140` (`0x1e8a28`) | set to 1 by **every** write at HP27128/30 `+0x2e46`, and cleared by exactly two sites. `FOCUS_WWATCH=1e8a28:1e8a2b`: seventeen writes of 1, no write of 0 |
+| the write path's own clear (`+0x2e70`) | skipped: on a write whose status block came back with byte 1 = 0 it branches past the wake (`BRZ` at `+0x2eb6`, traced taken) |
+| the other clear (`+0x23da`, inside entry 7) | the console's **event daemon** — the task the open creates with `LPPS STT[7]` through CORE SYSTEM entry 206. It clears `chan+140` and wakes `chan+160`, and it is blocked |
+| the daemon's block | `DOWN` on `[chan+108]` = `0x1e8a00` at HP27128/30 `+0x22cc`, t=2.338. `FOCUS_SEMALL` over the whole boot finds **one** operation on that word: this `DOWN`, count −1 |
+| what would post it | the request block at `0x1e9db4`, whose `+8` holds `80040020` — the label of seg 32 entry 16, eleven instructions that take the channel out of the request and `UP` its `chan+108`. `FOCUS_RWATCH` on `+8` sees no read all boot |
+| who calls that callback | **HP27128/30 entry 3**, the driver's asynchronous-event handler. Its label `8000c020` lives at the interrupt handler's `DB+28` (`0x1e97f0`, confirmed by `FOCUS_FIND`), and its request block at `DB+32` (`0x1e97f4` = `0x1e9db4`). It copies the event block into the request and calls `[req+8]` |
+| who calls entry 3 | CORE SYSTEM's Read-Transparent-Status dispatcher, **arm 4 — AES** — at run `0x2761c`: `LDB DB+57; CMPM DB+16` (the port ID, bounded), then `LDS DB+4; LDS DB+32; LRAS DB+56; CPAA; LDS DB+28; PCLS STT[0]`. It is the **only** caller |
 
-### Where it stops, to the instruction
+So the entire chain hangs off one report opcode. The six-arm table at run
+`0x274e8` decodes as IDL `0x27500`, SWI `0x27530`, EDD `0x275bc`, LCD
+`0x275f4`, AES `0x2761c`, ERT `0x27646` — and our card reported IDL, SWI and
+EDD and **never AES**.
 
-The kernel's own initialisation is two procedures at the very front of
-HP-UX KERNEL, and `FOCUS_WATCH=379b4:37a20` times both:
+### The event, and what the manual says about it
 
-| image | | measured |
-|---|---|---|
-| `0x22d1c` | phase 1: `TRY`, then ~15 `PCL`s of subsystem init | runs to its `EXIT` at 1.25 s — **completes** |
-| `0x22d64` | phase 2: `LDXI #9; PSHN; LRAS P+54; TRY,B` | starts 2.32 s |
-| `0x22d6c` | `PCL STT[648]` | **executes and never returns** |
-| `0x22d70` | `PCL STT[647]` — CONFIGURATION entry 3 | never reached |
-| `0x22d74` | `PCLS STT[11]` — **start init** | never reached |
+27128A 4-31 lists the eleven asynchronous events in priority order; number 5
+is "transmit buffer is empty", and 4-62 gives its code in the event block:
+**3**. That is exactly the constant the daemon's dispatch compares against
+(`LDS Q+72; CMPI #3` at `+0x23aa`, Q+72 being the byte the handler copied
+into `req+0`), and 255 — "completion for open link request" — is the other
+constant the driver's entry 3 tests. The vocabulary matches end to end.
 
-`STT[11]` is the procedure at `PB+0x9bc` that builds init's stack, pushes
-`LPPS STT[207]` — the routine at `PB+0x63e8` that `LRAS P+64`s the
-`/etc/init` string and execs it — and hands it to `PCL STT[332]`. It has
-exactly one caller, `0x22d74`, so nothing else can start init.
+The mask matters too: "IF ALL INTERRUPT CONDITIONS ARE DISABLED, NO
+ASYNCHRONOUS INTERRUPT WILL OCCUR" (4-32). The host interrupt mask is byte 22
+of the configuration block and byte 0 of subfunction 21, bit 2 being
+transmit-buffer-empty. **HP-UX writes `0x37`** — break, data available,
+transmit buffer empty, and both signal characters — measured, and it is why
+the model can honour the mask rather than firing unconditionally.
 
-`0x22d9e`, phase 2's `TRY` handler, is `0x37a38` at runtime: **the site that
-re-raised every fatal escape this boot ever had** (the 66s, then the 91s).
-Those were all this call failing; now it does not fail, it hangs.
+### The fix, and the second bug it uncovered
 
-### `STT[648]` is the TTY subsystem, and it blocks on a semaphore nobody posts
+`src/iop/focusasi.h`:
 
-`STT[648]` = **TTY SUBSYSTEM (seg 11) entry 2**. It configures the console
-through HP27128/30 and then, at **HP27128/30 +0x22cc**, does
+- `dma_complete()` senses **event 3** at the end of a write-device-data data
+  phase: every character has reached the terminal, which on this card is as
+  far as the SIO ever gets.
+- Read Transparent Status reports **AES** when an event is waiting and no
+  transaction is open (`!m_rts_report && op == IDL && !m_request`) — never
+  over the top of a logical channel, because AES replaces the LCN field.
+- `record_ready()` in `tick()` now senses **event 1** as well as posting
+  `STAT_AES`; the status byte was only half of what 4-6 describes, and a
+  keystroke could never have reached a driver that was not already reading.
+- **`take_data()` was giving the whole configuration block to the terminal.**
+  Only write-device-data's bytes are characters; write card configuration,
+  control device and control card send their data on the same order. That is
+  where the run of garbage ahead of the boot banner came from, and it is also
+  why the interrupt mask could not be read. Fixed, and the banner now starts
+  the output.
 
-    LDXI #108; LDS Q+64,I,X; DOWN,B
+`FOCUS_ASINOASYNC` silences the sensed events, which is the card exactly as
+it behaved before, and puts the stop back.
 
-on the completion semaphore inside its channel struct at +108 — absolute
-`0x1e8a00`. `FOCUS_SEMALL` censuses the entire boot at ~2000 semaphore
-operations, and **`0x1e8a00` appears exactly once: that `DOWN`, count 0.**
-Nothing ever posts it.
 
-The only code that would is **HP27128/30 +0x152a**:
+### The file system, and why it could not be mounted even when it is reached
 
-    LDIS #1; LDXI #112; STS Q+72,I,X     ; result := 1
-    LDXI #108; LDS Q+72,I,X; UP,B        ; post the completion
-
-and the path to it is guarded, at **+0x173c**, by the driver's request code
-in `Q-32` being **10**. Measured (`FOCUS_EATRACE=6f418:14`), the driver is
-entered with **12**, takes the `BCC.GL` at **+0x13d4** to `+0x1990`, and the
-poster is never reached. Watching `0x6f400:0x6f580` confirms it: seven
-instructions execute and stop at the guard. *(That guard is at +0x13d0 /
-+0x13d4; an earlier draft of this section said +0x173c, which was wrong.)*
-
-**So the open question is what is supposed to re-enter this driver with
-request code 10, and why nothing does.** The submission just before the
-`DOWN` goes through `PCL STT[21]` = CORE SYSTEM entry 355 (`PB+0x436c`),
-which looks up driver record `(Q-24)-8 = 0` in the table at `DB+240`
-(`0x1fe86c`), spins on a per-unit lock at record+56, and calls through
-`STT[348]`. No escape 63 is raised, so the record and its procedure exist
-and the call is made.
-
-### The card is not the problem
-
-`FOCUS_ASILOG` gives the whole console bring-up, and every request
-completes: read-card-information sf 253/254/255, write-card-configuration
-sf 5 and sf 0 (58 bytes, twice), control-device sf 5 ("clear the RS modem
-control signal", so no modem link and no solicited event is owed),
-control-card sf 2 — then every banner line as write-device-data on LCN 2,
-80 bytes each, the last 24 bytes, each ending `WD` → `RS` → `RTS` → IDL.
-The card then idles correctly at 1000 status reads a second.
-
-### The file system is never touched — and could not be mounted if it were
-
-`FOCUS_HPIBLOG`: **three HP-IB requests all boot** (`0b`, `03`, `01` — the
-card's go-online/IFC/REN bring-up) and nothing else. SDF_DISC executes only
-at module-init time (1.25 s) and never again. That follows from the hang
-above: the console blocks before anything mounts anything.
+`FOCUS_HPIBLOG` still shows the HP-IB card getting only its bring-up (`0b`,
+`03`, `01`) plus one `12` after the boot report, and SDF_DISC still executes
+only at module-init time: the configuration pass in §9 fails before anything
+mounts anything.
 
 Underneath that sits a second, independent blocker. `tools/sdf7914.py`
 establishes that the 7914 unit save is **tape 1 of two**, together holding
@@ -846,139 +839,38 @@ pins (`s_blksz` 1024, `s_fa`, `s_maxblk`). Note that today the loader reads
 its boot descriptor from file offset 0, which *is* disc block 1 because the
 image starts there; a whole-volume image shifts that by one block.
 
-### The completion path, decoded (2026-08-26)
 
-The waiter's own procedure is **seg 32 entry 7** (`PB+0x2208`), and what it
-builds before submitting says exactly how the wait is meant to end:
+## 9. Current frontier: the device configuration pass
 
-    +0x2250  LDS Q+68; LPPS STT[16]; LDXI #8;  PSTA,B   ; req+8  := a CALLBACK
-    +0x2256  ... LDXI #124 ...      LDXI #12; PSTA,B   ; req+12 := context
-    +0x2260  LDS Q+68; ADDI #24; PLDA; LDIS #4
-             DPF start=28,width=4; PSTA                ; req+24 bits 28:4 := 4
-    +0x22cc  PCL STT[21]; ... DOWN,B                   ; submit, then wait
+`PCL STT[647]` — CONFIGURATION entry 3 — now runs, at 3.28 s, and walks every
+driver module in the image: `2 -> 70`, `61`, `51`, `47`, `46`, `43`, `42`,
+`40`, `38`, `35`, `33`, `32`, `29`, `11`, `8`, each module's entry 2 called
+from CORE SYSTEM `+0x7e58`. Then it fails, and the machine prints **"System
+halted due to system error."** at about 14 s.
 
-**`STT[16]` is seg 32 entry 16 (`PB+0x21f4`), eleven instructions long, and
-it is the whole answer to "who posts the semaphore":**
+Two escapes, in order, both traced to a break:
 
-    LDS Q-20; LDXI #28; PLDA,B      ; the channel struct out of the request
-    LDXI #108; LSI,B                ; form [chan]+108  -- which IS 0x1e8a00
-    PCL STT[51]                     ; = CORE SYSTEM entry 35, the post
-    EXIT N=3
+- **115 at CORE SYSTEM `+0x7e48`.** Entry 315 walks the registered-driver
+  list from `DB+220`, asking each driver its identity (request code 11) and
+  comparing the answer with the key it was given. The key is **0**, no driver
+  answers 0, the walk reaches the `NULL` stub and runs out. The key comes
+  from a 20-byte configuration record CONFIGURATION built for itself at
+  1.231 s (`FOCUS_WWATCH=afb68:afb7b`, written from seg 49 `+0x13de`): its
+  fields are `{0x00e00000, 0, 1, 5, 0}` — key 0, then 1 and 5.
+- **110 at IOS and DDMs `+0xaf36`**, which is fatal. IOS calls the driver
+  with request 11 and then request 7, takes the top five bits of the word at
+  `[req]+24` as a device class, and escapes 110 when it does not match the
+  class asked for — again 0. The frames above it are **HP27110** (`0x6ab50`,
+  `0x6cebe`), the HP-IB interface driver: the device being configured is the
+  system disc's interface at select code 5.
 
-So the design is: submit a request carrying its own completion callback; the
-I/O system calls that callback; the callback posts `chan+108`; the waiter
-wakes. **Nothing ever calls the callback**, which is why `0x1e8a00` has one
-operation in the whole boot.
+So the next question is what fills that configuration record's key, and why
+the class the HP-IB path reports is not the one the record asks for.
 
-### How the driver is reached at all, and what the request codes are
+Underneath that sits the second, independent blocker recorded below: the
+mounted image is tape 1 of a two-tape volume, and the inode table is on
+tape 2, so even a configured disc has no file-system metadata to read.
 
-**No STT in any segment names segment 32.** (The four apparent hits from a
-byte-aligned scan are all coincidental instruction words at odd offsets —
-check alignment before believing such a scan.) The driver is reached only
-through **procedure labels held in data**: its own entry 1 (`PB+0x2fc8`)
-registers the name **"HP-UX-TERMINAL"** together with `LPPS STT[2]` through
-`PCL STT[59]` = CORE SYSTEM entry 317. Entry 2 is the published DDM
-procedure, and its single `PCLS STT[11]` at `+0x2672` is what reaches the
-dispatcher whose request-code chain runs 8, 10, 12, 13, 14, 16, 18, 24, 26.
-
-Two of those are now known:
-
-- **12 is an informational query.** It stores 960, a constant from the
-  pool, 0 and 1 into the caller's structure and returns. No I/O, no
-  completion. The "entered with 12" measurement above is this call, and it
-  is unrelated to the stuck wait.
-- **10 is the completion/event arm** — it reads the channel out of its
-  argument, checks the halfword at +24 against 1, and is the path that
-  reaches the poster at `+0x152a`.
-
-### What `STT[348]` does, and the queue it arms
-
-`CORE SYSTEM STT[348]` is the routine the submission ends in, and its shape
-is:
-
-    +0x3e9e  PSLA,B; TEST,B;            BCCS.GL 0x12bd0   ; EARLY EXIT 1
-    +0x3ea4  LDIS #136; PLDA,B; TEST,B; BCCS.E  0x12bd0   ; EARLY EXIT 2
-    +0x3eac  LDIS #116; PLDA,B;         BRO     0x12b72   ; pick which list
-    +0x3eb2  LDIS #144 ... PSTA,B                         ; ARM the gate
-    +0x3ec2  LDIS #4; PLDA,B; ANDI #7; ADDI #64; IOW io=0x4a   ; kick the card
-    +0x3ed4  EXIT N=1
-
-**`IOW io=0x4a` is not a doorbell.** Opcode `0x4a` is octal **0112**, and
-`(op & 7) == 2` makes it **`WIF 9`** — write interface register 9 — on the
-card named by the word beneath, with the value `pa + 64`. It is the FR9
-config write, the card kick, and on the ASI it arms event `0x30`. *(An
-earlier draft of this section read it as `SMSG` raising the doorbell. That
-was wrong.)*
-
-That path is **completely healthy**: over a boot, `FOCUS_ASIDBG` counts 14
-FR9 events armed, 14 queued and **14 read** — every one consumed, the last
-at t=2.369.
-
-The "queue" the routine arms is the **IOP command-list gate**. With the
-driver's data base at `0x1e97d4`, `base+144`/`base+152` are `0x1e9864` and
-`0x1e986c` — the very gate cells §6 spent a day on. Watching them
-(`FOCUS_WWATCH=1e9860:1e986f` from t=2.33) shows it working: armed with
-`0x1e9948` at 2.331–2.334 (the console open) and with `0x1e9c50` from 2.336
-(the banner writes), all from `CORE SYSTEM +0x3ec0`, interleaved with the
-idle re-arm to `0x1e9874` from `+0x3be4`.
-
-That idle re-arm is the interrupt handler's **IDL arm** doing
-`LDS DB+204; LNIS #1; STD DB+144` — about a thousand times a second.
-
-### The busy path is a work queue, and it works
-
-`STT[348]`'s first act is an **atomic test-and-set on the handler's
-in-progress flag** `DB+36`: `LDIS #36; PSLA,B; TEST,B; BCCS.GL`. When the
-handler is already running, the early exit **appends the work to a linked
-list** — head `DB+40` (`0x1e97fc`), tail `DB+44` (`0x1e9800`), link at
-entry+52:
-
-    LDIS #44; PLDA,B; BCCS.E <empty>   ; tail?
-    LDS Q-16; PSTA                     ; [tail] := new
-    LDIS #44; LDS Q-16; ADDI #52; DUP; ZERO; PSTA; PSTA,B
-
-and the handler's loop head drains it (`LDS DB+40; BRZ`, then `STD DB+40`
-to clear head and tail together). Watched from t=2.33 that queue is
-**healthy**: appended at 2.336 and 2.338, popped by the handler at
-`+0x3b90` in the same millisecond each time — eight writes, four clean
-pairs, nothing left behind.
-
-The popped work is dispatched too. `FOCUS_EATRACE` at the pop shows the SWI
-arm running on it: LCN 2 out of `DB+56`, bounds-checked against `DB+12`,
-channel struct `0x1e9c18` at state 4, the state-4 arm, state := 24, and the
-transfer armed from `DB+72`.
-
-**Correction: that queue holds IOP command-list blocks, not the driver's
-request blocks.** `0x1e98d4` dumps as `00000038 00000000 04000042 …` — a
-command word (`0x42` = `WIF8`). An earlier draft of this section read the
-stuck request as "queued and never started"; the transaction queue is fine
-and the transaction does start.
-
-### The real request block, and what is actually missing
-
-The waiter's request block is found by searching memory for its callback
-label — `FOCUS_FIND=80040020` (seg 32 entry 16) locates it at `0x1e9dbc`, so
-the block is **`0x1e9db4`**:
-
-    +8   80040020    the callback, seg 32 entry 16
-    +12  001e9db4    context: itself
-    +24  00011f04    low nibble 4 -- the type entry 7 set with DPF start=28,width=4
-    +28  0076899c    the channel, a tagged pointer -> 0x1e899c
-
-**`FOCUS_WWATCH=1e9db4:1e9df3` from t=2.35 catches ZERO writes.** The
-transaction completes, and the block is never touched again.
-
-So the missing step is not the queue and not the transaction: it is that
-**nothing walks the outstanding-request list to call each request's callback
-at +8 when a transaction succeeds.** The *failure* path does walk such a
-list — §6's teardown at `+0x4118` stores 66 into every entry's +32, +12 and
-+4 — so the success path should walk the same one.
-
-**Next: find the success-side counterpart of that teardown walk, and why it
-either does not run or finds the list empty.** Note that dynamic dispatch
-here cannot be found by scanning for an indirect call — **CORE SYSTEM
-contains no `PCL …,I` at all**; a label taken from data is called by writing
-it into an STT slot at run time and calling that slot by index.
 
 ### The doorbell, and why the obvious knob is not the answer
 

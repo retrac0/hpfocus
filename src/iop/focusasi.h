@@ -271,6 +271,32 @@ struct asi_card : public iop_interface
 		RTS_ERT = 5         // error trap in that transaction
 	};
 
+	// Asynchronous event codes, byte 1 of the event block an AES report
+	// carries in place of the LCN (27128A 4-61..4-63). Only the ones this
+	// card can actually raise are named.
+	enum : u8
+	{
+		AEV_DATA     = 1,   // a data message was received from the device
+		AEV_BREAK    = 2,   // break received from the device
+		AEV_TX_EMPTY = 3,   // the transmit buffer is empty
+		AEV_LINK     = 4    // an opened link was closed or disconnected
+	};
+
+	// Host interrupt mask, byte 0 of write-card-configuration subfunction
+	// 21 and byte 22 of the whole configuration block (27128A 4-42, 4-53).
+	// "IF ALL INTERRUPT CONDITIONS ARE DISABLED, NO ASYNCHRONOUS INTERRUPT
+	// WILL OCCUR" (4-32), so the mask is what decides whether an event the
+	// firmware senses ever reaches the host.
+	enum : u8
+	{
+		MASK_BREAK    = 0x01,
+		MASK_DATA     = 0x02,
+		MASK_TX_EMPTY = 0x04,
+		MASK_LINK     = 0x08,
+		MASK_SIG1     = 0x10,
+		MASK_SIG2     = 0x20
+	};
+
 	//----------------------------------------------------------------
 	//  iop_interface
 	//----------------------------------------------------------------
@@ -541,6 +567,27 @@ struct asi_card : public iop_interface
 		// DCE, DDMA, DINT, CIRQ, and 66 into every outstanding request.
 		if ((m_order == ORD_RD || m_order == ORD_WD) && m_request)
 			m_rts_report = RTS_EDD;
+		// The data phase of a request that sends the card a block rather
+		// than characters: read it now, while it is still whole, and
+		// leave nothing behind -- a block still sitting in m_in when the
+		// next Connect Logical Channel arrives would be read as that
+		// transaction's request block.
+		if (output && m_order == ORD_WD && m_request != REQ_WRITE_DATA)
+		{
+			if (m_request == REQ_WRITE_CARD_CFG)
+				take_card_configuration();
+			m_in.clear();
+		}
+		// "The transmit buffer is empty" -- event 3, and the one the tty
+		// subsystem's drain waits for. Every character of this write has
+		// been handed to the terminal, which on this card is as far as
+		// the SIO ever gets (27128A 4-31, 4-62). Without it the console
+		// driver's event daemon is never woken, the drain flag in its
+		// channel record is set by every write and cleared by nothing,
+		// and the boot stops in TTY SUBSYSTEM entry 2 the moment it has
+		// finished printing the boot report. See docs/HPUX.md 8.
+		if (output && m_order == ORD_WD && m_request == REQ_WRITE_DATA)
+			raise_async(AEV_TX_EMPTY, MASK_TX_EMPTY, "write device data done");
 		// The transfer the command asked for is done, so the card
 		// announces the completion the driver is waiting for.
 		start_event_timer();
@@ -582,9 +629,14 @@ struct asi_card : public iop_interface
 			// "If no read request is pending, and the card has a record
 			// available for the host, and the host interrupt mask allows
 			// 'data available' interrupt, an asynchronous event is sent
-			// to the host to start the read" (27128A 4-6).
+			// to the host to start the read" (27128A 4-6). The status
+			// byte is only half of that: the event itself is told
+			// through the next Read Transparent Status, as event 1.
 			if (record_ready())
+			{
+				raise_async(AEV_DATA, MASK_DATA, "record ready");
 				post(STAT_AES);
+			}
 		}
 	}
 
@@ -696,7 +748,16 @@ private:
 			{
 			// A report the card owes the host takes precedence over the
 			// swept default, and is consumed by the read.
-			const u8 op = m_rts_report ? m_rts_report : rts_opcode;
+			u8 op = m_rts_report ? m_rts_report : rts_opcode;
+			// An asynchronous event the firmware has sensed is told
+			// here, and only here -- but never over the top of a
+			// transaction: the SWI/EDD/status conversation belongs to
+			// the logical channel that is open, and AES replaces the
+			// LCN field, so it has to wait until that channel has been
+			// released (27128A 4-60/4-61).
+			if (!m_rts_report && op == RTS_IDL && !m_request
+					&& !m_async.empty())
+				op = RTS_AES;
 			m_rts_report = 0;
 			if (dbg())
 				dbg()("[%8.3fs asi%u RTS reports %u lcn=%u]\n",
@@ -705,7 +766,17 @@ private:
 			m_report.push_back(op);
 			if (op == RTS_AES)
 			{
-				m_report.push_back(rts_event);    // event code
+				// The event block: code, then the port ID, then whatever
+				// the code carries with it -- nothing, for the events
+				// this card raises. FOCUS_ASIEVENT2 still names the code
+				// when the opcode was forced rather than sensed.
+				u8 code = rts_event;
+				if (!m_async.empty())
+				{
+					code = m_async.front();
+					m_async.pop_front();
+				}
+				m_report.push_back(code);         // event code
 				m_report.push_back(0);            // port ID: the ASI has one
 			}
 			else
@@ -810,15 +881,65 @@ private:
 
 	void take_data(u8 b)
 	{
-		// Under a write-data order the bytes are characters for the
-		// terminal; under write-control they are the request block.
-		if (m_order == ORD_WD)
+		// Under a write-data order the bytes are the DATA PHASE of
+		// whatever request the CLC opened, and only write device data's
+		// are characters for the terminal. Write card configuration,
+		// control device and control card send their data blocks on the
+		// same order (27128A 4-4), and the card has to READ those: taking
+		// every WD byte for a character threw the configuration away --
+		// with the visible symptom that the 58-byte block the console
+		// open writes was printed to the terminal as garbage ahead of the
+		// boot banner. Under write-control the bytes are the request
+		// block, as before.
+		if (m_order == ORD_WD && m_request == REQ_WRITE_DATA)
 		{
 			if (on_char)
 				on_char(b);
 			return;
 		}
 		m_in.push_back(b);
+	}
+
+	// The configuration block a write-card-configuration request just
+	// delivered. Only the host and modem interrupt masks are kept: they
+	// are what gates every asynchronous event, and the rest of the block
+	// describes a real UART's framing, which this card does not model.
+	// Subfunction 0 writes the whole block, where the masks are bytes 22
+	// and 23; subfunction 21 writes just the two of them (27128A 4-42,
+	// 4-53).
+	void take_card_configuration()
+	{
+		unsigned at = ~0u;
+		if (m_subfunction == 0 && m_in.size() > 23)
+			at = 22;
+		else if (m_subfunction == 21 && m_in.size() >= 2)
+			at = 0;
+		if (at != ~0u)
+		{
+			m_host_mask = m_in[at];
+			m_modem_mask = m_in[at + 1];
+			if (dbg())
+				dbg()("[%8.3fs asi%u interrupt mask host=%02x modem=%02x"
+						" (sf %u)]\n", stamp(), pa, m_host_mask,
+						m_modem_mask, m_subfunction);
+		}
+		m_in.clear();
+	}
+
+	// Sense an asynchronous event. The mask decides whether it is
+	// announced at all; a code already waiting is not repeated, which is
+	// the same collapsing arm_event() does and for the same reason -- the
+	// firmware has one event of each kind to tell, not a backlog.
+	void raise_async(u8 code, u8 mask, const char *why)
+	{
+		if (no_async || !(m_host_mask & mask))
+			return;
+		if (std::find(m_async.begin(), m_async.end(), code) != m_async.end())
+			return;
+		if (dbg())
+			dbg()("[%8.3fs asi%u async event %u sensed (%s)]\n",
+					stamp(), pa, code, why);
+		m_async.push_back(code);
 	}
 
 	// A Connect Logical Channel request block arrived (27128A 4-3).
@@ -1049,6 +1170,7 @@ private:
 		m_in.clear();
 		m_out.clear();
 		m_report.clear();
+		m_async.clear();
 		m_status_posted = false;
 		m_order = 0xff;
 	}
@@ -1089,6 +1211,11 @@ private:
 	// byte and cannot, because it is already gone by the time RD runs.
 	std::deque<u8> m_report;    // ...and what it reads for an RTS
 	std::vector<u8> m_in;       // what the host has written
+	// Asynchronous events the firmware has sensed and not yet told, in
+	// the order it sensed them; an AES report takes one off the front.
+	std::deque<u8> m_async;
+	u8 m_host_mask = 0;         // which events may be announced...
+	u8 m_modem_mask = 0;        // ...and which modem lines, unused here
 
 	u32 m_fr[16] = {};
 	u8 m_order = 0xff;
@@ -1127,6 +1254,10 @@ public:
 	u16 lcn_force = 0;
 	// FOCUS_ASICLCRTS overrides what the card reports after a CLC.
 	u8 clc_report = 0;
+	// FOCUS_ASINOASYNC suppresses every asynchronous event the firmware
+	// senses, which is the card as it behaved before they were modelled:
+	// the A/B control for the console drain (docs/HPUX.md 8).
+	bool no_async = false;
 private:
 	u8 m_command = 0xff;
 	u32 m_config = 0;

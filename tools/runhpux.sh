@@ -31,9 +31,13 @@
 #                           Palo Alto, CA  94303
 #     CLOCK AND DATE NOT SET
 #
-# No system error, and the whole escape log is five benign 941s -- the last
-# of which is that last line. What has NOT happened yet is everything after
-# the boot report: the root filesystem and init. See docs/HPUX.md 6.
+# The tty subsystem then DRAINS the console -- it waits for the card's
+# "transmit buffer is empty" asynchronous event -- and goes on to the device
+# configuration pass, which is where the boot now stops: a driver lookup for
+# a configuration record whose key is 0 finds nothing, the HP-IB path reports
+# a device class that does not match, and the machine halts on error 110.
+# What has NOT happened yet is the root filesystem and init.
+# See docs/HPUX.md 8 (the drain, solved) and 9 (the frontier).
 
 set -e
 cd "$(dirname "$0")/.."

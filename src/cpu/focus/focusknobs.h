@@ -188,6 +188,12 @@ inline constexpr spec CATALOGUE[] = {
   "order. The driver's idle loop is PAU then read transparent status, so "
   "this is what paces it; 1 ms reproduces the ~1000 status reads a second "
   "the real driver makes." },
+{ "FOCUS_ASINOASYNC", "", group::cards, true,
+  "Silence the asynchronous events the serial card's firmware senses -- "
+  "'transmit buffer is empty', which the tty subsystem's drain waits for, "
+  "and 'data available'. The A/B control for the console drain: with it on "
+  "the boot stops after its banner, exactly as it did before the events "
+  "were modelled." },
 { "FOCUS_ASIRTS", "<n>", group::cards, true,
   "The opcode the card reports through Read Transparent Status." },
 { "FOCUS_ASISWITCHES", "<hex>", group::cards, true,

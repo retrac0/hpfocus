@@ -921,25 +921,50 @@ answer in the card's outbound queue — fetching a terminal record on `RD`
 throws it away, which is exactly what happened to the console open's first
 transaction (the switch byte it asks for with subfunction 253).
 
-##### Where the 540 console stops
+##### Asynchronous events — and they are not optional
 
-**It prints.** The panic report reaches the terminal in full — the message,
-the register file, the stack, the I/O state and the segment table. That is
-the whole write path working end to end: CLC, request block, configuration
+The event list *(4-30/4-31)* is eleven unsolicited conditions in priority
+order, and two of them are what a console runs on: **"a data record was
+received"** and **"the transmit buffer is empty"**. The card tells one by
+answering `AES` (opcode 4) to a Read Transparent Status, where an **event
+block** replaces the LCN field *(4-61)*:
+
+```
+byte 1    event code    1 data message received   3 transmit buffer empty
+                        2 break received          4 link closed
+                        5/6 signal characters     9,13-16 modem lines
+                        255 completion for an open-link request
+byte 2    port ID (the ASI has one, so always 0)
+byte 3+   additional information, by event code
+```
+
+Nothing gets through unless its mask bit is set: "IF ALL INTERRUPT
+CONDITIONS ARE DISABLED, NO ASYNCHRONOUS INTERRUPT WILL OCCUR" *(4-32)*. The
+host interrupt mask is byte 22 of the configuration block and byte 0 of
+write-card-configuration subfunction 21 — bit 0 break, bit 1 data available,
+bit 2 transmit buffer empty, bit 3 link closed, bits 4/5 the signal
+characters *(4-42, 4-53)*. **HP-UX 5.30 writes `0x37`**, measured.
+
+These are load-bearing, not decoration. HP-UX's console driver runs an
+**event daemon** whose only job is to wait for them, and the tty subsystem
+drains the console — waits for "transmit buffer is empty" — as the last act
+of printing the boot report. A card that never sensed the event stopped the
+boot dead there for months; see docs/HPUX.md §8 for the whole chain and
+`FOCUS_ASINOASYNC` for the A/B.
+
+Two consequences for the model, both now implemented: an AES report must
+never preempt an open logical channel (it replaces the LCN, so it waits
+until the transaction is released), and only *write device data* bytes on a
+`WD` order are characters — write card configuration, control device and
+control card send their data blocks on the same order and the card has to
+read them.
+
+##### The 540 console prints
+
+The panic report reaches the terminal in full — the message, the register
+file, the stack, the I/O state and the segment table. That is the whole
+write path working end to end: CLC, request block, configuration
 subfunctions, and 80-column `write device data`.
-
-What still fails is the **console driver's own open**. Its command list
-cycles `PAU` → suspend on ICEI → resume when the card asks for an order →
-`RTS` → read 17 bytes → dispatch, and it keeps choosing to poll rather than
-opening a transaction, because the emulated card answers `IDL`, "nothing to
-do". Its CLC transaction is built and waiting in the list at all times
-(`WIF8 0xb8`, `WDS 0x834` outbound, seven bytes) and the gate in front of
-it is simply never pointed at it. Forcing any other RTS opcode as a
-constant is worse, not better — so what a real ASI reports at this point,
-and when, is the open question. The event list *(4-30/4-31)* is the place
-to look: eleven asynchronous events in priority order, of which "transmit
-buffer is empty" and "a data record was received" are the two a console
-would turn on.
 
 #### 2.6.4 27130A 8-channel MUX
 
