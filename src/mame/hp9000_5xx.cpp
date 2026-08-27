@@ -442,6 +442,11 @@ public:
 	// a record, the HP-IB card working through a transfer -- get a call
 	// per IOP tick. A card that is purely register-driven ignores it.
 	virtual void focus_tick() { }
+	// Called once from machine_start with the select code the card was
+	// plugged into: the card reads its own knobs, names its own log and
+	// picks up its own medium. What genuinely needs the machine around it
+	// -- binding a serial card to the console -- stays with the driver.
+	virtual void focus_configure(focus::iop_core &iop, unsigned sc) { }
 };
 
 class hp27128_asi_device : public device_t, public device_focus_cio_interface
@@ -462,6 +467,58 @@ protected:
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
 	virtual void focus_tick() override { card.tick(); }
+	virtual void focus_configure(focus::iop_core &iop, unsigned sc) override
+	{
+		card.iop = &iop;
+		card.pa = sc;
+		arm_log(card.log, "asi", sc, "FOCUS_ASILOG");
+		// FOCUS_ASILOGMAX raises the line cap: a driver polling
+		// status outruns 2000 lines long before the interesting
+		// part of a dialogue.
+		card.log.set_cap(unsigned(
+				knob::number("FOCUS_ASILOGMAX", card.log.cap())));
+		// FOCUS_ASIID answers a different card identity -- 5 is the
+		// 27130A eight-channel multiplexer, which HP-UX drives with
+		// the same module (HP27128/30).
+		card.card_id = u8(knob::number("FOCUS_ASIID", card.card_id));
+		card.fr1_force = knob::number("FOCUS_ASIFR1", card.fr1_force);
+		card.identity = u16(knob::number("FOCUS_ASIIDENT", card.identity));
+		card.event_done =
+				u8(knob::number("FOCUS_ASIEVENT", card.event_done));
+		// FOCUS_ASICFGEVENT sweeps the answer to an FR9 write; the
+		// console driver only tests its high nibble.
+		card.event_configured =
+				u8(knob::number("FOCUS_ASICFGEVENT", card.event_configured));
+		// FOCUS_ASISWITCHES sets the card's configuration switch
+		// byte, which the driver reads with subfunction 253.
+		card.switches =
+				u8(knob::number("FOCUS_ASISWITCHES", card.switches));
+		// FOCUS_ASIRTS / FOCUS_ASIEVENT2 sweep what the card reports
+		// through Read Transparent Status -- the opcode, and the
+		// event code it carries under AES.
+		// FOCUS_ASIEVDELAY sets how many milliseconds of card time
+		// pass before a completion event is announced.
+		card.event_delay_ms =
+				unsigned(knob::number("FOCUS_ASIEVDELAY", card.event_delay_ms));
+		// FOCUS_ASIPAUSE sets how long a Pause order pauses, which
+		// is what paces the driver's polling loop.
+		card.pause_ms =
+				unsigned(knob::number("FOCUS_ASIPAUSE", card.pause_ms));
+		card.clc_report =
+				u8(knob::number("FOCUS_ASICLCRTS", card.clc_report));
+		card.lcn_force = u16(knob::number("FOCUS_ASILCN", card.lcn_force));
+		card.rts_opcode = u8(knob::number("FOCUS_ASIRTS", card.rts_opcode));
+		card.rts_event = u8(knob::number("FOCUS_ASIEVENT2", card.rts_event));
+		// FOCUS_ASINOASYNC silences the asynchronous events the
+		// firmware senses -- the transmit-buffer-empty the console
+		// drain waits for, and the data-available a typed record
+		// raises. The A/B control for docs/HPUX.md 8.
+		card.no_async = knob::flag("FOCUS_ASINOASYNC").on();
+		// FOCUS_ASIMPX sweeps the multiplexing capability in the
+		// identity block: 0 subchannel only, 1 in-channel only,
+		// 2 both (27128A 4-67; the ASI ships configured with 1).
+		card.mpx = u8(knob::number("FOCUS_ASIMPX", card.mpx));
+	}
 };
 
 // The 27110A and the drive on its bus. The medium belongs to the card,
@@ -498,6 +555,33 @@ private:
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
 	virtual void focus_tick() override { card.tick(); }
+	virtual void focus_configure(focus::iop_core &iop, unsigned sc) override
+	{
+		card.iop = &iop;
+		card.pa = sc;
+		arm_log(card.log, "hpib", sc, "FOCUS_HPIBLOG");
+		card.identity = u16(knob::number("FOCUS_HPIBIDENT", card.identity));
+		card.device_address =
+				u8(knob::number("FOCUS_HPIBADDR", card.device_address));
+		// The drive on this card's bus. Its medium is the card's own
+		// image device; FOCUS_HPIBDISC remains as a way to hand a raw
+		// file to a card without going through MAME's media system.
+		if (media().has_media())
+			card.disc.image = media().data();
+		if (const char *v = knob::text("FOCUS_HPIBDISC").get())
+		{
+			bool short_read = false;
+			if (!read_file(v, card.disc.image, short_read))
+				osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
+			else if (short_read)
+				osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
+		}
+		if (card.disc.loaded())
+			osd_printf_info("cio%u: CS/80 drive at HP-IB address %u, "
+					"%u blocks\n", sc, card.device_address,
+					card.disc.blocks());
+		iop.enable_interrupt(sc);
+	}
 };
 
 DEFINE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device, "hp27128_asi",
@@ -534,6 +618,15 @@ public:
 		device_focus_cio_interface *const c =
 				dynamic_cast<device_focus_cio_interface *>(get_card_device());
 		return c ? &c->focus_iface() : nullptr;
+	}
+
+	// Hand the card its select code and let it read its own knobs. An
+	// empty slot has nothing to configure.
+	void focus_configure(focus::iop_core &iop, unsigned sc)
+	{
+		if (device_focus_cio_interface *const c =
+				dynamic_cast<device_focus_cio_interface *>(get_card_device()))
+			c->focus_configure(iop, sc);
 	}
 
 protected:
@@ -1570,68 +1663,16 @@ void hp9000_5xx_state::configure_backplane()
 		focus::iop_interface *const iface = m_cio[sc]->iface();
 		if (!iface)
 			continue;
+		m_cio[sc]->focus_configure(m_iop, sc);
+		// The console is the serial card in slot 0 of a machine that
+		// has no display: what it prints goes to the terminal window
+		// and to stdout, and what the window types goes back into it.
+		// This is the one thing a card cannot do for itself, because
+		// it is not about the card -- it is about which card this
+		// machine is listening to.
 		if (auto *asi = dynamic_cast<hp27128_asi_device *>(
 				m_cio[sc]->get_card_device()))
 		{
-			asi->card.iop = &m_iop;
-			asi->card.pa = sc;
-			arm_log(asi->card.log, "asi", sc, "FOCUS_ASILOG");
-			// FOCUS_ASILOGMAX raises the line cap: a driver polling
-			// status outruns 2000 lines long before the interesting
-			// part of a dialogue.
-			asi->card.log.set_cap(unsigned(
-					knob::number("FOCUS_ASILOGMAX", asi->card.log.cap())));
-			// FOCUS_ASIID answers a different card identity -- 5 is the
-			// 27130A eight-channel multiplexer, which HP-UX drives with
-			// the same module (HP27128/30).
-			asi->card.card_id =
-					u8(knob::number("FOCUS_ASIID", asi->card.card_id));
-			asi->card.fr1_force =
-					knob::number("FOCUS_ASIFR1", asi->card.fr1_force);
-			asi->card.identity =
-					u16(knob::number("FOCUS_ASIIDENT", asi->card.identity));
-			asi->card.event_done =
-					u8(knob::number("FOCUS_ASIEVENT", asi->card.event_done));
-			// FOCUS_ASICFGEVENT sweeps the answer to an FR9 write; the
-			// console driver only tests its high nibble.
-			asi->card.event_configured =
-					u8(knob::number("FOCUS_ASICFGEVENT", asi->card.event_configured));
-			// FOCUS_ASISWITCHES sets the card's configuration switch
-			// byte, which the driver reads with subfunction 253.
-			asi->card.switches =
-					u8(knob::number("FOCUS_ASISWITCHES", asi->card.switches));
-			// FOCUS_ASIRTS / FOCUS_ASIEVENT2 sweep what the card reports
-			// through Read Transparent Status -- the opcode, and the
-			// event code it carries under AES.
-			// FOCUS_ASIEVDELAY sets how many milliseconds of card time
-			// pass before a completion event is announced.
-			asi->card.event_delay_ms =
-					unsigned(knob::number("FOCUS_ASIEVDELAY", asi->card.event_delay_ms));
-			// FOCUS_ASIPAUSE sets how long a Pause order pauses, which
-			// is what paces the driver's polling loop.
-			asi->card.pause_ms =
-					unsigned(knob::number("FOCUS_ASIPAUSE", asi->card.pause_ms));
-			asi->card.clc_report =
-					u8(knob::number("FOCUS_ASICLCRTS", asi->card.clc_report));
-			asi->card.lcn_force =
-					u16(knob::number("FOCUS_ASILCN", asi->card.lcn_force));
-			asi->card.rts_opcode =
-					u8(knob::number("FOCUS_ASIRTS", asi->card.rts_opcode));
-			asi->card.rts_event =
-					u8(knob::number("FOCUS_ASIEVENT2", asi->card.rts_event));
-			// FOCUS_ASINOASYNC silences the asynchronous events the
-			// firmware senses -- the transmit-buffer-empty the console
-			// drain waits for, and the data-available a typed record
-			// raises. The A/B control for docs/HPUX.md 8.
-			asi->card.no_async = knob::flag("FOCUS_ASINOASYNC").on();
-			// FOCUS_ASIMPX sweeps the multiplexing capability in the
-			// identity block: 0 subchannel only, 1 in-channel only,
-			// 2 both (27128A 4-67; the ASI ships configured with 1).
-			asi->card.mpx = u8(knob::number("FOCUS_ASIMPX", asi->card.mpx));
-			// The console is the serial card in slot 0 of a machine
-			// that has no display: what it prints goes to the terminal
-			// window and to stdout, and what the window types goes back
-			// into it.
 			if (m_console_is_asi && sc == 0)
 			{
 				m_console_asi = &asi->card;
@@ -1645,35 +1686,6 @@ void hp9000_5xx_state::configure_backplane()
 			}
 			else
 				asi->card.on_char = [this](u8 c) { trip_watch(c); };
-		}
-		else if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
-				m_cio[sc]->get_card_device()))
-		{
-			hpib->card.iop = &m_iop;
-			hpib->card.pa = sc;
-			arm_log(hpib->card.log, "hpib", sc, "FOCUS_HPIBLOG");
-			hpib->card.identity =
-					u16(knob::number("FOCUS_HPIBIDENT", hpib->card.identity));
-			hpib->card.device_address =
-					u8(knob::number("FOCUS_HPIBADDR", hpib->card.device_address));
-			// The drive on this card's bus. Its medium is the card's own
-			// image device; FOCUS_HPIBDISC remains as a way to hand a raw
-			// file to a card without going through MAME's media system.
-			if (hpib->media().has_media())
-				hpib->card.disc.image = hpib->media().data();
-			if (const char *v = knob::text("FOCUS_HPIBDISC").get())
-			{
-				bool short_read = false;
-				if (!read_file(v, hpib->card.disc.image, short_read))
-					osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
-				else if (short_read)
-					osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
-			}
-			if (hpib->card.disc.loaded())
-				osd_printf_info("cio%u: CS/80 drive at HP-IB address %u, "
-						"%u blocks\n", sc, hpib->card.device_address,
-						hpib->card.disc.blocks());
-			m_iop.enable_interrupt(sc);
 		}
 		m_iop.attach(sc, iface);
 		osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
