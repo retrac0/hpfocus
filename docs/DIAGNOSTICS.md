@@ -54,12 +54,16 @@ replaced, because the correlation inverts:
 | `MAIN_MENU` | 15 | **0** | loads, then trap 021 at `RUN` |
 
 Files that ship *with* a transfer table refuse to load; files that ship
-without one load and then fail at `RUN`. Neither the SDF mode bits nor any
-protect field explains the refusal — `sdfread.py --long` shows mode `000000`
-on all four — and `CAT_BOOT`, which has a 21-entry table, loads and runs
-perfectly from the fixed disc. So the difference is not "has a table" on its
-own; it is something about these files or this medium, and it is a second
-open question rather than an answer to the first.
+without one load and then fail at `RUN`.
+
+> **Answered, 2026-08-26, and the correlation above is a coincidence.** The
+> refusal is a **PROTECT field in the i-node**, at word +16, which the
+> fs(5) page does not name and `sdfread.py` did not decode: top byte `0x03`
+> protected, `0x53` not. It has nothing to do with the transfer table —
+> the two just happen to line up on `BASDEM1`, where the fourteen protected
+> files are all launcher stubs and the stubs all carry tables. §3 has the
+> evidence and what it unblocked; `sdfread.py` now prints a `P` column, so
+> this is visible at a glance rather than needing a hex dump.
 
 Read any of them with [`tools/progfile.py`](../tools/progfile.py), which
 documents the file format in its header comment:
@@ -246,11 +250,58 @@ the whole display subsystem passes clean for the first time:
   HARDWARE.md §2.7.4 item 11 has the argument; `FOCUS_MVBMEMMOVE` is the
   A/B control.
 
-**The demonstration discs are still out of reach**, and for a reason that
-has nothing to do with graphics: `LOAD "DEMO/func_3d"` answers `ERROR 62:
-File is protected or wrong PROTECT code`, the same as every other demo
-program (§1). Those are the natural workout for a graphics display and they
-are blocked one layer below it.
+**2026-08-26: the demonstration discs load and run.** `ERROR 62` and the
+`ERROR 56` behind it are both answered, and neither was a graphics problem.
+
+**`ERROR 62` is real protection, not an emulator fault.** The i-node's word
+at **+16** is a PROTECT field the fs(5) page does not name: its top byte is
+`0x03` on a protected file and `0x53` on an unprotected one, and a volume
+that never used PROTECT leaves the whole word `0xffffffff`. On `BASDEM1`
+every file that answers `ERROR 62` has `0x03` and every file that loads has
+`0x53` or `0xff`, with no exceptions; clearing the byte on a copy of the
+image makes the same `LOAD` succeed. `tools/sdfread.py` now prints a `P`
+column for it. The 9020 test discs are `0xff` throughout, which is why
+`TEST` never had the problem.
+
+**The type field explains `ERROR 58`.** `uftype` is BASIC's user file type
+— `-5680` a stored program, `-5687` a data file, `-5693` a directory — and
+`LOAD` on a data file is `ERROR 58: Improper file type`.
+`/DEMO/DIR/others/SIERPINSKI` is data that the `SP` programs plot, not a
+program. `sdfread.py --long` names the type.
+
+**The real programs are on disc 4.** The fourteen protected files in
+`/DEMO` are launcher stubs: each sets `/DEMO/DIR/others` and loads a
+program from there by name. Those directories are empty on discs 1, 2, 3, 5
+and 6; `BASDEM4` carries the real set — `QIX` and `SPIRAL_CONTROL` as
+programs, `SIERPINSKI`, `SP1`–`SP3` and `BPLOT1` as their data — and every
+one of them is **unprotected**. Nothing has to be patched to reach them:
+
+    FOCUS_TYPE='LOAD "/DEMO/DIR/others/QIX"\nRUN\n;\x7040\n;\x7050\n;\x700\n' \
+    FOCUS_TYPEAT=28,52,60,68 tools/runbasic-hd.sh software/hd/diag.img -- \
+        -mpb3 1m -mpb4 1m -flop1 "$PWD/software/demos/BASDEM4.TD0" -str 110
+
+`QIX` loads, runs, prints its partition table and takes all three of its
+answers; `SPIRAL_CONTROL` loads and runs. Both then stop on something that
+is neither the file system nor the display: `SPIRAL_CONTROL` reports
+`ERROR 504 IN 110: Partition(s) must be in the STOP state`, and `QIX`
+reaches its own draw loop without issuing a graphics command. The frontier
+here is now **partitions**, and a default `PLOTTER IS` — a program that
+does not assign one draws nothing, which a real 520 would not do.
+
+**Getting there needed two things in the emulator**, both fixed:
+
+- **lower-case `e` could not be typed.** It came out `{`, and had been
+  written up as a key this model has no way to press. It was the wrong
+  keycode: `E` was mapped to `0x2a` because a sweep of the unshifted half
+  found `0x2a` echoing `E` and stopped, and `0x2a`'s shifted partner
+  `0xaa` is `{`. The E key is `0x6c` — `0x6c` echoes `E`, `0xec` echoes
+  `e`. Until this was right, `/DEMO/DIR/others/QIX` could not be typed at
+  all. A sweep that validates one half of a shifted pair has validated
+  half a key.
+- **`FOCUS_TYPE` could only send characters.** `\xNN` now presses keycode
+  NN, which is how a script reaches a key that puts nothing on the screen
+  — `\x70` clears the input line, without which an answer typed at a
+  prompt lands after whatever the echo left there.
 
 The account below is what the situation was before that, kept because the
 measurements in it stand.

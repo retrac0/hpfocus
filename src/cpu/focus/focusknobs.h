@@ -494,8 +494,10 @@ inline constexpr spec CATALOGUE[] = {
   "Make the host's byte the keycode itself, which is how the keycode table "
   "was read off the machine." },
 { "FOCUS_TYPE", "<text>[;<text>...]", group::input, true,
-  "Keystrokes to feed at the FOCUS_TYPEAT moments, with \\n for EXECUTE "
-  "and \\r for STORE. A ';' starts a further script, which is what a "
+  "Keystrokes to feed at the FOCUS_TYPEAT moments, with \\n for EXECUTE, "
+  "\\r for STORE and \\xNN to press KEYCODE NN -- the only way to reach a "
+  "key that puts nothing on the screen, such as the one that clears the "
+  "input line (0x70). A ';' starts a further script, which is what a "
   "command that takes seconds to finish needs." },
 { "FOCUS_TYPEAT", "<seconds>[,...]", group::input, true,
   "When to type each FOCUS_TYPE script." },

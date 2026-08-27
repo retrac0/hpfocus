@@ -681,6 +681,10 @@ private:
 
 // The character cell the display's CRTC asks for: 15 scan lines tall, and
 // eight pixels wide for the font this build draws with.
+// FOCUS_TYPE's marker for "the next byte is a keycode, not a character".
+// 0x01 cannot appear in ordinary script text.
+static constexpr u8 RAW_KEY = 0x01;
+
 static constexpr unsigned CELL_WIDTH = 8;
 static constexpr unsigned CELL_HEIGHT = 15;
 static constexpr unsigned SCREEN_ROWS = 26;
@@ -1789,6 +1793,19 @@ void hp9000_5xx_state::machine_start()
 		{
 			if (pc[0] == '\\' && pc[1] == 'n') { one.push_back('\n'); pc++; }
 			else if (pc[0] == '\\' && pc[1] == 'r') { one.push_back('\r'); pc++; }
+			// \xNN presses a KEYCODE rather than typing a character, which
+			// is the only way to reach a key that puts nothing on the
+			// screen. A demo that pauses with "(CONT = 100)" wants the
+			// CONTINUE key and nothing else will do. RAW_KEY never occurs
+			// in ordinary script text, so it needs no escaping of its own.
+			else if (pc[0] == '\\' && pc[1] == 'x'
+					&& std::isxdigit((unsigned char)pc[2])
+					&& std::isxdigit((unsigned char)pc[3]))
+			{
+				one.push_back(char(RAW_KEY));
+				one.push_back(char(std::stoi(std::string(pc + 2, 2), nullptr, 16)));
+				pc += 3;
+			}
 			else if (pc[0] == ';') { m_type_scripts.push_back(one); one.clear(); }
 			else one.push_back(*pc);
 		}
@@ -1864,6 +1881,17 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 	if (m_type_pos < m_type_text.size())
 	{
 		const u8 c = u8(m_type_text[m_type_pos++]);
+		// A \xNN escape: the byte after the marker is a keycode, handed
+		// to the keyboard board as it stands.
+		if (c == RAW_KEY && m_type_pos < m_type_text.size())
+		{
+			const u8 code = u8(m_type_text[m_type_pos++]);
+			if (m_console_asi)
+				m_console_asi->type(code);
+			else
+				m_console6.type(code);
+			return;
+		}
 		// The 540's console is a terminal on the serial card, and a
 		// terminal sends ASCII -- no keycode translation.
 		if (m_console_asi)
@@ -2774,11 +2802,11 @@ static const u8 KEYCODES[128] =
 	0x22, 0x2b, 0x5b, 0x43, 0x42, 0x27, 0x40, 0x50,   // ()*+,-./
 	0x2f, 0x52, 0x24, 0x2c, 0x62, 0x5a, 0x2d, 0x25,   // 01234567
 	0x2e, 0x26, 0xe1, 0x61, 0x89, 0x29, 0x88, 0x45,   // 89:;<=>?
-	0xa4, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // @ABCDEFG
+	0xa4, 0x7c, 0x4e, 0x4d, 0x5c, 0x6c, 0x65, 0x5d,   // @ABCDEFG
 	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // HIJKLMNO
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // PQRSTUVW
 	0x55, 0x75, 0x4c, 0x69, 0x68, 0x71, 0x23, 0xa7,   // XYZ[\]^_
-	0x28, 0x7c, 0x4e, 0x4d, 0x5c, 0x2a, 0x65, 0x5d,   // `abcdefg
+	0x28, 0x7c, 0x4e, 0x4d, 0x5c, 0x6c, 0x65, 0x5d,   // `abcdefg
 	0x66, 0x76, 0x5e, 0x67, 0x5f, 0x4f, 0x57, 0x6f,   // hijklmno
 	0x77, 0x78, 0x74, 0x54, 0x6d, 0x6e, 0x56, 0x64,   // pqrstuvw
 	0x55, 0x75, 0x4c, 0xaa, 0xc2, 0xa3, 0xa8, 0x00,   // xyz{|}~.
@@ -2795,35 +2823,26 @@ void hp9000_5xx_state::kbd_put(u8 data)
 	// need shift on the real keyboard therefore map to code | 0x80.
 	// FOCUS_RAWKEYS makes the host's byte the keycode itself, which is
 	// how the table above was read off the machine.
-	// Lower case reaches the machine for twenty-five letters of the
-	// twenty-six: typing the alphabet at the BASIC prompt produces
-	// `abcd{fghijklmnopqrstuvwxyz`. Only `e` is missing, and the
-	// translation table says why rather than leaving it a mystery --
-	// unshifted 0x2a is `E`, and the shifted half maps 0xaa, which is
-	// what `code | 0x80` produces, to `{`. No shifted slot yields a
-	// lower-case `e`, so this is not a wrong entry in the table above
-	// but a key this model has no way to press: probably a CAPS toggle
-	// held in the keyboard board's own state, or a modifier reported
-	// outside the keycode. Identifying it needs another sweep of the
-	// board's registers.
+	// The whole alphabet reaches the machine, and getting there took
+	// two corrections. The first: bit 7 of the keycode is Shift, and on
+	// this machine the SHIFTED letter is the lower-case one -- the
+	// opposite of a modern keyboard -- so the host's lower-case letters
+	// are the ones that carry the bit.
 	//
-	// It costs something real. Most demo-disc file names are lower case
-	// and `games` has an `e` in it, so `/DEMO/DIR/games/MASTERMIND`
-	// cannot be typed and LOAD answers ERROR 56, file name is undefined.
-	// See docs/SOFTWARE.md for the two ways round it.
+	// The second was `e`, which typed `{` for a long time and was
+	// written up as a key this model had no way to press. It was simply
+	// the wrong keycode. `E` was mapped to 0x2a because a sweep of the
+	// unshifted half found 0x2a echoing `E` and stopped there; 0x2a's
+	// shifted partner 0xaa is `{`, and no amount of shift makes it an
+	// `e`. The E key is 0x6c: 0x6c echoes `E` and 0xec echoes `e`, which
+	// a two-keystroke experiment shows directly. The lesson generalises
+	// to the rest of this table -- a sweep that validates one half of a
+	// shifted pair has validated half a key.
 	//
-	// (An earlier reading of this said no lower case was reachable at
-	// all. That was taken before the table above was complete.)
-	// Case. The holding register is a 7-bit keycode plus Shift and
-	// Control bits (520 Service, "Theory of Operation" 2-33), so bit 7
-	// of the translation index is Shift -- and on this machine the
-	// unshifted letter is the UPPER case one, with shift giving lower
-	// case, the opposite of a modern keyboard. `DISP "abcABC"` types
-	// back exactly abcABC once the host's lower-case letters are the
-	// ones that carry the bit. Getting this backwards costs more than
-	// appearance: most of the demo disc's file names are lower case,
-	// and LOAD answers ERROR 56, file name is undefined, for a name
-	// whose case does not match.
+	// It mattered: most demo-disc file names are lower case, and
+	// `/DEMO/DIR/others/QIX` could not be typed at all until this was
+	// right.
+	//
 	static const knob::flag rawkeys("FOCUS_RAWKEYS");
 	u8 code = rawkeys ? data : KEYCODES[data & 0x7f];
 	if (!rawkeys && data >= 'a' && data <= 'z')

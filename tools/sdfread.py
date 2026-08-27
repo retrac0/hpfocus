@@ -15,6 +15,21 @@ Everything is big-endian. A file's data lives in up to four extents named
 directly by its i-node; longer files chain further extents through extent
 map records, which this follows.
 
+Two fields the manual pages do not name were read off the discs, because
+between them they decide whether BASIC will load a file at all:
+
+    +16  PROTECT.  Its top byte is 0x03 on a protected file and 0x53 on an
+         unprotected one; a volume that never used PROTECT leaves the whole
+         word 0xffffffff. Every file on the BASIC demo discs that answers
+         `ERROR 62: File is protected or wrong PROTECT code` has 0x03 and
+         every file that loads has 0x53 or 0xff -- and clearing the byte on
+         a copy of the image makes the same LOAD succeed.
+    -->  the `uftype` at +6 is the USER file type, and BASIC checks it:
+         -5680 is a stored program, -5687 a data file, -5693 a directory.
+         LOAD on a data file is `ERROR 58: Improper file type`, which is
+         what /DEMO/DIR/others/SIERPINSKI answers -- it is the data that
+         the SP programs plot, not a program.
+
     sdfread.py <image> [--path /DIR] [--extract OUTDIR] [--long]
 """
 import argparse
@@ -23,6 +38,8 @@ import os
 import struct
 from pathlib import Path
 
+# BASIC's user file types, from the discs: what LOAD will and will not take.
+FTYPE = {-5680: 'prog', -5687: 'data', -5693: 'dir'}
 FA_REC = 128
 DIRENT = 24
 
@@ -108,6 +125,7 @@ class SDF:
             "uid": struct.unpack(">H", e[116:118])[0],
             "gid": struct.unpack(">H", e[118:120])[0],
             "mode": struct.unpack(">H", e[120:122])[0],
+            "protect": struct.unpack(">I", e[16:20])[0],
         }
 
     def all_extents(self, ino: dict) -> list:
@@ -179,7 +197,8 @@ class SDF:
                    "atime": unix_time(d[off:off + FA_REC], 100),
                    "mtime": ios_time(d[off:off + FA_REC], 104),
                    "uid": 0, "gid": 0,
-                   "mode": struct.unpack(">H", d[off + 120:off + 122])[0]}
+                   "mode": struct.unpack(">H", d[off + 120:off + 122])[0],
+                   "protect": struct.unpack(">I", d[off + 16:off + 20])[0]}
             out[ino["ino"]] = ino
         return out
 
@@ -256,11 +275,13 @@ def main() -> int:
             distinct.add(ino["ino"])
             total += max(ino["size"], 0)
         when = stamp(ino["mtime"])
+        prot = "P" if (ino.get("protect", 0) >> 24) == 0x03 else " "
         if args.long:
-            print(f"  {'d' if isdir else '-'} {ino['mode']:06o} "
+            print(f"  {'d' if isdir else '-'}{prot} {ino['mode']:06o} "
+                  f"{FTYPE.get(ino['uftype'], str(ino['uftype'])):>7} "
                   f"{ino['size']:>9,} ino{ino['ino']:<5} {when}  {path}")
         else:
-            print(f"  {'d' if isdir else '-'} {ino['size']:>9,} {when}  {path}")
+            print(f"  {'d' if isdir else '-'}{prot} {ino['size']:>9,} {when}  {path}")
         if not args.extract:
             continue
         dest = args.extract / path.lstrip("/")
