@@ -68,4 +68,4 @@ test: all
 	@./run_difftest.sh
 
 clean:
-	rm -f dasmtest statetest addrtest dsttest exectest ioptest bootprobe
+	rm -f dasmtest statetest addrtest dsttest exectest ioptest bootprobe bootrun

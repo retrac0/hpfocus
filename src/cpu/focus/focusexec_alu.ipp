@@ -983,6 +983,10 @@ private:
 		case 041: {                                             // ESCP
 			// The same switch as TRY, on its own budget: ESCP is the
 			// other end of the frame chain and the two interleave.
+			// Sharing the name with the channel in TRY is deliberate --
+			// one switch turns both ends on -- and so are the two
+			// separate budgets, which keep a flood of one end from
+			// spending the other's. Not a duplicate to be merged.
 			static knob::channel escp_log("FOCUS_TRYLOG", 4000);
 			if (escp_log)
 				escp_log("[ESCP%s p=%08x sb=%08x head=%08x val=%08x]\n",

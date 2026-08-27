@@ -41,6 +41,12 @@ To build the disassembler inside MAME, register it in two places:
   scripts/target/mame/*.lua  add "FOCUS" to the CPUS list of whichever target
                              you build.
 
-Until the execution core exists (plan step 1.2), only focusdasm.cpp is
-buildable; focusdasm.h has no dependency on a device class.
+The execution core, the IOP and the machine driver all build now:
+
+  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9000_5xx.cpp -j8
+
+Note that the driver is linked as a single file, and the three run
+scripts (tools/runbasic.sh, runbasic-hd.sh, runhpux.sh) name that same
+path in their SOURCES=. Splitting it would mean linking each new file
+here as well.
 NOTE

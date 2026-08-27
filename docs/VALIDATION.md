@@ -468,6 +468,29 @@ already argued in `README.md` or `docs/FOCUS.md`:
 | `LLSH` compares bits 1–31 only | heap free-block sizes carry a flag in bit 0 and first-fit must still order numerically |
 | trap return address follows sheet 52 notes 1/2 | only debug and arithmetic traps point at the *next* instruction; the rest point at the faulting one |
 
+#### The CS/80 command set is implemented twice, on purpose
+
+`cs80_device` (`src/iop/focushpib.h`) serves the HP-IB card and `disc_card`
+(`src/iop/focusdisc.h`) serves the internal disc. They parse the same command
+set, and they are deliberately **not** shared: each was built against the
+traffic of a different driver -- LCS80 for the internal disc, HP-UX's HP-IB
+driver for the other -- and each answers what its own driver actually sends.
+The differences below are the record of that, so a later pass does not read
+them as one copy having drifted from the other:
+
+| difference | focusdisc.h (internal) | focushpib.h (CS/80 over HP-IB) |
+|---|---|---|
+| opcode `0x0a`, cold load read | not decoded; LCS80 never sends it | `locate_read()`, same as `0x00` |
+| opcode `0x33`, initiate diagnostic | three parameter bytes, per Instruction Set manual 2-31 | lumped with `0x30`-`0x32` as eight |
+| `request_status` identification bytes | unit then volume, one byte each | one packed byte `(volume << 4) \| unit`, then zero |
+
+The `0x33` length is the one that had a real bug behind it: reading it as a
+two-byte command left the third byte to execute as a Locate and Read, which
+failed, put an error in QSTAT, and made the driver abandon an INITIALIZE
+half-way. The comment at the site tells that story. Both implementations
+otherwise agree, including `set_flag`/`flags_up`, which are the same two
+lines in each.
+
 ---
 
 ## 5. What was fixed, and how the reader got better

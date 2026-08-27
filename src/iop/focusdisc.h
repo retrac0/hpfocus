@@ -627,12 +627,17 @@ private:
 	// status-flag bytes (bits 0-63), ten parameter bytes. Until the
 	// first request the power-fail bit (30) is up, as a freshly
 	// powered CS/80 device reports; reporting clears it.
+	//
+	// The identification bytes are LCS80's reading of them: unit and
+	// volume one each. cs80_device packs both into the first byte for
+	// the HP-IB driver instead -- see VALIDATION.md section 4, which
+	// records why the two CS/80 implementations differ where they do.
 	void request_status()
 	{
 		m_out.push_back(u8(m_unit));
 		m_out.push_back(u8(m_volume));
 		if (m_poweron)
-			m_flags[30 / 8] |= u8(0x80 >> (30 & 7));
+			set_flag(30);
 		for (unsigned k = 0; k < 8; k++)
 			m_out.push_back(m_flags[k]);
 		for (unsigned k = 0; k < 10; k++)

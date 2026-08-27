@@ -133,9 +133,16 @@ struct cs80_device
 				break;
 			case 0x00: locate_read(out); break;
 			case 0x02: m_writing = true; m_write_addr = m_address; break;
+			// Cold load read: the boot path's own Locate and Read. Only
+			// this side decodes it -- LCS80 boots the internal disc a
+			// different way and never sends one.
 			case 0x0a: locate_read(out); break;   // cold load read
 			case 0x35: describe(out); break;
 			case 0x0d: request_status(out); break;
+			// disc_card steps 0x33 as a three-byte command, which is what
+			// the Instruction Set manual gives and what its driver sends;
+			// nothing on this side has needed the distinction. Both
+			// readings are recorded in VALIDATION.md section 4.
 			case 0x30: case 0x31: case 0x32: case 0x33:
 				i += 8;                 // initiate utility, up to 8 bytes
 				break;
@@ -258,6 +265,8 @@ private:
 
 	// Request Status (CS/80 2-35, table 2-5): 2 identification bytes,
 	// 8 of error flags, 10 parameter bytes. Reading clears the report.
+	// The two identification bytes are packed here and split in
+	// disc_card; VALIDATION.md section 4 records why.
 	void request_status(std::deque<u8> &out)
 	{
 		out.push_back(u8((m_volume << 4) | (m_unit & 15)));
