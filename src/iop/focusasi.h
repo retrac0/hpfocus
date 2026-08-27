@@ -1226,6 +1226,23 @@ private:
 	// The card wants its next order; the interface poll reports it.
 	bool m_want_order = false;
 
+	u8 m_command = 0xff;
+	u32 m_config = 0;
+	u8 m_status = 0;
+	bool m_status_posted = false;
+	bool m_arq_enabled = true;
+	bool m_ard = false;
+
+	// The current request block's fields.
+	u8 m_request = 0;
+	u16 m_channel = 0;
+	u8 m_subfunction = 0;
+	u8 m_port = 0;
+	u16 m_length = 0;
+
+	// The powerup presence test's echo, as on every other card here.
+	presence_echo m_echo;
+
 public:
 	// What the card reports through Read Transparent Status, and the
 	// event code it carries under AES. Sweepable; see write_order().
@@ -1251,23 +1268,6 @@ public:
 	// senses, which is the card as it behaved before they were modelled:
 	// the A/B control for the console drain (docs/HPUX.md 8).
 	bool no_async = false;
-private:
-	u8 m_command = 0xff;
-	u32 m_config = 0;
-	u8 m_status = 0;
-	bool m_status_posted = false;
-	bool m_arq_enabled = true;
-	bool m_ard = false;
-
-	// The current request block's fields.
-	u8 m_request = 0;
-	u16 m_channel = 0;
-	u8 m_subfunction = 0;
-	u8 m_port = 0;
-	u16 m_length = 0;
-
-	// The powerup presence test's echo, as on every other card here.
-	presence_echo m_echo;
 };
 
 } // namespace focus

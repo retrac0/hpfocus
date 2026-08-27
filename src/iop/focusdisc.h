@@ -662,9 +662,6 @@ private:
 	unsigned m_device = 0;
 	bool m_want_burst = false;
 	unsigned m_go_mode = 0;
-public:
-	unsigned m_seq = 0;         // command-block counter, for ordering logs
-private:
 	u32 m_status = 2;           // QSTAT; power-on state until reported
 	unsigned m_unit = 0;
 	unsigned m_volume = 0;
@@ -676,11 +673,6 @@ private:
 	u8 m_flags[8] = {};         // the CS/80 status-report flag bytes
 	u32 m_write_addr = 0;
 	unsigned m_phase = 0;       // 1 = command block expected, 2 = data leg
-public:
-	static constexpr u32 BLOCK = 256;
-	std::vector<u8> m_image;    // the flexible medium, one byte per byte
-	std::vector<u8> m_fixed;    // the fixed disc, when one is fitted
-private:
 	u32 m_config = 0;
 	presence_echo m_echo;
 	bool m_configured = false;
@@ -688,6 +680,15 @@ private:
 	std::deque<u8> m_out;       // bytes the next DMA read leg supplies
 	std::vector<u8> m_in;       // bytes a DMA write leg delivered
 	unsigned m_busy_left = 50;
+
+public:
+	// What the driver and the tests reach in from outside: the medium
+	// itself, the block size it is measured in, and the command counter
+	// the logs order themselves by.
+	static constexpr u32 BLOCK = 256;
+	std::vector<u8> m_image;    // the flexible medium, one byte per byte
+	std::vector<u8> m_fixed;    // the fixed disc, when one is fitted
+	unsigned m_seq = 0;         // command-block counter, for ordering logs
 };
 
 } // namespace focus
