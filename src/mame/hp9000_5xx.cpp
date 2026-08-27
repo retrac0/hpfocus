@@ -713,6 +713,10 @@ private:
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
+	static bool debug_armed();
+	void debug_pre_step(focus::cpu_core &core);
+	// Whether any instrument asked to run, settled once at machine_start.
+	bool m_dbg_armed = false;
 	void memory_find();
 	TIMER_CALLBACK_MEMBER(find_tick);
 	TIMER_CALLBACK_MEMBER(poke_tick);
@@ -1015,6 +1019,236 @@ void hp9000_5xx_state::attach_probes()
 		if (!comma)
 			break;
 		p = comma + 1;
+	}
+}
+
+
+// Is any instrument asking to run? A knob belongs in this list when the
+// hook below does work for it every instruction, OR when it can reach
+// report_state(), whose "last instructions" section is read straight out
+// of the trail the hook keeps -- arm one without the other and the report
+// comes out blank.
+//
+// Deliberately absent, because their handlers print registers or memory
+// and never touch the trail: FOCUS_EAWATCH and FOCUS_SEMLOG (hooks the
+// core calls directly), FOCUS_RWATCH and FOCUS_WWATCH (memory hooks, and
+// they live in focus.cpp), FOCUS_FIND and FOCUS_FINDAT. Nothing reports
+// at exit either -- machine_stop only writes the discs back -- so a run
+// with none of these set never reads what the hook would have recorded.
+bool hp9000_5xx_state::debug_armed()
+{
+	return knob::flag("FOCUS_PCPROF")        // the bucket counts
+		|| knob::flag("FOCUS_QCHECK")           // and its report
+		|| knob::flag("FOCUS_RUNAWAY")          // keeps the P/PB trail
+		|| bool(knob::text("FOCUS_WATCH"))      // tests P every instruction
+		|| bool(knob::text("FOCUS_WPOINT"))     // re-reads the word
+		|| bool(knob::text("FOCUS_EATRACE"))    // arms, and refills the count
+		|| bool(knob::text("FOCUS_POKEPC"))     // waits for its instruction
+		|| bool(knob::text("FOCUS_BREAK"))      // and its report
+		|| bool(knob::text("FOCUS_TRACEN"))     // prints after the break
+		|| bool(knob::text("FOCUS_TRIP"))       // trip_watch -> report_state
+		|| bool(knob::text("FOCUS_STATEAT"))    // state_tick -> report_state
+		|| bool(knob::text("FOCUS_TRAPLOG"))    // on_trap -> report_state
+		|| knob::flag("FOCUS_ESCLOG");          // on_escape -> report_state
+}
+
+
+// What the driver does before every instruction, when an instrument has
+// asked for it: the trails a report is written from, and the knobs that
+// watch for a moment to arrive.
+void hp9000_5xx_state::debug_pre_step(focus::cpu_core &core)
+{
+	// FOCUS_PCPROF buckets the program counter by 4 KB and prints the
+	// busiest buckets every 40M instructions, so "where is the
+	// emulated machine spending its time" is answered by measurement
+	// rather than by reading code. It found the cycle-accounting bug
+	// this comment sits above the fix for: the counts were far larger
+	// than any real workload, which is what pointed at emulated time
+	// running too fast rather than at any one routine.
+	static const knob::flag pcprof("FOCUS_PCPROF");
+	if (pcprof)
+	{
+		m_pcprof[(core.r.p >> 12) & 0x3fff]++;
+		if (++m_pcprof_n == 40000000u)
+		{
+			std::printf("[pcprof: top buckets by instruction count]\n");
+			std::vector<std::pair<u64, unsigned>> v;
+			for (unsigned k = 0; k < 0x4000; k++)
+				if (m_pcprof[k])
+					v.push_back({m_pcprof[k], k});
+			std::sort(v.rbegin(), v.rend());
+			for (unsigned k = 0; k < 12 && k < v.size(); k++)
+				std::printf("  P=%08x..%08x  %llu\n", v[k].second << 12,
+						(v[k].second << 12) + 0xfff,
+						(unsigned long long)v[k].first);
+			std::fflush(stdout);
+			m_pcprof_n = 0;
+			for (auto &c : m_pcprof) c = 0;
+		}
+	}
+	// A short trail of Q changes: which instruction moved Q last is
+	// the question every corrupted-marker hunt ends at.
+	if (core.r.q != m_qtrail_last)
+	{
+		m_qtrail[m_qtrail_at] = std::make_pair(m_qtrail_prev_p, core.r.q);
+		m_qtrail_at = (m_qtrail_at + 1) % m_qtrail.size();
+		m_qtrail_last = core.r.q;
+	}
+	m_qtrail_prev_p = core.r.p;
+	m_pctrail[m_pctrail_at] = std::make_pair(core.r.p, core.r.s);
+	m_pctrail_at = (m_pctrail_at + 1) % m_pctrail.size();
+	// FOCUS_QCHECK reports the first instruction that runs with a
+	// misaligned Q or a STATUS whose CSN field is impossible -- the
+	// wreckage of a corrupted stack marker, caught at the moment of
+	// restoration rather than at the crash it causes later.
+	static const knob::flag qcheck("FOCUS_QCHECK");
+	if (qcheck && !m_qcheck_hit && core.r.q != 0
+			&& ((core.r.q & 3) != 3 || core.r.status == 0xfffffffcu))
+	{
+		m_qcheck_hit = true;
+		std::printf("[qcheck: Q=%08x STATUS=%08x]\n",
+				core.r.q, core.r.status);
+		report_state("qcheck");
+	}
+	if (m_runaway)
+	{
+		if (!m_ran_away && (core.r.p >= m_ram_total || core.r.pb >= m_ram_total))
+		{
+			m_ran_away = true;
+			std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
+					machine().time().as_double(), core.r.p, core.r.pb);
+			std::printf("  last %u instructions, oldest first:\n",
+					unsigned(m_trail.size()));
+			for (size_t i = 0; i < m_trail.size(); i++)
+			{
+				const size_t k = (m_trail_at + i) % m_trail.size();
+				if (m_trail[k].first)
+					std::printf("    P=%08x PB=%08x\n",
+							m_trail[k].first, m_trail[k].second);
+			}
+			report_state("runaway");
+		}
+		m_trail[m_trail_at] = std::make_pair(core.r.p, core.r.pb);
+		m_trail_at = (m_trail_at + 1) % m_trail.size();
+	}
+	static knob::channel watch("FOCUS_WATCH", 12, "FOCUS_WATCHN");
+	if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
+			&& watch
+			&& machine().time().as_double() >= m_watch_from)
+		watch("[%.2fs watch %08x  Q=%08x]\n",
+				machine().time().as_double(), core.r.p, core.r.q);
+	// FOCUS_EATRACE's count, refilled where the installer that used
+	// to write it stood. Keeping it here is what makes hoisting the
+	// installers a move rather than a change; see the installer for
+	// why the refill is left in place.
+	if (m_ea_refill)
+		m_ea_want = m_ea_refill;
+	// FOCUS_WPOINT=<addr> reports every change of one memory word with
+	// the instruction that made it, which is how a table's builder is
+	// found when the table is all there is to go on.
+	if (m_wpoint && machine().time().as_double() >= m_wp_from)
+	{
+		const u32 now = core.read_mem32(m_wpoint);
+		if (now != m_wpoint_last)
+		{
+			static knob::channel wp("FOCUS_WPOINT", 20);
+			if (wp)
+			{
+				wp("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
+						m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
+				// FOCUS_WPSTACK adds the call chain, which is how the
+				// code that asked for a write gets named when the
+				// writer itself is a shared helper.
+				if (knob::flag("FOCUS_WPSTACK"))
+					report_state("wp");
+			}
+			m_wpoint_last = now;
+			std::fflush(stdout);
+		}
+	}
+	// FOCUS_EATRACEFROM=<emulated seconds> delays the arming, so a
+	// shared routine can be traced on a chosen later visit -- the
+	// compile-time call and the run-time call of the same helper are
+	// different questions.
+	static const double ea_from = knob::seconds("FOCUS_EATRACEFROM", 0.0);
+	// FOCUS_POKEPC=<pc>:<addr>:<hex value>[,...] writes a word the
+	// first time the processor reaches an instruction, which is the
+	// only way to reach a moment two events share -- the compiler's
+	// copy and the copied code's first execution land in the same
+	// emulated millisecond, so a timed poke cannot sit between them.
+	{
+		static bool parsed = false;
+		static std::vector<std::pair<u32, std::pair<u32, u32>>> pcpokes;
+		if (!parsed)
+		{
+			parsed = true;
+			if (const char *e = knob::text("FOCUS_POKEPC").get())
+				for (std::string list(e); !list.empty(); )
+				{
+					const size_t comma = list.find(',');
+					const std::string one = list.substr(0, comma);
+					list = (comma == std::string::npos)
+							? "" : list.substr(comma + 1);
+					const char *c1 = strchr(one.c_str(), ':');
+					if (!c1) continue;
+					const char *c2 = strchr(c1 + 1, ':');
+					if (!c2) continue;
+					pcpokes.push_back(std::make_pair(
+							u32(strtoul(one.c_str(), nullptr, 16)),
+							std::make_pair(u32(strtoul(c1 + 1, nullptr, 16)),
+									u32(strtoul(c2 + 1, nullptr, 16)))));
+				}
+		}
+		for (auto &pk : pcpokes)
+			if (pk.first && core.r.p == pk.first)
+			{
+				const u32 before = core.read_mem32(pk.second.first);
+				m_cpu->memory().write32(pk.second.first, pk.second.second);
+				std::printf("[pokepc P=%08x: %08x: %08x -> %08x at %.4fs]\n",
+						pk.first, pk.second.first, before, pk.second.second,
+						machine().time().as_double());
+				std::fflush(stdout);
+				pk.first = 0;
+			}
+	}
+	if (m_ea_at && core.r.p == m_ea_at
+			&& machine().time().as_double() >= ea_from)
+		m_ea_armed = true;
+	if (m_traced && m_trace_left)
+	{
+		m_trace_left--;
+		std::printf("[t %08x pb=%08x q=%08x]\n", core.r.p, core.r.pb, core.r.q);
+		if (!m_trace_left)
+			std::fflush(stdout);
+	}
+	if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max
+			&& machine().time().as_double() >= m_break_from)
+	{
+		m_traced = true;
+		m_break_hits++;
+		std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
+		std::printf("  last Q changes (instruction that moved it -> new Q):\n");
+		for (size_t i = 0; i < m_qtrail.size(); i++)
+		{
+			const auto &e = m_qtrail[(m_qtrail_at + i) % m_qtrail.size()];
+			if (e.second)
+				std::printf("    P=%08x -> Q=%08x\n", e.first, e.second);
+		}
+		report_state("break");
+		// Stack words sit on the q-3 grid: operand (Q-k) is the word
+		// at byte q-k-3, so the window walks word slots from there.
+		for (int k = -24; k <= 14; k++)
+			std::printf("    Q%+3d (%08x) = %08x\n", 4 * k,
+					core.r.q + 4 * k - 3,
+					core.read_mem32(core.r.q + 4 * k - 3));
+		// The stack top, where an instruction's operands actually
+		// sit: (S) is the top word, (S-1) beneath it. A block move
+		// takes its count, target and source from exactly here.
+		for (int k = 0; k <= 5; k++)
+			std::printf("    S-%d (%08x) = %08x\n", k,
+					core.r.s - 4 * k - 3,
+					core.read_mem32(core.r.s - 4 * k - 3));
+		std::fflush(stdout);
 	}
 }
 
@@ -1575,199 +1809,12 @@ void hp9000_5xx_state::machine_start()
 			}
 		};
 
+	// The instruments run only when something has asked for them; see
+	// debug_armed(). The traps check below is not one of them.
+	m_dbg_armed = debug_armed();
 	m_cpu->set_pre_step([this](focus::cpu_core &core) {
-		// FOCUS_PCPROF buckets the program counter by 4 KB and prints the
-		// busiest buckets every 40M instructions, so "where is the
-		// emulated machine spending its time" is answered by measurement
-		// rather than by reading code. It found the cycle-accounting bug
-		// this comment sits above the fix for: the counts were far larger
-		// than any real workload, which is what pointed at emulated time
-		// running too fast rather than at any one routine.
-		static const knob::flag pcprof("FOCUS_PCPROF");
-		if (pcprof)
-		{
-			m_pcprof[(core.r.p >> 12) & 0x3fff]++;
-			if (++m_pcprof_n == 40000000u)
-			{
-				std::printf("[pcprof: top buckets by instruction count]\n");
-				std::vector<std::pair<u64, unsigned>> v;
-				for (unsigned k = 0; k < 0x4000; k++)
-					if (m_pcprof[k])
-						v.push_back({m_pcprof[k], k});
-				std::sort(v.rbegin(), v.rend());
-				for (unsigned k = 0; k < 12 && k < v.size(); k++)
-					std::printf("  P=%08x..%08x  %llu\n", v[k].second << 12,
-							(v[k].second << 12) + 0xfff,
-							(unsigned long long)v[k].first);
-				std::fflush(stdout);
-				m_pcprof_n = 0;
-				for (auto &c : m_pcprof) c = 0;
-			}
-		}
-		// A short trail of Q changes: which instruction moved Q last is
-		// the question every corrupted-marker hunt ends at.
-		if (core.r.q != m_qtrail_last)
-		{
-			m_qtrail[m_qtrail_at] = std::make_pair(m_qtrail_prev_p, core.r.q);
-			m_qtrail_at = (m_qtrail_at + 1) % m_qtrail.size();
-			m_qtrail_last = core.r.q;
-		}
-		m_qtrail_prev_p = core.r.p;
-		m_pctrail[m_pctrail_at] = std::make_pair(core.r.p, core.r.s);
-		m_pctrail_at = (m_pctrail_at + 1) % m_pctrail.size();
-		// FOCUS_QCHECK reports the first instruction that runs with a
-		// misaligned Q or a STATUS whose CSN field is impossible -- the
-		// wreckage of a corrupted stack marker, caught at the moment of
-		// restoration rather than at the crash it causes later.
-		static const knob::flag qcheck("FOCUS_QCHECK");
-		if (qcheck && !m_qcheck_hit && core.r.q != 0
-				&& ((core.r.q & 3) != 3 || core.r.status == 0xfffffffcu))
-		{
-			m_qcheck_hit = true;
-			std::printf("[qcheck: Q=%08x STATUS=%08x]\n",
-					core.r.q, core.r.status);
-			report_state("qcheck");
-		}
-		if (m_runaway)
-		{
-			if (!m_ran_away && (core.r.p >= m_ram_total || core.r.pb >= m_ram_total))
-			{
-				m_ran_away = true;
-				std::printf("[runaway at %.3fs: P=%08x PB=%08x]\n",
-						machine().time().as_double(), core.r.p, core.r.pb);
-				std::printf("  last %u instructions, oldest first:\n",
-						unsigned(m_trail.size()));
-				for (size_t i = 0; i < m_trail.size(); i++)
-				{
-					const size_t k = (m_trail_at + i) % m_trail.size();
-					if (m_trail[k].first)
-						std::printf("    P=%08x PB=%08x\n",
-								m_trail[k].first, m_trail[k].second);
-				}
-				report_state("runaway");
-			}
-			m_trail[m_trail_at] = std::make_pair(core.r.p, core.r.pb);
-			m_trail_at = (m_trail_at + 1) % m_trail.size();
-		}
-		static knob::channel watch("FOCUS_WATCH", 12, "FOCUS_WATCHN");
-		if (m_watch_hi && core.r.p >= m_watch_lo && core.r.p <= m_watch_hi
-				&& watch
-				&& machine().time().as_double() >= m_watch_from)
-			watch("[%.2fs watch %08x  Q=%08x]\n",
-					machine().time().as_double(), core.r.p, core.r.q);
-		// FOCUS_EATRACE's count, refilled where the installer that used
-		// to write it stood. Keeping it here is what makes hoisting the
-		// installers a move rather than a change; see the installer for
-		// why the refill is left in place.
-		if (m_ea_refill)
-			m_ea_want = m_ea_refill;
-		// FOCUS_WPOINT=<addr> reports every change of one memory word with
-		// the instruction that made it, which is how a table's builder is
-		// found when the table is all there is to go on.
-		if (m_wpoint && machine().time().as_double() >= m_wp_from)
-		{
-			const u32 now = core.read_mem32(m_wpoint);
-			if (now != m_wpoint_last)
-			{
-				static knob::channel wp("FOCUS_WPOINT", 20);
-				if (wp)
-				{
-					wp("[wp %08x: %08x -> %08x at P=%08x PB=%08x]\n",
-							m_wpoint, m_wpoint_last, now, core.r.p, core.r.pb);
-					// FOCUS_WPSTACK adds the call chain, which is how the
-					// code that asked for a write gets named when the
-					// writer itself is a shared helper.
-					if (knob::flag("FOCUS_WPSTACK"))
-						report_state("wp");
-				}
-				m_wpoint_last = now;
-				std::fflush(stdout);
-			}
-		}
-		// FOCUS_EATRACEFROM=<emulated seconds> delays the arming, so a
-		// shared routine can be traced on a chosen later visit -- the
-		// compile-time call and the run-time call of the same helper are
-		// different questions.
-		static const double ea_from = knob::seconds("FOCUS_EATRACEFROM", 0.0);
-		// FOCUS_POKEPC=<pc>:<addr>:<hex value>[,...] writes a word the
-		// first time the processor reaches an instruction, which is the
-		// only way to reach a moment two events share -- the compiler's
-		// copy and the copied code's first execution land in the same
-		// emulated millisecond, so a timed poke cannot sit between them.
-		{
-			static bool parsed = false;
-			static std::vector<std::pair<u32, std::pair<u32, u32>>> pcpokes;
-			if (!parsed)
-			{
-				parsed = true;
-				if (const char *e = knob::text("FOCUS_POKEPC").get())
-					for (std::string list(e); !list.empty(); )
-					{
-						const size_t comma = list.find(',');
-						const std::string one = list.substr(0, comma);
-						list = (comma == std::string::npos)
-								? "" : list.substr(comma + 1);
-						const char *c1 = strchr(one.c_str(), ':');
-						if (!c1) continue;
-						const char *c2 = strchr(c1 + 1, ':');
-						if (!c2) continue;
-						pcpokes.push_back(std::make_pair(
-								u32(strtoul(one.c_str(), nullptr, 16)),
-								std::make_pair(u32(strtoul(c1 + 1, nullptr, 16)),
-										u32(strtoul(c2 + 1, nullptr, 16)))));
-					}
-			}
-			for (auto &pk : pcpokes)
-				if (pk.first && core.r.p == pk.first)
-				{
-					const u32 before = core.read_mem32(pk.second.first);
-					m_cpu->memory().write32(pk.second.first, pk.second.second);
-					std::printf("[pokepc P=%08x: %08x: %08x -> %08x at %.4fs]\n",
-							pk.first, pk.second.first, before, pk.second.second,
-							machine().time().as_double());
-					std::fflush(stdout);
-					pk.first = 0;
-				}
-		}
-		if (m_ea_at && core.r.p == m_ea_at
-				&& machine().time().as_double() >= ea_from)
-			m_ea_armed = true;
-		if (m_traced && m_trace_left)
-		{
-			m_trace_left--;
-			std::printf("[t %08x pb=%08x q=%08x]\n", core.r.p, core.r.pb, core.r.q);
-			if (!m_trace_left)
-				std::fflush(stdout);
-		}
-		if (m_break_at && core.r.p == m_break_at && m_break_hits < m_break_max
-				&& machine().time().as_double() >= m_break_from)
-		{
-			m_traced = true;
-			m_break_hits++;
-			std::printf("\n[break %08x hit %u]\n", m_break_at, m_break_hits);
-			std::printf("  last Q changes (instruction that moved it -> new Q):\n");
-			for (size_t i = 0; i < m_qtrail.size(); i++)
-			{
-				const auto &e = m_qtrail[(m_qtrail_at + i) % m_qtrail.size()];
-				if (e.second)
-					std::printf("    P=%08x -> Q=%08x\n", e.first, e.second);
-			}
-			report_state("break");
-			// Stack words sit on the q-3 grid: operand (Q-k) is the word
-			// at byte q-k-3, so the window walks word slots from there.
-			for (int k = -24; k <= 14; k++)
-				std::printf("    Q%+3d (%08x) = %08x\n", 4 * k,
-						core.r.q + 4 * k - 3,
-						core.read_mem32(core.r.q + 4 * k - 3));
-			// The stack top, where an instruction's operands actually
-			// sit: (S) is the top word, (S-1) beneath it. A block move
-			// takes its count, target and source from exactly here.
-			for (int k = 0; k <= 5; k++)
-				std::printf("    S-%d (%08x) = %08x\n", k,
-						core.r.s - 4 * k - 3,
-						core.read_mem32(core.r.s - 4 * k - 3));
-			std::fflush(stdout);
-		}
+		if (m_dbg_armed)
+			debug_pre_step(core);
 		// Traps vector through CST entry 1 once the powerup module has
 		// built the tables and pointed dedicated location 0 at them.
 		if (!core.traps_enabled() && core.read_mem32(0) != 0)
