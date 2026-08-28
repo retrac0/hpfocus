@@ -560,9 +560,15 @@ public:
 		card.iop = &iop;
 		card.pa = sc;
 		arm_log(card.log, "hpib", sc, "FOCUS_HPIBLOG");
+		// FOCUS_HPIBFR1 forces the card's FR1 status word, as
+		// FOCUS_ASIFR1 does for the serial card.
+		card.fr1_force = knob::number("FOCUS_HPIBFR1", card.fr1_force, 16);
 		card.identity = u16(knob::number("FOCUS_HPIBIDENT", card.identity));
 		card.device_address =
 				u8(knob::number("FOCUS_HPIBADDR", card.device_address));
+		card.amigo_id = u16(knob::number("FOCUS_CS80ID", card.amigo_id, 16));
+		card.system_controller =
+				knob::number("FOCUS_HPIBSC", card.system_controller ? 1 : 0) != 0;
 		// The drive on this card's bus. Its medium is the card's own
 		// image device; FOCUS_HPIBDISC remains as a way to hand a raw
 		// file to a card without going through MAME's media system.
@@ -2559,20 +2565,36 @@ bool hp9000_5xx_state::boot_from_cs80(focus::hpib_card &card)
 	constexpr u32 MAGIC = 0xe9c28206;
 	constexpr u32 SECTOR = focus::cs80_device::BLOCK;
 
+	// A bootable SDF volume carries its volume header in block 0, the
+	// boot descriptor in block 1 (byte 0x400) and the image from block 2
+	// (0x800) -- the layout tools/bootimage.py documents for the shipped
+	// discs. The 7914 unit save was imaged from disc block 1, so on it
+	// the descriptor is the first sector and the image begins at 0x400;
+	// both layouts are accepted, by where the boot magic is found.
 	std::vector<u8> desc;
-	if (!card.disc.read_blocks(0, SECTOR, desc))
-	{
-		osd_printf_error("boot: cannot read the system disc\n");
-		return false;
-	}
+	u32 desc_at = 0;
 	auto beword = [&desc](u32 off) {
 		return (u32(desc[off]) << 24) | (u32(desc[off + 1]) << 16)
 				| (u32(desc[off + 2]) << 8) | desc[off + 3];
 	};
-	if (beword(0) != MAGIC)
+	for (u32 at : { 0u, 0x400u })
 	{
-		osd_printf_error("boot: the system disc is not bootable -- block 0 "
-				"begins %08x, not the boot magic %08x\n", beword(0), MAGIC);
+		if (!card.disc.read_blocks(at / SECTOR, SECTOR, desc))
+		{
+			osd_printf_error("boot: cannot read the system disc\n");
+			return false;
+		}
+		if (beword(0) == MAGIC)
+		{
+			desc_at = at;
+			break;
+		}
+		desc.clear();
+	}
+	if (desc.empty())
+	{
+		osd_printf_error("boot: the system disc is not bootable -- no boot "
+				"magic %08x in block 0 or block 1\n", MAGIC);
 		return false;
 	}
 	const u32 total = beword(4);
@@ -2585,12 +2607,13 @@ bool hp9000_5xx_state::boot_from_cs80(focus::hpib_card &card)
 	}
 
 	std::vector<u8> image;
-	if (!card.disc.read_blocks(0x400 / SECTOR, total, image))
+	if (!card.disc.read_blocks((desc_at + 0x400) / SECTOR, total, image))
 	{
 		osd_printf_error("boot: the system disc is short\n");
 		return false;
 	}
-	logerror("boot: %u bytes from the CS/80 system disc\n", total);
+	logerror("boot: %u bytes from the CS/80 system disc, descriptor at "
+			"block %u\n", total, desc_at / SECTOR);
 	install_boot_image(image, "the system disc");
 	return true;
 }

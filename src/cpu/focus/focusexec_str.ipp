@@ -125,6 +125,71 @@ private:
 		return true;
 	}
 
+	// A byte position inside a string operand. Code operands and the
+	// stack and global segments are one piece of memory, but an external
+	// data segment is only contiguous within a page (or, chained, within
+	// one segment of the chain), so a byte walk keeps the logical pointer
+	// and resolves it again whenever the physical run it was given is
+	// used up. Every string instruction that steps through a data
+	// segment pointer walks through one of these.
+	struct byte_cursor
+	{
+		u32 ptr = 0;        // the operand pointer, as the instruction had it
+		bool ds = false;    // data segment pointer (else code, contiguous)
+		bool modify = false;
+		int dir = 1;
+		u32 phys = 0;       // physical address of the current byte
+		u32 left = 0;       // bytes contiguous from phys in `dir`, this one included
+		s32 disp = 0;       // bytes walked from the original pointer
+	};
+
+	exec_trap cursor_resolve(byte_cursor &c)
+	{
+		const ea_result e = m_au.resolve_data_pointer(u32(s32(c.ptr) + c.disp),
+				false, c.modify);
+		m_addr_trap = e.t;
+		if (!e.ok())
+			return exec_trap::address_error;
+		c.phys = e.addr;
+		c.left = c.dir > 0 ? e.run_fwd : e.run_back;
+		return exec_trap::none;
+	}
+
+	exec_trap cursor_open(byte_cursor &c, u32 ptr, bool is_ds, bool modify,
+			int dir, u32 code_phys = 0)
+	{
+		c.ptr = ptr;
+		c.ds = is_ds;
+		c.modify = modify;
+		c.dir = dir;
+		c.disp = 0;
+		if (!is_ds)
+		{
+			c.phys = code_phys;
+			c.left = 0x7fffffffu;
+			return exec_trap::none;
+		}
+		return cursor_resolve(c);
+	}
+
+	// Step to the next byte; resolves afresh at the end of a run.
+	exec_trap cursor_step(byte_cursor &c)
+	{
+		c.disp += c.dir;
+		if (c.left > 1)
+		{
+			c.left--;
+			c.phys = u32(s32(c.phys) + c.dir);
+			return exec_trap::none;
+		}
+		if (!c.ds)
+		{
+			c.phys = u32(s32(c.phys) + c.dir);
+			return exec_trap::none;
+		}
+		return cursor_resolve(c);
+	}
+
 	// The body of MVB, which SLD, SAS and SCON all finish by executing
 	// with parameters of their own making (ERS sheets 108-112).
 	exec_trap do_mvb(int d, unsigned sdec, bool src_is_ds)
@@ -143,6 +208,14 @@ private:
 		m_addr_trap = te.t;
 		if (!te.ok()) return exec_trap::address_error;
 		u32 tba = te.addr;
+
+		byte_cursor src, dst;
+		{
+			const exec_trap t1 = cursor_open(src, sptr, src_is_ds, false, d, sba);
+			if (t1 != exec_trap::none) return t1;
+			const exec_trap t2 = cursor_open(dst, tptr, true, true, d);
+			if (t2 != exec_trap::none) return t2;
+		}
 
 		// An overlapping move runs BYTE AT A TIME in the chosen
 		// direction, which is what FOCUS.md says of this instruction and
@@ -198,10 +271,21 @@ private:
 		else
 			while (count > d * x)
 			{
-				m_mem.write8(tba, m_mem.read8(sba));
-				tba = u32(s32(tba) + d);
-				sba = u32(s32(sba) + d);
+				m_mem.write8(dst.phys, m_mem.read8(src.phys));
 				x += d;
+				if (count > d * x)
+				{
+					exec_trap t = cursor_step(src);
+					if (t == exec_trap::none)
+						t = cursor_step(dst);
+					if (t != exec_trap::none)
+					{
+						// Resumable: the count and X say how far it got.
+						r.x = u32(x);
+						set_stk(0, u32(count - d * x));
+						return t;
+					}
+				}
 			}
 		r.x = u32(x);
 		set_stk(0, u32(count - d * x));
@@ -251,13 +335,18 @@ private:
 		u32 sba;
 		const exec_trap st = string_source(stk(2), src_is_ds, sba);
 		if (st != exec_trap::none) return st;
+		byte_cursor src;
+		{
+			const exec_trap t1 = cursor_open(src, stk(2), src_is_ds, false, d, sba);
+			if (t1 != exec_trap::none) return t1;
+		}
 
 		s32 x = 0;
 		u8 ch = 0;
 		bool scanning = true;
 		while (scanning && count > d * x)
 		{
-			ch = m_mem.read8(sba);
+			ch = m_mem.read8(src.phys);
 			ctrl = ers32::set(ctrl, 0, 8, ch);
 			ctrl = ers32::set(ctrl, 8, 8, u8(ch ^ terminal));
 			const bool go = until ? (ch != test && ch != terminal)
@@ -267,8 +356,12 @@ private:
 				scanning = false;
 				break;
 			}
-			sba = u32(s32(sba) + d);
 			x += d;
+			if (count > d * x)
+			{
+				const exec_trap t = cursor_step(src);
+				if (t != exec_trap::none) return t;
+			}
 		}
 
 		set_stk(1, ctrl);

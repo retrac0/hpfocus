@@ -110,6 +110,16 @@ public:
 	// Returns false and sets `t` on a violation.
 	virtual bool resolve(bool system_dst, u32 segment, u32 offset,
 			bool modify, u32 &addr, trap &t) = 0;
+	// The parameter an absent-segment/page fault carries (ERS 5.2.2).
+	virtual u32 last_trap_param() const { return 0; }
+	// How far the last successful resolve() can be walked byte by byte
+	// before the physical address stops following the logical one: to
+	// the end of the page for a paged segment, to the end of the segment
+	// for an unpaged one, counting the resolved byte itself; `back` is
+	// the same toward lower addresses.
+	virtual void last_run(u32 &fwd, u32 &back) const { fwd = back = 0x7fffffffu; }
+	// VPTR's validation of an external pointer: -1 invalid, 0 absent, 1 good.
+	virtual int validate(bool, u32, u32, bool, bool) const { return 1; }
 };
 
 // The CPU side of the Memory Processor Bus I/O path (FOCUS I/O ERS section 6,
@@ -182,6 +192,11 @@ struct ea_result
 {
 	u32 addr = 0;
 	trap t = trap::none;
+	// Bytes from `addr` (inclusive) that stay physically contiguous in
+	// each direction; see eds_resolver::last_run. Stack and global
+	// segments are one piece of memory, so they carry the default.
+	u32 run_fwd = 0x7fffffffu;
+	u32 run_back = 0x7fffffffu;
 	bool ok() const { return t == trap::none; }
 };
 
@@ -190,6 +205,13 @@ class addressing_unit
 public:
 	addressing_unit(registers &r, memory_interface &mem, eds_resolver &eds)
 		: m_r(r), m_mem(mem), m_eds(eds) { }
+
+	// What the last external-data-segment fault should hand its trap
+	// handler; see dst_walker::last_trap_param().
+	u32 last_trap_param() const { return m_eds.last_trap_param(); }
+	int validate(bool system_dst, u32 segment, u32 offset, bool want_write,
+			bool want_priv) const
+	{ return m_eds.validate(system_dst, segment, offset, want_write, want_priv); }
 
 	// Compute the effective address of a base-relative reference.
 	//
@@ -299,6 +321,8 @@ public:
 		}
 
 		m_eds.resolve(system_dst, segnum, offset, modify, out.addr, out.t);
+		if (out.ok())
+			m_eds.last_run(out.run_fwd, out.run_back);
 		return out;
 	}
 

@@ -42,11 +42,26 @@
 set -e
 cd "$(dirname "$0")/.."
 CCT="$PWD/software/cct"
-DISC="$CCT/7914_unitSave_hpux4.0.bin"
+TAPE1="$CCT/7914_unitSave_hpux4.0.bin"
+TAPE2="$CCT/7914_unitSave_hpux4.0_tape2.bin"
+# The system disc is the WHOLE volume the two unit-save tapes hold, put
+# back together by tools/mkhpuxdisc.py: a rebuilt block 0, tape 1, the
+# two-block hole at the join, tape 2. Tape 1 alone boots the kernel but
+# gives it a disc with no volume header and no inode table, and the
+# device configuration pass rejects it (docs/HPUX.md 9). The assembled
+# file is what HP-UX writes to, so it is a derived file, rebuilt here
+# whenever it is missing; the tapes themselves are never written.
+DISC="$CCT/7914_hpux_volume.bin"
 
+for t in "$TAPE1" "$TAPE2"; do
+    if [ ! -f "$t" ]; then
+        echo "decompressing $(basename "$t")..."
+        gunzip -k "$t.gz"
+    fi
+done
 if [ ! -f "$DISC" ]; then
-    echo "decompressing the 7914 unit save..."
-    gunzip -k "$DISC.gz"
+    echo "assembling the system disc from the two unit-save tapes..."
+    python3 tools/mkhpuxdisc.py "$TAPE1" "$TAPE2" "$DISC" || exit 1
 fi
 
 if [ ! -x mame/focus ]; then

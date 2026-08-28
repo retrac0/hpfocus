@@ -840,37 +840,114 @@ its boot descriptor from file offset 0, which *is* disc block 1 because the
 image starts there; a whole-volume image shifts that by one block.
 
 
-## 9. Current frontier: the device configuration pass
+## 9. HP-UX BOOTS TO THE SHELL (2026-08-28)
 
-`PCL STT[647]` — CONFIGURATION entry 3 — now runs, at 3.28 s, and walks every
-driver module in the image: `2 -> 70`, `61`, `51`, `47`, `46`, `43`, `42`,
-`40`, `38`, `35`, `33`, `32`, `29`, `11`, `8`, each module's entry 2 called
-from CORE SYSTEM `+0x7e58`. Then it fails, and the machine prints **"System
-halted due to system error."** at about 14 s.
+Run `tools/runhpux.sh -str 40 -video none` and the console reads, in order:
+the four copyright lines, `CLOCK AND DATE NOT SET`, init's three lines
+ending `FIX root ENTRY IN /etc/passwd AND REBOOT !!!` and `SINGLE USER MODE`,
+then `/etc/profile` running: `/etc/copyright`, `/etc/motd` ("Welcome to
+Hewlett-Packard System 9000 Computer"), `You have mail.`, `Cannot find HOME
+variable.` and `tset` waiting at `TERM = (network)` for a keystroke. Every
+program on that path -- init, sh, stty, cat, sleep, mail, tset -- is exec'd
+from the 7914 image, paged in through the swap area, relocated and run.
 
-Two escapes, in order, both traced to a break:
+That took ten defects after the device configuration pass of the old §9
+(whose two escapes, 115 and 110, turned out to be the disc's own probing and
+went away with the file-system work of §8 and the CS/80 fix below). In the
+order they were found, each with where it showed and how it was proved:
 
-- **115 at CORE SYSTEM `+0x7e48`.** Entry 315 walks the registered-driver
-  list from `DB+220`, asking each driver its identity (request code 11) and
-  comparing the answer with the key it was given. The key is **0**, no driver
-  answers 0, the walk reaches the `NULL` stub and runs out. The key comes
-  from a 20-byte configuration record CONFIGURATION built for itself at
-  1.231 s (`FOCUS_WWATCH=afb68:afb7b`, written from seg 49 `+0x13de`): its
-  fields are `{0x00e00000, 0, 1, 5, 0}` — key 0, then 1 and 5.
-- **110 at IOS and DDMs `+0xaf36`**, which is fatal. IOS calls the driver
-  with request 11 and then request 7, takes the top five bits of the word at
-  `[req]+24` as a device class, and escapes 110 when it does not match the
-  class asked for — again 0. The frames above it are **HP27110** (`0x6ab50`,
-  `0x6cebe`), the HP-IB interface driver: the device being configured is the
-  system disc's interface at select code 5.
+1. **ASI odd-length writes counted their DMA padding byte.** A 23-byte
+   write (the date line) reported 24 transferred and the driver escaped 91.
+   `dma_write` now caps the data phase at the request length
+   (`src/iop/focusasi.h`).
+2. **Modem lines.** Read Card Information subfunction 255 answered
+   `00 00`; the tty layer took the console for a modem port with no carrier
+   and parked every write in a half-second retry loop. The card now answers
+   `00 1f` -- byte 1 is "current modem line state" (27128A 4-40) and all
+   lines up is what a console needs.
+3. **XGDS never balanced the use counts.** The dispatcher's `MUC,B` on the
+   task it switches to was matched by nothing when the kernel switched away;
+   init's data segment reached a count of 73, the compactor (CORE 109
+   refuses any count but zero) could not clear the head of the pool, the
+   pager's first 32 KB was refused (41 → 270) and `Cannot load
+   /etc/sslibs/sslib; errno=14`. ERS sheet 68: XGDS increments the new
+   segment's count and decrements the old one's. `focusexec_alu.ipp` 014.
+4. **CS/80 target address.** After a Locate-and-Read (or Write) the target
+   address is the block after the last one transferred; a following Set
+   Length / Locate-and-Read pair continues there. Ours stayed put, so the
+   SDF mount scanned one 5 KB window for eight seconds and sslib's segments
+   were relocated out of the wrong blocks (328/315). `src/iop/focushpib.h`.
+5. **Trap 037, Absent Code Segment.** The kernel keeps program segments
+   absent (CST word 0 bit 31) and loads them on the trap; PCL raised a CST
+   violation instead, the retried PCL popped a marker word as its pointer,
+   and each retry leaked 16 bytes. `do_call` now validates the target
+   before it pops or pushes anything, in the flowchart's order, and the CST
+   absence bit is bit 31 (bit 29 is the DST's R bit, which the loader sets).
+6. **Signals: the Machine Instruction Trap.** This was the one that had
+   init looping forever. The syscall stub's last act before returning to
+   user code, whenever the task's TCB has a signal pending (TCB+152), is
+   KERNEL 254: `PSHR 4; OR #0x00200000; SETR 4` -- it sets STATUS bit 10,
+   **MI**, and expects the hardware to trap before the next instruction
+   (ERS sheet 11: "a trap prior to each machine instruction"; cause 4).
+   TRAP HANDLERS entry 4 → STT[70] → the hook at absolute 0x104c4 → KERNEL
+   340 builds the handler call; the handler runs (`6 -> 76 entry 16`, the
+   libc trampoline), re-arms with signal(), and the interrupted wait() is
+   restarted. The emulator ignored the bit, so init's SIGALRM was never
+   taken, `wait()` came back EINTR (escape 309) every 122 ms, the stub
+   restarted it, and the restart leaked a word of stack per turn until
+   the dispatcher refused the task. Two facts about the bit, both forced
+   by the kernel's code: the trap fires **in privileged mode too** (the
+   stub sets MI and restarts the syscall without ever leaving the kernel;
+   the trap is taken at KERNEL 254's own EXIT), and MI and EM (bit 9) are
+   **carried across EXIT and IXIT** rather than restored from the marker
+   (otherwise the handler's cleared status is undone on the way out and
+   the trap re-fires forever). `focusexec.h step()`, `carry_trace_bits`.
+7. **Code segment use counts on trap entry.** ERS 5.2.1 step 3: a trap
+   decrements the exited segment's count and increments segment 1's; the
+   handler's EXIT reverses it. Ours counted only the EXIT, so every trap
+   left the interrupted segment one higher: thousands on CORE and IOS
+   from paging faults, and one on a user library segment was enough for
+   the relocator to refuse it, the compactor to stall and the shell's
+   children to die of their first page-in with "Killed". Now counted in
+   `take_trap`, `vector_cs1`, `external_interrupt` and the dispatcher entry.
+8. **Byte strings across page boundaries.** MVB resolved its destination
+   once and ran on through physical memory. The pager copies a 3 KB swap
+   read into a paged data segment with one MVB; the bytes past the first
+   page landed in whichever frames followed physically -- other pages of the
+   same segment, in allocation order -- so `stty`'s data image came back
+   permuted, the exec's relocation pass (KERNEL 220) read a pointer from
+   the wrong page (logical segment 0xc64 where 0xc01-0xc08 were mapped)
+   and escaped 315; the shell reported `8 Killed`. Every byte-walking
+   instruction (`MVB`, `CMPB`, `TRAN`, `FILB`, `SCW`/`SCU`) now steps
+   through a cursor that resolves the pointer again at the end of each
+   page or chained segment (`byte_cursor` in `focusexec_str.ipp`; the
+   resolver reports the contiguous run in `ea_result`).
+9. `-str` must be a whole number of seconds; a fractional value silently
+   ends the run early (several "nothing happens after 7.4 s" conclusions
+   were that).
+10. The two `Killed` children and the panic that followed them were one
+   defect (8) seen from two sides: the panic was the exit path freeing a
+   segment whose DST entry the permuted image had already destroyed.
 
-So the next question is what fills that configuration record's key, and why
-the class the HP-IB path reports is not the one the record asks for.
+What is known about the system as it now stands:
 
-Underneath that sits the second, independent blocker recorded below: the
-mounted image is tape 1 of a two-tape volume, and the inode table is on
-tape 2, so even a configured disc has no file-system metadata to read.
+- Kernel entries named on the way (seg 6): 14 fork, 209 exec, 145 close,
+  141 open, 143/144 read/write, 170 ioctl, 73 signal (305 = EINVAL for
+  signal 9), 75 wait (309 = EINTR; the stub restarts it), 7 exit, 254 the
+  "set MI" helper, 365 the escape-class mapper, 340 the signal hook, 220
+  the relocation walker, 190-193 the segment-loader gateway to TRAP
+  HANDLERS. The STT slot of entry n is `PL+1 - 4(n+1)`.
+- A process's logical segments: 0xc01.. its own (count at u-area DB+704),
+  0x801.. the shared library (`/etc/sslibs/sslib`, 34 KB, five segments
+  mapped to 68/69/71/72/73 through the halfword table at DB+716).
+- The pool at this point holds an 806 KB free block; memory is not short.
+- The RESTART loop period of 122 ms was the other process's disc I/O
+  between turns, not a timer.
 
+Next: the `TERM = (network)` prompt is waiting for console input; feed it
+and the session should continue into the shell proper. `/etc/passwd`'s root
+entry is broken on this image (init says so), which is why the boot goes
+single-user.
 
 ### The doorbell, and why the obvious knob is not the answer
 

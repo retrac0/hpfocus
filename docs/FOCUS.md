@@ -207,8 +207,8 @@ bit  13   14   15    16-17   18   19   20-31
 | `C` | Carry out of an arithmetic operation |
 | `O` | Overflow — cleared only by `BOV`, `BNO`, and `SETR` |
 | `T` | User trap enable (integer overflow, divide by zero) |
-| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1 |
-| `MI` | Machine-Instruction trap request — trap before each instruction |
+| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1. Cleared by the trap itself before its marker is pushed (note 4), set again when an instruction completes |
+| `MI` | Machine-Instruction trap request — trap before each instruction, **in either mode**. HP-UX 5.30 delivers signals with it: the syscall stub sets `MI` (`PSHR 4; OR #0x00200000; SETR 4`) and restarts the interrupted call without leaving the kernel, and the trap taken at the very next instruction is what builds the handler call. `MI` and `EM` are carried across `EXIT` and `IXIT` rather than restored from the marker — the handler's cleared status must survive its own return, or the trap re-fires on the instruction it returned to. Both facts were read off the kernel's code, not the ERS, and are the emulator's rule since 2026-08-28 |
 | `RM` | FP rounding mode: `00` nearest-even, `01` toward +∞, `10` toward 0, `11` toward −∞ |
 | `I` | Interrupt enable for Message register interrupts |
 | `M` | Mode: 1 = privileged |
@@ -503,7 +503,11 @@ internal trap or interrupt the microcode:
    the *same* instruction for restartable faults, with `STATUS.P` set);
    **which of the two is decided by the cause**, not by the instruction —
    see the note-1/note-2 split below;
-3. adjusts code segment use counts;
+3. adjusts code segment use counts — the exited segment's down, segment
+   1's up (ERS 5.2.1 step 3); the handler's `EXIT` does the reverse, so
+   an uncounted entry leaves the interrupted segment one higher for ever.
+   HP-UX's relocator refuses any segment with a count, and one stray count
+   on a user library segment was enough to stall its compactor;
 4. pushes one parameter word (the program pointer itself when the cause has
    no parameter);
 5. sets `PB`/`PL` from CST entry 1;
@@ -1320,6 +1324,15 @@ words to pop at completion. `b` is the direction: 0 forward, 1 backward
 element count, and the count word on the stack is continuously updated to
 the remainder, so the instruction resumes cleanly. On completion X holds
 the elements processed and `(S)` the count not processed.
+
+A data segment pointer is only physically contiguous within one page of a
+paged segment, or within one segment of a chain: the walk is a logical
+one, and the pointer is evaluated afresh at each page or segment boundary
+(the emulator's `byte_cursor`). Run on through physical memory instead and
+a copy into a paged segment spills into whatever frames follow — HP-UX's
+pager fills a process's data segment from swap with a single 3 KB `MVB`,
+and that is exactly how its exec images came back with their pages
+permuted.
 
 **`MVB`** — Move Bytes — `F2:51`
 Copy count bytes source → target in direction `b`. Overlapping moves are

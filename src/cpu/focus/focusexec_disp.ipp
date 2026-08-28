@@ -103,7 +103,13 @@ private:
 		const u32 sl = sb + m_mem.read32(loc + 4);
 		const u32 s = sb + m_mem.read32(sb - 4);
 		if (sb < loc || sl > loc + len || s < sb || s > sl)
+		{
+			static knob::channel dispdbg("FOCUS_DISPDBG");
+			if (dispdbg)
+				dispdbg("[dispatch tcb=%08x entw=%08x dst=%08x stackseg=%u loc=%08x len=%08x sb=%08x sl=%08x s=%08x]\n",
+						ctcbp, entw, r.dst, ers32::get(entw, 4, 12), loc, len, sb, sl, s);
 			return take_trap(trap_cause::inconsistent_registers, 0);
+		}
 		r.sb = sb;
 		r.sl = sl;
 		r.s = s;
@@ -127,6 +133,14 @@ private:
 		const u32 csn = ers32::get(sta, 20, 12);
 		if (csn != r.get(sf::CSN))
 		{
+			// The dispatcher's segment is entered like any other: the
+			// interrupted segment gives up its use count and the new
+			// one gains it (segment 0 is never counted).
+			if (r.get(sf::CSN) != 0 && csn != 0)
+			{
+				cst_use_count(r.get(sf::CSN), -1);
+				cst_use_count(csn, +1);
+			}
 			if (csn == 0)
 			{
 				r.pb = 0;
@@ -141,7 +155,7 @@ private:
 				r.pl = r.pb + m_mem.read32(ea + 4);
 			}
 		}
-		r.status = sta;
+		r.status = carry_trace_bits(sta);
 		r.x = qword(-3);
 		// The marker's return word is a program pointer: flags in the top
 		// two bits, byte offset in the low thirty, as do_call reads an STT
@@ -246,6 +260,16 @@ private:
 		const u32 location = m_mem.read32(entry + 8);
 		r.pb = location;
 		r.pl = location + len_m1 - 3;
+		// Counted like any other trap entry (ERS 5.2.1 step 3); see
+		// take_trap.
+		{
+			const u32 from = r.get(sf::CSN);
+			if (from != 0)
+			{
+				cst_use_count(from, -1);
+				cst_use_count(1, +1);
+			}
+		}
 		r.status = ers32::mask(14, 1);
 		r.put(sf::CSN, 1);
 		const u32 vector = m_mem.read32(r.pl - 4 * cause);
@@ -355,6 +379,18 @@ private:
 			r.pb = m_mem.read32(ea + 8);
 			r.pl = r.pb + m_mem.read32(ea + 4);
 			const u32 slot = m_mem.read32(r.pl - ers32::get(pgm, 1, 19));
+			// "The interrupt handler decrements the use count for the
+			// current code segment, and increments the use count for the
+			// new segment. For the special case of code segment 0 the use
+			// count is neither incremented nor decremented" (sheet 43).
+			{
+				const u32 from = r.get(sf::CSN);
+				if (from != 0)
+				{
+					cst_use_count(from, -1);
+					cst_use_count(seg, +1);
+				}
+			}
 			r.status = ers32::mask(14, 1);   // privileged, all else clear
 			r.put(sf::CSN, seg);
 			branch_to(r.pb + ers32::get(slot, 2, 30));

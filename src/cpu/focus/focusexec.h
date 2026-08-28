@@ -88,6 +88,7 @@ enum class trap_cause : u8
 	fp_operand                = 034,
 	fp_result                 = 035,
 	unexpected_eds_type       = 036,
+	absent_code_segment       = 037,
 	absent_page               = 040,
 	uncallable_procedure      = 041,
 	absent_data_segment       = 042,
@@ -381,6 +382,29 @@ public:
 	// What the last instruction cost in 18 MHz clocks; see CYCLES_TYPICAL.
 	unsigned cycles = CYCLES_TYPICAL;
 
+	// MI (bit 10) and EM (bit 9) of STATUS. EM is "set and cleared
+	// appropriately by the microcode" (sheet 11): the trap clears it
+	// before pushing its marker, and completing an instruction sets it
+	// again, so a request is honoured before the very next instruction
+	// in whichever mode the processor is in -- HP-UX's syscall stub sets
+	// MI and then RESTARTS the interrupted call without ever leaving
+	// privileged mode, and the trap taken there is what turns the
+	// pending signal into a handler call. The two bits belong to the
+	// processor rather than to the frame: EXIT and IXIT restore the rest
+	// of STATUS from the marker but carry these across, which is what
+	// keeps the handler's cleared status from being undone by the
+	// marker's copy of MI on its way back out -- the trap would fire
+	// again before the instruction it had just returned to.
+	static constexpr u32 STATUS_MI_EM = 0x00600000u;   // bits 9 and 10 from the MSB
+	bool machine_instruction_trap_armed() const
+	{
+		return (r.status & STATUS_MI_EM) == STATUS_MI_EM;
+	}
+	u32 carry_trace_bits(u32 restored) const
+	{
+		return (restored & ~STATUS_MI_EM) | (r.status & STATUS_MI_EM);
+	}
+
 	exec_trap step()
 	{
 		if (m_halted)
@@ -404,6 +428,30 @@ public:
 		if (!m_au.in_code(r.p))
 			return exec_trap::code_bounds;
 
+		// Machine Instruction Trap, condition 8 of the same list: "prior
+		// to every machine instruction if the Machine Instruction Trap
+		// Bit in the Status register is set", gated by the Enable bit
+		// beside it (sheets 11 and 47, cause 4). The marker points at the
+		// instruction that was about to run (note 1: detected at the end
+		// of the previous one), the parameter is that instruction (CIR),
+		// and the trap "clears STAT(9:1)", the enable, before pushing the
+		// marker (note 4). HP-UX delivers signals with this: the syscall
+		// stub's last act before EXITing to user code is KERNEL 254 --
+		// PSHR 4, OR #0x00200000, SETR 4 -- whenever the task's TCB has
+		// a signal pending, and the trap handler that runs before the
+		// first user instruction builds the handler call. With the bit
+		// ignored a pending SIGALRM was never taken: init's wait() kept
+		// returning EINTR, the stub kept restarting it, and the boot sat
+		// in that loop until the restart leak ran the stack off its limit.
+		if (m_traps_enabled && machine_instruction_trap_armed())
+		{
+			const u16 w = read16(r.p);
+			m_cir = ((w >> 13) & 7) == 7 ? m_mem.read32(r.p) : u32(w);
+			m_next = r.p;
+			r.status &= ~ers32::mask(9, 1);
+			return take_trap(trap_cause::machine_instruction, m_cir);
+		}
+
 		const u16 w = read16(r.p);
 		const u8 op1 = (w >> 13) & 7;
 		const bool is32 = (op1 == 7);
@@ -422,6 +470,8 @@ public:
 
 		if (t == exec_trap::none && !m_branched)
 			r.p = m_next;
+		if (t == exec_trap::none)
+			r.status |= ers32::mask(9, 1);              // instruction complete: EM set again
 		return t;
 	}
 
@@ -444,8 +494,23 @@ public:
 			return take_trap(trap_cause::user_trap, 2);
 		case exec_trap::pointer_conversion:
 			return take_trap(trap_cause::pointer_conversion, 0);
-		case exec_trap::address_error:
-			return take_trap(addr_trap_cause(), 0);
+		case exec_trap::address_error: {
+			// The absent-segment and absent-page traps carry the entry
+			// number or the pointer that faulted, "negated if this trap
+			// occurs on the ICS" (ERS 5.2.2, 040/042/043); the others
+			// carry nothing.
+			const trap_cause c = addr_trap_cause();
+			u32 param = 0;
+			if (c == trap_cause::absent_data_segment
+					|| c == trap_cause::absent_page
+					|| c == trap_cause::absent_page_table)
+			{
+				param = m_au.last_trap_param();
+				if (m_ics_flag)
+					param = u32(-s32(param));
+			}
+			return take_trap(c, param);
+		}
 		default:
 			return t;
 		}

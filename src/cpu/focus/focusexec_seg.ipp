@@ -131,6 +131,19 @@ private:
 		m_mem.write32(ea, ers32::set(w0, 1, 12, u32(int(n) + delta) & 0xfff));
 	}
 
+	// Adjust a data segment's use count -- DST entry word 0 bits 1-12,
+	// "the number of tasks currently using this segment". Saturating
+	// rather than wrapping, as MUC does: a miscounted release must not
+	// make a pinned segment look free. Entry zero is the table header.
+	void dst_use_count(u32 entry_addr, int delta)
+	{
+		const u32 w0 = m_mem.read32(entry_addr);
+		u32 n = ers32::get(w0, 1, 12);
+		if (delta > 0) { if (n != 0xfff) n++; }
+		else           { if (n != 0) n--; }
+		m_mem.write32(entry_addr, ers32::set(w0, 1, 12, n));
+	}
+
 	// Resolve an external program pointer -- bits 1-19 hold four times the
 	// STT entry number, bits 20-31 the code segment number (ERS sheet 28)
 	// -- switching PB, PL, CSN and the mode bit to the named segment. On
@@ -140,10 +153,26 @@ private:
 	// handler leaves exec_trap::none behind, so the caller cannot use
 	// that value alone to decide whether to go on -- and going on here
 	// would branch to an uninitialised target.
-	bool enter_segment(u32 ptr, u32 &target, exec_trap &out)
+	// What an external program pointer resolves to, worked out without
+	// touching a register: the PCL flowchart (sheet 138) raises traps 17,
+	// 21, 22, 37 and 41 BEFORE it pops the pointer and pushes the stack
+	// marker, and every one of them returns to the PCL to be retried.
+	// Validating after the pop and the push, as this used to, left the
+	// retry with a marker already on the stack and the pointer gone: it
+	// popped a word of the marker as its pointer -- a local offset, so
+	// the call landed at PB+0x58 of the wrong segment -- and each retry
+	// leaked sixteen bytes. HP-UX's init, whose program segment traps
+	// 37 the first time it is entered, walked into the kernel that way
+	// and then spun on trap 41 until its stack was 137 KB deep.
+	struct segment_target
+	{
+		u32 seg = 0, w0 = 0, pb = 0, pl = 0, slot = 0, target = 0;
+	};
+	bool check_external(u32 ptr, segment_target &e, exec_trap &out)
 	{
 		const u32 stt_off = ers32::get(ptr, 1, 19);
 		const u32 seg = ers32::get(ptr, 20, 12);
+		e.seg = seg;
 
 		// "An external program pointer contains a code segment number of
 		// zero, 1024, or 3072" (sheet 47, cause 17). do_exit had the EXIT
@@ -163,22 +192,40 @@ private:
 			return false;
 		}
 
-		const u32 w0 = m_mem.read32(ea);
-		if (ers32::get(w0, 29, 1))          // A: segment absent
+		e.w0 = m_mem.read32(ea);
+		// The absence bit is word 0 bit 31, as in the DST entry: the two
+		// tables share one layout in their last three bits -- R at 29, M
+		// at 30, A at 31 -- and HP-UX keeps them in one table. Reading A
+		// at bit 29 took the R bit the loader sets on a freshly written
+		// program segment for absence, and every free entry (word 0 = 1
+		// or 3, A set) for present.
+		if (ers32::get(e.w0, 31, 1))        // A: segment absent
 		{
-			out = take_trap(trap_cause::cst_violation, seg);
+			// "Absent Code Segment. The absence bit in the CST entry for
+			// the referenced segment is 1. The CST entry number is passed
+			// as a parameter. If this trap occurs on the ICS, the
+			// parameter is negated" (sheet 49, cause 37) -- and the trap
+			// returns to the instruction, so the OS can bring the
+			// segment in and let the call proceed. This is how HP-UX
+			// loads a program: exec leaves the process's code segment
+			// absent and the first PCL into it asks for the load.
+			// Reported as CST Violation (cause 22) instead, the call was
+			// routed to the fault handler, which signalled the process
+			// and let it run on -- unprivileged, in kernel code.
+			out = take_trap(trap_cause::absent_code_segment,
+					m_ics_flag ? u32(-s32(seg)) : seg);
 			return false;
 		}
 
-		const u32 pb = m_mem.read32(ea + 8);
-		const u32 pl = pb + m_mem.read32(ea + 4);   // length-1, low bits 11
+		e.pb = m_mem.read32(ea + 8);
+		e.pl = e.pb + m_mem.read32(ea + 4);   // length-1, low bits 11
 
 		// Cause 21's length test is "in the referenced segment" (sheet
 		// 48), and the referenced segment is this one, not the caller's.
 		// do_call bounds the first lookup against its own PL; this is the
 		// second lookup, into the STT of the segment being entered, and
 		// it was going unchecked.
-		const u32 limit = ers32::get(m_mem.read32(pl), 13, 19);
+		const u32 limit = ers32::get(m_mem.read32(e.pl), 13, 19);
 		if (stt_off > limit)
 		{
 			out = take_trap(trap_cause::stt_violation, stt_off);
@@ -190,31 +237,39 @@ private:
 		// external program pointer points to an external program pointer
 		// in the referenced segment" (sheet 48) -- and not cause 17,
 		// which is about a pointer naming a reserved segment number.
-		const u32 slot = m_mem.read32(pl - stt_off);
-		if (ers32::get(slot, 0, 1))
+		e.slot = m_mem.read32(e.pl - stt_off);
+		if (ers32::get(e.slot, 0, 1))
 		{
-			out = take_trap(trap_cause::stt_violation, slot);
+			out = take_trap(trap_cause::stt_violation, e.slot);
 			return false;
 		}
-		if (ers32::get(slot, 1, 1) && !r.privileged())
+		if (ers32::get(e.slot, 1, 1) && !r.privileged())
 		{
-			out = take_trap(trap_cause::uncallable_procedure, slot);
+			out = take_trap(trap_cause::uncallable_procedure, e.slot);
 			return false;
 		}
+		e.target = e.pb + ers32::get(e.slot, 2, 30);
+		out = exec_trap::none;
+		return true;
+	}
 
+	// The register side of entering the segment check_external resolved.
+	void commit_external(const segment_target &e, u32 ptr)
+	{
+		const u32 stt_off = ers32::get(ptr, 1, 19);
 		// Every transfer between segments comes through here, so this is
 		// the one place that sees the whole call graph. docs/SUNOS.md has
 		// the static version, read out of the boot image.
 		static knob::channel segcall("FOCUS_SEGCALL", knob::sync::buffered);
 		if (segcall)
 			segcall("[segcall %u -> %u entry %u  p=%08x]\n",
-					r.get(sf::CSN), seg, stt_off / 4, r.p);
+					r.get(sf::CSN), e.seg, stt_off / 4, r.p);
 
 		cst_use_count(r.get(sf::CSN), -1);
-		r.pb = pb;
-		r.pl = pl;
-		r.put(sf::CSN, seg);
-		if (ers32::get(w0, 30, 1))          // M: executes privileged
+		r.pb = e.pb;
+		r.pl = e.pl;
+		r.put(sf::CSN, e.seg);
+		if (ers32::get(e.w0, 30, 1))        // M: executes privileged
 			r.put(sf::M, 1);
 		// This CPU joins the use count. The CST reference bit (word 0
 		// bit 31) is deliberately NOT set: SUNOS keeps one unified
@@ -224,10 +279,16 @@ private:
 		// module initialises the flags with bit 31 clear and nothing in
 		// the OS ever clears it, so the hardware evidently does not
 		// write it either.
-		cst_use_count(seg, +1);
+		cst_use_count(e.seg, +1);
+	}
 
-		target = pb + ers32::get(slot, 2, 30);
-		out = exec_trap::none;
+	bool enter_segment(u32 ptr, u32 &target, exec_trap &out)
+	{
+		segment_target e;
+		if (!check_external(ptr, e, out))
+			return false;
+		commit_external(e, ptr);
+		target = e.target;
 		return true;
 	}
 
@@ -240,7 +301,7 @@ private:
 		static const knob::number calllog_p("FOCUS_CALLLOG", 0, 16);
 		u32 ptr;
 		if (offset == 0)
-			ptr = pop();
+			ptr = stk(0);       // popped below, once the call is known good
 		else
 		{
 			// The entry must lie within the STT, whose byte length is in
@@ -262,6 +323,29 @@ private:
 			calllog("[call p=%08x pl=%08x offset=%02x ptr=%08x]\n",
 					r.p, r.pl, offset, ptr);
 
+		// Resolve and check the target first: the flowchart's traps come
+		// before the pointer is popped and the marker pushed, so a trap
+		// returns to a PCL that can simply run again (see check_external).
+		const bool external = ers32::get(ptr, 0, 1) != 0;
+		segment_target e;
+		u32 target;
+		if (external)
+		{
+			exec_trap t;
+			if (!check_external(ptr, e, t))
+				return t;
+			target = e.target;
+		}
+		else
+		{
+			target = r.pb + ers32::get(ptr, 2, 30);
+			if (!m_au.in_code(target))
+				return exec_trap::code_bounds;
+		}
+
+		if (offset == 0)
+			pop();
+
 		const u32 ret = m_next - r.pb;      // PB-relative return address
 		const u32 old_q = r.q;
 
@@ -272,17 +356,15 @@ private:
 		set_stk(0, r.s - old_q);            // delta Q
 		r.q = r.s;
 
-		u32 target;
-		if (ers32::get(ptr, 0, 1))
+		if (external)
 		{
-			exec_trap t;
-			if (!enter_segment(ptr, target, t))
-				return t;
+			commit_external(e, ptr);
+			// Cause 55 is tested after the transfer (sheet 50): "the
+			// segment number and delta P in the stack marker are
+			// probably in error" presumes the marker is there.
+			if (!m_au.in_code(target))
+				return exec_trap::code_bounds;
 		}
-		else
-			target = r.pb + ers32::get(ptr, 2, 30);
-		if (!m_au.in_code(target))
-			return exec_trap::code_bounds;
 		branch_to(target);
 		return exec_trap::none;
 	}
@@ -304,11 +386,26 @@ private:
 			if (r.q - 16 - 4u * n < qnew)
 				return take_trap(trap_cause::stack_underflow, r.q);
 		}
+		// Returning into a code segment that is absent is cause 37, as a
+		// call into one is (see enter_segment): the CST entry number is
+		// the parameter, the trap returns to this EXIT, and the marker
+		// must still be here for the retry -- so the test comes before
+		// anything is popped. The marker's STATUS word sits just under Q.
+		{
+			const u32 st = m_mem.read32(r.q - 7);
+			const u32 seg = ers32::get(st, 20, 12);
+			u32 ea;
+			if (seg != r.get(sf::CSN) && seg != 0 && seg != 1024
+					&& seg != 3072 && cst_entry_addr(seg, ea)
+					&& ers32::get(m_mem.read32(ea), 31, 1))
+				return take_trap(trap_cause::absent_code_segment,
+						m_ics_flag ? u32(-s32(seg)) : seg);
+		}
 		r.s = r.q;
 		const u32 delta = stk(0);
 		r.q = r.q - delta;
 		const u32 old_seg = r.get(sf::CSN);
-		r.status = stk(1);
+		r.status = carry_trace_bits(stk(1));
 		const u32 ret = stk(2);
 		r.x = stk(3);
 		r.s -= 16 + 4u * n;

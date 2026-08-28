@@ -164,12 +164,47 @@ private:
 		set_stk(0, r.s - old_q);
 		r.q = r.s;
 
-		push(parameter);
+		// "A parameter is pushed onto the current stack at Q+3" (ERS
+		// 5.2.1 step 4) -- the same slot the external interrupt entry
+		// and the message trap use, with (Q+1) and (Q+2) being the
+		// interrupt frame's saved global pointer and mask, which an
+		// internal trap has no use for. Every handler in HP-UX 5.30
+		// that wants its parameter reads Q+12: the absent data segment,
+		// absent page and absent page table handlers all begin `LDS
+		// Q+12`. Pushed at Q+1, as this used to do, the parameter sat
+		// two words short of where the handler looked, and the first
+		// absent-segment fault of the boot -- the kernel building its
+		// first process -- became a bounds violation inside the handler
+		// and a halt.
+		m_mem.write32(r.q + 4, 0);
+		m_mem.write32(r.q + 8, 0);
+		r.s = r.q + 12;
+		m_mem.write32(r.s, parameter);
 
 		r.pb = location;
 		// LENGTH-1 always ends in 11 and PL must end in 00, so the last
 		// word of the segment starts three bytes lower.
 		r.pl = location + len_m1 - 3;
+
+		// "The use count for the exited code segment is decremented, and
+		// the use count for code segment 1 is incremented" (ERS 5.2.1
+		// step 3). EXIT back out of the handler does the reverse, so a
+		// trap that was not counted on the way in left the interrupted
+		// segment one higher every time it was taken: the paging faults
+		// alone put thousands on the kernel's own segments, and one on a
+		// user library segment was enough to pin it -- the memory
+		// manager's relocator refuses any segment with a non-zero count,
+		// the compactor could not clear the head of the pool for the
+		// pager's next 32 KB, and the shell's children died of their
+		// page-ins with "Killed".
+		{
+			const u32 from = r.get(sf::CSN);
+			if (from != 0)
+			{
+				cst_use_count(from, -1);
+				cst_use_count(1, +1);
+			}
+		}
 
 		// Only the mode bit survives, and the code segment number becomes
 		// 1 -- the handler segment the machine now executes in. (The old

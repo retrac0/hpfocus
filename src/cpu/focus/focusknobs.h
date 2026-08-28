@@ -126,6 +126,10 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_IOPDBG", "", group::iop, false,
   "Log the IOP's internal decisions -- channel selection, poll rounds, "
   "suspension and resumption." },
+{ "FOCUS_IOPREV", "<hex>", group::iop, true,
+  "The microcode release date the IOP answers RIRV with, YYYYMMDD in hex "
+  "(default 19820920, the I/O ERS's own date). HP-UX 5.30 will not open a "
+  "device on the HP-IB card unless it is later than 19810630." },
 { "FOCUS_IOPPOLL", "<us>", group::iop, true,
   "How often the IOP polls the interfaces, in microseconds. The ERS has it "
   "polling continuously; this is the emulated stand-in, and it has to be "
@@ -220,6 +224,22 @@ inline constexpr spec CATALOGUE[] = {
   "media system." },
 { "FOCUS_HPIBIDENT", "<hex>", group::cards, true,
   "The HP-IB card's identity halfword." },
+{ "FOCUS_CS80ID", "<hex>", group::cards, true,
+  "The two bytes the CS/80 drive answers an AMIGO identify with (default "
+  "020a, a 7914). HP-UX's boot-device probe tests the first byte for 02 "
+  "to choose its CS80 driver." },
+{ "FOCUS_HPIBDBG", "", group::cards, false,
+  "Log the HP-IB card's internal decisions: orders, the bus dialogue an "
+  "interface message runs, transaction completions and the events it "
+  "queues." },
+{ "FOCUS_HPIBSC", "<0|1>", group::cards, true,
+  "Whether the HP-IB card is the bus's System Controller (switch S6, UP "
+  "from the factory). FR1 bit 5 reports it, and the HP27110 driver refuses "
+  "request 13 with escape 127 without it." },
+{ "FOCUS_HPIBFR1", "<hex>", group::cards, true,
+  "Force the HP-IB card's FR1 status word. The sweep control for the "
+  "configuration pass's request 13, which the HP27110 driver refuses with "
+  "escape 127 unless bit 5 is set and 129 unless bit 6 is." },
 { "FOCUS_HPIBLOG", "", group::cards, false,
   "Log the HP-IB card's transactions and bus activity." },
 { "FOCUS_GFXDUMP", "<n>", group::cards, false,
@@ -396,6 +416,10 @@ inline constexpr spec CATALOGUE[] = {
   "the arguments a routine was called with." },
 { "FOCUS_BREAKFROM", "<seconds>", group::watch, false,
   "Ignore FOCUS_BREAK hits before that emulated moment." },
+{ "FOCUS_DISPDBG", "", group::watch, false,
+  "Report the registers the dispatcher computed when it refuses to resume "
+  "a task -- the stack segment, its base, limit and saved S -- rather than "
+  "just the inconsistent-registers trap." },
 { "FOCUS_DUMP", "<hex addr>[:<words>][,...]", group::watch, false,
   "Memory windows to print with every state report, for looking at tables "
   "the system built." },

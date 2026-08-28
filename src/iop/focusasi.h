@@ -527,7 +527,21 @@ struct asi_card : public iop_interface
 	void dma_write(u8 b) override
 	{
 		if (data_phase())
+		{
+			// The IOP's DMA moves halfwords, so an odd-length write
+			// arrives with one padding byte past the request's data
+			// transfer length -- whatever happened to follow the record
+			// in the host's buffer. The card "initiates" exactly the
+			// length the request block asked for (4-64): the padding is
+			// neither sent to the device nor counted. Counting it made a
+			// 23-byte write report 24, and HP27128/30 +0x2f52 turns that
+			// mismatch into 91; the first odd-length console write HP-UX
+			// makes is the boot date line, and its 91 unwound the boot
+			// task before it brought up the VM device.
+			if (m_length && m_transferred >= m_length)
+				return;
 			m_transferred++;
+		}
 		take_data(b);
 	}
 
@@ -1092,9 +1106,14 @@ private:
 			break;
 		case 255:
 			// Read modem line status: which line changed, then the
-			// current state. Nothing here has a modem.
+			// current state (4-41). Nothing here has a modem, but a
+			// hard-wired terminal still presents its handshake lines
+			// asserted, and the driver reads them at open: with every
+			// line reported down, HP-UX's tty layer treated the console
+			// as a modem port waiting for carrier -- its writes sat in a
+			// half-second retry loop and init never reached the screen.
 			m_out.push_back(0);
-			m_out.push_back(0);
+			m_out.push_back(0x1f);
 			break;
 		default:
 			// Subfunctions 0 and 1..32 read back the configuration

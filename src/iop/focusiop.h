@@ -475,7 +475,20 @@ public:
 				data |= ((m_attn_mask & 0xff) << 24)
 						| ((m_attn_log & 0xff) << 8);
 			return true;
-		case CMD_RIRV: data = REVISION; return true;
+		case CMD_RIRV: {
+			// "The date the IOP microcode was released ... YYYYMMDD in
+			// hex" (sheet 39). HP-UX 5.30 compares it with 0x19810630 and
+			// keeps a flag, CORE SYSTEM's DB+140, that is true only for
+			// microcode NEWER than that; every IOP in the machine has to
+			// agree (escape 69) and without the flag the kernel will not
+			// open a device on the HP-IB card at all (escape 91, then
+			// 185 and a halt). An IOP that answered 1 here was an IOP
+			// from before June 1981. The default is this ERS's own
+			// revision date; FOCUS_IOPREV sweeps it.
+			static const knob::number rev("FOCUS_IOPREV", REVISION, 16);
+			data = u32(rev);
+			return true;
+		}
 		case CMD_RIST: data = c.iface ? c.iface->status_reg() : 0; return true;
 		case CMD_RIFG: data = c.iface ? c.iface->flag() : 0; return true;
 		case CMD_IFPL: data = poll(); return true;
@@ -1116,9 +1129,21 @@ public:
 				// location following the command" -- the same word RDCS
 				// returns, so the driver can read its transfer's outcome
 				// out of memory instead of asking for it.
+				//
+				// The count half follows RDCS exactly: "current count is
+				// two less than the number of transfers remaining ... if
+				// DMA terminates on count, count will be -2; if on Device
+				// End, the number not transferred is count+2" (sheet 29).
+				// HP-UX's HP27110 driver reads its transfer lengths out of
+				// this word and does that arithmetic itself -- `length -
+				// count - 2` for a data leg, `count + 2` for the status
+				// leg -- so writing the raw count here made a full read
+				// look two bytes long and a short status block look
+				// shorter still, and the driver refused every CS/80
+				// Describe with escape 148.
 				const channel_state &cs = m_chan[pa & 7];
 				mem.write32(operand,
-						((cs.dma_count & 0xffff) << 16) | cs.term);
+						(((cs.dma_count - 2) & 0xffff) << 16) | cs.term);
 				m_chan[pa & 7].chain = operand;
 				break;
 			}
@@ -1302,7 +1327,7 @@ public:
 	u32 dma_mask() const { return m_dma_mask; }
 
 private:
-	static constexpr u32 REVISION = 0x0001;
+	static constexpr u32 REVISION = 0x19820920;   // I/O ERS A-1FE1-3030-9, 09/20/82
 	static constexpr unsigned TIMER_PA = 7;
 
 	struct channel_state

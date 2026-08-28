@@ -110,10 +110,83 @@ public:
 	// just done, so recording it here beats a second traversal.
 	u32 last_use_count_slot() const { return m_use_slot; }
 
+	// The parameter the trap sequence pushes for the last failed resolve:
+	// "Absent Data Segment ... The DST entry number is passed as a
+	// parameter"; "Absent Page / Absent Page Table ... The EDS pointer
+	// [indexed, if appropriate] is passed as a parameter" (ERS 5.2.2,
+	// causes 040, 042, 043). The pointer is rebuilt from what the walk
+	// was given, which is the pointer after indexing. HP-UX's handlers
+	// begin by testing this word: zero, which every fault used to carry,
+	// is the "on the ICS, negated" reading of nothing and halts.
+	u32 last_trap_param() const override { return m_trap_param; }
+	void last_run(u32 &fwd, u32 &back) const override
+	{
+		fwd = m_run_fwd;
+		back = m_run_back;
+	}
+
+	// VPTR's view of an external data segment pointer (ERS 155.1): -1
+	// when the pointer is invalid, out of bounds, or asks for a mode the
+	// segment does not grant; 0 when the segment (or its page) is absent;
+	// 1 when it is good. Absence is tested last, as the ERS lists it, so
+	// an absent segment answers "E" rather than "L".
+	int validate(bool system_dst, u32 segment, u32 offset,
+			bool want_write, bool want_priv) const override
+	{
+		const u32 table = system_dst ? SYSTEM_DST_BASE : m_r.dst;
+		const u32 tlength = m_mem.read32(table);
+		if (segment == 0 || tlength < ENTRY_BYTES * segment)
+			return -1;
+		const u32 entry_addr = table + ENTRY_BYTES * segment;
+		dst_entry e;
+		e.w0 = m_mem.read32(entry_addr);
+		e.w1 = m_mem.read32(entry_addr + 4);
+		e.w2 = m_mem.read32(entry_addr + 8);
+		e.w3 = m_mem.read32(entry_addr + 12);
+		int v = 1;
+		if (s32(offset) < 0)
+			v = -1;
+		else if (e.priv_only() && !want_priv)
+			v = -1;
+		else if (want_write && !e.writable())
+			v = -1;
+		else if (!e.paged())
+		{
+			// Chained segments are not followed here; a pointer past the
+			// first link is rare enough that reading it as invalid is the
+			// safer error.
+			if (offset > e.length_minus_1())
+				v = -1;
+		}
+		else
+		{
+			if (e.absent())
+				return 0;
+			const u32 pagenum = offset >> e.pagesize();
+			if (8 * pagenum + 4 > e.length_minus_1())
+				return -1;
+			page_entry pe;
+			pe.w0 = m_mem.read32(e.location() + 8 * pagenum);
+			if (pe.priv_only() && !want_priv)
+				return -1;
+			if (want_write && !pe.writable())
+				return -1;
+			if (pe.absent())
+				return 0;
+			return 1;
+		}
+		if (e.absent())
+			return 0;
+		return v;
+	}
+
 	bool resolve(bool system_dst, u32 segment, u32 offset, bool modify,
 			u32 &addr, trap &t) override
 	{
 		m_use_slot = 0;
+		m_trap_param = 0;
+		const u32 eds_ptr = (system_dst ? 0u : 0x40000000u)
+				| ((segment & 0x7ff) << 19) | (offset & 0x7ffff);
 		const u32 table = system_dst ? SYSTEM_DST_BASE : m_r.dst;
 
 		// Entry zero's first word is 16 times the number of entries,
@@ -171,7 +244,17 @@ public:
 					}
 					if (e.absent())
 					{
+						// "The DST entry number" as the pointer names
+						// it: the segment number with the U bit above
+						// it -- the top thirteen bits of an EDS pointer.
+						// HP-UX's handler sorts on exactly that: a
+						// number below 2048 is looked up in the system
+						// DST at absolute 0, anything else has its low
+						// ten bits looked up in the process's own table.
+						// A bare user segment number was taken for a
+						// system one, and the fault repeated for ever.
 						t = trap::absent_segment;
+						m_trap_param = (system_dst ? 0u : 0x800u) | (segment & 0x7ff);
 						return false;
 					}
 
@@ -186,6 +269,8 @@ public:
 
 					m_use_slot = entry_addr;
 					addr = e.location() + offset;
+					m_run_fwd = e.length() - offset;
+					m_run_back = offset + 1;
 					return true;
 				}
 
@@ -227,6 +312,7 @@ public:
 			if (e.absent())
 			{
 				t = trap::absent_page_table;
+				m_trap_param = eds_ptr;
 				return false;
 			}
 
@@ -258,6 +344,7 @@ public:
 			if (pe.absent())
 			{
 				t = trap::absent_page;
+				m_trap_param = eds_ptr;
 				return false;
 			}
 
@@ -271,6 +358,19 @@ public:
 			// LOCATION is page aligned, so OR and add are equivalent; the
 			// ERS writes it as OR.
 			addr = pe.location() | page_offset;
+			// A page is the unit of physical contiguity: the next page
+			// of the same segment can be anywhere in memory (or absent),
+			// so a byte walk that reaches the boundary has to resolve
+			// again rather than run on. HP-UX's pager copies a 3 KB
+			// swap read into a process's data segment with one MVB; run
+			// on past the first page and the bytes land in whichever
+			// frames happen to follow physically -- the frames of other
+			// pages of the same segment, in the order the allocator
+			// handed them out -- so the image came back permuted and
+			// the exec's relocation pass read a pointer out of the
+			// wrong page and gave up with 315.
+			m_run_fwd = (u32(1) << ps) - page_offset;
+			m_run_back = page_offset + 1;
 			return true;
 		}
 
@@ -284,6 +384,9 @@ private:
 	registers &m_r;
 	memory_interface &m_mem;
 	u32 m_use_slot = 0;
+	u32 m_trap_param = 0;
+	u32 m_run_fwd = 0x7fffffffu;
+	u32 m_run_back = 0x7fffffffu;
 };
 
 } // namespace focus

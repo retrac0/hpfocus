@@ -938,6 +938,13 @@ byte 2    port ID (the ASI has one, so always 0)
 byte 3+   additional information, by event code
 ```
 
+**Read Card Information subfunction 255, modem line status** *(4-40)*
+answers two bytes: byte 0 the lines that changed state since the last
+read (cleared by the read), byte 1 the current state. HP-UX's console
+open reads it and, seeing no carrier, treats the console as a modem port
+and parks every write in a half-second retry; the emulated card answers
+`00 1f` — all lines up.
+
 Nothing gets through unless its mask bit is set: "IF ALL INTERRUPT
 CONDITIONS ARE DISABLED, NO ASYNCHRONOUS INTERRUPT WILL OCCUR" *(4-32)*. The
 host interrupt mask is byte 22 of the configuration block and byte 0 of
@@ -1430,6 +1437,15 @@ enforce (a cold device must answer 2 until a Request Status collects it).
 | `0x0E` / `0x0F` | Release / Release Denied | general purpose |
 | `0x10`/`0x11` | Set Address, single-vector / 3-vector (6-byte parameter) | complementary |
 | `0x12` | Set Block Displacement (6-byte signed) | complementary |
+
+**The target address moves with the data.** After a Locate-and-Read or
+Locate-and-Write the target address names the block after the last one
+transferred, so a following Set Length / Locate-and-Read with no Set
+Address continues where the previous one stopped. HP-UX's SDF mount reads
+the file allocation area that way (one Set Address, then two hundred Set
+Length / Locate-and-Read pairs) and its segment loader reads `sslib` the
+same way; the emulator (`src/iop/focushpib.h`) advances by the whole
+blocks covered.
 | `0x18` | Set Length (4-byte; all-ones = "whole volume") | complementary |
 | `0x20`+u | Set Unit (u = 0–14; 15 = device controller) | complementary |
 | `0x30`–`0x33` | Initiate Utility (up to 8-byte parameter) | diagnostic |

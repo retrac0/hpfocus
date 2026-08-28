@@ -733,13 +733,23 @@ private:
 				branch_to(r.p);
 				return exec_trap::none;
 			}
+			// Both forms consume their operand. The ",B" flag chooses how
+			// the operand is read, not whether it is popped: no site in
+			// HP-UX 5.30 deletes anything after a plain UP or DOWN, and
+			// leaving the pointer behind was a stack leak of one word per
+			// semaphore operation -- invisible in a frame that soon
+			// EXITs, but the IOS task that reads the inode table at mount
+			// does a DOWN/UP pair per block in one frame, and after 754
+			// blocks its stack had grown by 6.9 KB and the next procedure
+			// entry's stack probe overflowed the task's stack by a word:
+			// "System halted due to system error. TRAP:00000024".
+			pop();
 			const u32 ca = a + 4;
 			const s32 count = s32(m_mem.read32(ca));
 			const u32 ctcbp = m_mem.read32(ded_base() + 4);
 			if (op3 == 021)
 			{
 				m_mem.write32(ca, u32(count - 1));
-				if (b3) pop();
 				if (count - 1 >= 0)
 					return exec_trap::none;
 
@@ -790,7 +800,6 @@ private:
 						if (sem_hook) sem_hook(false, a, l - 0x10, r.p);
 					}
 				}
-				if (b3) pop();
 				return exec_trap::none;
 			}
 		}
@@ -1067,6 +1076,48 @@ private:
 			return exec_trap::none;
 		}
 
+		case 071: {                                             // VPTR
+			// Validate Pointer (ERS 155.1): a data segment pointer on
+			// the TOS, the mode bits wanted of it (WRITE in bit 30, PRIV
+			// in bit 31) beneath, and an SB-relative byte offset beneath
+			// that. The answer is the condition code -- L invalid, E
+			// absent, G good -- and the pointer alone is popped. HP-UX's
+			// process loader validates every segment it is handed with
+			// this; executing it as an unimplemented instruction made
+			// the load of /etc/sslibs/sslib fail, and init with it.
+			const u32 ptr = stk(0), mode = stk(1), soff = stk(2);
+			const bool want_priv = ers32::get(mode, 31, 1) != 0;
+			const bool want_write = ers32::get(mode, 30, 1) != 0;
+			u32 cc = CCG;
+			if (want_priv && !r.privileged())
+				cc = CCL;
+			else if (ers32::get(ptr, 0, 2) == 2)
+			{
+				s32 off = s32(ers32::get(ptr, 2, 30));
+				if (b3) off += s32(r.x);
+				if (off < 0 || u32(off) > r.dl - r.db)
+					cc = CCL;
+			}
+			else if (ers32::get(ptr, 0, 2) == 3)
+			{
+				s32 off = s32(ers32::get(ptr, 2, 30));
+				if (b3) off += s32(r.x);
+				if (off < 0 || u32(off) > soff)
+					cc = CCL;
+			}
+			else if (ers32::get(ptr, 0, 1) == 0)
+			{
+				const bool system = ers32::get(ptr, 1, 1) == 0;
+				const u32 seg = ers32::get(ptr, 2, 11);
+				u32 off = ers32::get(ptr, 13, 19);
+				if (b3) off += r.x;
+				const int v = m_au.validate(system, seg, off, want_write, want_priv);
+				cc = v < 0 ? CCL : v == 0 ? CCE : CCG;
+			}
+			r.put(sf::CC, cc);
+			pop();
+			return exec_trap::none;
+		}
 		case 070: {                                             // CPTR
 			// Adds a byte offset to a data segment pointer, yielding a new
 			// pointer of the same type (ERS sheet 120). The delta lands in
@@ -1132,6 +1183,30 @@ private:
 			m_mem.write32(ctcbp + 8,
 					ers32::set(w, 20, 12, ers32::get(ptr, 1, 12)));
 			set_stk(0, ers32::set(ptr, 1, 12, old));
+			// "Increment Use Count for New Segment ... Decrement Use Count
+			// for Old Segment" (sheet 68). The count is the DST entry's
+			// bits 1-12, the number of tasks using the segment, and the
+			// memory manager's relocator refuses to move any segment
+			// whose count is not zero. HP-UX's dispatcher pairs its own
+			// MUC increment on the task it switches to with the
+			// decrement XGDS owes the segment it switches from; without
+			// this half a process's global data segment gained a count
+			// on every dispatch and never lost one, so once init had
+			// been scheduled a few dozen times its data segment was
+			// pinned in the middle of the heap, the compactor could not
+			// gather the free space below it, the paging pool could not
+			// take its first 32 KB, and every page-in of /etc/sslibs/
+			// sslib failed with 270 -- "Cannot load /etc/sslibs/sslib;
+			// errno=14". The old segment's number is the TCB field as
+			// it stood before the exchange, bit 20 selecting the table.
+			dst_use_count(ea, +1);
+			{
+				const u32 old_table = ers32::get(w, 20, 1)
+						? r.dst : dst_walker::SYSTEM_DST_BASE;
+				const u32 old_seg = ers32::get(w, 21, 11);
+				if (old_seg != 0)
+					dst_use_count(old_table + 16 * old_seg, -1);
+			}
 			return exec_trap::none;
 		}
 

@@ -71,6 +71,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <string>
 #include <vector>
 
 namespace focus {
@@ -84,6 +85,9 @@ namespace focus {
 struct cs80_device
 {
 	static constexpr u32 BLOCK = 256;
+	// The 7914's geometry (docs/bitsavers/cs80describes/7914-0.txt).
+	static constexpr u32 HEADS = 7;
+	static constexpr u32 SECTORS = 64;
 
 	// What Describe reports. The defaults are a 7914 -- the drive whose
 	// unit save carries the HP-UX this emulates -- and can be overridden
@@ -184,6 +188,9 @@ struct cs80_device
 		u64 off = u64(m_write_addr) * BLOCK;
 		for (size_t k = 0; k < data.size() && off + k < image.size(); k++)
 			image[off + k] = data[k];
+		// ...and a write leaves the target after what it wrote, for the
+		// same reason as locate_read.
+		m_address = m_write_addr + u32((data.size() + BLOCK - 1) / BLOCK);
 	}
 
 	bool writing() const { return m_writing; }
@@ -194,6 +201,14 @@ struct cs80_device
 	// included, rather than reaching around the device into the file.
 	bool read_blocks(u32 block, u32 count, std::vector<u8> &out)
 	{
+		// The real loader ROM drives the drive through the card and,
+		// like every CS/80 host, collects the power-on condition with a
+		// Request Status before it reads. Reading through here stands
+		// for that whole dialogue, so the condition is consumed as it
+		// would have been: HP-UX's first Describe otherwise came back
+		// with QSTAT 2, which its HP27110 driver turns into escape 148
+		// and the boot-device probe into "no disc here".
+		m_poweron = false;
 		std::deque<u8> data;
 		m_address = block;
 		m_length = count;
@@ -223,6 +238,18 @@ private:
 		}
 		for (u32 k = 0; k < len; k++)
 			out.push_back(image[off + k]);
+		// The target address moves with the data: after a Locate and
+		// Read it names the block after the last one transferred, so a
+		// following Locate and Read with a Set Length alone continues
+		// where this one stopped. HP-UX's SDF mount reads the file
+		// allocation area that way -- one Set Address, then two hundred
+		// Set Length / Locate and Read pairs -- and its segment loader
+		// reads sslib the same way. Leaving the address where it was
+		// served every continuation the same first blocks: the mount
+		// scanned one 5 KB window for eight seconds and the loader
+		// relocated sslib segments out of the wrong blocks, which its
+		// consistency checks turned into 328 and 315.
+		m_address += (len + BLOCK - 1) / BLOCK;
 	}
 
 	// Describe (CS/80 2-25, table 2-4): 5 controller bytes, 19 unit,
@@ -251,13 +278,21 @@ private:
 		b(1);                               // max interleave
 		b(0x01);                            // fixed volumes: volume 0
 		b(0x00);                            // removable volumes: none
-		// volume: block-addressed, so max cylinder, head and sector are
-		// all zero and only the single-vector maximum is real -- the
-		// rule the internal disc's driver enforces (see focusdisc.h).
-		b(0); b(0); b(0);
-		b(0);
-		b(0); b(0);
-		const u32 maxblk = image.empty() ? 0 : u32(image.size() / BLOCK - 1);
+		// volume. The internal disc's driver wants a block-addressed
+		// volume to describe max cylinder, head and sector as zero
+		// (focusdisc.h); HP-UX's CS80 driver is the opposite: it sizes
+		// the volume from the geometry, and 0/0/0 made volume 0 a
+		// zero-block volume that the swap open then refused with escape
+		// 91. So the geometry is real: a 7914's 7 heads of 64 sectors,
+		// and as many cylinders as the image needs (a 7914 has 1152;
+		// tools/mkhpuxdisc.py pads its volume to whole cylinders).
+		const u32 sectors = u32(image.size() / BLOCK);
+		const u32 cyls = (sectors + HEADS * SECTORS - 1) / (HEADS * SECTORS);
+		const u32 maxcyl = cyls ? cyls - 1 : 0;
+		b(u8(maxcyl >> 16)); b(u8(maxcyl >> 8)); b(u8(maxcyl));
+		b(HEADS - 1);
+		b(0); b(SECTORS - 1);
+		const u32 maxblk = sectors ? cyls * HEADS * SECTORS - 1 : 0;
 		b(0); b(0); b(0);
 		b(u8(maxblk >> 16)); b(u8(maxblk >> 8)); b(u8(maxblk));
 		b(1);                               // current interleave
@@ -311,6 +346,8 @@ struct hpib_card : public iop_interface
 	iop_core *iop = nullptr;
 	unsigned pa = 5;
 	knob::device_log log;
+	// FOCUS_HPIBFR1 forces the status word FR1 answers (bits 7:1).
+	u32 fr1_force = 0;
 
 	// The halfword the identify transaction answers, which is what types
 	// the slot: the card ID in the HIGH byte, the firmware ID in the low
@@ -325,6 +362,18 @@ struct hpib_card : public iop_interface
 	// sets the system disc to address 0.
 	cs80_device disc;
 	u8 device_address = 0;
+
+	// The two bytes the drive answers an AMIGO identify with. CS/80 discs
+	// answer 0x02 in the first byte -- the byte HP-UX's boot-device probe
+	// tests to choose its CS80 driver -- and a model code in the second;
+	// 0x020a is the 7914. FOCUS_CS80ID sweeps it.
+	u16 amigo_id = 0x020a;
+
+	// Switch S6, "System Controller", UP from the factory (27110A 2-3).
+	// Bit 5 of FR1 reports it: the HP27110 and HP27125A drivers both
+	// refuse request 13 with escape 127 unless it is set, and nothing
+	// else in the image looks at that bit. FOCUS_HPIBSC=0 clears it.
+	bool system_controller = true;
 
 	// Event codes, classified by high nibble as on every card here. The
 	// kernel's handler (CORE SYSTEM 0x26020) reads the code, masks 0xf0
@@ -342,21 +391,50 @@ struct hpib_card : public iop_interface
 	// card takes a millisecond or two of the host's tick instead.
 	unsigned event_delay_ms = 2;
 
+	// Write Order opcodes, in bits 7:4 of the order byte (27110A 4-2).
+	enum : u8
+	{
+		ORD_IDY = 0,        // identify
+		ORD_DLD = 1,        // download (not supported)
+		ORD_PAU = 2,        // pause
+		ORD_DIS = 3,        // disconnect
+		ORD_RS  = 4,        // read status
+		ORD_WC  = 5,        // write control
+		ORD_RD  = 6,        // read data
+		ORD_WD  = 7         // write data
+	};
+
+	// The card's own commentary, in emulated time: what it decided and
+	// when. FOCUS_HPIBDBG.
+	static knob::channel &dbg()
+	{
+		static knob::channel c("FOCUS_HPIBDBG");
+		return c;
+	}
+	double stamp() const { return iop ? iop->tnow() : 0.0; }
+
 	// One millisecond of the card's own time.
 	void tick()
 	{
 		if (m_event_timer && --m_event_timer == 0 && m_pending_event)
 		{
+			if (dbg())
+				dbg()("[%8.3fs hpib%u event %02x queued]\n",
+						stamp(), pa, m_pending_event);
 			m_events.push_back(m_pending_event);
 			m_pending_event = 0;
 			if (iop)
 				iop->raise(pa);
 		}
+		// The pause the PAU order asked for, counted out; when it runs
+		// down the card asks for its next order.
+		if (m_pause_ticks && --m_pause_ticks == 0)
+			m_want_order = true;
 	}
 
 	// Collapsing and capping come from knob::device_log, for the same
 	// reason as the serial card: a driver polling status outruns any
-	// useful log in a second of emulated time.
+	// uncapped log long before the interesting part of a dialogue.
 	static unsigned long log_key(char dir, unsigned n, u32 v)
 	{
 		return (u32(dir) << 24) | (n << 16) | (v & 0xffff);
@@ -372,8 +450,30 @@ struct hpib_card : public iop_interface
 
 	bool attention() override { return !m_events.empty() && !m_ard; }
 
-	bool service_request() override { return !m_out.empty() || m_want_in; }
-	bool poll_request() override { return false; }
+	// A transaction is three legs -- Control, Data, Status -- and each
+	// is a separate order from the host (27110A 4-8). The card is asking
+	// the channel for service whenever an order whose data runs
+	// HOST-to-CARD is open (the control block after WC, a write's data
+	// block after WD), or whenever it has bytes to give.
+	bool service_request() override
+	{
+		return m_order == ORD_WC || m_order == ORD_WD || !m_out.empty();
+	}
+
+	// Device End: the answer this order prepared has been read out in
+	// full. The host sizes its count for the longest reply, so a leg
+	// ending here is the normal case.
+	bool data_end() override { return m_answering && m_out.empty(); }
+
+	// "The CLC request is in response to an SRQ signal, requesting the
+	// next order" (27128A 4-2) -- the same BIC on both cards. Between the
+	// legs of a transaction the card asks for its next order, and the
+	// driver's command list, suspended on ICEI after each order, resumes
+	// when the interface poll says so. Without this the list never got
+	// past its control block: the data and status legs were never run,
+	// the completion arrived anyway, and the driver read a status block
+	// nobody had written.
+	bool poll_request() override { return m_want_order; }
 
 	u32 read_fr(unsigned n) override
 	{
@@ -381,18 +481,27 @@ struct hpib_card : public iop_interface
 		switch (n)
 		{
 		case 0:
-			v = m_out.empty() ? 0 : m_out.front();
+		case 6:
+			// The data path a byte at a time. The driver's list reads
+			// the status block this way: `WIF8 RS; ICEI; WRIF FR6 ->
+			// memory; DCEI`, and the byte that arrives is the TSTAT its
+			// 44-arm state table dispatches on.
+			v = pop_out();
 			break;
 		case 1:
 			// The powerup presence echo, then the status this becomes.
 			if (!m_echo.take(v))
 			{
-				if (!m_echo.present())
+				if (fr1_force)
+					v = fr1_force & 0xffff;
+				else if (!m_echo.present())
 					v = 0;
 				else
 					// The house status register: bit 7 configured, bit 6
-					// self test complete, bit 0 an event waiting.
-					v = 0xc0 | (m_events.empty() ? 0 : 0x01);
+					// self test complete, bit 5 System Controller, bit 0
+					// an event waiting.
+					v = 0xc0 | (system_controller ? 0x20 : 0)
+							| (m_events.empty() ? 0 : 0x01);
 			}
 			break;
 		case 3:
@@ -445,7 +554,7 @@ struct hpib_card : public iop_interface
 				m_ard = true;           // the IOP poll's attention disable
 			break;
 		case 8:
-			transaction(u8(v));
+			order(u8(v));
 			break;
 		case 9:
 			m_config = v;               // (2 << 4) | pa
@@ -455,55 +564,164 @@ struct hpib_card : public iop_interface
 		}
 	}
 
-	u8 dma_read() override
-	{
-		if (m_out.empty())
-			return 0;
-		const u8 b = m_out.front();
-		m_out.pop_front();
-		return b;
-	}
+	u8 dma_read() override { return pop_out(); }
 	void dma_write(u8 b) override { m_in.push_back(b); }
 
 	void dma_complete(bool output) override
 	{
-		if (output && !m_in.empty())
+		if (output)
 		{
-			// An outbound leg carried the request block.
-			request_block(m_in);
-			m_in.clear();
+			if (m_order == ORD_WC)
+			{
+				// The control block, which opens the transaction. The
+				// card then wants its next order: RD for the data, or RS
+				// straight away when there is none.
+				request_block(m_in);
+				m_in.clear();
+				m_want_order = true;
+			}
+			else if (m_order == ORD_WD)
+			{
+				// A write's data block.
+				data_block(m_in);
+				m_in.clear();
+				m_want_order = true;
+			}
 		}
-		m_want_in = false;
-		if (m_pending_event)
-			m_event_timer = event_delay_ms ? event_delay_ms : 1;
+		else
+		{
+			m_answering = false;
+			switch (m_order)
+			{
+			case ORD_IDY:
+				// The identify's two bytes have gone: the completion the
+				// powerup scan waits for.
+				start_event_timer();
+				break;
+			case ORD_RD:
+				// The data leg is over; the status leg is next.
+				m_want_order = true;
+				break;
+			case ORD_RS:
+				// A status block read by DMA rather than through FR6.
+				finish();
+				break;
+			default:
+				break;
+			}
+		}
 	}
 
 private:
 	//----------------------------------------------------------------
-	//  the card's transactions
+	//  orders
 	//----------------------------------------------------------------
 
-	void transaction(u8 c)
+	void order(u8 c)
 	{
-		m_command = c;
-		m_in.clear();
-		switch (c)
+		m_order = u8(c >> 4);
+		m_want_order = false;
+		m_answering = false;
+		if (dbg())
+			dbg()("[%8.3fs hpib%u order %02x]\n", stamp(), pa, c);
+		switch (m_order)
 		{
-		case 0:
+		case ORD_IDY:
 			// Identify, as on every card here: the answer is one
 			// halfword and it types the slot.
 			m_out.clear();
 			m_out.push_back(u8(identity >> 8));
 			m_out.push_back(u8(identity));
+			m_answering = true;
 			m_pending_event = event_done;
 			break;
+		case ORD_WC:
+			// The control block arrives on the next outbound leg.
+			m_in.clear();
+			m_out.clear();
+			m_status.clear();
+			m_tstat = 0;
+			break;
+		case ORD_RD:
+			// The data block the control block prepared.
+			m_answering = true;
+			break;
+		case ORD_WD:
+			m_in.clear();
+			break;
+		case ORD_RS:
+			// The status block: TSTAT first, then whatever the
+			// transaction has to add (27110A 4-11). The driver's list
+			// goes straight on to read it, so the card wants its next
+			// order at once.
+			m_out.clear();
+			for (u8 b : m_status)
+				m_out.push_back(b);
+			if (m_out.empty())
+				m_out.push_back(m_tstat);
+			if (dbg())
+			{
+				std::string hex;
+				char b2[4];
+				for (u8 b : m_out)
+				{
+					std::snprintf(b2, sizeof b2, " %02x", b);
+					hex += b2;
+				}
+				dbg()("[%8.3fs hpib%u status block%s]\n", stamp(), pa,
+						hex.c_str());
+			}
+			m_answering = true;
+			m_want_order = true;
+			break;
+		case ORD_PAU:
+			m_pause_ticks = 1;
+			break;
+		case ORD_DIS:
+			m_out.clear();
+			m_status.clear();
+			break;
 		default:
-			// Any other command opens a transaction whose control block
-			// arrives on the next outbound leg.
-			m_want_in = true;
+			// "The card will accept and discard (thus effectively
+			// terminating) commands which are not supported" (4-2).
 			break;
 		}
 	}
+
+	// The transaction is over: its status has been read. The completion
+	// event follows, a tick or two later.
+	void finish()
+	{
+		if (m_done)
+			return;
+		m_done = true;
+		if (dbg())
+			dbg()("[%8.3fs hpib%u transaction done, tstat %02x]\n",
+					stamp(), pa, m_tstat);
+		m_pending_event = event_done;
+		start_event_timer();
+	}
+
+	void start_event_timer()
+	{
+		if (!m_event_timer && m_pending_event)
+			m_event_timer = event_delay_ms ? event_delay_ms : 1;
+	}
+
+	u8 pop_out()
+	{
+		if (m_out.empty())
+			return 0;
+		const u8 b = m_out.front();
+		m_out.pop_front();
+		if (m_order == ORD_RS && m_out.empty())
+			finish();
+		return b;
+	}
+
+	//----------------------------------------------------------------
+	//  the card's transactions
+	//----------------------------------------------------------------
 
 	// A request block arrived (27110A Tech Ref, 4-8/4-9). The first byte
 	// routes on bits 7:6.
@@ -523,32 +741,76 @@ private:
 			}
 			log("[hpib%u request %02x:%s]\n", pa, fc, hex.c_str());
 		}
+		if (dbg())
+		{
+			std::string hex;
+			char b2[4];
+			for (size_t k = 1; k < raw.size() && k < 24; k++)
+			{
+				std::snprintf(b2, sizeof b2, " %02x", raw[k]);
+				hex += b2;
+			}
+			dbg()("[%8.3fs hpib%u request %02x:%s]\n", stamp(), pa, fc,
+					hex.c_str());
+		}
+		m_out.clear();
+		m_status.clear();
+		m_tstat = 0;
+		m_write_pending = false;
+		m_done = false;
 		switch (fc >> 6)
 		{
 		case 2:
 			if (fc & 0x20)
-				break;                  // mag tape, not modelled
-			cs80_transaction(raw);
+			{
+				m_tstat = 0x0a;         // mag tape: not supported here
+				break;
+			}
+			cs80_transaction(fc, raw);
 			break;
 		case 0:
 			general(fc & 0x3f, raw);
 			break;
 		case 3:
-			// Raw HP-IB data transfer: without a bus model there is
-			// nothing to carry, so the transaction ends cleanly with
-			// nothing transferred.
-			m_tstat = 0;
+			bus_transfer(fc, raw);
 			break;
 		default:
+			m_tstat = 0x0a;             // reserved
 			break;
 		}
-		m_pending_event = event_done;
+		if (m_status.empty())
+			m_status.push_back(m_tstat);
+	}
+
+	// A write's data block arrived on the WD leg.
+	void data_block(const std::vector<u8> &raw)
+	{
+		if (log)
+		{
+			std::string hex;
+			char b2[4];
+			for (size_t k = 0; k < raw.size() && k < 32; k++)
+			{
+				std::snprintf(b2, sizeof b2, " %02x", raw[k]);
+				hex += b2;
+			}
+			log("[hpib%u data block %u bytes:%s%s]\n", pa,
+					unsigned(raw.size()), hex.c_str(),
+					raw.size() > 32 ? " ..." : "");
+		}
+		if (dbg())
+			dbg()("[%8.3fs hpib%u data block %u bytes%s]\n", stamp(), pa,
+					unsigned(raw.size()),
+					m_write_pending && disc.writing() ? " (written)" : "");
+		if (m_write_pending && disc.writing())
+			disc.commit_write(raw);
+		m_write_pending = false;
 	}
 
 	// A CS/80 transaction (4-30/4-31): bytes 1-8 are the card's own
 	// header -- flags, then the device's bus address and a secondary --
 	// and the CS/80 command message follows from byte 9.
-	void cs80_transaction(const std::vector<u8> &raw)
+	void cs80_transaction(u8 fc, const std::vector<u8> &raw)
 	{
 		if (raw.size() < 9)
 		{
@@ -557,76 +819,239 @@ private:
 		}
 		const u8 addr = raw[6];
 		std::vector<u8> cmd(raw.begin() + 8, raw.end());
-		m_out.clear();
-		if ((addr & 7) != device_address)
+		if ((addr & 0x1f) != device_address)
 		{
 			// Nothing at that bus address answers.
 			m_tstat = 0x0e;
 			return;
 		}
 		disc.command(cmd, m_out, &log);
+		if (log && !m_out.empty())
+		{
+			std::string hex;
+			char b2[4];
+			size_t k = 0;
+			for (auto it = m_out.begin(); it != m_out.end() && k < 32; ++it, ++k)
+			{
+				std::snprintf(b2, sizeof b2, " %02x", *it);
+				hex += b2;
+			}
+			log("[hpib%u read data %u bytes:%s%s]\n", pa,
+					unsigned(m_out.size()), hex.c_str(),
+					m_out.size() > 32 ? " ..." : "");
+		}
+		// A write's data comes on the WD leg that follows.
+		m_write_pending = disc.writing() && (fc & 0x08) && !(fc & 0x04);
 		m_tstat = 0;
 
 		// The status block: TSTAT, then the device's QSTAT, and if that
 		// is not zero the card fetches Request Status by itself and
 		// appends the report (4-31).
+		// "Byte 1: TSTAT. Byte 2: CS/80 QSTAT. Byte 3 to up to 22: the
+		// CS/80 Request Status execution message if QSTAT <> 0. Byte n:
+		// QSTAT of CS/80 Request Status if QSTAT <> 0" (4-31) -- twenty-
+		// three bytes when the device has something to report, and the
+		// driver reads exactly that many: a report without its closing
+		// QSTAT is one byte short, which its count arithmetic turns into
+		// escape 148.
 		const u8 q = disc.qstat();
-		m_status_block.clear();
-		m_status_block.push_back(m_tstat);
-		m_status_block.push_back(q);
+		m_status.push_back(m_tstat);
+		m_status.push_back(q);
 		if (q != 0)
 		{
 			std::deque<u8> report;
 			const std::vector<u8> rs{ 0x0d };
 			disc.command(rs, report, &log);
 			for (u8 b : report)
-				m_status_block.push_back(b);
+				m_status.push_back(b);
+			m_status.push_back(disc.qstat());
 		}
-		// The status block follows the data on the same read path.
-		for (u8 b : m_status_block)
-			m_out.push_back(b);
+	}
+
+	// Data transfer between the card and another HP-IB device (4-17..
+	// 4-21). The function code's low bits say whether there is a data
+	// block and which way it runs; the parameters are a flag byte, a
+	// four-byte length, the device ID, the match byte, and then the
+	// interface message the card sends with ATN before the data moves.
+	// An AMIGO identify is exactly this -- UNL, MLA, UNT, then the
+	// secondary 0x60+address, and a two-byte read (4-35) -- and it is
+	// how HP-UX's boot-device probe asks each bus address what it is.
+	void bus_transfer(u8 fc, const std::vector<u8> &raw)
+	{
+		const bool data = (fc & 0x08) != 0;
+		const bool read = (fc & 0x04) != 0;
+		u32 length = 0;
+		for (size_t k = 2; k < 6 && k < raw.size(); k++)
+			length = (length << 8) | raw[k];
+		std::vector<u8> msg;
+		if (raw.size() > 8)
+			msg.assign(raw.begin() + 8, raw.end());
+		if (dbg())
+		{
+			std::string hex;
+			char b2[4];
+			for (u8 b : msg)
+			{
+				std::snprintf(b2, sizeof b2, " %02x", b);
+				hex += b2;
+			}
+			dbg()("[%8.3fs hpib%u bus %s%s len=%u msg%s]\n", stamp(), pa,
+					data ? (read ? "read" : "write") : "no-data",
+					data ? "" : " (interface message only)", length,
+					hex.c_str());
+		}
+		// Run the interface message across the bus. The card is CIC; the
+		// one device on the bus answers to its address.
+		bool identify = false;
+		for (u8 b : msg)
+		{
+			const u8 cmd = b & 0x7f;
+			if (cmd == 0x3f)                            // UNL
+				m_device_listens = false;
+			else if (cmd >= 0x20 && cmd < 0x3f)         // LAD n
+			{
+				if ((cmd & 0x1f) == device_address)
+					m_device_listens = true;
+			}
+			else if (cmd == 0x5f)                       // UNT
+			{
+				m_device_talks = false;
+				m_after_unt = true;
+				continue;
+			}
+			else if (cmd >= 0x40 && cmd < 0x5f)         // TAD n
+				m_device_talks = ((cmd & 0x1f) == device_address);
+			else if (cmd >= 0x60)                       // secondary
+			{
+				if (m_after_unt)
+				{
+					// "UNT followed by a secondary" is the AMIGO
+					// identify of the address the secondary carries.
+					identify = ((cmd & 0x1f) == device_address);
+				}
+				else
+					m_secondary = cmd & 0x1f;
+			}
+			m_after_unt = false;
+		}
+		if (data && read)
+		{
+			if (identify)
+			{
+				m_out.push_back(u8(amigo_id >> 8));
+				m_out.push_back(u8(amigo_id));
+				m_tstat = 0x01;         // terminated by EOI
+			}
+			else if (m_device_talks)
+			{
+				// The device's execution message for whatever the last
+				// command was. Not reached by anything yet; logged.
+				if (log)
+					log("[hpib%u bus read from device, secondary %02x: "
+							"not modelled]\n", pa, m_secondary);
+				m_tstat = 0x01;
+			}
+			else
+			{
+				// Nobody addressed to talk. On a real bus the handshake
+				// would hang until the host gave up; here the read ends
+				// with nothing, which the probe's length check rejects
+				// in the same way and a great deal faster.
+				if (dbg())
+					dbg()("[%8.3fs hpib%u bus read: no talker]\n",
+							stamp(), pa);
+				m_tstat = 0x00;
+			}
+			while (m_out.size() > length && length)
+				m_out.pop_back();
+		}
+		else if (data && !read)
+		{
+			// The data block follows on the WD leg. Where it goes is
+			// decided by the addressing above; nothing consumes it yet.
+			m_tstat = 0x00;
+		}
+		else
+			m_tstat = 0x00;
 	}
 
 	// General card control (table 4-1). None of these need a bus to be
 	// answered usefully; the card records what it was told.
 	void general(u8 opcode, const std::vector<u8> &raw)
 	{
+		m_tstat = 0;
 		switch (opcode)
 		{
+		case 0x01: case 0x02:           // set / clear REN
+			if (!system_controller)
+				m_tstat = 0x0b;         // requires the card to be SC
+			break;
+		case 0x03:                      // send IFC
+			if (!system_controller)
+				m_tstat = 0x0b;
+			m_cic = true;               // "The System Controller becomes
+			break;                      // the CIC by asserting IFC"
 		case 0x0b: m_online = true; break;
 		case 0x0c: m_online = false; break;
 		case 0x11:                      // configure the card's HP-IB address
 			if (raw.size() > 1)
 				m_card_address = raw[1] & 0x1f;
 			break;
-		case 0x12:                      // read address and current status
-			m_out.clear();
-			m_out.push_back(m_card_address);
-			m_out.push_back(m_online ? 1 : 0);
+		case 0x12:
+			// Read HP-IB address configuration and current status
+			// (4-25): OML|TA|LA|D1 -- the not-CIC address -- then D2,
+			// the CIC address, always 30, then the state flags. The
+			// HP27110 driver takes the card's own address from the
+			// second byte, and it matters: the boot-device probe skips
+			// the address it believes is the card's, and an answer of
+			// zero there made it skip the system disc.
+			m_out.push_back(u8((m_online ? 0x80 : 0) | (m_card_address & 0x1f)));
+			m_out.push_back(30);
+			m_out.push_back(u8((system_controller ? 0x80 : 0) | (m_cic ? 0x40 : 0)));
 			break;
 		case 0x07:                      // read reason for interrupt
-			m_out.clear();
 			m_out.push_back(0);
+			break;
+		case 0x10:                      // conduct PPOLL and read response
+			m_out.push_back(0);
+			break;
+		case 0x05:                      // read PPOLL response configuration
+			m_out.push_back(0);
+			break;
+		case 0x09:                      // read interrupt mask
+			m_out.push_back(0);
+			m_out.push_back(0);
+			break;
+		case 0x14:                      // last secondary address
+			m_out.push_back(m_secondary);
 			break;
 		default:
 			break;
 		}
-		m_tstat = 0;
 	}
 
 	u32 m_fr[16] = {};
-	std::deque<u8> m_out;
-	std::vector<u8> m_in;
-	std::vector<u8> m_status_block;
+	std::deque<u8> m_out;               // what the host reads next
+	std::vector<u8> m_in;               // what the host wrote
+	std::vector<u8> m_status;           // the transaction's status block
 	std::deque<u8> m_events;
 	u8 m_pending_event = 0;
-	u8 m_command = 0xff;
+	u8 m_order = 0xff;
 	u8 m_tstat = 0;
 	u32 m_config = 0;
 	u8 m_card_address = 30;             // the card talks at address 30 (4-31)
+	u8 m_secondary = 0;
 	bool m_online = false;              // the card powers up offline (4-7)
+	bool m_cic = true;
+	bool m_answering = false;
+	bool m_want_order = false;
+	bool m_write_pending = false;
+	bool m_done = false;                // the completion has been announced
+	bool m_device_listens = false;
+	bool m_device_talks = false;
+	bool m_after_unt = false;
 	unsigned m_event_timer = 0;
-	bool m_want_in = false;
+	unsigned m_pause_ticks = 0;
 	bool m_ard = false;
 	presence_echo m_echo;
 };

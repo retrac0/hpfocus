@@ -131,22 +131,30 @@ private:
 			const exec_trap st = string_source(stk(2), src_is_ds, sba);
 			if (st != exec_trap::none) return st;
 
-			const ea_result te = m_au.resolve_data_pointer(stk(1), false, false);
-			m_addr_trap = te.t;
-			if (!te.ok()) return exec_trap::address_error;
-			u32 tba = te.addr;
+			byte_cursor src, dst;
+			{
+				const exec_trap t1 = cursor_open(src, stk(2), src_is_ds, false, d, sba);
+				if (t1 != exec_trap::none) return t1;
+				const exec_trap t2 = cursor_open(dst, stk(1), true, false, d);
+				if (t2 != exec_trap::none) return t2;
+			}
 
 			s32 x = 0;
 			u8 sb = 0, tb = 0;
 			while (count > d * x)
 			{
-				sb = m_mem.read8(sba);
-				tb = m_mem.read8(tba);
+				sb = m_mem.read8(src.phys);
+				tb = m_mem.read8(dst.phys);
 				if (sb != tb)
 					break;
-				sba = u32(s32(sba) + d);
-				tba = u32(s32(tba) + d);
 				x += d;
+				if (count > d * x)
+				{
+					exec_trap t = cursor_step(src);
+					if (t == exec_trap::none)
+						t = cursor_step(dst);
+					if (t != exec_trap::none) return t;
+				}
 			}
 			r.x = u32(x);
 			set_stk(0, u32(count - d * x));
@@ -173,17 +181,22 @@ private:
 			const exec_trap st = string_source(stk(2), tbl_is_ds, tblba);
 			if (st != exec_trap::none) return st;
 
-			const ea_result te = m_au.resolve_data_pointer(stk(1), false, true);
-			m_addr_trap = te.t;
-			if (!te.ok()) return exec_trap::address_error;
-			u32 tba = te.addr;
+			byte_cursor dst;
+			{
+				const exec_trap t2 = cursor_open(dst, stk(1), true, true, d);
+				if (t2 != exec_trap::none) return t2;
+			}
 
 			s32 x = 0;
 			while (count > d * x)
 			{
-				m_mem.write8(tba, m_mem.read8(tblba + m_mem.read8(tba)));
-				tba = u32(s32(tba) + d);
+				m_mem.write8(dst.phys, m_mem.read8(tblba + m_mem.read8(dst.phys)));
 				x += d;
+				if (count > d * x)
+				{
+					const exec_trap t = cursor_step(dst);
+					if (t != exec_trap::none) return t;
+				}
 			}
 			r.x = u32(x);
 			set_stk(0, u32(count - d * x));
@@ -584,17 +597,22 @@ private:
 			{
 				const u32 tptr = stk(1);
 				const u8 fill = u8(stk(2));
-				const ea_result e = m_au.resolve_data_pointer(tptr, false, true);
-				m_addr_trap = e.t;
-				if (!e.ok())
-					return exec_trap::address_error;
+				byte_cursor dst;
+				{
+					const exec_trap t2 = cursor_open(dst, tptr, true, true, 1);
+					if (t2 != exec_trap::none) return t2;
+				}
 
-				u32 tba = e.addr;
 				s32 x = 0;
 				while (count > x)
 				{
-					m_mem.write8(tba++, fill);
+					m_mem.write8(dst.phys, fill);
 					x++;
+					if (count > x)
+					{
+						const exec_trap t = cursor_step(dst);
+						if (t != exec_trap::none) return t;
+					}
 				}
 				r.x = u32(x);
 				set_stk(0, u32(count - x));

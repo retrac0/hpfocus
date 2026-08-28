@@ -685,12 +685,11 @@ static void test_unimplemented_is_reported()
 	harness h;
 
 	// What is left of format 4 must not be silently treated as a set of
-	// no-ops. DTB, BTD and POT used to stand in here and are implemented
-	// now, so the stand-ins are the four that remain.
+	// no-ops. DTB, BTD, POT and VPTR used to stand in here and are
+	// implemented now, so the stand-ins are the three that remain.
 	CHECK(h.one(u16(1 << 6 | 024)) == exec_trap::unimplemented);   // CTCB
 	CHECK(h.one(u16(1 << 6 | 054)) == exec_trap::unimplemented);   // CNTO
 	CHECK(h.one(u16(1 << 6 | 056)) == exec_trap::unimplemented);   // RFC
-	CHECK(h.one(u16(1 << 6 | 071)) == exec_trap::unimplemented);   // VPTR
 }
 
 
@@ -2513,12 +2512,15 @@ static void test_up_down()
 	CHECK(h.one(f4(021, true)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 
-	// Without the b bit the pointer survives.
+	// The pointer is popped with or without the b bit: HP-UX 5.30's
+	// dispatcher pairs `DOWN,B`/`UP` on the same semaphore and its
+	// stack has no room for the pointer to survive the UP -- the
+	// process-context stack overflowed, one word per lock, when it did.
+	// The b bit chooses the lock test, not the pop.
 	h.cpu.push(ptr);
 	CHECK(h.one(f4(020)) == exec_trap::none);
-	CHECK_EQ(h.cpu.stk(0), s32(ptr));
+	CHECK_EQ(h.cpu.r.s, s32(h.cpu.r.sb + 3));    // popped
 	CHECK_EQ(h.mem.read32(sem + 4), 1);
-	h.cpu.pop();
 
 	// A waiter: park a fake TCB on the list the way a blocking DOWN
 	// does -- link node at CTCBP-8, state word at CTCBP-16 -- and check

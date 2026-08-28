@@ -132,9 +132,11 @@ static void test_registers()
 	CHECK(iop.io_read(tgt(CMD_RIMG, 3, 0), v));
 	CHECK_EQ(v, 0x5a5a);
 
-	// Revision is readable.
+	// Revision is readable: the microcode's release date as eight hex
+	// digits, which HP-UX compares against 19810630 to decide whether
+	// the IOP is new enough (FOCUS_IOPREV overrides it).
 	CHECK(iop.io_read(tgt(CMD_RIRV, 3, 0), v));
-	CHECK_EQ(v, 1);
+	CHECK_EQ(v, 0x19820920u);
 
 	// LED control.
 	CHECK(!iop.led());
@@ -391,7 +393,7 @@ static void test_cpu_to_iop()
 	cpu.r.p = 0x1000;
 	put(0x1000, f5(020, CMD_RIRV));
 	CHECK(cpu.step() == exec_trap::none);
-	CHECK_EQ(cpu.stk(0), 1);
+	CHECK_EQ(cpu.stk(0), 0x19820920);
 
 	// IOC CMD_LON: light the LED.
 	cpu.pop();
