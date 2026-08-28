@@ -60,8 +60,16 @@ namespace focus {
 
 struct disc_card : public iop_interface
 {
+	// The select code the 520's internal disc is built into. It is the
+	// same number scm_device::SELECT_CODE names, and deliberately so:
+	// the two are alternatives rather than neighbours. A 520 answers
+	// there with this card, a 530/540 with the SCM, and the driver picks
+	// one per machine instead of attaching both and letting the later
+	// one win.
+	static constexpr unsigned SELECT_CODE = 7;
+
 	iop_core *iop = nullptr;
-	unsigned pa = 7;
+	unsigned pa = SELECT_CODE;
 	knob::device_log log;
 
 	// The halfword the identify transaction answers. Values 1..6 map to
@@ -243,19 +251,10 @@ struct disc_card : public iop_interface
 		m_out.pop_front();
 		return b;
 	}
-	u16 dma_read16() override
-	{
-		return u16((dma_read() << 8) | dma_read());
-	}
 	void dma_write(u8 b) override
 	{
 		m_in.push_back(b);
 		log("[disc DMA-in %02x]\n", b);
-	}
-	void dma_write16(u16 v) override
-	{
-		dma_write(u8(v >> 8));
-		dma_write(u8(v));
 	}
 
 	// One millisecond of the card's own time.

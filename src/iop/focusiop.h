@@ -158,7 +158,25 @@ public:
 	// status-word bit 29 clear and default to byte pairs.
 	virtual u8 dma_read() { return 0; }
 	virtual void dma_write(u8) { }
-	virtual u16 dma_read16() { return u16((dma_read() << 8) | dma_read()); }
+	// High byte first, both ways: FOCUS is big-endian, and dma_write16
+	// below has always sent the high byte first because two statements
+	// are sequenced.
+	//
+	// The read had to be written the same way rather than as
+	// `u16((dma_read() << 8) | dma_read())`, which is what it was. The
+	// operands of | are NOT sequenced against each other in C++, so which
+	// of those two calls ran first was up to the compiler -- and each one
+	// takes a byte off the card's queue, so the choice decided the byte
+	// order of every halfword the IOP read. GCC takes the left one first
+	// and the emulator was built on that; nothing in the language says it
+	// must, and a compiler that chose otherwise would have swapped every
+	// halfword with no diagnostic anywhere.
+	virtual u16 dma_read16()
+	{
+		const u8 hi = dma_read();
+		const u8 lo = dma_read();
+		return u16((hi << 8) | lo);
+	}
 	virtual void dma_write16(u16 v) { dma_write(u8(v >> 8)); dma_write(u8(v)); }
 
 	// Direct CPU access to the card.
