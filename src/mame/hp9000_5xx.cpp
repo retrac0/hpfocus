@@ -803,6 +803,13 @@ private:
 		std::vector<std::pair<u32, u32>> pokes;
 	};
 	focus_debug m_dbg;
+	// A 520 has its display, keyboard and disc built in; a 530/540 has no
+	// built-in peripherals at all and finds everything, console included,
+	// on the backplane. m_console_is_asi is how the machine says which it
+	// is, and this is the question that matters for select code 7: the
+	// internal disc is wired to it, so on a machine that has one the SCM
+	// does not get it.
+	bool has_internal_disc() const { return !m_console_is_asi; }
 	// Which routine touched the card: segment and offset, for the device
 	// logs. For an interface no manual describes this is most of the
 	// answer -- the FR number says what register, the caller says what
@@ -1430,7 +1437,18 @@ void hp9000_5xx_state::load_batteries()
 	// that also drives the frame buffer directly (2400 halfwords of
 	// blanks, one per character cell) the way the 520 manual describes,
 	// so it is the default. Select code 6 is the keyboard board.
-	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
+	// Select code 7 belongs to ONE of two things, and which one is what
+	// kind of machine this is: a 530/540 answers there with the SCM, a
+	// 520 has its internal disc built into that select code and
+	// configure_peripherals() attaches it. Both used to be attached, the
+	// SCM first and the disc over the top of it, so the machine came out
+	// right only because the disc happened to run second. Saying which
+	// one owns the select code is the same machine and a smaller thing
+	// to get wrong. The SCM object itself stays either way -- its
+	// battery, clock and NVM are read below on both machines whether or
+	// not the backplane can reach it.
+	if (!has_internal_disc())
+		m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	// FOCUS_SCMNV=<file> is the battery behind the SCM's clock and
 	// configuration memory, and FOCUS_KBDNV=<file> the same for the 520's
 	// keyboard board: loaded here, written back at exit and periodically.
@@ -1587,9 +1605,9 @@ void hp9000_5xx_state::configure_peripherals()
 	// internal disc's select code is armed the same way when present.
 	m_iop.enable_interrupt(6);
 	// The 520's internal disc is built-in hardware, always present, at
-	// select code 7 -- where the 530/540 put the SCM instead.
-	if (!m_console_is_asi)
-		m_iop.enable_interrupt(7);
+	// its own select code -- where the 530/540 put the SCM instead.
+	if (has_internal_disc())
+		m_iop.enable_interrupt(focus::disc_card::SELECT_CODE);
 
 	// The 520's internal disc.
 	if (!m_console_is_asi)
@@ -1640,7 +1658,7 @@ void hp9000_5xx_state::configure_peripherals()
 					m_disc.fixed_blocks());
 		}
 		m_disc.reset_self_test();
-		m_iop.attach(7, &m_disc);
+		m_iop.attach(focus::disc_card::SELECT_CODE, &m_disc);
 	}
 
 }
@@ -2456,20 +2474,19 @@ void hp9000_5xx_state::machine_reset()
 	// actually has. Which of the two is right for the hardware is an
 	// emulation question and not a tidying one; the difference is left
 	// standing and written down rather than unified by hand.
-	//
-	// The order matters and is shared with machine_start: the SCM claims
-	// select code 7 and the internal disc claims it back, so on a 520 the
-	// disc is what answers there. A 530/540 has no internal disc, does not
-	// reach that line, and leaves the SCM in place.
 	m_iop.reset();
 	m_scm.reset();
 	m_console6.reset();
-	m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	if (!m_console_is_asi)
+	// Select code 7 goes to exactly one of them, the same way it does in
+	// machine_start: the internal disc on a machine that has one, the SCM
+	// otherwise.
+	if (has_internal_disc())
 	{
 		m_iop.attach(0, &m_dim);
-		m_iop.attach(7, &m_disc);
+		m_iop.attach(focus::disc_card::SELECT_CODE, &m_disc);
 	}
+	else
+		m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
 	m_iop.attach(6, &m_console6);
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 		if (m_cio[sc])
