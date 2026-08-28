@@ -765,6 +765,88 @@ public:
 		return on.on();
 	}
 
+	// What the DMA status word says this transfer is. Direction is bits
+	// 27 and 28 TOGETHER, and Table 5.1 of the I/O ERS spells out all
+	// four combinations -- only one of which is an output:
+	//
+	//     F1=0 F2=0  Input
+	//     F1=0 F2=1  Input, terminate on Match
+	//     F1=1 F2=0  Output
+	//     F1=1 F2=1  Input, Verify
+	//
+	// Reading F1 alone as the direction, which is what this did, turns
+	// the last of those into an output: the card is never asked for a
+	// word and the transfer moves nothing. That is how the display's
+	// memory test read back 98,304 bytes of nothing and still passed --
+	// the comparison is the IOP's job here, not the software's, which is
+	// why PWP SELF TEST does not do it.
+	struct dma_mode
+	{
+		bool output;      // the card is being written to
+		bool verify;      // compare against memory, do not store
+		bool on_match;    // compare, and stop when it agrees
+		bool bytes;       // bit 29 set is bytes, clear halfwords
+	};
+
+	static dma_mode decode_dma_mode(u32 status)
+	{
+		const bool f1 = ers32::get(status, 27, 1) != 0;
+		const bool f2 = ers32::get(status, 28, 1) != 0;
+		return dma_mode{ f1 && !f2, f1 && f2, !f1 && f2,
+				ers32::get(status, 29, 1) != 0 };
+	}
+
+	// One unit across the channel: a byte or a halfword, out of memory or
+	// into it, or -- on a verify or a search -- compared against what is
+	// there and not stored at all. Returns true when the comparison says
+	// the transfer should stop here, leaving what disagreed in got/want
+	// for the log. Advances `current` by the width either way.
+	//
+	// It takes the card and the address cursor rather than the whole
+	// channel because those are what moving one unit needs; the counting
+	// and the terminations belong to run_dma.
+	static bool run_dma_unit(iop_interface &card, u32 &current,
+			const dma_mode &m, memory_interface &mem,
+			u32 &got_v, u32 &want_v)
+	{
+		bool stop = false;
+		if (m.bytes)
+		{
+			if (m.output)
+				card.dma_write(mem.read8(current));
+			else
+			{
+				const u8 got = card.dma_read();
+				if (m.verify || m.on_match)
+				{
+					got_v = got; want_v = mem.read8(current);
+					stop = (got_v == want_v) == m.on_match;
+				}
+				else
+					mem.write8(current, got);
+			}
+			current++;
+		}
+		else
+		{
+			if (m.output)
+				card.dma_write16(mem.read16(current));
+			else
+			{
+				const u16 got = card.dma_read16();
+				if (m.verify || m.on_match)
+				{
+					got_v = got; want_v = mem.read16(current);
+					stop = (got_v == want_v) == m.on_match;
+				}
+				else
+					mem.write16(current, got);
+			}
+			current += 2;
+		}
+		return stop;
+	}
+
 	// `uncounted` says whether a transfer with no count may advance. A
 	// COUNTED transfer completes inside one call whatever the poll rate,
 	// so polling faster changes only how promptly it finishes -- which is
@@ -790,29 +872,9 @@ public:
 			return;
 
 		memory_interface &mem = m_host.iop_memory();
-		// Direction and width come from the DMA status word. Bit 29 set
-		// is byte transfers, clear halfword, and the count is "the
-		// length of the DMA block transfer in transfers". The direction
-		// is bits 27 and 28 TOGETHER, and Table 5.1 spells out all four
-		// combinations -- only one of which is an output:
-		//
-		//     F1=0 F2=0  Input
-		//     F1=0 F2=1  Input, terminate on Match
-		//     F1=1 F2=0  Output
-		//     F1=1 F2=1  Input, Verify
-		//
-		// Reading F1 alone as the direction, which is what this did,
-		// turns the last of those into an output: the card is never
-		// asked for a word and the transfer moves nothing. That is how
-		// the display's memory test read back 98,304 bytes of nothing
-		// and still passed -- the comparison is the IOP's job here, not
-		// the software's, which is why PWP SELF TEST does not do it.
-		const bool f1 = ers32::get(c.dma_status, 27, 1) != 0;
-		const bool f2 = ers32::get(c.dma_status, 28, 1) != 0;
-		const bool output = f1 && !f2;
-		const bool verify = f1 && f2;         // compare, do not store
-		const bool on_match = !f1 && f2;      // compare, stop when equal
-		const bool bytes  = ers32::get(c.dma_status, 29, 1) != 0;
+		// The count is "the length of the DMA block transfer in
+		// transfers"; what a transfer IS comes off the status word.
+		const dma_mode m = decode_dma_mode(c.dma_status);
 		u32 left = c.dma_count ? c.dma_count : 1;
 		while (left--)
 		{
@@ -839,47 +901,14 @@ public:
 					if (ioplog())
 						ioplog()("[iop DMA-dend pa=%u left=%u]\n",
 								pa, c.dma_count);
-					c.iface->dma_complete(output);
+					c.iface->dma_complete(m.output);
 					raise(pa);
 				}
 				break;
 			}
-			bool stop = false;
 			u32 got_v = 0, want_v = 0;
-			if (bytes)
-			{
-				if (output)
-					c.iface->dma_write(mem.read8(c.dma_current));
-				else
-				{
-					const u8 got = c.iface->dma_read();
-					if (verify || on_match)
-					{
-						got_v = got; want_v = mem.read8(c.dma_current);
-						stop = (got_v == want_v) == on_match;
-					}
-					else
-						mem.write8(c.dma_current, got);
-				}
-				c.dma_current++;
-			}
-			else
-			{
-				if (output)
-					c.iface->dma_write16(mem.read16(c.dma_current));
-				else
-				{
-					const u16 got = c.iface->dma_read16();
-					if (verify || on_match)
-					{
-						got_v = got; want_v = mem.read16(c.dma_current);
-						stop = (got_v == want_v) == on_match;
-					}
-					else
-						mem.write16(c.dma_current, got);
-				}
-				c.dma_current += 2;
-			}
+			const bool stop = run_dma_unit(*c.iface, c.dma_current, m,
+					mem, got_v, want_v);
 
 			// A verify that disagrees, or a search that agrees, ends the
 			// transfer where it stands. Bit 17 of the status half is
@@ -893,7 +922,7 @@ public:
 				c.term = 0x4000;
 				if (ioplog())
 					ioplog()("[iop DMA-%s pa=%u at=%08x got=%04x want=%04x "
-							"left=%u]\n", verify ? "verifyfail" : "match",
+							"left=%u]\n", m.verify ? "verifyfail" : "match",
 							pa, c.dma_current, got_v, want_v, c.dma_count);
 				c.iface->dma_complete(false);
 				raise(pa);
@@ -906,7 +935,7 @@ public:
 				c.term = 0x2000;    // terminated on count, no error
 				if (ioplog())
 					ioplog()("[iop DMA-done pa=%u en=%d]\n", pa, c.int_enabled);
-				c.iface->dma_complete(output);
+				c.iface->dma_complete(m.output);
 				raise(pa);
 			}
 		}
