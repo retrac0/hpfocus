@@ -840,7 +840,45 @@ its boot descriptor from file offset 0, which *is* disc block 1 because the
 image starts there; a whole-volume image shifts that by one block.
 
 
-## 9. HP-UX BOOTS TO THE SHELL (2026-08-28)
+## 9. HP-UX RUNS COMMANDS AT THE SHELL (2026-08-28)
+
+    FOCUS_TYPE='\n;ls\n' FOCUS_TYPEAT=24,34 tools/runhpux.sh -str 60 -video none
+
+answers `tset`'s terminal-type prompt and then runs `ls` at the root shell:
+
+    TERM = (network)
+    Cannot find terminfo directory.
+    Nature and nature's laws lay hid in night, ...   [/etc/profile's fortune]
+    # ls
+    .profile    dev         graphics    lost+found  tmp
+    HP_upm_log  disc        kernel      new.kernel  users
+    bin         etc         lib         system      usr
+    #
+
+-- all fifteen entries of the volume's root, matching `tools/sdf7914.py`'s
+listing exactly. `ls -l /etc/passwd`, `pwd` and `echo` answer too, so the
+shell is a working session, not a one-shot.
+
+One defect stood between the prompt and this. **The card must sense a
+received record whatever the host is in the middle of.** The tick that
+notices a complete receive record was gated on *no Level 2 status
+outstanding*, and this driver polls the card continuously -- PAU, read
+transparent status, repeat -- with every one of those reads answering
+through `answer()`, which arms a completion event and posts a status. A
+status is therefore outstanding almost always: with the keystroke sitting
+in the receive queue, `posted` was 1 on every tick from 24.000 s to the
+end of the run and the terminal was deaf. Sensing an asynchronous event
+(the firmware noticing a condition) and posting a Level 2 status (the
+handshake with the host) are two different things, and only the second
+belongs behind that gate. `src/iop/focusasi.h`; the tick also now checks
+"no read request pending" explicitly, which is how 27128A 4-6 words it.
+
+The console prompt lands at **23.455 s** emulated, and `FOCUS_TYPEAT` wants
+a moment after that; a script per command, because the line typed while
+the previous one is still running is not buffered.
+
+
+## 9a. How it got here: HP-UX boots to the shell
 
 Run `tools/runhpux.sh -str 40 -video none` and the console reads, in order:
 the four copyright lines, `CLOCK AND DATE NOT SET`, init's three lines

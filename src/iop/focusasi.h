@@ -197,7 +197,16 @@ struct asi_card : public iop_interface
 	// Where characters the host writes go, and where typed characters
 	// come from. A host wires these to a terminal.
 	std::function<void(u8)> on_char;
-	void type(u8 c) { m_rx.push_back(c); }
+	// A character typed at the terminal joins the receive queue; the tick
+	// senses the completed record and the host is told at its next Read
+	// Transparent Status.
+	void type(u8 c)
+	{
+		m_rx.push_back(c);
+		if (dbg())
+			dbg()("[%8.3fs asi%u typed %02x, rx=%u]\n", stamp(), pa, c,
+					unsigned(m_rx.size()));
+	}
 
 	// The single text terminator the receive pipeline ends a record on.
 	// A terminal's Return key is the one that matters; the driver can
@@ -631,7 +640,7 @@ struct asi_card : public iop_interface
 		// down the card asks for its next order.
 		if (m_pause_ticks && --m_pause_ticks == 0)
 			m_want_order = true;
-		if (!m_rx.empty() && !m_status_posted && m_arq_enabled)
+		if (!m_rx.empty() && m_arq_enabled && !m_request && record_ready())
 		{
 			// "If no read request is pending, and the card has a record
 			// available for the host, and the host interrupt mask allows
@@ -639,11 +648,21 @@ struct asi_card : public iop_interface
 			// to the host to start the read" (27128A 4-6). The status
 			// byte is only half of that: the event itself is told
 			// through the next Read Transparent Status, as event 1.
-			if (record_ready())
-			{
-				raise_async(AEV_DATA, MASK_DATA, "record ready");
-				post(STAT_AES);
-			}
+			//
+			// SENSING the event and POSTING the status are two different
+			// things, and only the second is a handshake with the host.
+			// Gating both on "no status outstanding" made the terminal
+			// deaf: this driver polls the card continuously (PAU, read
+			// transparent status, repeat) and every one of those reads
+			// answers with a completion event of its own, so a status is
+			// outstanding almost always -- with a character waiting in
+			// the receive queue, `posted` was 1 on every tick from the
+			// keystroke to the end of the run and the shell never saw
+			// the line. The firmware notices the record whatever the
+			// host is in the middle of; the status post still waits its
+			// turn, and the next Read Transparent Status tells it.
+			raise_async(AEV_DATA, MASK_DATA, "record ready");
+			post(STAT_AES);
 		}
 	}
 

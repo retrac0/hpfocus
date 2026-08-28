@@ -938,6 +938,16 @@ byte 2    port ID (the ASI has one, so always 0)
 byte 3+   additional information, by event code
 ```
 
+**Receive records and the status handshake.** "If no read request is
+pending, and the card has a record available for the host, and the host
+interrupt mask allows 'data available' interrupt, an asynchronous event is
+sent to the host to start the read" *(4-6)*. Sensing that event is the
+firmware noticing a condition and is independent of whether a Level 2
+status is still outstanding -- only the status *post* is a handshake. It
+matters because HP-UX polls the card continuously and keeps a status
+outstanding nearly always; gating the sense on it as well makes the
+terminal permanently deaf.
+
 **Read Card Information subfunction 255, modem line status** *(4-40)*
 answers two bytes: byte 0 the lines that changed state since the last
 read (cleared by the read), byte 1 the current state. HP-UX's console
