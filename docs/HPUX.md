@@ -1019,3 +1019,97 @@ ASI's `on_char`), but **its stack walk is useless there**: the byte reaches
 the card by IOP DMA while the CPU sits at the dispatcher `STOP`, so the walk
 reports the dispatcher every time. It answers "what was on screen", not
 "who printed it". Same attribution trap as `FOCUS_IOALL`'s `p=`.
+
+## 10. MULTIUSER: a login on every port of a 27140A (2026-08-29)
+
+`tools/runhpux.sh --multiuser` boots to run level 2 with a getty on each
+of the six ports of an HP 27140A six-channel multiplexer at select code 2,
+and a login typed into any of them reaches a root shell:
+
+    FOCUS_MUXTAP=2:0 FOCUS_TYPEPORT=2:0 FOCUS_TYPERATE=60 \
+    FOCUS_TYPE='root\n;\n;\n;who\n' FOCUS_TYPEAT=50,58,64,70 \
+    tools/runhpux.sh --multiuser -str 80 -video none
+
+    login: root
+    ... /etc/profile's banner, "You have mail." ...
+    TERM = (hp2623)           <- answered by the first '\n'
+    Remember to verify terminal type:
+    TERM = (hp2623)           <- root's .profile asks again; the second '\n'
+    unrcad# who
+    root       tty01        Feb  6 22:29
+
+Interactively: `tools/runhpux.sh --multiuser -cio2:mux6:port0 null_modem
+-bitb socket.127.0.0.1:4000` and `nc 127.0.0.1 4000`, or
+`-cio2:mux6:port0 terminal` for a window. Port N of the card is
+`/dev/tty0(N+1)`; `FOCUS_MUXTAP=2:all` prints every port.
+
+### 10.1 The card
+
+`src/iop/focusmux.h`, a transaction-level model of the 27140A's firmware
+protocol -- HARDWARE.md 2.6.6 has the register map and block formats, and
+the dialogue HP-UX was watched running: the powerup scan's CSC + IDY, the
+HP27140 module's download of its 5,330-byte Z80 image, subfunction 152 on
+every port, and a continuous RD/WD poll. `-cio<n> mux6` fits it; the six
+ports are MAME rs232 slots `cio<n>:mux6:port0..5`, empty by default.
+
+### 10.2 The disc
+
+`tools/hpuxconfig.py` makes three in-place edits to the assembled volume,
+all the same size or shorter than what they replace: root's passwd entry
+loses its expired aging field (`root:,..:` -> `root::`, and `csh` ->
+`sh`), `/etc/inittab` gets `is:2:initdefault:` and `respawn` on tty01..06
+with gettydefs entry H, and the `/dev/tty01..06` i-nodes are restamped
+major 29, minor `0x02 0N 04` -- the 27140A driver, port N, direct access
+(mkdev(1M)'s "Modem MUX ... Hard wire"). They were `c 31 0x000N00`, a
+27130A at select code 0 on the machine the tapes came from.
+
+### 10.3 The defect that kept it single-user: MVB is not resumable
+
+None of that got past init: the FIX root ENTRY IN /etc/passwd message
+stayed, with the same passwd file that `ls -l` resolved names from and
+`su root` accepted. Traced (FOCUS_BREAK at init's call, FOCUS_TRACEN
+through the library, the MAME debugger's `dump` at the compare):
+
+- init's check is `getpwnam("root")` (STT[66] -> sslib segment 0x803
+  +0x1d48) followed by `pw_uid == 0` (init's segment 2 +0x1b08..0x1d5e,
+  messages at DB+3152..3176 -- DB+n is D-image offset n-0x28, the
+  a.out's `a_user_db_offset`).
+- getpwnam read the file (the block is in the HP-IB log before the
+  message) and its parser rejected the line at sslib +0x3d26: the
+  `strtol` of the uid field consumed no digits, because its
+  character-class lookup (`LD DB+688; ADDI #1; ADD c; LBSI`) read 0
+  where the table says 0x84.
+- The table lives in init's I-data at +0x8f0, page 2 of a 1 KB-paged
+  segment, and the MAME debugger showed that page **zero from 0x800 to
+  0x937** and correct from 0x938 on. Pages 4 and 8 had the same hole.
+- The exec loader copies each 1 KB file block into the paged segment
+  with one `MVB` (IOS +0x506a / +0x4e78). Because the a.out's I-data
+  starts 0x138 into a block, every copy crosses a page boundary after
+  712 bytes, and pages 2, 4 and 8 are the first pages of the groups the
+  pager maps on a fault: the copy trapped 040 there. `do_mvb` reported
+  the remainder in the count word and X but **left both pointers at
+  their original values**, so the re-executed instruction copied the 312
+  remaining bytes to the original target again and never wrote
+  0x800..0x937. (FOCUS_MVBLOG now prints every such trap: `[mvb TRAP
+  src=... dst=40580538 n=1024 done=712 ...]`.)
+- The ERS's loop begins `X := 0` and HP's code never clears X before an
+  MVB, so a restart cannot be told from a first execution: the stack
+  must carry the whole state. `do_mvb` (and TRAN, which works in place)
+  now advance the pointer words along with the count. exectest's
+  `test_mvb_resume` reproduces the page-crossing copy against an absent
+  page.
+
+With that, init enters run level 2: `/etc/rc` runs (accounting, cron,
+talkdemon, lpsched, uuclean), `revision` prints "Release: 05.21", and the
+console and the six MUX ports all get their `login:`.
+
+### 10.4 Loose ends
+
+- The three INIT: messages before the FIX line printed as `INIT: ` plus a
+  BEL and no text on the console -- init's messages begin with 0x07 and
+  the body after it never reached the ASI. Not investigated.
+- `Cannot find terminfo directory.` and the `TERM = (network)` prompt on
+  the console are the image's own configuration (no terminfo, `tset
+  -m unknown:network`), not emulation.
+- `/etc/rc` prints `logout` and `unknown: adm logged out` from the
+  accounting startup's `su - adm`, and NOTE: Files in /tmp -- all normal.

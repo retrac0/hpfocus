@@ -14,13 +14,16 @@ The goal is to run HP-UX and BASIC.
 
 ## Current state
 
-**HP-UX 5.30 boots** on the emulated 9000/540 and prints its
-AT&T/Regents/HP boot report to the console terminal, with no system error;
-BASIC 2.0 and the 9020 diagnostics environment boot on the 520 to
-"BASIC Ready for use." on a rendered screen with a live command line.
-What HP-UX has not done yet is anything *after* the boot report -- the root
-filesystem and `init`. The console-open work that got it there, and the five
-emulator defects behind it, are in `docs/HPUX.md` section 6.
+**HP-UX 5.30 runs multiuser** on the emulated 9000/540: `tools/runhpux.sh
+--multiuser` boots to run level 2 with a getty on the console and on all
+six ports of an emulated HP 27140A multiplexer, and a root login typed into
+any port reaches a shell (`docs/HPUX.md` section 10; the card is
+`docs/HARDWARE.md` 2.6.6). Without the flag the disc boots as imaged, to
+init's single-user shell (section 9). BASIC 2.0 and the 9020 diagnostics
+environment boot on the 520 to "BASIC Ready for use." on a rendered screen
+with a live command line. The console-open work, the drain, the shell and
+the multiuser step each cost emulator defects, recorded in `docs/HPUX.md`
+sections 6, 8, 9 and 10.
 
 Much of what follows is a running log and is dated; where it says "the
 current frontier", read it as the frontier at the time it was written.

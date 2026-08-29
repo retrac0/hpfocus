@@ -14,30 +14,19 @@
 # procedure puts them, and the 7914 unit save mounts as the CS/80 drive on
 # that card. Re-card either slot, or fit more, with -cio0 .. -cio6.
 #
-# THE MACHINE BOOTS. The loader reads the image off the CS/80 disc, the
-# kernel relocates all 27 modules, types both cards, creates its tasks and
-# runs the device world -- SDF_DISC, the TTY subsystem, HP27128/30 and
-# HP27110 all execute, the HP-IB card gets its documented go-online /
-# send-IFC / set-REN bring-up, the console driver's open COMPLETES, and the
-# boot report reaches the terminal:
+# THE MACHINE BOOTS TO MULTIUSER. The loader reads the image off the
+# CS/80 disc, the kernel relocates all 27 modules, types the cards and
+# brings up its device world, mounts the root, and init runs /etc/rc and
+# starts a getty on the console -- and, with --multiuser, on the six ports
+# of an HP 27140A multiplexer at select code 2, each of which accepts a
+# root login (docs/HPUX.md 10). Without --multiuser the disc boots as it
+# was imaged: to init's single-user shell after the boot report,
+# /etc/copyright, /etc/motd and tset's TERM prompt (docs/HPUX.md 9).
 #
-#     (c) Copyright 1983, 1984, 1985, 1986, 1987 Hewlett-Packard Company
-#     (c) Copyright 1979 The Regents of the University of Colorado ...
-#     (c) Copyright 1980, 1984 AT&T Technologies. All Rights Reserved.
-#                         RESTRICTED RIGHTS LEGEND
-#     ...
-#                         HEWLETT-PACKARD COMPANY
-#                             3000 Hanover St.
-#                           Palo Alto, CA  94303
-#     CLOCK AND DATE NOT SET
-#
-# The tty subsystem then DRAINS the console -- it waits for the card's
-# "transmit buffer is empty" asynchronous event -- and goes on to the device
-# configuration pass, which is where the boot now stops: a driver lookup for
-# a configuration record whose key is 0 finds nothing, the HP-IB path reports
-# a device class that does not match, and the machine halts on error 110.
-# What has NOT happened yet is the root filesystem and init.
-# See docs/HPUX.md 8 (the drain, solved) and 9 (the frontier).
+# Typed input: FOCUS_TYPE='...' FOCUS_TYPEAT=<s>,... types into the
+# console, or into a MUX port with FOCUS_TYPEPORT=2:<port>; FOCUS_MUXTAP
+# prints a port's output. Interactive ports: -cio2:mux6:port0 terminal,
+# or -cio2:mux6:port0 null_modem -bitb socket.127.0.0.1:4000 and nc.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -62,6 +51,30 @@ done
 if [ ! -f "$DISC" ]; then
     echo "assembling the system disc from the two unit-save tapes..."
     python3 tools/mkhpuxdisc.py "$TAPE1" "$TAPE2" "$DISC" || exit 1
+fi
+
+# --multiuser: the same disc, made to boot to run level 2 with a login on
+# every port of an HP 27140A six-channel multiplexer at select code 2.
+# tools/hpuxconfig.py makes the three edits in place (root's passwd entry,
+# the gettys in inittab, the tty01..tty06 device numbers) and is
+# idempotent, so it runs on every such boot; the card is fitted unless
+# the caller has already said what -cio2 holds. Without the flag nothing
+# here changes.
+MULTIUSER=0
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --multiuser) MULTIUSER=1 ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+set -- "${ARGS[@]}"
+if [ "$MULTIUSER" = 1 ]; then
+    python3 tools/hpuxconfig.py "$DISC" || exit 1
+    case " $* " in
+        *" -cio2 "*) ;;
+        *) set -- -cio2 mux6 "$@" ;;
+    esac
 fi
 
 if [ ! -x mame/focus ]; then
