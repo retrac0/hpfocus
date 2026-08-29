@@ -1098,6 +1098,81 @@ static void test_mvb()
 		CHECK_EQ(h.mem.read8(h.cpu.r.db + 0xc0 + i), 0x10 + i);
 }
 
+// An MVB into a paged data segment that runs into an absent page must
+// leave the stack resumable: the remainder as the count, BOTH pointers
+// advanced past the bytes already moved, and X reporting the progress.
+// HP-UX's exec loader copies each 1 KB file block into a process's paged
+// data segment with one MVB; the kernel maps the page the copy trips over
+// and re-executes the instruction. With only the count updated, the
+// remainder was copied to the original target again and the bytes past
+// the page boundary were never written -- init lost the C library's
+// character-class table that way and went single-user.
+static void test_mvb_resume()
+{
+	std::printf("MVB resume across an absent page\n");
+	harness h;
+
+	// A user DST with one paged, writable segment of 1 KB pages: entry 0
+	// carries 16 * the entry count; entry 1's word 0 has P at bit 26, W
+	// at bit 27 and the page size (as a shift) in (22:4); word 2 is the
+	// page table. Two pages: the first present at 0x30000, the second
+	// absent for now.
+	const u32 dst_base = 0x20000, ptab = 0x21000;
+	h.cpu.r.dst = dst_base;
+	h.mem.write32(dst_base, 16 * 4);
+	u32 w0 = 0;
+	w0 = ers32::set(w0, 22, 4, 10);
+	w0 = ers32::set(w0, 26, 1, 1);
+	w0 = ers32::set(w0, 27, 1, 1);
+	h.mem.write32(dst_base + 16, w0);
+	h.mem.write32(dst_base + 20, 0xfff);
+	h.mem.write32(dst_base + 24, ptab);
+	h.mem.write32(dst_base + 28, 0);
+	const u32 present = ers32::set(0, 27, 1, 1);
+	h.mem.write32(ptab + 0, present);
+	h.mem.write32(ptab + 4, 0x30000);
+	h.mem.write32(ptab + 8, ers32::set(present, 31, 1, 1));   // absent
+	h.mem.write32(ptab + 12, 0x31000);
+
+	// 1 KB of source in the global segment; the target starts 256 bytes
+	// before the page boundary.
+	for (u32 i = 0; i < 1024; i++)
+		h.mem.write8(h.cpu.r.db + 0x100 + i, u8(i * 7 + 3));
+	u32 tptr = ers32::set(0, 1, 1, 1);
+	tptr = ers32::set(tptr, 2, 11, 1);
+	tptr = ers32::set(tptr, 13, 19, 0x300);
+	const u32 sptr = 0x80000000u | 0x100;
+
+	const u32 s0 = h.cpu.r.s;
+	h.cpu.push(sptr);
+	h.cpu.push(tptr);
+	h.cpu.push(1024);
+	const u16 insn = u16((051 << 6) | (1 << 2) | 3);
+	const auto saved = h.cpu.r;      // S with the three operands on it
+	CHECK(h.one(insn) == exec_trap::address_error);
+	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
+	// The state the instruction left for its restart, read off the
+	// operand words themselves (word k below the top is at S-3-4k).
+	CHECK_EQ(h.cpu.r.x, 256);
+	CHECK_EQ(h.mem.read32(saved.s - 3), 1024 - 256);
+	CHECK_EQ(h.mem.read32(saved.s - 7), tptr + 256);
+	CHECK_EQ(h.mem.read32(saved.s - 11), sptr + 256);
+	for (u32 i = 0; i < 256; i++)
+		CHECK_EQ(h.mem.read8(0x30300 + i), u8(i * 7 + 3));
+
+	// The kernel maps the page and re-executes the instruction.
+	h.mem.write32(ptab + 8, present);
+	h.cpu.r = saved;
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, 1024 - 256);
+	for (u32 i = 0; i < 256; i++)
+		CHECK_EQ(h.mem.read8(0x30300 + i), u8(i * 7 + 3));
+	for (u32 i = 256; i < 1024; i++)
+		CHECK_EQ(h.mem.read8(0x31000 + i - 256), u8(i * 7 + 3));
+	CHECK_EQ(h.cpu.r.s, s0);         // SDEC 3 popped the operands
+	(void)s0;
+}
+
 // Records what the CPU sends over the MPB.
 class mock_iop : public io_interface
 {
@@ -2558,6 +2633,7 @@ int main()
 	test_new_groups();
 	test_try_escp();
 	test_mvb();
+	test_mvb_resume();
 	test_io();
 	test_tcc();
 	test_traps();

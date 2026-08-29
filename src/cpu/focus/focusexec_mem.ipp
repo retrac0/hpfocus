@@ -195,7 +195,18 @@ private:
 				if (count > d * x)
 				{
 					const exec_trap t = cursor_step(dst);
-					if (t != exec_trap::none) return t;
+					if (t != exec_trap::none)
+					{
+						// Translation is in place, so a restart from the
+						// original pointer would put bytes already done
+						// through the table a second time. Leave the
+						// resumable state MVB leaves: the remainder, the
+						// target advanced past the work, X the progress.
+						r.x = u32(x);
+						set_stk(0, u32(count - d * x));
+						set_stk(1, u32(s32(stk(1)) + x));
+						return t;
+					}
 				}
 			}
 			r.x = u32(x);

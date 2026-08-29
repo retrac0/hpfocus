@@ -1325,6 +1325,20 @@ element count, and the count word on the stack is continuously updated to
 the remainder, so the instruction resumes cleanly. On completion X holds
 the elements processed and `(S)` the count not processed.
 
+Resuming cleanly means more than the count. The loop in every one of these
+sheets begins `X := 0`, and HP's compiled code never clears X before an
+`MVB` or `SCU`, so the hardware cannot tell a re-executed instruction from
+a fresh one: the **pointer words on the stack must be advanced too**, past
+the bytes already moved, when the instruction is interrupted by a trap.
+The emulator learned this from HP-UX's exec loader (HPUX.md 10.3): a 1 KB
+block copy into a paged data segment trapped 040 at the page boundary, the
+count came back reduced but the pointers did not, and the re-executed copy
+put the remainder at the original target, leaving the first 0x138 bytes of
+every page the pager mapped on a fault as zeros -- init's C library lost
+its character-class table and `getpwnam("root")` failed. `MVB` and `TRAN`
+(which translates in place) now write the advanced pointers back; the scan
+and compare instructions restart from the beginning harmlessly.
+
 A data segment pointer is only physically contiguous within one page of a
 paged segment, or within one segment of a chain: the walk is a logical
 one, and the pointer is evaluated afresh at each page or segment boundary

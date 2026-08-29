@@ -248,6 +248,9 @@ private:
 		// direction, which makes a target of source+n a self-propagating
 		// fill, and that is what HP's display self test relies on.
 		static knob::channel mvblog("FOCUS_MVBLOG");
+		if (mvblog && count >= 1024)
+			mvblog("[mvb start src=%08x(%08x) dst=%08x(%08x) n=%d p=%08x seg=%u x_in=%08x]\n",
+					sptr, sba, tptr, tba, count, r.p - r.pb, r.get(sf::CSN), r.x);
 		if (clash && mvblog)
 			mvblog("[mvb %s src=%08x dst=%08x n=%d gap=%+d p=%08x seg=%u]\n",
 					d > 0 ? "fwd" : "back", sba, tba, count,
@@ -280,9 +283,35 @@ private:
 						t = cursor_step(dst);
 					if (t != exec_trap::none)
 					{
-						// Resumable: the count and X say how far it got.
+						// Resumable. The ERS's loop begins `X := 0` and
+						// HP's code never clears X before an MVB, so a
+						// restart cannot be told from a first execution:
+						// the stack has to carry the whole state. That
+						// means all three words -- the count reduced to
+						// the remainder AND both pointers advanced past
+						// the bytes already moved -- with X reporting the
+						// progress. Updating the count alone was the
+						// bug that lost HP-UX's init its /etc/passwd
+						// parser: the exec loader copies a 1 KB file
+						// block into a paged data segment, the copy
+						// crosses into an absent page after 712 bytes,
+						// the kernel maps the page and re-executes, and
+						// the 312 remaining bytes were copied to the
+						// ORIGINAL target again while offsets 0x800..0x937
+						// -- the C library's character-class table --
+						// stayed zero. Pages 2, 4 and 8, the first of
+						// each group the pager maps, all lost their first
+						// 0x138 bytes the same way; getpwnam("root")
+						// then found no digits in "0" and init went
+						// single-user.
+						if (mvblog)
+							mvblog("[mvb TRAP src=%08x dst=%08x n=%d done=%d "
+									"p=%08x seg=%u x_in=%08x]\n", sptr, tptr,
+									count, x, r.p - r.pb, r.get(sf::CSN), r.x);
 						r.x = u32(x);
 						set_stk(0, u32(count - d * x));
+						set_stk(1, u32(s32(tptr) + x));
+						set_stk(2, u32(s32(sptr) + x));
 						return t;
 					}
 				}
