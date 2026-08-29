@@ -96,8 +96,8 @@ fill. The imaging run stopped rather than skipping bad spots.
 | `TOOLS1` | 8+185 | 98.9% | truncated tail |
 | `TOOLS2` | 193+824 | 98.2% | truncated tail |
 | `CONTENTS` | 1017+6 | 100% | OK |
-| **`S97080C`** | 1023+1892 | **100%** | **complete** |
-| `S97089C` | 2915+1974 | 99.5% | cpio sync lost at 99.1% |
+| **`S97080C`** | 1023+1892 | **100%** | **complete** — the 520 kernel |
+| `S97089C` | 2915+1974 | 99.5% | cpio sync lost at 99.1%; `os.req` extracts but does not verify |
 | `SUPDT_TLS` | 4889+978 | 94.4% | cpio unreadable from offset 0 |
 | `SHPUX_MAN` | 5867+8080 | 100% | OK — 2 MB of manuals |
 | `SSTARBASE` | 13947+7106 | 31.6% | truncated |
@@ -110,7 +110,18 @@ fill. The imaging run stopped rather than skipping bad spots.
 
 ### What survived, and why it matters
 
-`S97080C` is **whole**, and contains:
+**There are two kernels on this tape, and only one of them is usable.**
+`S97080C` is the **520** build — its `os.rev` reads `HP-UX Model 520
+Release 05.01 (97080C)` — and all sixteen of its segments verify.
+`S97089C` is the **530/540/550** build, and although the cpio sync does not
+break until 99.1%, well past `os.req`, so the file extracts at its full
+353,510 bytes, its `CORE SYSTEM` segment does not checksum and no other
+word position in the segment does either: the damage is inside the segment
+body. The two are different builds (the 520's `CORE SYSTEM` is four bytes
+shorter), so the good one cannot substitute. **HP-UX 5.01 therefore runs
+here on the 520, not the 540.**
+
+`S97080C` is whole, and contains:
 
 ```
 system/97080C/os.req        363,566 bytes   <- the HP-UX kernel
@@ -138,30 +149,35 @@ the shell and every command. A kernel with no userland boots as far as trying
 to start `init`, then stops. This image supports **kernel bring-up and
 validation, not a usable HP-UX session.**
 
-### Making `os.req` bootable
+### Making `os.req` bootable — and booting it
 
-All sixteen segments verify, so the kernel itself is undamaged. But the
+All sixteen segments verify, so the 520 kernel itself is undamaged. But the
 stored file is what `osmgr` *installs*, not what the loader hands to the
 CPU: its segment chain simply ends, with no negative terminator word, so
 `SYSTEM POWERUP` walks straight past the last segment and checksums
 whatever follows in memory. The chain ends at `0x58c2c` (the file's last
 two bytes are padding), so a bootable image is the file truncated there
-with `ffffffff` appended:
+with `ffffffff` appended — and the `.opt` driver modules can be spliced in
+before the terminator, because each is a chain module whose own checksum
+already covers exactly its own bytes. `tools/hpuxboot.py` does both:
 
 ```sh
-python3 tools/lifdir.py software/97089C.hpi --extract S97080C --out s.cpio
-python3 tools/cpiolist.py s.cpio --extract system/97080C/os.req --out os.req
-python3 -c "d=open('os.req','rb').read(); open('hpux501.bin','wb').write(d[:0x58c2c]+b'\xff\xff\xff\xff')"
-src/test/bootrun hpux501.bin --p64 0x1000000
+python3 tools/hpuxboot.py software/97089C.hpi --list
+python3 tools/hpuxboot.py software/97089C.hpi -o hpux501.bin --option HPIB_FLEX
+tools/runhpux.sh --release 5.01 -str 100 -video none | python3 tools/screen.py
 ```
 
-That boots the full launch chain and prints the console self-test, stopping
-where HP-UX 5.30 also stops — on format 4 opcodes 020/021, which the
-Dec-82 ERS does not assign.
+**That reaches the HP-UX copyright banner on the emulated 520**, with the
+`9020 HUMAN INT` console driver running the display as a terminal, once
+the machine is given an HP-IB card with a disc on it — without one the
+kernel raises escape 116 against the NULL driver and halts. It then loops
+without starting `init`, which is unsurprising given that there is no 5.01
+userland for it to start. `docs/HPUX.md` section 11 is the full account.
 
-To close that gap: ask the museum whether the original tape can be re-read (the
-2013 file date suggests a single pass long ago), or find another copy of the
-97089C tape.
+To close the remaining gap: ask the museum whether the original tape can be
+re-read (the 2013 file date suggests a single pass long ago), or find
+another copy of the 97089C tape. A better read would give back both
+`SCOMMANDS` and an undamaged 530/540 kernel.
 
 ---
 

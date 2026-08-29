@@ -324,8 +324,8 @@ inline constexpr spec CATALOGUE[] = {
   "What the 6-channel MUX reports to the interface poll: 0 nothing, 1 "
   "that it wants its next order (default), 2 whenever it could move data." },
 { "FOCUS_MUXTAP", "<sc>:<port>|<sc>:all", group::cards, false,
-  "Print what a 6-channel MUX port transmits, as the console path prints "
-  "the console, and let FOCUS_TRIP watch it." },
+  "Print what a 6-channel MUX port transmits. The older spelling of "
+  "FOCUS_TAP, which names the same ports and anything else as well." },
 { "FOCUS_PRINTER", "", group::cards, true,
   "Fit the internal thermal printer, which shares select code 6 with the "
   "keyboard (520 Service 2-43). An option on the machine and off by default "
@@ -569,20 +569,28 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_RAWKEYS", "", group::input, true,
   "Make the host's byte the keycode itself, which is how the keycode table "
   "was read off the machine." },
-{ "FOCUS_TYPE", "<text>[;<text>...]", group::input, true,
+{ "FOCUS_TAP", "<name>[,...]|all", group::watch, false,
+  "Which terminals this run listens to: 'console', a select code for a "
+  "serial card that is not the console's, '<sc>:<port>' for one port of a "
+  "multiplexer. What they print goes to stdout and FOCUS_TRIP watches it. "
+  "A machine whose console is a serial terminal listens to that one "
+  "anyway; a 520 talks to its screen, which FOCUS_DIMDUMP reads." },
+{ "FOCUS_TYPE", "[@<term>=]<text>[;...]", group::input, true,
   "Keystrokes to feed at the FOCUS_TYPEAT moments, with \\n for EXECUTE, "
   "\\r for STORE and \\xNN to press KEYCODE NN -- the only way to reach a "
   "key that puts nothing on the screen, such as the one that clears the "
   "input line (0x70). A ';' starts a further script, which is what a "
-  "command that takes seconds to finish needs." },
+  "command that takes seconds to finish needs; a script opening with "
+  "'@<terminal>=' names the FOCUS_TAP terminal it types at, so one run "
+  "can drive the console and several multiplexer ports at once." },
 { "FOCUS_TYPEAT", "<seconds>[,...]", group::input, true,
   "When to type each FOCUS_TYPE script." },
 { "FOCUS_TYPERATE", "<ms>", group::input, true,
   "Pace the injected keystrokes. The default mimics fast human typing; the "
   "display driver drops characters pushed faster than it redraws." },
 { "FOCUS_TYPEPORT", "<sc>:<port>", group::input, true,
-  "Send the FOCUS_TYPE scripts into a port of the 6-channel MUX at that "
-  "select code instead of the console." },
+  "Where a FOCUS_TYPE script that does not name a terminal of its own "
+  "goes, instead of the console." },
 };
 
 inline constexpr unsigned COUNT = sizeof(CATALOGUE) / sizeof(CATALOGUE[0]);

@@ -1026,8 +1026,9 @@ reports the dispatcher every time. It answers "what was on screen", not
 of the six ports of an HP 27140A six-channel multiplexer at select code 2,
 and a login typed into any of them reaches a root shell:
 
-    FOCUS_MUXTAP=2:0 FOCUS_TYPEPORT=2:0 FOCUS_TYPERATE=60 \
-    FOCUS_TYPE='root\n;\n;\n;who\n' FOCUS_TYPEAT=50,58,64,70 \
+    FOCUS_TAP=2:0 FOCUS_TYPERATE=60 \
+    FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' \
+    FOCUS_TYPEAT=50,58,64,70 \
     tools/runhpux.sh --multiuser -str 80 -video none
 
     login: root
@@ -1041,7 +1042,34 @@ and a login typed into any of them reaches a root shell:
 Interactively: `tools/runhpux.sh --multiuser -cio2:mux6:port0 null_modem
 -bitb socket.127.0.0.1:4000` and `nc 127.0.0.1 4000`, or
 `-cio2:mux6:port0 terminal` for a window. Port N of the card is
-`/dev/tty0(N+1)`; `FOCUS_MUXTAP=2:all` prints every port.
+`/dev/tty0(N+1)`; `FOCUS_TAP=all` prints every terminal the machine has,
+and `FOCUS_TAP=bogus` lists them.
+
+The gettys do not come up at a fixed moment: on a loaded host the console
+`login:` has been seen anywhere from 65 s to not at all within 170 s, on
+this driver and on the one before it alike. A run that does not reach it
+is a lost measurement, not a result — retry, as `src/test/basictest.sh`
+does for the BASIC prompt.
+
+### 10.5 Addressing terminals
+
+Everything the host says to and hears from this machine goes through one
+registry now (`host_terminal` in the driver). A terminal has a name, and
+the names are what the knobs take:
+
+| name | what it is |
+|---|---|
+| `console` | the machine's console — the 520's screen and keyboard, or the terminal on a 540's slot-0 serial card |
+| `<sc>` | a serial card in a slot that is not the console's |
+| `<sc>:<port>` | one port of the multiplexer at that select code |
+
+`FOCUS_TAP=<name>[,...]` (or `all`) says which of them print on stdout and
+which the `FOCUS_TRIP` text watch listens to; a machine whose console is a
+serial terminal listens to that one anyway, while a 520 talks to its
+screen and is read with `FOCUS_DIMDUMP`. A `FOCUS_TYPE` script opening
+`@<name>=` types at that one, so a single run can drive the console and
+several ports at once — before this there was one destination for the
+whole run. `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they meant.
 
 ### 10.1 The card
 
@@ -1113,3 +1141,138 @@ console and the six MUX ports all get their `login:`.
   -m unknown:network`), not emulation.
 - `/etc/rc` prints `logout` and `unknown: adm logged out` from the
   accounting startup's `su - adm`, and NOTE: Files in /tmp -- all normal.
+
+---
+
+## 11. HP-UX 5.01 ON THE 520: the banner, off the release tape (2026-08-29)
+
+    tools/runhpux.sh --release 5.01 -str 100 -video none | tools/screen.py
+
+                                              (c) Copyright 1983, 1984, 1985
+     Hewlett-Packard Company,  All rights reserved.   (c) Copyright 1979 ...
+     ...
+    T Technologies. All Rights Reserved.                CLOCK AND DATE NOT SET
+                  REMOTE                             DISPLAY    AUTO
+                   MODE *                            FUNCTNS     LF
+
+The softkey line under the banner is the point: that is the `9020 HUMAN
+INT` segment running the 520's display as a terminal. The kernel has
+relocated, launched, typed its cards, opened its console and printed
+`/etc/copyright` — on hardware five years older than the 5.30 disc, from
+a completely different medium.
+
+### 11.1 Which kernel, and it is not the obvious one
+
+`software/97089C.hpi` carries two 5.01 kernels, and the README's earlier
+reading — that `S97080C` was simply "the intact fileset" — understates
+what is there and misses which machine it is for:
+
+| fileset | `os.rev` | `os.req` | chain |
+|---|---|---|---|
+| `S97080C` | HP-UX **Model 520** Release 05.01 (97080C) | 363,566 | all 16 segments verify |
+| `S97089C` | (past the cpio sync loss) | 353,510 | `CORE SYSTEM` **fails** |
+
+`S97089C`'s `os.req` *does* survive the extraction — the cpio sync is not
+lost until 99.1%, well past it — so the 530/540 kernel is nearly in hand.
+It is not usable: segment 3 (`CORE SYSTEM`, length `0x12a3c`) does not
+checksum, and scanning every word position from the segment start for one
+that does finds nothing, so the damage is inside the segment body rather
+than a mis-read length. The two builds are genuinely different, too — the
+520's `CORE SYSTEM` is 4 bytes shorter — so the good one cannot stand in.
+
+That settles the machine. The surviving kernel is the 520's, its console
+driver is `9020 HUMAN INT`, and it boots on `hp9020`. Its sixteen segments:
+
+    SYSTEM POWERUP  CONFIGURATION  TRAP HANDLERS  CORE SYSTEM
+    HP-UX ENTRYPTS  HP-UX KERNEL   HP-UX DIRECTORY  IOS and DDMs
+    SDF_DISC  TTY SUBSYSTEM  POWERUP SELFTEST  9020 HUMAN INT
+    MATH LIBRARY  HP-UX IO DRIVERS  MEMORY INTRINSIC  HP27110
+
+`HP27110` — the CIO HP-IB driver — being built in is what makes the boot
+below possible at all.
+
+### 11.2 Making it bootable: `tools/hpuxboot.py`
+
+Two edits, both now a tool rather than a shell recipe:
+
+- **Terminate the chain.** `os.req` is what `osmgr` installs, and its
+  segment chain simply ends. `SYSTEM POWERUP` walks it until a negative
+  word, so without one it walks past the last segment and checksums
+  whatever follows. Cut at `0x58c2c` and append `ffffffff`.
+- **Splice in the drivers.** The `.opt` files beside `os.req` are chain
+  modules in exactly the boot image's format — length at +4, name at +28,
+  byte-sum checksum at length+8 — and each one's checksum already covers
+  precisely its own bytes, which is the same rule the chain walk applies
+  to a segment. So adding one is inserting it before the terminator and
+  nothing else. All six that matter verify: `HPIB_FLEX`, `HP27128/30`,
+  `HP27140`, `SERIAL`, `MEMORY_VOL`, `HP98770_GR`. This is HP's own
+  `customize` step, done offline.
+
+`tools/hpuxboot.py software/97089C.hpi -o hpux501.bin --option HPIB_FLEX`;
+`--list` shows the fileset, `--fileset S97089C` will build the damaged one
+and say so.
+
+### 11.3 Escape 116, and the hardware it wanted
+
+On a bare 520 the kernel halts before the banner:
+
+    System halted due to system error.  00000074 00000250 00460002 00000074
+
+`tools/panicdump.py` decodes it: **error 116**, raised from `CORE SYSTEM
++0x250`, `STATUS` CSN 2, the chain walking back `+0x5b3c` → `+0x4e8` →
+`+0x250`. Those frames are the *handler*, not the raise: `+0x24c` is
+`LDS SB+12; PCL STT[572]` — the re-raise idiom, `SB+12` being the escape
+being handled — reached because the preceding `CMPI #69` did not match.
+`FOCUS_ESCLOG` names the actual raise: `CORE SYSTEM +0x7b82`, which
+`tools/escmap.py` lists as one of the three constant-116 sites, and 116 is
+the same NULL-driver stub 5.30 raises from `+0x7f82`. A request went to a
+device with no card behind it.
+
+Fitting one is the whole fix. A 520's own select codes are spoken for —
+0 display, 1 graphics, 6 keyboard, 7 internal disc — so the HP-IB card
+goes in a user slot:
+
+    -cio5 hpib -hard2 <the 5.30 volume>
+
+and the kernel walks straight past the escape to its banner. The disc it
+is given is the 5.30 unit save, because 5.01 has no root of its own: the
+tape's `SCOMMANDS` fileset, the entire userland, is gone. `runhpux.sh`
+mounts it with `FOCUS_HDNOSAVE=1` — 5.01 *does* write to that file system,
+and a 5.01 kernel's writes to a 5.30 installation would quietly spoil the
+one system in this tree that boots to a shell.
+
+### 11.4 Where it stops: a loop, not a halt
+
+With the disc, `FOCUS_HPIBLOG` shows real file system traffic — CS/80
+request `8c` reads and `88` writes of 1024-byte blocks, i-node-shaped
+records among them — so the root is being reached. But the console goes no
+further than the banner through 360 emulated seconds, and `FOCUS_STATEAT`
+finds the processor at `P=0x17b3a`, the idle loop.
+
+`FOCUS_ESCLOG` shows why it is idle rather than wedged: a repeating cycle,
+resolved against the runtime CST that `FOCUS_STATEAT` prints —
+
+| raise | module | escape |
+|---|---|---|
+| `0x4108a` | HP-UX KERNEL +0xa9aa | 319 |
+| `0x4b08a` | IOS and DDMs +0x2a36 | 154, then 244 (×4) |
+| `0x41ace` | HP-UX KERNEL +0xb3ee | 320 |
+| `0x3a6b0` | HP-UX KERNEL +0x3fd0 | 0 |
+
+None of those numbers is in section 3's table yet. The obvious suspect is
+that there is nothing for `init` to exec: this is a 5.01 kernel over a 5.30
+root, and the tunables it wants (`root_device`, `vm_device` — named in
+`CONFIGURATION`, whose strings include "CONFIGURE: cannot bring up the ROOT
+device!") were set for the machine HP shipped it to. Naming 319/154/320/244
+with `tools/escmap.py` and the disassembler is the next step, and the one
+after that is a 5.01 root — which needs a copy of the tape that was read
+more carefully than this one, or another copy of 97089C.
+
+### 11.5 What is *not* the problem
+
+Worth recording, because each cost a run: the `.opt` driver modules make no
+difference to the escape 116 halt (it happens before any of them would be
+asked for); `FOCUS_KBDNV` and `FOCUS_RTCTIME` do not clear "CLOCK AND DATE
+NOT SET", which the 520 prints under BASIC too; and 020/021 — the
+unassigned format 4 opcodes this kernel used to stop on after 1.26M
+instructions — no longer arise at all, because `UP`/`DOWN` are implemented.

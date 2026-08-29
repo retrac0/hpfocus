@@ -771,10 +771,9 @@ public:
 
 	focus::mux_card card;
 
-	// A tapped port's output also goes here -- the machine hangs its
-	// trip-watch on it.
-	std::function<void(u8)> on_tap;
-	int tap_port = -1;      // -1 none, -2 every port
+	// What a port has just transmitted, port number and byte. The
+	// machine binds each port to a host terminal through this.
+	std::function<void(unsigned, u8)> on_rx;
 
 protected:
 	virtual void device_start() override
@@ -828,28 +827,15 @@ public:
 		card.no_async = knob::flag("FOCUS_MUXNOASYNC").on();
 		if (knob::flag("FOCUS_MUXDOWNLOADED").on())
 			card.start_downloaded();
-		// FOCUS_MUXTAP=<sc>:<port> or <sc>:all -- print what the port
-		// transmits, exactly as the console path prints the console.
-		if (const char *v = knob::text("FOCUS_MUXTAP").get())
-		{
-			unsigned s = 0;
-			char rest[8] = "";
-			if (std::sscanf(v, "%u:%7s", &s, rest) == 2 && s == sc)
-				tap_port = std::strcmp(rest, "all") == 0 ? -2 : std::atoi(rest);
-		}
 		card.on_tx = [this](unsigned p, u8 c) { return m_uart[p]->send(c); };
 		card.on_config = [this](unsigned p) { m_uart[p]->configure(); };
 		card.on_lines = [this](unsigned p) { m_uart[p]->set_lines(); };
 		card.on_break = [this](unsigned p, bool on) { m_uart[p]->set_break(on); };
+		// A byte a port has finished transmitting is handed straight up:
+		// which ports the host is listening to, and what it does with
+		// what it hears, is the machine's business and not the card's.
 		for (unsigned i = 0; i < focus::mux_card::PORTS; i++)
-			m_uart[i]->on_byte = [this, i](u8 c) {
-				if (tap_port != -2 && tap_port != int(i))
-					return;
-				if (on_tap)
-					on_tap(c);
-				std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
-				std::fflush(stdout);
-			};
+			m_uart[i]->on_byte = [this, i](u8 c) { if (on_rx) on_rx(i, c); };
 	}
 };
 
@@ -924,6 +910,51 @@ static void focus_cio_cards(device_slot_interface &device)
 
 
 namespace {
+
+//**************************************************************************
+//  HOST TERMINALS
+//**************************************************************************
+
+// Three quite different things in these machines are terminals, and every
+// one of them carries characters both ways between the emulated machine
+// and the host running it: the 520's built-in display and keyboard, the
+// terminal on a 530/540's console serial card, and each of the six ports
+// of a multiplexer. They arrived here as three separate arrangements --
+// three copies of "print the byte as a character", three ways of asking
+// whether the trip watch should see it, and one solitary variable saying
+// which single one of them FOCUS_TYPE was allowed to type at. This is
+// that one idea, said once.
+//
+// A terminal is a NAME, a way to put a byte into the machine, and the
+// driver's own handling of a byte coming out of it. The names are what
+// the knobs address:
+//
+//   console     the machine's own console -- the 520's screen and
+//               keyboard, or the terminal on the 540's slot-0 card
+//   <sc>        a serial card in a slot that is not the console's
+//   <sc>:<port> one port of the multiplexer at that select code
+//
+// so FOCUS_TAP=2:0 and FOCUS_TYPE='@2:0=root\n' name the same thing, and
+// a run can now listen to, and type at, more than one of them at once.
+struct host_terminal
+{
+	std::string name;
+	// A byte from the host. `raw` means the byte is already in this
+	// port's own alphabet -- a keycode for the keyboard, the byte
+	// itself for a serial line -- which is what FOCUS_TYPE's \xNN
+	// escape produces; otherwise it is a character to be typed.
+	std::function<void(u8, bool)> put;
+	// Echo what comes out of it on the host's stdout. The console of a
+	// machine whose console is a serial terminal echoes by default,
+	// because that stream IS the run's output; everything else is
+	// silent until FOCUS_TAP asks for it.
+	bool echo = false;
+	// Let the FOCUS_TRIP text watch see this stream. Every terminal
+	// except an unlistened multiplexer port does: six ports interleaving
+	// their output would corrupt the match, and a port nobody asked to
+	// hear is not what a trip text is being waited for on.
+	bool watch = false;
+};
 
 class hp9000_5xx_state : public driver_device, public focus::iop_core::host
 {
@@ -1019,13 +1050,11 @@ private:
 	// no built-in peripherals at all and offers 0-6. Absent entries are
 	// null, which is what an unpopulated slot is.
 	optional_device_array<focus_cio_slot_device, 7> m_cio;
-	// The console serial card, once a slot on a 530/540 turns out to
-	// hold one: what the terminal window types into and what prints.
-	focus::asi_card *m_console_asi = nullptr;
-	// Where FOCUS_TYPE goes when FOCUS_TYPEPORT names a multiplexer port.
-	focus::mux_card *m_type_mux = nullptr;
-	int m_type_port_sc = -1;
-	unsigned m_type_port = 0;
+	// Every terminal this machine presents to the host, in the order
+	// they were bound; m_console_term indexes the one that is the
+	// machine's console.
+	std::vector<host_terminal> m_terms;
+	int m_console_term = -1;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -1101,6 +1130,15 @@ private:
 		return std::string(buf);
 	}
 	void trip_watch(u8 c);
+	// The host-terminal registry: bind one, find one by name, and the
+	// one path a byte coming out of any of them takes.
+	unsigned bind_terminal(std::string name, std::function<void(u8, bool)> put,
+			bool console = false);
+	int find_terminal(const std::string &name) const;
+	void terminal_output(unsigned id, u8 c);
+	void select_taps();
+	// Type a byte at a terminal, or say once that the name went nowhere.
+	void type_at(int id, u8 c, bool raw);
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
@@ -1127,8 +1165,13 @@ private:
 	emu_timer *m_type_timer = nullptr;
 	std::string m_type_text;
 	size_t m_type_pos = 0;
-	// FOCUS_TYPE may hold several scripts, each with its own start time.
+	// FOCUS_TYPE may hold several scripts, each with its own start time
+	// and its own terminal: a run that logs in on three multiplexer
+	// ports is three scripts at three destinations, which is not
+	// something one global destination could say.
 	std::vector<std::string> m_type_scripts;
+	std::vector<std::string> m_type_dest;   // "" = wherever FOCUS_TYPEPORT says
+	int m_type_term = -1;                   // the running script's terminal
 	attotime m_type_rate;
 	u32 m_prev_rq = 0;
 	// The discs in the drive, in the order the loader asks for them: a
@@ -1878,6 +1921,15 @@ void hp9000_5xx_state::configure_peripherals()
 		m_console6.printer = &m_printer;
 	}
 	m_console6.where = [this]() { return where_now(); };
+	// On a 520 the console is the machine itself -- the keyboard board
+	// takes the keystrokes and the display shows the answer -- so it
+	// binds here rather than out of a backplane slot. Nothing comes back
+	// on stdout: what this console says is on the screen, and
+	// FOCUS_DIMDUMP is how a headless run reads it.
+	if (!m_console_is_asi)
+		bind_terminal("console",
+				[this](u8 c, bool raw) { if (raw) m_console6.type(c);
+						else kbd_put(c); }, true);
 	m_iop.attach(6, &m_console6);
 	// SC6 keyboard interrupts are enabled by the hardware itself; the
 	// internal disc's select code is armed the same way when present.
@@ -1952,12 +2004,6 @@ void hp9000_5xx_state::configure_backplane()
 	// FOCUS_ASI*/FOCUS_HPIB* debug knobs reach whichever card is in a
 	// slot. On a 540 this is where the console and the system disc come
 	// from -- there is no built-in anything to fall back on.
-	// FOCUS_TYPEPORT=<sc>:<port> sends the FOCUS_TYPE scripts into a
-	// multiplexer port instead of the console.
-	m_type_port_sc = -1;
-	if (const char *v = knob::text("FOCUS_TYPEPORT").get())
-		if (std::sscanf(v, "%d:%u", &m_type_port_sc, &m_type_port) != 2)
-			m_type_port_sc = -1;
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 	{
 		if (!m_cio[sc])
@@ -1966,42 +2012,52 @@ void hp9000_5xx_state::configure_backplane()
 		if (!iface)
 			continue;
 		m_cio[sc]->focus_configure(m_iop, sc);
-		// A multiplexer: its tapped port trips the watch like the console
-		// does, and it may be where typed scripts go.
+		// Every port a card carries is a terminal the host can listen
+		// to and type at. Which of them it actually does is settled once,
+		// by select_taps(), after they are all bound -- a card cannot
+		// answer that for itself, because it is not a question about the
+		// card but about which of them this run is watching.
 		if (auto *mux = dynamic_cast<hp27140_mux_device *>(
 				m_cio[sc]->get_card_device()))
 		{
-			mux->on_tap = [this](u8 c) { trip_watch(c); };
-			if (m_type_port_sc == int(sc))
-				m_type_mux = &mux->card;
+			focus::mux_card *const card = &mux->card;
+			unsigned first = 0;
+			for (unsigned port = 0; port < focus::mux_card::PORTS; port++)
+			{
+				const unsigned id = bind_terminal(
+						util::string_format("%u:%u", sc, port),
+						[card, port](u8 c, bool raw) {
+							card->receive(port, raw || c != '\n' ? c : u8('\r'));
+						});
+				if (port == 0)
+					first = id;
+			}
+			mux->on_rx = [this, first](unsigned port, u8 c) {
+				terminal_output(first + port, c);
+			};
 		}
 		// The console is the serial card in slot 0 of a machine that
 		// has no display: what it prints goes to the terminal window
-		// and to stdout, and what the window types goes back into it.
-		// This is the one thing a card cannot do for itself, because
-		// it is not about the card -- it is about which card this
-		// machine is listening to.
+		// as well as to stdout, and what the window types goes back
+		// into it.
 		if (auto *asi = dynamic_cast<hp27128_asi_device *>(
 				m_cio[sc]->get_card_device()))
 		{
-			if (m_console_is_asi && sc == 0)
-			{
-				m_console_asi = &asi->card;
-				asi->card.on_char = [this](u8 c) {
-					trip_watch(c);
-					if (m_terminal)
-						m_terminal->write(c);
-					std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
-					std::fflush(stdout);
-				};
-			}
-			else
-				asi->card.on_char = [this](u8 c) { trip_watch(c); };
+			focus::asi_card *const card = &asi->card;
+			const bool console = m_console_is_asi && sc == 0;
+			const unsigned id = bind_terminal(
+					console ? "console" : util::string_format("%u", sc),
+					[card](u8 c, bool raw) {
+						card->type(raw || c != '\n' ? c : u8('\r'));
+					},
+					console);
+			card->on_char = [this, id](u8 c) { terminal_output(id, c); };
 		}
 		m_iop.attach(sc, iface);
 		osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
 				m_cio[sc]->get_card_device()->name(), sc);
 	}
+	select_taps();
 	attach_probes();
 	m_cpu->set_io(&m_iop);
 	m_iop.trace_pc = [this]() { return m_cpu->core().r.p; };
@@ -2289,8 +2345,28 @@ void hp9000_5xx_state::schedule_scripts()
 	// which is what a command that takes seconds to finish needs -- the
 	// keyboard buffer does not hold a line typed while the disc is busy,
 	// so the next command has to wait for the first to land.
+	//
+	// A script may open with '@<terminal>=' to say where it types, so
+	// one run can drive several terminals at once -- logging in on three
+	// multiplexer ports, or answering at the console while a port is
+	// busy:
+	//
+	//   FOCUS_TYPE='@2:0=root\n;@2:1=root\n' FOCUS_TYPEAT=40,45
+	//
+	// A script that says nothing goes where FOCUS_TYPEPORT says, and
+	// failing that to the machine's console, which is where every script
+	// went before there was more than one place to send them.
 	if (const char *e = knob::text("FOCUS_TYPE").get())
 	{
+		std::string dflt;
+		if (const char *v = knob::text("FOCUS_TYPEPORT").get())
+		{
+			unsigned sc = 0, port = 0;
+			if (std::sscanf(v, "%u:%u", &sc, &port) == 2)
+				dflt = util::string_format("%u:%u", sc, port);
+			else
+				dflt = v;   // any terminal name will do as well
+		}
 		std::string one;
 		for (const char *pc = e; *pc; pc++)
 		{
@@ -2313,6 +2389,23 @@ void hp9000_5xx_state::schedule_scripts()
 			else one.push_back(*pc);
 		}
 		m_type_scripts.push_back(one);
+		// Split each script's '@<terminal>=' opener off its text. It is
+		// taken only at the very start of a script, so an '@' anywhere
+		// in what is being typed is just an '@'.
+		for (std::string &script : m_type_scripts)
+		{
+			std::string dest = dflt;
+			if (!script.empty() && script[0] == '@')
+			{
+				const size_t eq = script.find('=');
+				if (eq != std::string::npos)
+				{
+					dest = script.substr(1, eq - 1);
+					script.erase(0, eq + 1);
+				}
+			}
+			m_type_dest.push_back(dest);
+		}
 		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
 		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
 		// mimics fast human typing; the display driver drops or reorders
@@ -2388,10 +2481,147 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::state_tick)
 }
 
 
+//**************************************************************************
+//  THE HOST-TERMINAL REGISTRY
+//**************************************************************************
+
+unsigned hp9000_5xx_state::bind_terminal(std::string name,
+		std::function<void(u8, bool)> put, bool console)
+{
+	const unsigned id = unsigned(m_terms.size());
+	m_terms.push_back(host_terminal{ std::move(name), std::move(put) });
+	if (console)
+		m_console_term = int(id);
+	return id;
+}
+
+
+int hp9000_5xx_state::find_terminal(const std::string &name) const
+{
+	for (unsigned i = 0; i < m_terms.size(); i++)
+		if (m_terms[i].name == name)
+			return int(i);
+	return -1;
+}
+
+
+// One byte out of one terminal, and the three things that can happen to
+// it. They used to be written out again at each of the three places a
+// terminal existed.
+void hp9000_5xx_state::terminal_output(unsigned id, u8 c)
+{
+	const host_terminal &t = m_terms[id];
+	if (t.watch)
+		trip_watch(c);
+	// The terminal window belongs to the console and shows what the
+	// console prints; there is only ever one of them.
+	if (m_terminal && int(id) == m_console_term)
+		m_terminal->write(c);
+	if (t.echo)
+	{
+		std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+		std::fflush(stdout);
+	}
+}
+
+
+// Which terminals this run listens to, settled once every terminal is
+// bound. The default is the machine's own console when that console
+// speaks to stdout at all -- on a 520 it speaks to the screen, and
+// echoing its bytes would be inventing a stream the machine does not
+// have.
+//
+//   FOCUS_TAP=<name>[,<name>...]   listen to exactly these
+//   FOCUS_TAP=all                  listen to every one of them
+//   FOCUS_MUXTAP=<sc>:<port>|all   the older spelling, kept working
+void hp9000_5xx_state::select_taps()
+{
+	if (m_console_term >= 0 && m_console_is_asi)
+		m_terms[size_t(m_console_term)].echo = true;
+
+	auto tap = [this](const std::string &name) {
+		if (name == "all")
+		{
+			for (host_terminal &t : m_terms)
+				t.echo = true;
+			return;
+		}
+		const int id = find_terminal(name);
+		if (id < 0)
+		{
+			osd_printf_error("tap: no terminal called %s; this machine has",
+					name.c_str());
+			for (const host_terminal &t : m_terms)
+				osd_printf_error(" %s", t.name.c_str());
+			osd_printf_error("\n");
+			return;
+		}
+		m_terms[size_t(id)].echo = true;
+	};
+
+	if (const char *v = knob::text("FOCUS_TAP").get())
+		for (std::string list(v); !list.empty(); )
+		{
+			const size_t comma = list.find(',');
+			const std::string one = list.substr(0, comma);
+			list = (comma == std::string::npos) ? "" : list.substr(comma + 1);
+			if (!one.empty())
+				tap(one);
+		}
+	// FOCUS_MUXTAP names a multiplexer port the way it always did: a
+	// select code and a port, or "all" for every port of that card.
+	if (const char *v = knob::text("FOCUS_MUXTAP").get())
+	{
+		unsigned sc = 0;
+		char rest[8] = "";
+		if (std::sscanf(v, "%u:%7s", &sc, rest) == 2)
+		{
+			if (std::strcmp(rest, "all") == 0)
+				for (unsigned port = 0; port < focus::mux_card::PORTS; port++)
+					tap(util::string_format("%u:%u", sc, port));
+			else
+				tap(util::string_format("%u:%s", sc, rest));
+		}
+	}
+
+	// The trip watch hears whatever the run hears, and the console
+	// besides -- see host_terminal for why an unlistened port is left
+	// out of it.
+	for (host_terminal &t : m_terms)
+		t.watch = t.echo || t.name.find(':') == std::string::npos;
+}
+
+
+// Send one byte to a named terminal, or say why nothing happened. A
+// script addressed at a port that is not fitted is a mistake worth a
+// line of output: silence there looks exactly like a machine that
+// ignored what was typed.
+void hp9000_5xx_state::type_at(int id, u8 c, bool raw)
+{
+	if (id < 0 || id >= int(m_terms.size()))
+		return;
+	m_terms[size_t(id)].put(c, raw);
+}
+
+
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 {
 	m_type_text = m_type_scripts[size_t(param)];
 	m_type_pos = 0;
+	// Where this script types: its own @name, else FOCUS_TYPEPORT's
+	// port, else the machine's console.
+	const std::string &want = m_type_dest[size_t(param)];
+	m_type_term = want.empty() ? m_console_term : find_terminal(want);
+	if (m_type_term < 0)
+	{
+		osd_printf_error("type: script %d has nowhere to go (%s); "
+				"this machine has", int(param) + 1,
+				want.empty() ? "no console" : want.c_str());
+		for (const host_terminal &t : m_terms)
+			osd_printf_error(" %s", t.name.c_str());
+		osd_printf_error("\n");
+		return;
+	}
 	m_type_timer->adjust(attotime::zero, 0, m_type_rate);
 }
 
@@ -2399,33 +2629,19 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 {
 	if (m_type_pos == 0)
-		std::printf("[typing starts, disc blocks %u, sc6 writes %u]\n",
+		std::printf("[typing at %s starts, disc blocks %u, sc6 writes %u]\n",
+				m_terms[size_t(m_type_term)].name.c_str(),
 				m_disc.m_seq, m_console6.writes);
 	if (m_type_pos < m_type_text.size())
 	{
 		const u8 c = u8(m_type_text[m_type_pos++]);
-		// A \xNN escape: the byte after the marker is a keycode, handed
-		// to the keyboard board as it stands.
+		// A \xNN escape: the byte after the marker goes in as it
+		// stands -- a keycode at the 520's keyboard, the byte itself
+		// on a serial line.
 		if (c == RAW_KEY && m_type_pos < m_type_text.size())
-		{
-			const u8 code = u8(m_type_text[m_type_pos++]);
-			if (m_type_mux)
-				m_type_mux->receive(m_type_port, code);
-			else if (m_console_asi)
-				m_console_asi->type(code);
-			else
-				m_console6.type(code);
-			return;
-		}
-		// The 540's console is a terminal on the serial card, and a
-		// terminal sends ASCII -- no keycode translation. A multiplexer
-		// port is a terminal too.
-		if (m_type_mux)
-			m_type_mux->receive(m_type_port, c == '\n' ? u8('\r') : c);
-		else if (m_console_asi)
-			m_console_asi->type(c == '\n' ? u8('\r') : c);
+			type_at(m_type_term, u8(m_type_text[m_type_pos++]), true);
 		else
-			kbd_put(c);
+			type_at(m_type_term, c, false);
 	}
 	else
 		m_type_timer->adjust(attotime::never);
@@ -2698,8 +2914,11 @@ void hp9000_5xx_state::load_battery(focus::rtc_nvm &part, const char *knobname,
 // record is complete.
 void hp9000_5xx_state::term_put(u8 data)
 {
-	if (m_console_asi)
-		m_console_asi->type(data);
+	// The window is only ever fitted to a machine whose console is a
+	// serial terminal, and it already sends the bytes a terminal sends,
+	// so they go in as they stand.
+	if (m_console_term >= 0)
+		m_terms[size_t(m_console_term)].put(data, true);
 }
 
 

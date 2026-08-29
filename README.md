@@ -23,7 +23,9 @@ init's single-user shell (section 9). BASIC 2.0 and the 9020 diagnostics
 environment boot on the 520 to "BASIC Ready for use." on a rendered screen
 with a live command line. The console-open work, the drain, the shell and
 the multiuser step each cost emulator defects, recorded in `docs/HPUX.md`
-sections 6, 8, 9 and 10.
+sections 6, 8, 9 and 10. **HP-UX 5.01, off the release tape, reaches its
+copyright banner on the emulated 520** — `tools/runhpux.sh --release 5.01`,
+section 11.
 
 Much of what follows is a running log and is dated; where it says "the
 current frontier", read it as the frontier at the time it was written.
@@ -523,15 +525,38 @@ storage device** — the DDM lives in the `IOS and DDMs` segment and its
 protocol can be read out of a run with `bootrun --probe <pa> <id>
 --probelog`, which is what that switch exists for.
 
-**HP-UX 5.01 boots the same chain.** The kernel on the damaged tape is
-whole (`system/97080C/os.req`, all sixteen segments verify), and once it is
-terminated as a boot image it runs powerup, relocation, the TCB dispatch
-and the console self-test exactly as BASIC and the diagnostics do. The
-stored `os.req` is the *installable* file, not a boot image: the segment
-chain ends without the negative word the powerup module stops on, so the
-walk runs off the end and checksums garbage for ninety million
-instructions. Truncating at the chain end and appending `ffffffff` makes it
-bootable:
+**HP-UX 5.01 reaches its copyright banner on the 520.**
+`tools/runhpux.sh --release 5.01` builds a boot image out of the damaged
+release tape and boots it; `docs/HPUX.md` section 11 has the whole
+account. Three things had to be got right, and each is now a tool rather
+than a recipe:
+
+- **Which kernel.** The tape carries two, and it is the *520's* that
+  survives whole. `S97080C` is "HP-UX Model 520 Release 05.01" and all
+  sixteen of its segments verify; `S97089C` is the 530/540/550 build, and
+  although its `os.req` was extracted intact by length, its `CORE SYSTEM`
+  segment does not checksum. So the machine this release boots on is the
+  520, whose console is the built-in display and keyboard — which is
+  exactly what its `9020 HUMAN INT` segment is for.
+- **Terminating the chain.** The stored `os.req` is the *installable*
+  file, not a boot image: the segment chain ends without the negative word
+  the powerup module stops on, so the walk runs off the end and checksums
+  garbage for ninety million instructions. Cutting at the chain end and
+  appending `ffffffff` makes it bootable.
+- **Giving it hardware.** On a bare 520 the kernel raises escape 116 —
+  a request dispatched to the NULL driver — from `CORE SYSTEM +0x7b82`,
+  and its outermost TRY handler prints "System halted due to system
+  error." Fit an HP-IB card with a disc on it and the same kernel walks
+  past that, brings up its console and prints the HP-UX banner on the
+  screen.
+
+`tools/hpuxboot.py` does the first two (and will splice in the `.opt`
+driver modules, which are chain modules in the boot image's own format —
+the customize step HP's installer did). Where it stops now is a loop, not
+a halt: the kernel reads and writes the file system it is given, and cycles
+on escapes 319/154/320/244 out of `HP-UX KERNEL` and `IOS and DDMs`
+without ever starting `init`. That it has no 5.01 userland to start is the
+likeliest reason — `SCOMMANDS`, the whole of `/bin`, is gone from the tape.
 
 ### Recovered software
 
@@ -550,12 +575,14 @@ includes copies of:
 
 ### Current holds
 
-Both HP-UX versions then stop on the same thing: format 4 opcodes
+Both HP-UX versions once stopped on the same thing: format 4 opcodes
 020 and 021, which the Dec-82 Appendix B leaves unassigned — and so,
 it turns out, does HP's own toolchain. 5.01 uses
 them 1,192 times and 5.30 1,514 times; BASIC and the diagnostics never
-execute either. 5.01 reaches its first `021` after 1.26M instructions, in
-the `CORE SYSTEM` segment.
+execute either. 5.01 reached its first `021` after 1.26M instructions, in
+the `CORE SYSTEM` segment. **They are `UP` and `DOWN`, and they are
+implemented** — the hunt below is kept because it is how they were named,
+and because the reasoning generalises to the slots still unassigned.
 
 What the recovered toolchain says: The 5.30 tapes carry HP's own
 assembler (`/bin/as`) and Pascal compiler (`/usr/lib/pascomp`), and the
@@ -622,7 +649,7 @@ docs/
   notes/               pdftotext extractions, Appendix B + loader flowchart
 software/
   README.md            provenance and per-image analysis
-  97089C.hpi           HP-UX 5.01 tape (damaged)
+  97089C.hpi           HP-UX 5.01 tape (damaged; the 520 kernel survives)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
 src/
   cpu/focus/           MAME CPU device + disassembler, registers,
@@ -638,6 +665,8 @@ tools/
   td0.py               decode Teledisk images to raw sectors
   lifdir.py            list/extract LIF volumes
   cpiolist.py          list/extract big-endian old-binary cpio
+  hpuxboot.py          build a bootable 5.01 kernel out of the release tape
+  lib/focus.sh         the run scripts' shared MAME launch
   sdfread.py           read an SDF volume; sdfwrite.py builds one
   mkharddisc.py        make a fixed disc, installbasic.py installs BASIC
   modmap.py            map named modules in a boot image

@@ -19,6 +19,9 @@ __pycache__/
 *.img
 software/cct/*.bin
 software/cct/scm.nv
+# Derived: tools/hpuxboot.py rebuilds the 5.01 kernel from the release
+# tape, and the 520's clock battery is per-run state like the SCM's.
+software/cct/*.nv
 
 # Built fixed-disc images -- tools/mkharddisc.py + tools/installbasic.py
 # reproduce them from the shipped discs in two commands

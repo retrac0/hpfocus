@@ -1,7 +1,34 @@
 #!/bin/bash
-# Boot HP-UX 5.30 on the emulated HP 9000/540: an ASI terminal window for
-# the console, and the 7914 unit-save image mounted as the CS/80 system
-# disc on the HP-IB card, booted through the emulated loader.
+# Boot HP-UX on an emulated Series 500.
+#
+#   tools/runhpux.sh                  5.30 on the 540, to the single-user shell
+#   tools/runhpux.sh --multiuser      5.30 on the 540, to a login on every port
+#   tools/runhpux.sh --release 5.01   5.01 on the 520, from the release tape
+#
+# TWO RELEASES, TWO MACHINES, AND TWO QUITE DIFFERENT KINDS OF MEDIA. It
+# is worth being clear about which is which, because they arrive here by
+# opposite routes:
+#
+#   5.30  is an INSTALLED SYSTEM. software/cct holds a unit save of a real
+#         HP 7914 disc -- kernel, root file system, userland and one site's
+#         live data -- so the machine boots the way that machine booted:
+#         the emulated loader reads the image off the CS/80 disc and the
+#         kernel mounts the disc it came from. This is the supported path
+#         and the one that reaches a shell.
+#
+#   5.01  is a RELEASE TAPE with no file system on it, and most of it did
+#         not survive imaging: software/97089C.hpi has lost SCOMMANDS
+#         entirely, which is /bin and /usr/bin -- every command there is.
+#         What did survive whole is the 520's kernel, so this path builds
+#         that kernel into a bootable image (tools/hpuxboot.py) and hands
+#         it to the 520 through the loader's own handoff. There is no 5.01
+#         root to mount; see docs/HPUX.md 11 for how far it gets and on
+#         what it stops.
+#
+# The 5.30 machine is all backplane: the console serial card is -cio0 and
+# the system disc's HP-IB card -cio5, where the CE handbook's installation
+# procedure puts them, and the 7914 unit save mounts as the CS/80 drive on
+# that card. Re-card either slot, or fit more, with -cio0 .. -cio6.
 #
 # The RTC and configuration NVM persist in software/cct/scm.nv, standing
 # for the SCM's battery: the FIRST boot finds an unset clock, sets it and
@@ -9,28 +36,77 @@
 # requires before it will bring up its device world. Delete the file to
 # simulate a dead battery.
 #
-# The machine is all backplane: the console serial card is -cio0 and the
-# system disc's HP-IB card -cio5, where the CE handbook's installation
-# procedure puts them, and the 7914 unit save mounts as the CS/80 drive on
-# that card. Re-card either slot, or fit more, with -cio0 .. -cio6.
-#
-# THE MACHINE BOOTS TO MULTIUSER. The loader reads the image off the
-# CS/80 disc, the kernel relocates all 27 modules, types the cards and
-# brings up its device world, mounts the root, and init runs /etc/rc and
-# starts a getty on the console -- and, with --multiuser, on the six ports
-# of an HP 27140A multiplexer at select code 2, each of which accepts a
-# root login (docs/HPUX.md 10). Without --multiuser the disc boots as it
-# was imaged: to init's single-user shell after the boot report,
-# /etc/copyright, /etc/motd and tset's TERM prompt (docs/HPUX.md 9).
-#
-# Typed input: FOCUS_TYPE='...' FOCUS_TYPEAT=<s>,... types into the
-# console, or into a MUX port with FOCUS_TYPEPORT=2:<port>; FOCUS_MUXTAP
-# prints a port's output. Interactive ports: -cio2:mux6:port0 terminal,
-# or -cio2:mux6:port0 null_modem -bitb socket.127.0.0.1:4000 and nc.
+# Typed input and listening: FOCUS_TAP names the terminals a run listens
+# to ('console', '<sc>:<port>'), FOCUS_TYPE='@<term>=...' types at them,
+# FOCUS_TYPEAT=<s>,... says when. FOCUS_HELP=1 lists every knob.
+# Interactive ports: -cio2:mux6:port0 terminal, or -cio2:mux6:port0
+# null_modem -bitb socket.127.0.0.1:4000 and nc.
 
 set -e
-cd "$(dirname "$0")/.."
-CCT="$PWD/software/cct"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/focus.sh"
+focus_repo
+CCT="$FOCUS_REPO/software/cct"
+
+# ------------------------------------------------------------------ options
+RELEASE=5.30
+MULTIUSER=0
+ARGS=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--multiuser) MULTIUSER=1 ;;
+		--release) RELEASE=$2; shift ;;
+		--release=*) RELEASE=${1#--release=} ;;
+		*) ARGS+=("$1") ;;
+	esac
+	shift
+done
+set -- "${ARGS[@]}"
+
+focus_built
+
+case "$RELEASE" in
+5.01|501)
+	# The kernel is rebuilt from the tape whenever it is missing: it is a
+	# derived file like the assembled 5.30 disc, and the tape is never
+	# written. The three drivers spliced in are the ones this machine can
+	# actually use -- the internal flexible disc, the serial interface and
+	# the memory volume -- which is the customize step HP's installer did.
+	TAPE="$FOCUS_REPO/software/97089C.hpi"
+	KERNEL="$CCT/hpux501.bin"
+	[ -f "$TAPE" ] || { echo "no release tape at $TAPE"; exit 1; }
+	if [ ! -f "$KERNEL" ]; then
+		echo "building the 5.01 boot image from the release tape..."
+		python3 "$FOCUS_REPO/tools/hpuxboot.py" "$TAPE" -o "$KERNEL" \
+			--option HPIB_FLEX --option SERIAL --option MEMORY_VOL || exit 1
+	fi
+	# 5.01 has no root of its own on the tape, so the 5.30 volume is what
+	# it is given to mount -- the same disc, the same HP-IB card, one slot
+	# along from where a 540 keeps it because a 520's own select codes 0,
+	# 1, 6 and 7 are its display, graphics, keyboard and internal disc.
+	# Without a disc at all the kernel raises escape 116 against the NULL
+	# driver before it ever reaches its banner.
+	DISC="$CCT/7914_hpux_volume.bin"
+	[ -f "$DISC" ] || { echo "no system disc at $DISC; run tools/runhpux.sh once"; exit 1; }
+	# And it mounts READ-ONLY. 5.01 does reach that file system and does
+	# write to it -- the HP-IB log is full of its writes -- but those are
+	# a 5.01 kernel's writes to a 5.30 installation, which is not a
+	# machine that ever existed, and letting them stick would quietly
+	# spoil the one system in this tree that boots to a shell. Set
+	# FOCUS_HDNOSAVE= to let them through on purpose.
+	export FOCUS_HDNOSAVE="${FOCUS_HDNOSAVE-1}"
+	export FOCUS_KBDNV="${FOCUS_KBDNV:-$CCT/kbd501.nv}"
+	focus_run hp9020 -mpb3 1m -mpb4 1m -cio5 hpib -hard2 "$DISC" \
+		-quik "$KERNEL" "$@"
+	;;
+5.30|530)
+	;;
+*)
+	echo "unknown release '$RELEASE'; this tree has 5.30 and 5.01"
+	exit 2
+	;;
+esac
+
+# ------------------------------------------------------------------ 5.30
 TAPE1="$CCT/7914_unitSave_hpux4.0.bin"
 TAPE2="$CCT/7914_unitSave_hpux4.0_tape2.bin"
 # The system disc is the WHOLE volume the two unit-save tapes hold, put
@@ -43,14 +119,14 @@ TAPE2="$CCT/7914_unitSave_hpux4.0_tape2.bin"
 DISC="$CCT/7914_hpux_volume.bin"
 
 for t in "$TAPE1" "$TAPE2"; do
-    if [ ! -f "$t" ]; then
-        echo "decompressing $(basename "$t")..."
-        gunzip -k "$t.gz"
-    fi
+	if [ ! -f "$t" ]; then
+		echo "decompressing $(basename "$t")..."
+		gunzip -k "$t.gz"
+	fi
 done
 if [ ! -f "$DISC" ]; then
-    echo "assembling the system disc from the two unit-save tapes..."
-    python3 tools/mkhpuxdisc.py "$TAPE1" "$TAPE2" "$DISC" || exit 1
+	echo "assembling the system disc from the two unit-save tapes..."
+	python3 tools/mkhpuxdisc.py "$TAPE1" "$TAPE2" "$DISC" || exit 1
 fi
 
 # --multiuser: the same disc, made to boot to run level 2 with a login on
@@ -60,65 +136,18 @@ fi
 # idempotent, so it runs on every such boot; the card is fitted unless
 # the caller has already said what -cio2 holds. Without the flag nothing
 # here changes.
-MULTIUSER=0
-ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        --multiuser) MULTIUSER=1 ;;
-        *) ARGS+=("$arg") ;;
-    esac
-done
-set -- "${ARGS[@]}"
 if [ "$MULTIUSER" = 1 ]; then
-    python3 tools/hpuxconfig.py "$DISC" || exit 1
-    case " $* " in
-        *" -cio2 "*) ;;
-        *) set -- -cio2 mux6 "$@" ;;
-    esac
+	python3 tools/hpuxconfig.py "$DISC" || exit 1
+	case " $* " in
+		*" -cio2 "*) ;;
+		*) set -- -cio2 mux6 "$@" ;;
+	esac
 fi
-
-if [ ! -x mame/focus ]; then
-    echo "mame/focus is not built; run:"
-    echo "  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9000_5xx.cpp -j8"
-    exit 1
-fi
-
-cd mame
-# Throttling. A batch run wants to go as fast as it can; an interactive
-# one wants the window to keep up. Unthrottled, a machine that idles in
-# STOP races its emulated clock to thousands of percent, and MAME spends
-# so long emulating between presentations that the window never draws and
-# the event pump never sees a close or a signal -- a blank window you have
-# to kill by hand. So -nothrottle is added only for a run that ends by
-# itself, which is what -seconds_to_run means.
-THROTTLE=()
-for arg in "$@"; do
-    case "$arg" in
-        -seconds_to_run|-str) THROTTLE=(-nothrottle); break ;;
-    esac
-done
-
-# Video backend. MAME defaults to opengl, and a driver that cannot present
-# through it leaves a window that renders the blinking cursor and never
-# updates the text -- the machine running perfectly behind a screen that
-# looks dead. This display is 640x390 of character cells, so the software
-# renderer costs nothing and always works. A -video on the command line
-# comes after this one and wins, so any backend can still be asked for.
-# A headless run has no business opening a window. MAME initialises SDL's
-# video subsystem even for -video none, which costs real time on a loaded
-# desktop and, on this machine, intermittently leaves the emulated boot
-# dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
-case " $* " in
-    *" -video none "*) export SDL_VIDEODRIVER=dummy ;;
-esac
-
-VIDEO=(-video soft)
 
 # RAM. The machine default is HP's 1 MB base configuration, but the
 # HP-UX image is 597 KB and its relocated world reaches past 0xb2000:
 # together they cannot fit under 1 MB, so this boot pins the two 1 MB
 # boards it was brought up and measured on. Fit different boards by
 # editing here; a second -mpb3 on the command line is a MAME error.
-exec env FOCUS_SCMNV="$CCT/scm.nv" \
-    ./focus hp9040 -mpb3 1m -mpb4 1m \
-    -hard1 "$DISC" "${THROTTLE[@]}" "${VIDEO[@]}" -sound none "$@"
+export FOCUS_SCMNV="${FOCUS_SCMNV:-$CCT/scm.nv}"
+focus_run hp9040 -mpb3 1m -mpb4 1m -hard1 "$DISC" "$@"
