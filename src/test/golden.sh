@@ -191,7 +191,7 @@ echo
 
 # ------------------------------------------------------------- the probes
 echo "unit harnesses:"
-for t in statetest addrtest dsttest exectest ioptest; do
+for t in statetest addrtest dsttest exectest ioptest muxtest; do
 	run "$t" "$TEST/$t"
 done
 

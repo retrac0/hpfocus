@@ -42,6 +42,8 @@
 #include "iop/focusdisc.h"
 #include "iop/focusasi.h"
 #include "iop/focushpib.h"
+#include "iop/focusmux.h"
+#include "bus/rs232/rs232.h"
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -296,6 +298,8 @@ class mpb_ram1m_device;
 class mpb_slot_device;
 class hp27128_asi_device;
 class hp27110_hpib_device;
+class hp27140_uart_device;
+class hp27140_mux_device;
 class focus_cio_slot_device;
 DECLARE_DEVICE_TYPE(MPB_RAM256K, mpb_ram256k_device)
 DECLARE_DEVICE_TYPE(MPB_RAM512K, mpb_ram512k_device)
@@ -303,6 +307,8 @@ DECLARE_DEVICE_TYPE(MPB_RAM1M, mpb_ram1m_device)
 DECLARE_DEVICE_TYPE(MPB_SLOT, mpb_slot_device)
 DECLARE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device)
 DECLARE_DEVICE_TYPE(HP27110_HPIB, hp27110_hpib_device)
+DECLARE_DEVICE_TYPE(HP27140_UART, hp27140_uart_device)
+DECLARE_DEVICE_TYPE(HP27140_MUX, hp27140_mux_device)
 DECLARE_DEVICE_TYPE(FOCUS_CIO_SLOT, focus_cio_slot_device)
 
 // RAM boards. The service manual is explicit that memory shares the
@@ -590,10 +596,271 @@ public:
 	}
 };
 
+
+// One of the 27140A's six channels as MAME sees it: a UART whose framing
+// and rate follow the card's per-port configuration (subfunctions 1, 2
+// and 3), feeding an rs232 port. The card hands it bytes and takes what
+// it receives; the port's modem lines come back as the card's DM/RR/IC/CS.
+class hp27140_uart_device : public device_t, public device_serial_interface
+{
+public:
+	hp27140_uart_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, HP27140_UART, tag, owner, clock)
+		, device_serial_interface(mconfig, *this)
+		, m_txd(*this), m_dtr(*this), m_rts(*this)
+	{
+	}
+
+	auto txd_handler() { return m_txd.bind(); }
+	auto dtr_handler() { return m_dtr.bind(); }
+	auto rts_handler() { return m_rts.bind(); }
+
+	// Every byte that leaves through this channel, for a tap.
+	std::function<void(u8)> on_byte;
+
+	void bind(focus::mux_card *card, unsigned port, rs232_port_device *rs232)
+	{
+		m_card = card;
+		m_port = port;
+		m_rs232 = rs232;
+	}
+
+	void rx_w(int state) { device_serial_interface::rx_w(state); }
+	// MAME's RS-232 control lines are active low: 0 is asserted.
+	void dcd_w(int state) { line(focus::mux_card::LINE_RR, state); }
+	void dsr_w(int state) { line(focus::mux_card::LINE_DM, state); }
+	void cts_w(int state) { line(focus::mux_card::LINE_CS, state); }
+	void ri_w(int state)  { line(focus::mux_card::LINE_IC, state); }
+
+	// Take a byte for transmission, or refuse it while one is still
+	// shifting out -- the card offers it again on a later tick, which is
+	// what paces output at the port's baud rate.
+	bool send(u8 c)
+	{
+		if (m_break || !is_transmit_register_empty())
+			return false;
+		if (on_byte)
+			on_byte(c);
+		transmit_register_setup(c);
+		return true;
+	}
+
+	// The port's line configuration, from the card's stored subfunctions.
+	void configure()
+	{
+		if (!m_card)
+			return;
+		const focus::mux_card::port_state &P = m_card->port(m_port);
+		static const parity_t parities[4] = { PARITY_NONE, PARITY_ODD, PARITY_EVEN, PARITY_NONE };
+		static const stop_bits_t stops[4] = { STOP_BITS_1, STOP_BITS_1_5, STOP_BITS_2, STOP_BITS_1 };
+		set_data_frame(1, 5 + ((P.frame >> 4) & 3), parities[P.frame & 3],
+				stops[(P.frame >> 2) & 3]);
+		set_rate(baud_of(P.baud));
+	}
+
+	void set_lines()
+	{
+		if (!m_card)
+			return;
+		const focus::mux_card::port_state &P = m_card->port(m_port);
+		m_dtr(P.tr ? 0 : 1);
+		m_rts(P.rs ? 0 : 1);
+	}
+
+	// Break: the line held at space for as long as the host says.
+	void set_break(bool on)
+	{
+		m_break = on;
+		if (on)
+			m_txd(0);
+		else if (is_transmit_register_empty())
+			m_txd(1);
+	}
+
+	static int baud_of(u8 code)
+	{
+		// Subfunction 2's codes (ERS p.54): 1..0x11 = 50 .. 38400.
+		static const int table[18] = { 0, 50, 75, 110, 134, 150, 300, 600, 900,
+				1200, 1800, 2400, 3600, 4800, 7200, 9600, 19200, 38400 };
+		return code < 18 && table[code] ? table[code] : 9600;
+	}
+
+protected:
+	virtual void device_start() override {}
+	virtual void device_reset() override
+	{
+		set_data_frame(1, 8, PARITY_NONE, STOP_BITS_1);
+		set_rate(9600);
+		receive_register_reset();
+		transmit_register_reset();
+		m_txd(1);
+		m_dtr(1);
+		m_rts(1);
+	}
+	virtual void tra_callback() override
+	{
+		if (!m_break)
+			m_txd(transmit_register_get_data_bit());
+	}
+	virtual void tra_complete() override
+	{
+		// The byte is out; if the card has another waiting, start it
+		// now rather than at the next millisecond tick.
+		u8 c;
+		if (m_card && !m_break && m_card->next_tx(m_port, c))
+		{
+			if (on_byte)
+				on_byte(c);
+			transmit_register_setup(c);
+		}
+	}
+	virtual void rcv_complete() override
+	{
+		receive_register_extract();
+		if (!m_card)
+			return;
+		u8 attr = 0;
+		if (is_receive_parity_error())
+			attr |= focus::mux_card::ATTR_PARITY;
+		if (is_receive_framing_error())
+			attr |= focus::mux_card::ATTR_FRAMING;
+		m_card->receive(m_port, get_received_char(), attr);
+	}
+
+private:
+	// A port with nothing plugged in keeps every modem line asserted --
+	// a hard-wired terminal's handshake lines are up, and the tty layer
+	// treats a port that reports them down as a modem waiting for
+	// carrier (the ASI's lesson, HPUX.md 9a). Only a fitted device
+	// drives them.
+	void line(u8 bit, int state)
+	{
+		if (!m_card || !m_rs232 || !m_rs232->get_card_device())
+			return;
+		if (state)
+			m_lines &= u8(~bit);
+		else
+			m_lines |= bit;
+		m_card->modem_lines(m_port, m_lines);
+	}
+
+	devcb_write_line m_txd, m_dtr, m_rts;
+	focus::mux_card *m_card = nullptr;
+	unsigned m_port = 0;
+	rs232_port_device *m_rs232 = nullptr;
+	u8 m_lines = focus::mux_card::LINE_DM | focus::mux_card::LINE_RR
+			| focus::mux_card::LINE_CS;
+	bool m_break = false;
+};
+
+// The 27140A: the card model, six UARTs and six rs232 slots. The slots
+// start empty -- fit a terminal window (-cio2:port0 terminal), a socket
+// (-cio2:port0 null_modem -bitb socket.127.0.0.1:4000) or a pty.
+class hp27140_mux_device : public device_t, public device_focus_cio_interface
+{
+public:
+	hp27140_mux_device(const machine_config &mconfig, const char *tag,
+			device_t *owner, u32 clock)
+		: device_t(mconfig, HP27140_MUX, tag, owner, clock)
+		, device_focus_cio_interface(mconfig, *this)
+		, m_uart(*this, "uart%u", 0U)
+		, m_port(*this, "port%u", 0U)
+	{
+	}
+
+	focus::mux_card card;
+
+	// A tapped port's output also goes here -- the machine hangs its
+	// trip-watch on it.
+	std::function<void(u8)> on_tap;
+	int tap_port = -1;      // -1 none, -2 every port
+
+protected:
+	virtual void device_start() override
+	{
+		for (unsigned i = 0; i < focus::mux_card::PORTS; i++)
+			m_uart[i]->bind(&card, i, m_port[i]);
+	}
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD
+	{
+		for (unsigned i = 0; i < focus::mux_card::PORTS; i++)
+		{
+			HP27140_UART(config, m_uart[i], 0);
+			RS232_PORT(config, m_port[i], default_rs232_devices, nullptr);
+			m_uart[i]->txd_handler().set(m_port[i], FUNC(rs232_port_device::write_txd));
+			m_uart[i]->dtr_handler().set(m_port[i], FUNC(rs232_port_device::write_dtr));
+			m_uart[i]->rts_handler().set(m_port[i], FUNC(rs232_port_device::write_rts));
+			m_port[i]->rxd_handler().set(m_uart[i], FUNC(hp27140_uart_device::rx_w));
+			m_port[i]->dcd_handler().set(m_uart[i], FUNC(hp27140_uart_device::dcd_w));
+			m_port[i]->dsr_handler().set(m_uart[i], FUNC(hp27140_uart_device::dsr_w));
+			m_port[i]->cts_handler().set(m_uart[i], FUNC(hp27140_uart_device::cts_w));
+			m_port[i]->ri_handler().set(m_uart[i], FUNC(hp27140_uart_device::ri_w));
+		}
+	}
+
+private:
+	required_device_array<hp27140_uart_device, 6> m_uart;
+	required_device_array<rs232_port_device, 6> m_port;
+
+public:
+	virtual focus::iop_interface &focus_iface() override { return card; }
+	virtual void focus_tick() override { card.tick(); }
+	virtual void focus_configure(focus::iop_core &iop, unsigned sc) override
+	{
+		card.iop = &iop;
+		card.pa = sc;
+		arm_log(card.log, "mux", sc, "FOCUS_MUXLOG");
+		card.log.set_cap(unsigned(
+				knob::number("FOCUS_MUXLOGMAX", card.log.cap())));
+		card.identity = u16(knob::number("FOCUS_MUXIDENT", card.identity, 16));
+		card.fr1_force = knob::number("FOCUS_MUXFR1", card.fr1_force, 16);
+		card.event_csc = u8(knob::number("FOCUS_MUXCSCEVENT", card.event_csc, 16));
+		card.event_done = u8(knob::number("FOCUS_MUXEVENT", card.event_done, 16));
+		card.event_aes = u8(knob::number("FOCUS_MUXAESEVENT", card.event_aes, 16));
+		card.event_per = u8(knob::number("FOCUS_MUXPER", card.event_per, 16));
+		card.per_order = u8(knob::number("FOCUS_MUXPERORDER", card.per_order));
+		card.event_delay_ms =
+				unsigned(knob::number("FOCUS_MUXEVDELAY", card.event_delay_ms));
+		card.aes_delay_ms =
+				unsigned(knob::number("FOCUS_MUXAESDELAY", card.aes_delay_ms));
+		card.poll_mode = unsigned(knob::number("FOCUS_MUXPOLL", card.poll_mode));
+		card.no_async = knob::flag("FOCUS_MUXNOASYNC").on();
+		if (knob::flag("FOCUS_MUXDOWNLOADED").on())
+			card.start_downloaded();
+		// FOCUS_MUXTAP=<sc>:<port> or <sc>:all -- print what the port
+		// transmits, exactly as the console path prints the console.
+		if (const char *v = knob::text("FOCUS_MUXTAP").get())
+		{
+			unsigned s = 0;
+			char rest[8] = "";
+			if (std::sscanf(v, "%u:%7s", &s, rest) == 2 && s == sc)
+				tap_port = std::strcmp(rest, "all") == 0 ? -2 : std::atoi(rest);
+		}
+		card.on_tx = [this](unsigned p, u8 c) { return m_uart[p]->send(c); };
+		card.on_config = [this](unsigned p) { m_uart[p]->configure(); };
+		card.on_lines = [this](unsigned p) { m_uart[p]->set_lines(); };
+		card.on_break = [this](unsigned p, bool on) { m_uart[p]->set_break(on); };
+		for (unsigned i = 0; i < focus::mux_card::PORTS; i++)
+			m_uart[i]->on_byte = [this, i](u8 c) {
+				if (tap_port != -2 && tap_port != int(i))
+					return;
+				if (on_tap)
+					on_tap(c);
+				std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+				std::fflush(stdout);
+			};
+	}
+};
+
 DEFINE_DEVICE_TYPE(HP27128_ASI, hp27128_asi_device, "hp27128_asi",
 		"HP 27128A Async Serial Interface")
 DEFINE_DEVICE_TYPE(HP27110_HPIB, hp27110_hpib_device, "hp27110_hpib",
 		"HP 27110A HP-IB Interface")
+DEFINE_DEVICE_TYPE(HP27140_UART, hp27140_uart_device, "hp27140_uart",
+		"HP 27140A MUX channel")
+DEFINE_DEVICE_TYPE(HP27140_MUX, hp27140_mux_device, "hp27140_mux",
+		"HP 27140A 6-Channel Modem Multiplexer")
 
 class focus_cio_slot_device : public device_t, public device_slot_interface
 {
@@ -651,6 +918,7 @@ static void focus_cio_cards(device_slot_interface &device)
 {
 	device.option_add("asi", HP27128_ASI);
 	device.option_add("hpib", HP27110_HPIB);
+	device.option_add("mux6", HP27140_MUX);
 }
 
 
@@ -754,6 +1022,10 @@ private:
 	// The console serial card, once a slot on a 530/540 turns out to
 	// hold one: what the terminal window types into and what prints.
 	focus::asi_card *m_console_asi = nullptr;
+	// Where FOCUS_TYPE goes when FOCUS_TYPEPORT names a multiplexer port.
+	focus::mux_card *m_type_mux = nullptr;
+	int m_type_port_sc = -1;
+	unsigned m_type_port = 0;
 
 	focus::iop_core m_iop;
 	focus::scm_device m_scm;
@@ -1680,6 +1952,12 @@ void hp9000_5xx_state::configure_backplane()
 	// FOCUS_ASI*/FOCUS_HPIB* debug knobs reach whichever card is in a
 	// slot. On a 540 this is where the console and the system disc come
 	// from -- there is no built-in anything to fall back on.
+	// FOCUS_TYPEPORT=<sc>:<port> sends the FOCUS_TYPE scripts into a
+	// multiplexer port instead of the console.
+	m_type_port_sc = -1;
+	if (const char *v = knob::text("FOCUS_TYPEPORT").get())
+		if (std::sscanf(v, "%d:%u", &m_type_port_sc, &m_type_port) != 2)
+			m_type_port_sc = -1;
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 	{
 		if (!m_cio[sc])
@@ -1688,6 +1966,15 @@ void hp9000_5xx_state::configure_backplane()
 		if (!iface)
 			continue;
 		m_cio[sc]->focus_configure(m_iop, sc);
+		// A multiplexer: its tapped port trips the watch like the console
+		// does, and it may be where typed scripts go.
+		if (auto *mux = dynamic_cast<hp27140_mux_device *>(
+				m_cio[sc]->get_card_device()))
+		{
+			mux->on_tap = [this](u8 c) { trip_watch(c); };
+			if (m_type_port_sc == int(sc))
+				m_type_mux = &mux->card;
+		}
 		// The console is the serial card in slot 0 of a machine that
 		// has no display: what it prints goes to the terminal window
 		// and to stdout, and what the window types goes back into it.
@@ -2122,15 +2409,20 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 		if (c == RAW_KEY && m_type_pos < m_type_text.size())
 		{
 			const u8 code = u8(m_type_text[m_type_pos++]);
-			if (m_console_asi)
+			if (m_type_mux)
+				m_type_mux->receive(m_type_port, code);
+			else if (m_console_asi)
 				m_console_asi->type(code);
 			else
 				m_console6.type(code);
 			return;
 		}
 		// The 540's console is a terminal on the serial card, and a
-		// terminal sends ASCII -- no keycode translation.
-		if (m_console_asi)
+		// terminal sends ASCII -- no keycode translation. A multiplexer
+		// port is a terminal too.
+		if (m_type_mux)
+			m_type_mux->receive(m_type_port, c == '\n' ? u8('\r') : c);
+		else if (m_console_asi)
 			m_console_asi->type(c == '\n' ? u8('\r') : c);
 		else
 			kbd_put(c);

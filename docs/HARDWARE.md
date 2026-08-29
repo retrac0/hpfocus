@@ -546,7 +546,9 @@ everything below cites them.
 | 27110A | 2 | HP-IB, IEEE-488-1978, up to 14 devices, controller or slave, hardware self-test *(27132-90002)* |
 | 27128A | 3 | single-channel asynchronous serial (ASI), RS-232C / V.24 / V.28 *(27132-90001)* |
 | 27130A | 5 | 8-channel asynchronous multiplexer, two 512-byte buffers per channel *(27132-90006)* |
-| 27122A | — | PSI programmable serial (bisync / HDLC / SDLC, RJE); identity set by downloaded firmware *(27132-90005)* |
+| 27122A / 27123A | 4 | PSI programmable serial (bisync / HDLC / SDLC, RJE; SRM); the ID is the card's, the firmware ID names what was downloaded *(27132-90004 RJE Firmware Ref, 3-36: "CARD ID from IDY block (4)")* |
+| 27140A | 7 | 6-channel asynchronous multiplexer with modem control, Z80, downloadable firmware — the "6-port MUX" of mkdev(1M); §2.6.6 *(27140A Firmware ERS p.41-42, Hardware Reference 27140-90007)* |
+| 27125A | 6 *(inferred)* | LANIC, IEEE 802.3 / Ethernet, MC68000 + AM7990 LANCE; the only value left in the kernel's 1..7 table, not read off a document *(5959-2259 is the Series 800 twin, 30241A)* |
 | 98760 | — | 520 built-in colour graphics display — see §2.7 |
 | 97060A | — | external graphics processor, with built-in HP-IB — see §2.7.5 |
 
@@ -573,7 +575,7 @@ enough that the two are evidently one house design:
 | `FR1` write | commands: 1 is the attention-request disable the IOP's own poll issues (I/O ERS 4.4, and the CIO write_control byte's bit 0), 2 acknowledges the event standing in FR9. |
 | `FR3` read | not an identity at all: a readiness register. The scan (`CONFIGURATION`, runtime `0x152fc`) reads it, and **if it reads 9 writes 0 to FR1 and FR8** — a reset — then reads it again and registers the slot only when it reads **0**, skipping it otherwise. The CIO card-ID byte (§2.6) is a different thing, carried in the identify *response*. |
 | `FR8` write | the transaction command byte. **0 = identify.** |
-| `FR9` write | a configuration word, `(2 << 4) | pa` — `0x20` in slot 0. LCS80 sends the disc controller the identical word; the high nibble's meaning is unestablished on either card. |
+| `FR9` write | the **Connect Subchannel command**, `(2 << 4) | pa` — `0x20` in slot 0. Code 2 is CSC in the CIO smart-card command byte and the low nibble is "the SRQ address" the card is to answer on *(27140A Firmware ERS p.27)*; LCS80 sends the disc controller the identical word. Until the 27140A's ERS named it this was read as a configuration word with an unexplained high nibble. |
 | `FR9` read | the event code being announced. Dispatched by high nibble: 1, 2 and 4 are completion classes, 3 and anything above `0x4f` an error. |
 
 A transaction is an **ICEI command list** (§2.2, opcode 070), exactly as for
@@ -630,7 +632,11 @@ halfword the two-byte DMA delivered — high byte to the device record's `+0`,
 low byte to `+2` — then range-checks the high byte against 1..7 with `CRB`
 and computed-branches through a seven-arm table; out of range it stores
 error 30 and abandons the slot. So `identity` is `id << 8 | firmware`:
-`0x0300` for the ASI, `0x0200` for the HP-IB.
+`0x0300` for the ASI, `0x0200` for the HP-IB, `0x0702` for the 27140A. The
+table itself (unit-save file 0x11ffc, arms at 0x1200a + 10k) stores a device
+**type code** at the record's +6: ID 1 → 6, 2 → 5, 3 → 26, 4 → 7, 5 → 27,
+6 → 18, **7 → 32**, out of range → 30 — which is how the HP27140 module (CST
+53) comes to own a slot that answered 7.
 
 #### 2.6.1 Common channel protocol
 
@@ -1012,6 +1018,41 @@ connection comes first via write_adapter_command (STT), after which the card
 raises SRQ whenever ready *(Tech Ref, 3-25/3-26)*. Word or byte transfers,
 switch-selected handshake modes. This is the card the 97060A graphics
 processor connects through (§2.7.5).
+
+#### 2.6.6 27140A 6-channel modem MUX *(modelled: src/iop/focusmux.h)*
+
+Not the ASI with more ports. Its backplane protocol is an explicitly reduced
+subset of the HP-CIO smart-card protocol, "created to minimize the
+significant overhead of the backplane transactions for small buffer sizes
+(mainly character-at-a-time I/O from terminals)" *(Firmware ERS p.27)*: one
+command, six orders, three ARQs, no logical channels and no request blocks.
+
+| | |
+|---|---|
+| command | **CSC n** — connect subchannel, code 2 in the high nibble, the SRQ address in the low. This is the FR9 write of §2.6.0. |
+| orders (FR8, opcode 7:4, byte-mode bit 3, option 2:0) | **IDY** 0 · **DLD** 1 (option 0 data record, 1 control block) · **DIS** 3 · **RD** 6 · **WD** 7 · **RDS** 0xA (option 1, read download status). PAU, RS, RTS, WTC, CLC are "not used" — and RTS or CLC would switch the real EPROM into an ASI log-channel personality (ERS App. C), not modelled: refused with PER. |
+| ARQ / event codes | RFC 0x0n, AES 0x11 data available / 0x14 modem line change, PER 0x71..0x78 (73 already connected, 74 bad port, 75 bad subfunction, 76 bad length, 77 transmit overflow, 78 bad parameter). HP-UX's slot scan and driver were watched accepting the ASI's house codes for the command and completions — 0x30 for the CSC, 0x10 after each transfer — and those are the model's defaults (`FOCUS_MUXCSCEVENT`, `FOCUS_MUXEVENT` sweep them). |
+| IDY block | **six** bytes: card ID 7, firmware ID (2 EPROM, 3 downloaded), 16-bit date code, `MPX<<4 | MOD` = 0x32 ("3 for other backplane protocol", "2 for both byte and word mode"), active ports − 1 (0 before download, 5 after). The scan reads two, as for every card. |
+| RD block | character **quads** `[0\|port][attribute][1][char]` in arrival order, then status blocks `[0x80\|port][code][n][info…]`, then 0xFF — **never empty**: by default (sf 154) every read carries status 128, the transmit buffer's remaining count, for each active port. Attribute bits 0 parity, 1 overrun, 2 framing, 3 break (char = NUL), 4 modem change (char = the modem status word), 5 buffer overflow. ≤ 8 KB. |
+| WD block | data blocks `[0\|port][0][len 1..255][data]` and control blocks `[0x80\|port][subfunction][count][params]`, 0xFF, ≤ 4096 bytes; **processing stops at the first error** with the matching PER. |
+| subfunctions | 1 mode (1 modem / 2 hardwired, bit 4 originate) · 2 baud (0x0f = 9600, 0x10 = 19200, 6 = 300 …) · 3 data/stop/parity (bits 5:4, 3:2, 1:0) · 4/5/6 modem timers · 7/8 device/host XON-XOFF characters · 128/129 open/close the modem link · 130/131 break · 132–137 clear/set RS, TR, SR · 138 flush · 139/140 stop/restart the transmitter · 141/142 modem lines / link status (answered as status 141/142 in the next read) · 143 RAM read · 144 backplane echo · 145 LEDs · **146 host interrupt mask** (bit 0 data, bit 3 modem) · 147/148 receiver off/on · 149/150 send XON/XOFF · 151/152 modem-quad generation · 153 modem interrupt mask · 154/155 status-128 policy. |
+| download | control blocks `{sf, count, params}`: 1 initialise · 2 `0,0,addrH,addrL,0,0,lenH,lenL` · 3 verify (CRC; read back with RDS,1 as `03 01 result`, or `FF` if nothing was verified) · 4 `0,0,addrH,addrL` start RAM execution. Data records follow DLD option 0. |
+| defaults | 9600 8N1 hardwired, TR and RS clear, SR set, interrupt mask 0 (the host polls), transmit buffer 255 bytes a port, silo 1024 quads; after the download **every receiver is disabled** until the host's subfunction 148 *(ERS ch.6)*. |
+
+**What HP-UX 5.30 does with it, watched at select code 2 (HARDWARE.md's
+observation style, `FOCUS_MUXLOG=1 FOCUS_MUXDBG=1`).** The slot scan at
+1.2 s: FR9 = 0x22, IDY with a two-byte leg, 0x30 then 0x10 read back. At
+1.32 s the HP27140 module downloads its firmware — the kernel carries the
+Z80 image itself, 5,330 bytes at module +0x31f8 behind a length word — as
+`DLD,1 {01 00}`, `DLD,1 {02 08 00 00 40 00 00 00 14 d2}` (RAM 0x4000, 5,330
+bytes), one `DLD,0` data record, `DLD,1 {03 00}`, `RDS,1`, `DLD,1 {04 04 00
+00 40 00}`; then a WD enabling subfunction 152 on all six ports. From then on
+the driver **polls**: an RD (word mode, 0x60) every 25–50 ms answered with
+six status-128 blocks and 0xFF, each followed by a WD writing interrupt
+mask 0 to every port (`80 92 01 00 …`). Opening a port writes timers 4/5/6,
+baud, 148, framing and XON/XOFF (`80 04 01 19 80 05 02 00 00 80 06 01 28 80
+02 01 06 80 94 00 80 03 01 30 80 07 02 ff ff`), closing it 141, 134 and 147.
+Nothing outside the six orders is ever issued.
 
 ### 2.7 Display subsystem *(Model 520 only)*
 

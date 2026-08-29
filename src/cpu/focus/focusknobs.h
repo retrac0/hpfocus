@@ -280,6 +280,52 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_SC1LOG", "", group::cards, false,
   "Trace every register access to the graphics interface, with the segment "
   "and PC that made it." },
+{ "FOCUS_MUXAESDELAY", "<ms>", group::cards, true,
+  "How long the 6-channel MUX waits between a character reaching its silo "
+  "and the data-available event (default 5; the ERS allows up to 10)." },
+{ "FOCUS_MUXAESEVENT", "<hex>", group::cards, true,
+  "The event code the 6-channel MUX announces for data available (default "
+  "11, the ERS's ARQ,AES); a modem-line change is that plus 3." },
+{ "FOCUS_MUXCSCEVENT", "<hex>", group::cards, true,
+  "The event the 6-channel MUX answers the FR9 Connect Subchannel command "
+  "with (default 30, the code the kernel's slot scan accepts from the ASI)." },
+{ "FOCUS_MUXDBG", "", group::cards, false,
+  "Log the 6-channel MUX's own decisions: orders, blocks, subfunctions, "
+  "the download, and the events it queues." },
+{ "FOCUS_MUXDOWNLOADED", "", group::cards, true,
+  "Start the 6-channel MUX in its downloaded personality -- six ports, "
+  "firmware ID 3 -- without waiting for the host to download it." },
+{ "FOCUS_MUXEVDELAY", "<ms>", group::cards, true,
+  "Milliseconds of card time before the 6-channel MUX announces a "
+  "completion (default 2)." },
+{ "FOCUS_MUXEVENT", "<hex>", group::cards, true,
+  "The completion event code the 6-channel MUX announces after each "
+  "transfer (default 10)." },
+{ "FOCUS_MUXFR1", "<hex>", group::cards, true,
+  "Force the 6-channel MUX's FR1 status word." },
+{ "FOCUS_MUXIDENT", "<hex>", group::cards, true,
+  "The 6-channel MUX's identify halfword: card ID in the high byte (7 "
+  "types the slot 32), EPROM firmware ID in the low (default 0702)." },
+{ "FOCUS_MUXLOG", "", group::cards, false,
+  "Log the 6-channel MUX's register accesses and blocks at the driver's "
+  "level." },
+{ "FOCUS_MUXLOGMAX", "<n>", group::cards, false,
+  "Raise the FOCUS_MUXLOG line cap (default 2000)." },
+{ "FOCUS_MUXNOASYNC", "", group::cards, true,
+  "Silence the 6-channel MUX's asynchronous events -- data available and "
+  "modem line changes -- leaving the host to poll." },
+{ "FOCUS_MUXPER", "<hex>", group::cards, true,
+  "The base of the 6-channel MUX's protocol-error event codes (default "
+  "70; the ERS's PER low nibble is added)." },
+{ "FOCUS_MUXPERORDER", "<n>", group::cards, true,
+  "The PER low nibble the 6-channel MUX answers an unsupported order "
+  "with (default 2, 'unimplemented or invalid order')." },
+{ "FOCUS_MUXPOLL", "<0|1|2>", group::cards, true,
+  "What the 6-channel MUX reports to the interface poll: 0 nothing, 1 "
+  "that it wants its next order (default), 2 whenever it could move data." },
+{ "FOCUS_MUXTAP", "<sc>:<port>|<sc>:all", group::cards, false,
+  "Print what a 6-channel MUX port transmits, as the console path prints "
+  "the console, and let FOCUS_TRIP watch it." },
 { "FOCUS_PRINTER", "", group::cards, true,
   "Fit the internal thermal printer, which shares select code 6 with the "
   "keyboard (520 Service 2-43). An option on the machine and off by default "
@@ -534,6 +580,9 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_TYPERATE", "<ms>", group::input, true,
   "Pace the injected keystrokes. The default mimics fast human typing; the "
   "display driver drops characters pushed faster than it redraws." },
+{ "FOCUS_TYPEPORT", "<sc>:<port>", group::input, true,
+  "Send the FOCUS_TYPE scripts into a port of the 6-channel MUX at that "
+  "select code instead of the console." },
 };
 
 inline constexpr unsigned COUNT = sizeof(CATALOGUE) / sizeof(CATALOGUE[0]);

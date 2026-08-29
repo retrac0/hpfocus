@@ -6,6 +6,7 @@ src/test/dasmtest
 src/test/dsttest
 src/test/exectest
 src/test/ioptest
+src/test/muxtest
 src/test/statetest
 *.o
 
