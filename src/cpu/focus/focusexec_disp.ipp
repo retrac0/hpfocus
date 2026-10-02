@@ -115,7 +115,11 @@ private:
 		r.s = s;
 		r.q = s;
 		m_ics_flag = false;
-		return do_exit(0);
+		m_in_dispatcher = false;
+		m_exit_from_ixit = true;
+		const exec_trap t = do_exit(0);
+		m_exit_from_ixit = false;
+		return t;
 	}
 
 	// Unwind the dispatcher-entry frame at Q on the ICS: (Q-1) status,
@@ -123,6 +127,7 @@ private:
 	// at (Q+1). Shared by DISP and IXIT cases 7 and 8.
 	exec_trap launch_ics_frame()
 	{
+		m_in_dispatcher = true;
 		set_qword(0, 0);
 		const exec_trap t = set_dbdl_from_pointer(qword(1));
 		if (t != exec_trap::none)

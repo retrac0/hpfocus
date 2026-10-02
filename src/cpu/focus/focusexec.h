@@ -774,6 +774,14 @@ private:
 	u32 m_control_store_date = 0x19820319;   // CPU 4.0
 	bool m_disp_flag = false;         // the microcode dispatcher flag
 	bool m_ics_flag = false;          // executing on the interrupt stack
+	// The dispatcher is on the ICS: launched from its frame at QI and not
+	// yet out through a task's TCB. With Q == QI it tells the dispatcher's
+	// own frame from a service routine nested above it, which is the
+	// "DISP FLAG" test PSEB makes (ERS sheet 99).
+	bool m_in_dispatcher = false;
+	// tcb_dispatch's EXIT into the task it has chosen is under way (see
+	// do_exit's absent-segment test).
+	bool m_exit_from_ixit = false;
 	trap m_addr_trap = trap::none;
 	trap_cause m_last_trap = trap_cause::reset;
 };

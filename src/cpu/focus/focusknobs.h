@@ -109,6 +109,11 @@ inline constexpr spec CATALOGUE[] = {
 { "FOCUS_SEMALLSKIP", "<n>", group::cpu, false,
   "Drop the first n FOCUS_SEMALL events, which is how the boot's own "
   "traffic gets off the front of a census." },
+{ "FOCUS_SEMPREEMPT", "", group::cpu, true,
+  "Make an UP that readies a waiter of better priority than the caller "
+  "enter the dispatcher, the way HP-UX's own software semaphore routines "
+  "end. An experiment: with it on, 3 of 10 multiuser boots stopped short "
+  "of their logins across FOCUS_IOPPOLL 300..700, against 0 of 10 off." },
 { "FOCUS_TRYLOG", "", group::cpu, false,
   "Log every TRY and ESCP with the frame chain head, for following the "
   "pseudo stack markers BASIC's statement loop builds and eats." },

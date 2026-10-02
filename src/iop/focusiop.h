@@ -1273,15 +1273,46 @@ public:
 		memory_interface &mem = m_host.iop_memory();
 		const u32 ta = 1024 + 8u * c.int_level;
 		const u32 tail = mem.read32(ta);
-		// A device already on the list must not be linked onto it again.
-		// The append writes the new entry's address into the old tail's
-		// link field, so appending a device that IS the tail links it to
-		// itself -- and the CPU's walk (take the head, follow the link,
-		// clear the message bit when the link is zero) then never
-		// terminates. The level's bit stays set, every IXIT re-enters
-		// the service routine, and the machine services the same
-		// interrupt tens of thousands of times a second.
-		if (tail != 0xffffffffu && tail != device)   // -1 = locked by CPU
+		// A device already on the list must not be linked onto it again:
+		// "the interrupt mask is used to prevent interrupt requests ...
+		// from devices which have interrupt requests pending at the CPU
+		// already" (I/O ERS 4.1.2). One PA is one bit in the request
+		// register and one entry on its level's list, however many times
+		// it asks before the CPU gets to it -- and the CPU may not get to
+		// it for a while, because a driver that restarts its transfer
+		// from inside an interrupt service (SDEC re-arms the device) has
+		// the completion raised here while its level is still masked.
+		//
+		// The first form of this guard compared against the TAIL only,
+		// which covers a device queued alone. With a second device queued
+		// behind it the append ran anyway: it zeroed the link field of an
+		// entry that was in the middle of the list, hung the entry on the
+		// tail a second time, and so cut every device queued behind it
+		// off the list. The CPU's walk then found one entry with a zero
+		// link, emptied the list, and the other device's interrupt was
+		// never taken. HP-UX's transaction layer counts those interrupts
+		// -- a card's DRT routine is a V on the semaphore the driver
+		// waits on after every ICEI (CORE SYSTEM +0x10dc) -- so each one
+		// lost left the 27140A's semaphore a unit short, and with the
+		// console's card interrupting every millisecond under a login
+		// session the multiplexer's poll parked for good within seconds:
+		// its gettys died of the driver's timeout and every reopen
+		// answered EIO.
+		bool queued = false;
+		if (tail != 0xffffffffu)
+		{
+			u32 e = mem.read32(ta + 4);
+			for (unsigned n = 0; e != 0 && e != 0xffffffffu && n < 64; n++)
+			{
+				if (e == device)
+				{
+					queued = true;
+					break;
+				}
+				e = mem.read32(e) >> 16;
+			}
+		}
+		if (tail != 0xffffffffu && !queued)   // -1 = locked by CPU
 		{
 			// The new last entry's own link must read zero.
 			mem.write32(device,

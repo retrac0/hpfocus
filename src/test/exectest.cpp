@@ -2618,6 +2618,165 @@ static void test_up_down()
 	CHECK_EQ(h.cpu.r.msg, 0x00200000);           // doorbell rung
 }
 
+// The wait list UP and DOWN build has to be the one HP-UX's own software
+// semaphore routines build (CORE SYSTEM, file 0x13c18..0x14090), because
+// the kernel runs both on the same semaphores: circular, doubly linked
+// through CTCBP-8, ordered on the priority word at CTCBP-12 (smallest
+// first, first come first served among equals), the head made nil when
+// the count returns to zero. The first model was a nil-terminated LIFO,
+// and an UP over a kernel-built ring left the head on a task that was no
+// longer waiting -- the multiuser boot stalled on the file system's lock.
+static void test_up_down_wait_list()
+{
+	std::printf("UP and DOWN: the wait list is the kernel's\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);
+
+	const u32 sem = 0x2800;                      // absolute, the ,B form
+	const u32 ded = 16 * ers32::get(h.cpu.r.mask, 3, 3);
+	const u32 QI = 0x2f03;
+	h.mem.write32(ded + 8, QI);
+	h.mem.write32(QI - 3 - 16, 1);               // dispatching pseudo-disabled:
+	                                             // a DISP only flags (QI)
+	auto tcb = [&](u32 at, s32 prio) {
+		h.mem.write32(at - 16, 0x00050001);      // state: ready
+		h.mem.write32(at - 12, u32(prio));
+		h.mem.write32(at - 8, 0xdeadbeef);
+		h.mem.write32(at - 4, 0xdeadbeef);
+		return at;
+	};
+	const u32 A = tcb(0x3100, 5), B = tcb(0x3200, 3), C = tcb(0x3300, 5);
+	auto down_as = [&](u32 t) {
+		h.mem.write32(ded + 4, t);
+		h.cpu.push(sem);
+		return h.one(f4(021, true));
+	};
+	auto up_as = [&](u32 t) {
+		h.mem.write32(ded + 4, t);
+		h.cpu.push(sem);
+		return h.one(f4(020, true));
+	};
+
+	// 1. An UP over a ring the kernel's routine built: one waiter, linked
+	// to itself. The head must become nil, not stay on the woken task.
+	h.mem.write32(A - 8, A - 8);
+	h.mem.write32(A - 4, A - 4);
+	h.mem.write32(A - 16, 0x00050002);
+	h.mem.write32(sem, A - 8);
+	h.mem.write32(sem + 4, u32(-1));
+	CHECK(up_as(A) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem), 0);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+	CHECK_EQ(h.mem.read32(A - 16), 0x00050001);
+
+	// 2. The first blocker makes a ring of one and records the semaphore.
+	h.mem.write32(QI - 3, 0);
+	CHECK(down_as(A) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), u32(-1));
+	CHECK_EQ(h.mem.read32(sem), A - 8);
+	CHECK_EQ(h.mem.read32(A - 8), A - 8);
+	CHECK_EQ(h.mem.read32(A - 4), A - 4);
+	CHECK_EQ(h.mem.read32(A - 16), 0x00050002);
+	CHECK_EQ(h.mem.read32(A + 104), sem);
+	CHECK_EQ(h.mem.read32(QI - 3), 0x80000000);  // the dispatch was asked for
+
+	// 3. A better priority goes in front and takes the head; an equal one
+	// goes behind those already there.
+	CHECK(down_as(B) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem), B - 8);
+	CHECK(down_as(C) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), u32(-3));
+	CHECK_EQ(h.mem.read32(sem), B - 8);
+	CHECK_EQ(h.mem.read32(B - 8), A - 8);        // B -> A -> C -> B
+	CHECK_EQ(h.mem.read32(A - 8), C - 8);
+	CHECK_EQ(h.mem.read32(C - 8), B - 8);
+	CHECK_EQ(h.mem.read32(B - 4), C - 4);        // and backwards
+	CHECK_EQ(h.mem.read32(A - 4), B - 4);
+	CHECK_EQ(h.mem.read32(C - 4), A - 4);
+
+	// 4. They come off in that order, and the last one leaves nil.
+	h.cpu.r.msg = 0;
+	CHECK(up_as(C) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(B - 16), 0x00050001);
+	CHECK_EQ(h.mem.read32(sem), A - 8);
+	CHECK_EQ(h.mem.read32(A - 8), C - 8);
+	CHECK_EQ(h.mem.read32(C - 8), A - 8);
+	CHECK_EQ(h.cpu.r.msg, 0x00200000);
+	CHECK(up_as(B) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(A - 16), 0x00050001);
+	CHECK_EQ(h.mem.read32(sem), C - 8);
+	CHECK(up_as(B) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(C - 16), 0x00050001);
+	CHECK_EQ(h.mem.read32(sem), 0);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+
+	// 5. The instruction readies and rings; it does not dispatch, whatever
+	// the two priorities are. (The kernel's software routines do, and
+	// FOCUS_SEMPREEMPT is the experiment that gives UP the same ending.)
+	CHECK(down_as(B) == exec_trap::none);        // B (3) waits
+	h.mem.write32(QI - 3, 0);
+	h.cpu.r.put(sf::CC, 2);
+	CHECK(up_as(A) == exec_trap::none);          // A (5) readies B (3)
+	CHECK_EQ(h.mem.read32(B - 16), 0x00050001);
+	CHECK_EQ(h.mem.read32(QI - 3), 0);
+	CHECK_EQ(h.cpu.r.get(sf::CC), 2);
+}
+
+// XGDS on a global data segment that is not in memory (ERS 5.2.2, trap
+// 042). HP-UX's system-call exit runs XGDS back onto the user's segment,
+// which the memory manager may have swapped out while the process was in
+// the kernel; the trap is how it comes back. Loading DB from the absent
+// entry's zero location word returned the process to user mode with
+// DB = 0 -- "Unexpected memory fault" in both shells of two concurrent
+// logins, and a system halt after it.
+static void test_xgds_absent()
+{
+	std::printf("XGDS: an absent global data segment traps\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);
+	const u32 ded = 16 * ers32::get(h.cpu.r.mask, 3, 3);
+	const u32 TCB = 0x3000, DST = 0x6000;
+	h.mem.write32(ded + 4, TCB);
+	h.cpu.r.dst = DST;
+	h.mem.write32(TCB + 8, ers32::set(0, 20, 12, 0x802));   // on user segment 2
+	h.mem.write32(DST + 16 * 2, ers32::set(0x2058, 1, 12, 1));
+	h.mem.write32(DST + 16 * 9, 0x2058);         // present, written, count 0
+	h.mem.write32(DST + 16 * 9 + 4, 0xad2f);
+	h.mem.write32(DST + 16 * 9 + 8, 0xcc4b4);
+	const u32 ptr = ers32::set(0, 1, 12, 0x809);
+
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(014)) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.db, 0xcc4b4);
+	CHECK_EQ(h.cpu.r.dl, 0xcc4b4 + 0xad2f);
+	CHECK_EQ(ers32::get(h.mem.read32(TCB + 8), 20, 12), 0x809);
+	CHECK_EQ(ers32::get(h.cpu.stk(0), 1, 12), 0x802);
+	CHECK_EQ(ers32::get(h.mem.read32(DST + 16 * 9), 1, 12), 1);
+	CHECK_EQ(ers32::get(h.mem.read32(DST + 16 * 2), 1, 12), 0);
+
+	// Swapped out: the absence bit, and a location word of zero.
+	h.cpu.pop();
+	h.mem.write32(TCB + 8, ers32::set(0, 20, 12, 0x802));
+	h.mem.write32(DST + 16 * 2, ers32::set(0x2058, 1, 12, 1));
+	h.mem.write32(DST + 16 * 9, 0x2051);
+	h.mem.write32(DST + 16 * 9 + 8, 0);
+	h.cpu.r.db = 0x8000;
+	u32 param = 0;
+	h.cpu.on_trap = [&](trap_cause, u32 p) { param = p; };
+	h.cpu.push(ptr);
+	const u32 s_before = h.cpu.r.s;
+	CHECK(h.one(f4(014)) == exec_trap::trapped);
+	CHECK(h.cpu.last_trap() == trap_cause::absent_data_segment);
+	CHECK_EQ(param, 0x809);                      // the DST entry number
+	CHECK_EQ(h.cpu.r.db, 0x8000);                // nothing was exchanged,
+	CHECK_EQ(h.cpu.r.s, s_before);               // the pointer still stands,
+	CHECK_EQ(h.cpu.stk(0), ptr);
+	CHECK_EQ(ers32::get(h.mem.read32(TCB + 8), 20, 12), 0x802);
+	CHECK_EQ(ers32::get(h.mem.read32(DST + 16 * 9), 1, 12), 0);   // no count taken
+	CHECK_EQ(ers32::get(h.mem.read32(DST + 16 * 2), 1, 12), 1);
+	h.cpu.on_trap = nullptr;
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -2652,6 +2811,8 @@ int main()
 	test_lra_index();
 	test_sbit();
 	test_up_down();
+	test_up_down_wait_list();
+	test_xgds_absent();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

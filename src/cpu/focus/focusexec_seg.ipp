@@ -395,7 +395,8 @@ private:
 			const u32 st = m_mem.read32(r.q - 7);
 			const u32 seg = ers32::get(st, 20, 12);
 			u32 ea;
-			if (seg != r.get(sf::CSN) && seg != 0 && seg != 1024
+			if (!m_exit_from_ixit
+					&& seg != r.get(sf::CSN) && seg != 0 && seg != 1024
 					&& seg != 3072 && cst_entry_addr(seg, ea)
 					&& ers32::get(m_mem.read32(ea), 31, 1))
 				return take_trap(trap_cause::absent_code_segment,
@@ -437,10 +438,40 @@ private:
 				u32 ea;
 				if (!cst_entry_addr(seg, ea))
 					return take_trap(trap_cause::cst_violation, seg);
-				r.pb = m_mem.read32(ea + 8);
-				r.pl = r.pb + m_mem.read32(ea + 4);
 				cst_use_count(old_seg, -1);
 				cst_use_count(seg, +1);
+				if (m_exit_from_ixit && ers32::get(m_mem.read32(ea), 31, 1))
+				{
+					// IXIT returning a task to a code segment that was
+					// swapped out while it waited. The dispatcher pins a
+					// task's stack and global segments before choosing it
+					// (MUC,B on both) but nothing pins its code, and an
+					// IXIT cannot be retried from the task's side the way
+					// an EXIT is retried above: by now the registers are
+					// the task's, the ICS has been left, and a trap that
+					// returned to the IXIT would run the dispatcher's
+					// instruction in the task's context -- which is what
+					// happened, unwinding the task's own frame as if it
+					// were an interrupt's and loading DB = 0 from a word
+					// that was not a pointer, so that the shell died of
+					// "Unexpected memory fault" (seven logins at once
+					// swapped enough out to get there). Taken on the ICS
+					// instead, with the parameter negated, the kernel's
+					// handler halts on Inconsistent Registers. What is
+					// left is the task's own view: it was returning into
+					// segment `seg` at `ret`, and that segment is absent
+					// -- exactly the trap a branch into it would raise,
+					// taken on the task's stack with the task's status in
+					// the marker, so the handler's EXIT brings the
+					// segment in and lands on the instruction the task
+					// was about to execute.
+					r.pb = 0;
+					r.pl = 0xfffffffc;
+					r.p = ers32::get(ret, 2, 30);
+					return take_trap(trap_cause::absent_code_segment, seg);
+				}
+				r.pb = m_mem.read32(ea + 8);
+				r.pl = r.pb + m_mem.read32(ea + 4);
 			}
 		}
 

@@ -753,25 +753,69 @@ private:
 				if (count - 1 >= 0)
 					return exec_trap::none;
 
-				// Block. The BASIC kernel's software version fixes the
-				// conventions the microcode must share: the TCB's wait
-				// link node lives at CTCBP-8 ({forward, backward}, the
-				// backward convention LDEL expects), its state word at
-				// CTCBP-16, low halfword 2 meaning blocked -- the TCB
-				// stays spliced in the dispatcher's priority chain, whose
-				// LLSH walk simply skips anything whose state is not 1.
-				// Then the task leaves through the dispatcher, exactly
-				// the entry DISP performs.
+				// Block. HP-UX's own software semaphore routines (CORE
+				// SYSTEM +0x5060.., the "signal one, wait on another" family
+				// at file 0x13c18/0x13d88/0x13ea4/0x13f20) work on the SAME
+				// semaphores these instructions do, so the microcode has to
+				// build exactly the list they build and take apart:
+				//
+				//   - the wait list is CIRCULAR and doubly linked through
+				//     the node at CTCBP-8 ({forward, backward}); the first
+				//     waiter is linked to itself (LINS into an empty list);
+				//   - it is PRIORITY ORDERED on the word at CTCBP-12 (node-4),
+				//     smallest first and first-come-first-served among
+				//     equals: `LLSH 3` from the head, limited to the number
+				//     of waiters already there, advances while target <=
+				//     own, and `LINS` puts the task in front of where it
+				//     stopped;
+				//   - the head moves to the new node only when the search
+				//     did not advance at all;
+				//   - the state word at CTCBP-16 takes 2 in its low halfword
+				//     and CTCBP+104 (node+112) records the semaphore operand.
+				//
+				// The first model here pushed a nil-terminated node on the
+				// head, LIFO, with the head's backward link aimed at the
+				// count word. Alone that is self-consistent; mixed with the
+				// kernel's routines it is not. An UP over a list the kernel
+				// built found the sole waiter's forward link pointing at
+				// itself and left the head on a task that was no longer
+				// waiting; the next DOWN chained in behind that stale node,
+				// the UP after it readied a task that was already running,
+				// and the real waiter was never woken. That is the
+				// multiuser stall: the file system's lock at 0x1fe5f4 ends
+				// with count 0, a head naming a running task, and the task
+				// that asked for it parked for ever.
 				const u32 link = ctcbp - 8;
-				const u32 old_head = head;
-				m_mem.write32(link, old_head);
-				m_mem.write32(link + 4, a + 4);
-				if (old_head != 0)
-					m_mem.write32(old_head + 4, link + 4);
-				m_mem.write32(a, link);
+				const s32 ahead = -(count - 1) - 1;     // waiters already queued
 				const u32 sw = ctcbp - 16;
 				m_mem.write32(sw,
 						(m_mem.read32(sw) & 0xffff0000u) | 2);
+				const s32 prio = s32(m_mem.read32(ctcbp - 12));
+				u32 pos = head;
+				s32 left = ahead;
+				while (left > 0 && pos != 0
+						&& s32(m_mem.read32(pos - 4)) <= prio)
+				{
+					pos = m_mem.read32(pos);
+					left--;
+				}
+				if (pos == 0)
+				{
+					// LINS into an empty list: circular on itself.
+					m_mem.write32(link, link);
+					m_mem.write32(link + 4, link + 4);
+				}
+				else
+				{
+					const u32 bkw = m_mem.read32(pos + 4);
+					m_mem.write32(link, pos);
+					m_mem.write32(pos + 4, link + 4);
+					if (bkw != 0)
+						m_mem.write32(bkw - 4, link);
+					m_mem.write32(link + 4, bkw);
+				}
+				m_mem.write32(a, (left == ahead) ? link : head);
+				m_mem.write32(ctcbp + 104, ptr);
 				if (sem_hook) sem_hook(true, a, ctcbp, r.p);
 				return do_disp();
 			}
@@ -780,24 +824,67 @@ private:
 				m_mem.write32(ca, u32(count + 1));
 				if (count + 1 <= 0)
 				{
-					// Wake the first waiter: unlink its node from the
-					// list, mark its TCB ready, and ring the doorbell
-					// bit the dispatcher's idle mask always leaves
-					// enabled, so a STOPped processor comes back to
-					// find it.
+					// Wake the first waiter, the way the kernel's routine
+					// does: when the count reaches zero it was the only one
+					// and the head simply becomes nil (its links are left
+					// as they were); otherwise LDEL takes it out of the
+					// ring and its forward neighbour becomes the head. Its
+					// state word goes back to 1 and the doorbell bit the
+					// dispatcher's idle mask always leaves enabled is rung,
+					// so a STOPped processor comes back to find it.
 					const u32 l = head;
 					if (l != 0)
 					{
-						const u32 fwd = m_mem.read32(l);
-						m_mem.write32(a, fwd);
-						if (fwd != 0)
-							m_mem.write32(fwd + 4, a + 4);
+						u32 new_head = 0;
+						if (count + 1 < 0)
+						{
+							const u32 fwd = m_mem.read32(l);
+							const u32 bkw = m_mem.read32(l + 4);
+							if (bkw != 0)
+								m_mem.write32(bkw - 4, fwd);
+							if (fwd != 0)
+								m_mem.write32(fwd + 4, bkw);
+							new_head = fwd;
+						}
+						m_mem.write32(a, new_head);
 						const u32 sw = l - 8;
 						m_mem.write32(sw,
 								(m_mem.read32(sw) & 0xffff0000u) | 1);
 						r.msg |= 0x00200000u;
 						m_halted = false;
 						if (sem_hook) sem_hook(false, a, l - 0x10, r.p);
+						// The kernel's own routines go one step further
+						// and end by comparing the priority of the task
+						// they readied with the caller's (`PLDA CTCBP-12;
+						// LDS woken; CMP,B; BCCS.EL; DISP`), entering the
+						// dispatcher when the waiter outranks it. The
+						// instruction does NOT: the code around HP-UX's
+						// UP sites is written for a caller that keeps the
+						// processor (`LDS Q-16; UP; EXIT`, three UPs in a
+						// row at CORE SYSTEM +0x4698), and with the
+						// dispatch added 3 of 10 multiuser boots stopped
+						// across FOCUS_IOPPOLL 300..700 -- one traced to a
+						// shell parked in a console write that never
+						// completed -- against 0 of 10 without it.
+						// FOCUS_SEMPREEMPT turns the dispatch on, as the
+						// A/B control for that measurement.
+						static const knob::flag preempt("FOCUS_SEMPREEMPT");
+						if (preempt
+								&& s32(m_mem.read32(ctcbp - 12))
+									> s32(m_mem.read32(l - 4)))
+						{
+							// Indicators unaffected: a deferred DISP
+							// reports through CC, and that is DISP's
+							// business, not this instruction's.
+							const u32 cc = r.get(sf::CC);
+							const u32 qi = m_mem.read32(ded_base() + 8);
+							const bool deferred = m_ics_flag
+									|| m_mem.read32(qi - 3 - 16) != 0;
+							const exec_trap t = do_disp();
+							if (deferred)
+								r.put(sf::CC, cc);
+							return t;
+						}
 					}
 				}
 				return exec_trap::none;
@@ -1175,6 +1262,33 @@ private:
 			const u32 table = ers32::get(ptr, 1, 1)
 					? r.dst : dst_walker::SYSTEM_DST_BASE;
 			const u32 ea = table + 16 * seg;
+			// "Absent Data Segment. The absence bit in the DST entry for
+			// the referenced segment is 1. The DST entry number is passed
+			// as a parameter. If this trap occurs on the ICS, the
+			// parameter is negated" (ERS 5.2.2, trap 042) -- and XGDS
+			// references its segment like anything else. HP-UX depends on
+			// it: a process inside a system call runs on the kernel's
+			// global segment, its own has a use count of zero for as long
+			// as that lasts, and the memory manager is free to swap it
+			// out. The system-call exit stub (HP-UX ENTRYPTS +0xce) then
+			// executes XGDS on a DST entry marked absent, with a location
+			// word of zero, and counts on the trap to bring the segment
+			// back and re-execute the instruction. Loading DB from the
+			// entry regardless sent the process back to user mode with
+			// DB = 0: two logins a second apart were enough memory
+			// pressure for both shells to die of "Unexpected memory
+			// fault" (trap 030 on the first DB-relative pointer), and
+			// the dispatcher then restored one of them from a stack
+			// segment that was absent too and halted the system on a
+			// stack underflow. Nothing has been changed when the trap is
+			// taken, so the handler's return runs the XGDS again.
+			if (ers32::get(m_mem.read32(ea), 31, 1))
+			{
+				u32 param = ers32::get(ptr, 1, 12);
+				if (m_ics_flag)
+					param = u32(-s32(param));
+				return take_trap(trap_cause::absent_data_segment, param);
+			}
 			r.db = m_mem.read32(ea + 8);
 			r.dl = r.db + m_mem.read32(ea + 4);
 			const u32 ctcbp = m_mem.read32(ded_base() + 4);
@@ -1220,15 +1334,64 @@ private:
 		}
 		case 016: return do_disp();                             // DISP
 		case 017: {                                             // PSEB
+			// Pseudo Interrupt Enable (ERS sheets 99-100):
+			//
+			//   If (QI-4) = 0 then System Error Trap
+			//   (QI-4) := (QI-4) - 1
+			//   If (QI-4) = 0 then
+			//     If (QI)(0:1) = 1 then
+			//       If DISP FLAG = 1 then (QI) := 0; abort dispatcher
+			//                             & restart
+			//       else Execute DISP Instruction
+			//
+			// "If it now equals zero, all pseudo-disables have been
+			// removed, and it is now permissible to dispatch a new
+			// process. If (QI)(0:1)=1 (it may have been set by executing
+			// a DISP instruction while on the ICS or while
+			// pseudo-disabled) then the dispatcher is aborted and
+			// restarted if DISP FLAG=1 or the DISP instruction [is
+			// executed]."
+			//
+			// Only the decrement used to be modelled. HP-UX's dispatcher
+			// depends on the rest: when the task it has picked turns out
+			// to have its stack or global segment swapped out (`MUC,B`
+			// answers CCE), it queues the segment for the memory manager
+			// and executes `DISP; PSEB` (TRAP HANDLERS +0x1d6) -- a DISP
+			// that can only be deferred, followed by the PSEB that is to
+			// restart the dispatcher. Falling through instead ran the
+			// rest of the dispatch on a frame the absent path had already
+			// zeroed, reached the dispatcher's own closing PSEB with the
+			// count at zero, and halted: "System halted due to system
+			// error. TRAP:00000012". It takes memory pressure to get
+			// there -- two logins a second apart were enough.
 			if (!r.privileged()) return exec_trap::unimplemented;
-			const u32 a = m_mem.read32(ded_base() + 8) - 3 - 16;
+			const u32 qi = m_mem.read32(ded_base() + 8);
+			const u32 a = qi - 3 - 16;
 			const u32 n = m_mem.read32(a);
 			if (n == 0)
 				return take_trap(trap_cause::inconsistent_registers, 0);
 			m_mem.write32(a, n - 1);
-			// CCL says "no dispatch happened", which is always true
-			// here: entering the dispatcher from PSEB is not modelled.
+			// CCL says "no dispatch happened"; a deferred DISP that is
+			// carried out below reports through the dispatcher instead.
 			r.put(sf::CC, CCL);
+			if (n - 1 == 0 && ers32::get(m_mem.read32(qi - 3), 0, 1))
+			{
+				if (m_ics_flag)
+				{
+					// The dispatcher's own frame is the bottom one on
+					// the ICS. A service routine nested above it, or one
+					// that interrupted a task, would only defer a DISP
+					// again, so its PSEB leaves the flag for IXIT.
+					if (m_in_dispatcher && r.q == qi)
+					{
+						r.sb = (qi & ~3u) - 256;
+						r.sl = m_mem.read32(ded_base() + 12);
+						return launch_ics_frame();   // clears (QI)
+					}
+				}
+				else
+					return do_disp();
+			}
 			return exec_trap::none;
 		}
 		case 074: return do_ixit();                             // IXIT

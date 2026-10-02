@@ -228,6 +228,51 @@ static void test_interrupts()
 }
 
 
+// The level lists (I/O ERS 4.1.4): a device is on its level's list once,
+// however often it asks before the CPU services it. HP-UX's ASI driver
+// restarts its transfer from inside the interrupt service, so the console
+// card raises again while it is still queued -- and when the multiplexer
+// was queued behind it, re-linking the console cut the multiplexer off
+// the list and its interrupt was never taken.
+static void test_interrupt_list()
+{
+	std::printf("IOP interrupt level lists\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	const u32 LIST = 1024;                   // level 0: (tail, head)
+	const u32 A = 128 * 1 + 16 * 0, B = 128 * 1 + 16 * 2;
+	h.mem.write32(A, 0x00001111);            // OS information in the right half
+	h.mem.write32(B, 0x00002222);
+
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 0)));
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 2)));
+	iop.raise(0);
+	CHECK_EQ(h.mem.read32(LIST + 4), A);
+	CHECK_EQ(h.mem.read32(LIST), A);
+	iop.raise(2);
+	CHECK_EQ(h.mem.read32(LIST + 4), A);
+	CHECK_EQ(h.mem.read32(LIST), B);
+	CHECK_EQ(h.mem.read32(A), (B << 16) | 0x1111);
+	CHECK_EQ(h.mem.read32(B), 0x00002222u);
+
+	// The first device is re-armed and asks again, still unserviced.
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 0)));
+	iop.raise(0);
+	CHECK_EQ(h.mem.read32(LIST + 4), A);     // head: A
+	CHECK_EQ(h.mem.read32(A), (B << 16) | 0x1111);   // A still leads to B
+	CHECK_EQ(h.mem.read32(B), 0x00002222u);  // and B still ends the list
+	CHECK_EQ(h.mem.read32(LIST), B);         // tail: B
+	CHECK_EQ(iop.take_raise_events(), 1u << 0 | 1u << 2);
+
+	// And the last device asking again is not linked to itself.
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 2)));
+	iop.raise(2);
+	CHECK_EQ(h.mem.read32(B), 0x00002222u);
+	CHECK_EQ(h.mem.read32(LIST), B);
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -999,6 +1044,7 @@ int main()
 	std::printf("FOCUS IOP tests\n\n");
 	test_registers();
 	test_interrupts();
+	test_interrupt_list();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();

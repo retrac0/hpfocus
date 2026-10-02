@@ -1019,10 +1019,29 @@ private:
 		// keep re-issuing the CLC until it hears it.
 		m_rts_report = clc_report ? clc_report : RTS_SWI;
 		rts_lcn = lcn_force ? lcn_force : m_channel;
+		// A read request ends the way a write request does: with the card
+		// asking for its next order. "The CLC request is in response to
+		// an SRQ signal, requesting the next order" (27128A 4-2), and the
+		// sibling firmware's order processing "exit[s] ... [and]
+		// initiates an SRQ for the next order" (27130A firmware IMS
+		// 13.2.3.3). Only the write family did. After a CLC for a read
+		// the card sat silent with its SWI ready, and the read went ahead
+		// only if one of the driver's timed PAUs happened to end in
+		// between and raise the request; when the driver ran the RTS and
+		// the RD back to back, the RD's command list stopped at its next
+		// ICEI waiting for a request that never came, and the console
+		// took no more input for the rest of the run (keystrokes queued,
+		// card disarmed by the driver's DCE/DINT at CORE SYSTEM
+		// +0x4134). Measured on six console logins: three died that way
+		// before this, none after. Read card information is left as it
+		// was: raising the request there too broke the console open at
+		// FOCUS_IOPPOLL 300 and 600, so for that request the rule is not
+		// established.
 		switch (m_request)
 		{
 		case REQ_READ_DATA:
 			deliver_record();
+			m_want_order = true;
 			break;
 		case REQ_READ_CARD_INFO:
 			read_card_information();

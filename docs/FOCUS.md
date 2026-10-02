@@ -957,7 +957,11 @@ Inconsistent Registers traps. DST is not saved by traps or interrupts —
 global segment; its DST entry must have `W` set. DB/DL are set from the
 entry, use counts are moved, and the pointer's segment number is exchanged
 with the global segment number in the current Task Control Block, so the
-TOS afterwards names the *old* global segment. Privileged. *CC unaffected.*
+TOS afterwards names the *old* global segment. An absent segment is Absent
+Data Segment (042) with the DST entry number as parameter, before anything
+is changed: HP-UX's system-call exit runs `XGDS` back onto a user segment
+the memory manager may have swapped out meanwhile, and relies on the trap.
+Privileged. *CC unaffected.*
 
 **`GTSP`** — Get Task Segment Pointers — `F4:12`
 Pop an absolute TCB address into the Current-TCB dedicated location; set
@@ -1544,7 +1548,11 @@ Privileged. *CC unaffected.*
 **`PSDB` / `PSEB`** — Pseudo Interrupt Disable / Enable — `F4:15` / `F4:17`
 Increment / decrement the dispatcher-disable count at `(QI−4)`. `PSEB` on
 a zero count raises Inconsistent Registers. While the count is nonzero,
-`DISP` defers (below) instead of dispatching. Privileged. *CC unaffected.*
+`DISP` defers (below) instead of dispatching. When `PSEB` takes the count
+to zero with a deferred `DISP` flagged at `(QI)(0:1)`, it carries it out
+(ERS sheet 99): the dispatcher itself is aborted and restarted, anything
+else executes `DISP`. HP-UX's dispatcher depends on the restart (`DISP;
+PSEB` when the task it picked has a segment swapped out). Privileged.
 
 **`DISP`** — Dispatch — `F4:16`
 The only way into the dispatcher. If already on the ICS or
@@ -1616,17 +1624,30 @@ feed both forms; both their call sites use the same `{0, 1}` layout, an
 unlocked one-unit mutex.
 
 `DOWN` decrements the count. If it stays non-negative the instruction is
-done. Otherwise the task blocks: its wait-link node at `CTCBP−8`
-(`{forward, backward}`, the direction `LDEL` expects) is pushed on the
-list head, its state word at `CTCBP−16` takes 2 in the low halfword, and
-the task leaves through the dispatcher exactly as `DISP` enters it. The
-TCB stays spliced into the dispatcher's priority chain — the `LLSH` walk
-skips anything whose state is not 1.
+done. Otherwise the task blocks, and the list it joins is the one HP-UX's
+own software semaphore routines build and take apart on the same
+semaphores (CORE SYSTEM, file 0x13c18..0x14090), so it has to be exactly
+theirs: **circular** and doubly linked through the node at `CTCBP−8`
+(`{forward, backward}`), the first waiter linked to itself; **ordered on
+the word at `CTCBP−12`**, smallest first and first-come-first-served among
+equals (`LLSH 3` from the head, limited to the waiters already queued,
+then `LINS` in front of where it stopped); the head moves to the new node
+only when the search did not advance. The state word at `CTCBP−16` takes
+2 in the low halfword, `CTCBP+104` records the operand, and the task
+leaves through the dispatcher exactly as `DISP` enters it.
 
 `UP` increments the count. If it is still non-positive there is a waiter:
-the head node is unlinked, its state word set back to 1, and the MSG
-doorbell bit the dispatcher's idle mask always leaves enabled is raised,
-so a processor sitting in `STOP` returns to find it.
+when the count has reached zero it was the only one and the head simply
+becomes nil; otherwise `LDEL` takes the head out of the ring and its
+forward neighbour becomes the head. The waiter's state word goes back to
+1 and the MSG doorbell bit is raised. `UP` does not itself dispatch (the
+kernel's software routines end with a priority test and `DISP`; giving
+the instruction the same ending stalled 3 of 10 multiuser boots —
+`FOCUS_SEMPREEMPT` is that experiment).
+
+(An earlier reading pushed a nil-terminated node on the head, LIFO. Mixed
+with the kernel's routines it left the head on a task that was no longer
+waiting and lost the real waiter's wake-up: the multiuser boot's stall.)
 
 A semaphore already locked (−1) by another processor is handled by
 re-executing the instruction. *CC unaffected.*
