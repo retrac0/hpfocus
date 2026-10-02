@@ -224,6 +224,22 @@ private:
 			if (divisor == 0)
 				return exec_trap::divide_by_zero;
 			const s64 dividend = (s64(u64(stk(2)) << 32)) | u64(stk(1));
+			// The one doubleword quotient that will not fit -- -2^63 by
+			// -1 -- and, unguarded, a division the host itself faults on:
+			// x86-64 raises #DE for it, so any program, privileged or
+			// not, that pushed 0x80000000, 0, -1 and divided ended the
+			// whole emulator with SIGFPE. The quotient's overflow is the
+			// ERS's own answer ("Indicators = CCA on quotient,
+			// Overflow"); the dividend is left standing as the quotient
+			// with a zero remainder, which is what DIVS already does for
+			// its own -2^31 by -1.
+			if (dividend == INT64_MIN && divisor == -1)
+			{
+				r.put(sf::O, 1);
+				set_stk(0, 0);
+				dcca(stk(2), stk(1));
+				return exec_trap::none;
+			}
 			s64 quot = dividend / divisor;
 			s32 rem = s32(dividend % divisor);
 			if (b3 && rem < 0)

@@ -364,6 +364,47 @@ static void test_arithmetic()
 	CHECK_EQ(h.cpu.stk(0), s32(~0xf0ffu));
 }
 
+// The divisions a guest can hand the core that the host cannot do: -2^63 by
+// -1 in DIV and -2^31 by -1 in DIVS overflow the quotient, and in C++ both
+// are undefined -- x86-64 raises a divide error, which ended the emulator
+// with SIGFPE. Each must set Overflow and carry on.
+static void test_divide_extremes()
+{
+	std::printf("division overflow\n");
+	harness h;
+	const u32 base = h.cpu.r.s;
+
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);       // DIV
+	CHECK_EQ(h.cpu.r.s, base + 12);                 // shape unchanged
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(2), 0x80000000u);            // quotient = dividend
+	CHECK_EQ(h.cpu.stk(1), 0);
+	CHECK_EQ(h.cpu.stk(0), 0);                      // remainder
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023, true)) == exec_trap::none); // DIV,B
+	CHECK(h.cpu.r.test(sf::O));
+
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(033)) == exec_trap::none);       // DIVS
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(1), 0x80000000u);
+	CHECK_EQ(h.cpu.stk(0), 0);
+
+	// One step inside the range still divides.
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(1); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);
+	CHECK(!h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(2), 0x7fffffffu);
+	CHECK_EQ(h.cpu.stk(1), 0xffffffffu);
+	CHECK_EQ(h.cpu.stk(0), 0);
+}
+
 // Every instruction whose ERS entry names an indicator has to set one. The
 // condition code is the easiest effect in this architecture to leave out:
 // nothing in an instruction's own test looks at it, and an omission only
@@ -2781,6 +2822,7 @@ int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
 	test_arithmetic();
+	test_divide_extremes();
 	test_stack_ops();
 	test_condition_codes();
 	test_branches();
