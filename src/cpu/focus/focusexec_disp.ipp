@@ -172,7 +172,7 @@ private:
 				r.pl = r.pb + m_mem.read32(ea + 4);
 			}
 		}
-		r.status = carry_trace_bits(sta);
+		r.status = status_from_marker(sta);
 		r.x = qword(-3);
 		// The marker's return word is a program pointer: flags in the top
 		// two bits, byte offset in the low thirty, as do_call reads an STT

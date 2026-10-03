@@ -157,6 +157,18 @@ private:
 		const u32 old_q = r.q;
 		const u32 old_pb = r.pb;
 
+		// Note 4 (sheet 52): causes 4, 13, 37, 40, 42 and 43 clear
+		// STAT(9:1), EM, before pushing the marker. They return to the
+		// instruction that faulted, which has had its Machine Instruction
+		// Trap already and must not be given a second one when EXIT
+		// restores STATUS from the marker. (Cause 4 clears it in step();
+		// 13 is not raised by this core.)
+		if (cause == trap_cause::absent_code_segment
+				|| cause == trap_cause::absent_page
+				|| cause == trap_cause::absent_data_segment
+				|| cause == trap_cause::absent_page_table)
+			r.status &= ~ers32::mask(9, 1);
+
 		r.s += 16;
 		set_stk(3, r.x);
 		set_stk(2, ret);

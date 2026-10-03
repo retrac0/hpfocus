@@ -3061,6 +3061,89 @@ static void test_stop_is_level_sensitive()
 	CHECK(m.cpu.step() == exec_trap::halted);
 }
 
+// HP-UX's dispatcher delivers a signal to a task that is not in a system
+// call by setting MI in the STATUS word of the marker the task resumes
+// through (TRAP HANDLERS +0x102..0x122), and IXIT's "STATUS := (Q-1)"
+// loads it. The signal hook withdraws the request the same way, clearing
+// the bit in the trap's own marker (KERNEL 340 +0x3b04..0x3b14).
+static void test_mi_through_marker()
+{
+	std::printf("MI set in a marker reaches the task; cleared there, it is gone\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+	m.code(m.vector(004), { D_EXIT0 });
+
+	CHECK(m.interrupt());
+	// The interrupted task's marker is at 0x4013; its STATUS at (Q-1).
+	const u32 st = 0x4013 - 3 - 4;
+	CHECK_EQ(m.mem.read32(st) & ST_MI, 0);
+	m.mem.write32(st, m.mem.read32(st) | ST_MI);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT, through the TCB
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.status & ST_MI, ST_MI);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // the trap, not the NOP
+	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+
+	// The trap's marker: MI still requested, EM cleared (note 4).
+	const u32 tst = m.cpu.r.q - 3 - 4;
+	CHECK_EQ(m.mem.read32(tst) & (ST_MI | ST_EM), ST_MI);
+
+	// The hook clears the request in the marker and returns.
+	m.mem.write32(tst, m.mem.read32(tst) & ~ST_MI);
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.status & ST_MI, 0);
+	CHECK(m.cpu.step() == exec_trap::none);         // the NOP at last
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+}
+
+// Left in the marker, MI is a single step: the instruction returned to
+// runs (EM came back clear), and the trap is taken before the next one.
+static void test_mi_single_step()
+{
+	std::printf("MI left in the trap marker single-steps\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP, D_NOP });
+	m.code(m.vector(004), { D_EXIT0 });
+	m.cpu.r.status |= ST_MI;
+
+	CHECK(m.cpu.step() == exec_trap::none);         // trap before PROC+0
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK(m.cpu.step() == exec_trap::none);         // PROC+0 executes
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK(m.cpu.step() == exec_trap::none);         // trap before PROC+2
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 8), 2);   // marker names PROC+2
+}
+
+// I/O interrupts outrank the Machine Instruction Trap at the end of an
+// instruction (sheet 45, conditions 4 and 8), and "all tests that are
+// skipped ... will be performed again later when the interrupted code
+// sequence is resumed". HP-UX's system call stub requests the trap with
+// PSHR 4 / OR / SETR 4 (KERNEL 254); an interrupt in the gap must not
+// cost the task its signal.
+static void test_mi_survives_interrupt()
+{
+	std::printf("an interrupt between the request and the trap does not lose MI\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP });
+	m.code(m.ISR, { D_NOP, D_IXIT });
+	m.cpu.r.status |= ST_MI;                        // requested, EM set
+
+	CHECK(m.interrupt());
+	CHECK(m.cpu.step() == exec_trap::none);         // the routine runs
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+}
+
 // STOP and INT are privileged (sheets 94 and 119): cause 026, parameter 1.
 // SETR may load only some of STATUS (sheet 71).
 static void test_stop_and_int_are_privileged()
@@ -3149,6 +3232,9 @@ int main()
 	test_disp_sets_flag();
 	test_interrupted_dispatcher_resumes();
 	test_stop_is_level_sensitive();
+	test_mi_through_marker();
+	test_mi_single_step();
+	test_mi_survives_interrupt();
 	test_stop_and_int_are_privileged();
 	test_factorial();
 

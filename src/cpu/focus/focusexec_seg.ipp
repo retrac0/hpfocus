@@ -406,7 +406,7 @@ private:
 		const u32 delta = stk(0);
 		r.q = r.q - delta;
 		const u32 old_seg = r.get(sf::CSN);
-		r.status = carry_trace_bits(stk(1));
+		r.status = status_from_marker(stk(1));
 		const u32 ret = stk(2);
 		r.x = stk(3);
 		r.s -= 16 + 4u * n;
