@@ -282,7 +282,7 @@ private:
 		static const knob::flag as_memmove("FOCUS_MVBMEMMOVE");
 		const bool clash = (d > 0)
 				? (tba > sba && tba < sba + u32(rem))
-				: (tba < sba && sba < tba + u32(rem));
+				: (tba < sba && sba < tba + u32(-rem));
 		// Which way an overlapping move has to run is the one place the
 		// two readings of this instruction disagree, so every instance
 		// is reportable: FOCUS.md says byte-at-a-time in the chosen
@@ -302,8 +302,8 @@ private:
 		{
 			// Same bytes, opposite order: start at the last element and
 			// walk back toward the first.
-			u32 tb2 = u32(s32(tba) + d * (rem - 1));
-			u32 sb2 = u32(s32(sba) + d * (rem - 1));
+			u32 tb2 = u32(s32(tba) + d * (rem - d));
+			u32 sb2 = u32(s32(sba) + d * (rem - d));
 			while (count > d * x)
 			{
 				m_mem.write8(tb2, m_mem.read8(sb2));
