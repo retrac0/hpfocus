@@ -280,15 +280,30 @@ if [ "$BUILD" = 1 ]; then
 	say "building mame/focus with $JOBS jobs: make ${MAKEARGS[*]}"
 	echo "   a first build compiles MAME's core: 20-40 minutes on an idle 8-core"
 	echo "   machine, longer on fewer cores; the log is var/setup/build.log"
+	run_make() {
+		(cd mame && make -j"$JOBS" "${MAKEARGS[@]}") > var/setup/build.log 2>&1 &
+		mpid=$!
+		# A line of progress a minute, so a long build is visibly alive.
+		while kill -0 "$mpid" 2>/dev/null; do
+			for _ in $(seq 60); do kill -0 "$mpid" 2>/dev/null || break; sleep 1; done
+			kill -0 "$mpid" 2>/dev/null && echo "   $(grep -c '^Compiling' var/setup/build.log) files compiled..."
+		done
+		wait "$mpid"
+	}
 	set +e
-	(cd mame && make -j"$JOBS" "${MAKEARGS[@]}") > var/setup/build.log 2>&1 &
-	mpid=$!
-	# A line of progress a minute, so a long build is visibly alive.
-	while kill -0 "$mpid" 2>/dev/null; do
-		for _ in $(seq 60); do kill -0 "$mpid" 2>/dev/null || break; sleep 1; done
-		kill -0 "$mpid" 2>/dev/null && echo "   $(grep -c '^Compiling' var/setup/build.log) files compiled..."
-	done
-	wait "$mpid"; rc=$?
+	run_make; rc=$?
+	# A MAME tree built before the compiler was last upgraded keeps a
+	# precompiled header the new compiler refuses ("PCH files were found,
+	# but they were invalid"), and make does not know to rebuild it: every
+	# later build fails on its first file. Remove the stale header and build
+	# again; everything that includes it is recompiled, which is most of
+	# MAME's core, so this takes about as long as a first build.
+	if [ "$rc" != 0 ] && grep -q 'PCH files were found, but they were invalid' var/setup/build.log; then
+		echo "   MAME's precompiled header was made by an older compiler; removing it"
+		echo "   and building again (this recompiles MAME's core: as long as a first build)"
+		find mame/build -name '*.gch' -exec rm -rf {} + 2>/dev/null
+		run_make; rc=$?
+	fi
 	set -e
 	echo "${MAKEARGS[*]}" | sed 's/ REGENIE=1$//' > "$OPTS_FILE"
 	if [ "$rc" != 0 ]; then
