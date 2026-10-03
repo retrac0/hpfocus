@@ -452,6 +452,35 @@ than half-loading. A save goes through a temporary and a rename, and runs every
 bytes — are still read. `FOCUS_RTCBATTERY` lets the battery advance the clock
 over the time the emulator was **not** running, up to the manuals' ten days,
 and is off by default because it makes a run depend on when it was started.
+It moves a running chip's digits only, never the check byte: a clock the OS
+does not believe stays unbelieved. The battery-fail bit is latched when the
+battery is read and survives the machine reset that follows (it used to be
+cleared there, so it never reached `R2`).
+
+**Setting the clock from the host.** `FOCUS_RTCTIME=now|<ISO 8601>|<epoch>`
+writes what the OS's own set sequence leaves: the digits, the day of week and
+leap status, the chip started, the year and century in the NVM, and check
+byte 240. What the guests then report, measured:
+
+- **HP-UX 5.30 keeps GMT in the chip** and converts with its `TZ` (the
+  shipped image says `PST8PDT`), so seed it with `FOCUS_RTCTIME=now
+  FOCUS_RTCUTC=1`; an ISO date is written to the chip as given, i.e. as GMT.
+  `date` then shows the right moment in Pacific time, as standard time all
+  year for current years (its daylight-saving rules are 1980s ones: a 1987
+  date shows PDT, October 2026 shows PST).
+- HP-UX 5.30 accepts a clock **from 1970 to 2038-01-19 03:14:07 GMT** at
+  boot; a clock set outside that boots without any warning at time 0 (`date`
+  says 31 Dec 1969 in Pacific time). A clock that runs past the 2038 limit
+  while the system is up carries on correctly. 1 January 2000 is crossed
+  correctly.
+- BASIC keeps local time (seed it with `FOCUS_RTCTIME=now` alone) and reads
+  dates in at least 1900–2100; its leap-year arithmetic is right in 2000 and
+  2100.
+- The seed is only believed on a battery the OS has already initialised:
+  a blank NVM fails its checksum and the OS rewrites it, check byte 15
+  included, so **the first boot on a new battery file always says CLOCK AND
+  DATE NOT SET**. Keep the battery file (`FOCUS_SCMNV`, `FOCUS_KBDNV`) and the
+  seed takes from the second boot on.
 
 ### 2.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 
