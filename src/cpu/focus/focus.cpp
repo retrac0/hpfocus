@@ -262,16 +262,23 @@ void focus_device::execute_run()
 		}
 		m_halt_logged = false;
 
-		if (m_pre_step)
-			m_pre_step(m_core);
-
-		debugger_instruction_hook(m_core.r.p);
-
 		// The microcode interrupt handler runs between instructions:
 		// with STATUS.I set and an unmasked I/O message pending, pull
 		// the first waiting device from its level's list and vector
 		// through its DRT entry (ERS section 5.1.3).
+		//
+		// Before the debugger hook and the instruments, not after: when
+		// an interrupt is taken, the instruction step() executes next is
+		// the service routine's first, and that is the one a breakpoint,
+		// FOCUS_BREAK or the P trail has to be shown. The other order
+		// presented the interrupted instruction (again, after the IXIT)
+		// and never the routine's entry.
 		m_core.service_interrupts();
+
+		if (m_pre_step)
+			m_pre_step(m_core);
+
+		debugger_instruction_hook(m_core.r.p);
 
 		const focus::exec_trap t = m_core.step();
 		if (t == focus::exec_trap::halted)
