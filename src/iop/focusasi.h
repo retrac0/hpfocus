@@ -543,7 +543,11 @@ struct asi_card : public iop_interface
 	bool data_phase() const { return m_order == ORD_RD || m_order == ORD_WD; }
 	u8 dma_read() override
 	{
-		if (data_phase())
+		// Only bytes the card has: the IOP's halfword legs pull a pad
+		// byte past an odd-length record (an empty pop), which the card
+		// did not send -- 'ls\r' was reported as a four-byte transfer.
+		// The write side already caps the same way.
+		if (data_phase() && !out_now().empty())
 			m_transferred++;
 		return pop_out();
 	}
@@ -1099,6 +1103,7 @@ private:
 		}
 		m_in.clear();
 		m_transferred = 0;
+		m_remaining = 0;
 		m_request_status = 0;       // no error unless something says so
 		// "SWI (switch) -- Switch to the logical channel given in the LCN
 		// field and continue the transaction there" (4-60). A CLC opens
@@ -1178,7 +1183,11 @@ private:
 			m_out.push_back(u8(m_transferred));
 			if (m_request != REQ_WRITE_DATA && m_request != REQ_WRITE_CARD_CFG)
 			{
-				const u16 left = u16(m_rx.size());
+				// "Length of data remaining in the current record" --
+				// the rest of the record this read took part of, not
+				// everything typed since, which invited the driver to
+				// read the next record's characters as this one's.
+				const u16 left = m_remaining;
 				m_out.push_back(u8(left >> 8));
 				m_out.push_back(u8(left));
 				if (m_request == REQ_READ_DATA)
@@ -1252,7 +1261,10 @@ private:
 			break;
 		}
 		while (m_out.size() > m_length && m_length)
+		{
 			m_out.pop_back();
+			m_remaining++;
+		}
 		answer();
 	}
 
@@ -1273,6 +1285,7 @@ private:
 	void deliver_record()
 	{
 		m_out.clear();
+		m_remaining = 0;
 		while (!m_rx.empty())
 		{
 			const u8 c = m_rx.front();
@@ -1281,7 +1294,18 @@ private:
 			if (c == terminator)
 				break;
 			if (m_length && m_out.size() >= m_length)
+			{
+				// Ended on the read's length: what is left of the
+				// record, up to and including its terminator, is the
+				// status block's remaining count.
+				for (u8 r : m_rx)
+				{
+					m_remaining++;
+					if (r == terminator)
+						break;
+				}
 				break;
+			}
 		}
 		if (!m_out.empty())
 			post(STAT_DONE);
@@ -1374,6 +1398,7 @@ private:
 	u8 m_rts_report = 0;        // a report owed to the host, or 0
 	u8 m_request_status = 0;    // byte 0 of the read-status block
 	u16 m_transferred = 0;      // ...and its length-of-transfer field
+	u16 m_remaining = 0;        // ...and its remaining-in-record field
 	u8 m_message_type = 1;      // text terminated by the terminator
 	// The card wants its next order; the interface poll reports it.
 	bool m_want_order = false;

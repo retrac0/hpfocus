@@ -400,6 +400,43 @@ static void test_asi_order_exit()
 }
 
 
+// The read status block (27128A 4-64): the length is the data the card
+// sent, not the pad byte a halfword leg pulls past an odd record, and the
+// remaining count is the rest of THIS record, not the typeahead.
+static void test_asi_read_status()
+{
+	std::printf("ASI: read status block lengths\n");
+	asi_card asi;
+	for (u8 c : { 'l', 's', '\r', 'x' })
+		asi.type(c);
+	asi.write_fr(8, 0xb8);                   // CLC: read device data, 80
+	for (u8 b : { 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x50 })
+		asi.dma_write(b);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x68);                   // RD, halfword legs
+	unsigned n = 0;
+	while (!asi.data_end() && n < 10)
+	{
+		asi.dma_read16();
+		n++;
+	}
+	CHECK_EQ(n, 2u);                         // 'ls', '\r' + pad
+	asi.dma_complete(false);
+	asi.write_fr(8, 0x49);                   // RS
+	std::vector<u8> st;
+	while (!asi.data_end() && st.size() < 16)
+		st.push_back(asi.dma_read());
+	CHECK_EQ(st.size(), 7u);
+	if (st.size() == 7)
+	{
+		CHECK_EQ(st[0], 0);
+		CHECK_EQ((st[1] << 8) | st[2], 3);   // three bytes of data
+		CHECK_EQ((st[3] << 8) | st[4], 0);   // the record was whole
+		CHECK_EQ(st[6], '\r');
+	}
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -1176,6 +1213,7 @@ int main()
 	test_asi_events_are_attention();
 	test_asi_pause();
 	test_asi_order_exit();
+	test_asi_read_status();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();
