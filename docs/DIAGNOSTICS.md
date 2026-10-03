@@ -370,6 +370,22 @@ then `LOAD "TEST"` and `RUN` — or, for a batch run,
     tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
         -flop1 "$PWD/software/test/500MFTST.TD0" -seconds_to_run 48
 
+*(Updated for the alpha: `tools/setup.sh` builds `software/hd/diag.img`
+now, so `tools/mkdiagdisc.sh` is only needed to rebuild it. As written,
+the batch run opens a window and stops before the driver's first screen
+is up. Without a window, and read back as a screen:*
+
+    FOCUS_TYPE='LOAD "TEST"\n;RUN\n' FOCUS_TYPEAT=20,36 FOCUS_DIMDUMP=60 \
+    tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
+        -flop1 "$PWD/software/test/500MFTST.TD0" -video none -str 70 \
+      | tools/screen.py
+
+*This ends on `Welcome to the HP 9000 Test Supervisor`. `src/test/hpuxtest.py
+matrix --only diag` runs it at four typing times, this one among them:
+during the alpha's review `RUN` was found to halt with `TRAP:00000055` at
+some typing times and not at others, and nothing in the tests ran the
+driver.)*
+
 The driver's first act is `Clear_screen`, and that is where it stops:
 
     ERROR 702 IN Clear_screen: No graphics driver/CRT graphics hw failure
