@@ -17,6 +17,10 @@ from pathlib import Path
 PDF = Path(__file__).resolve().parents[1] / "docs/bitsavers/FOCUS_Instruction_Set_ERS_Dec82.pdf"
 FIRST, LAST = 54, 130  # section 6.2, detailed instruction descriptions
 
+if not PDF.exists():
+    sys.exit(f"{PDF.name} is not here: HP's manuals are fetched, not carried.\n"
+             "Run tools/fetch-media.sh --manuals (MEDIA.txt lists them).")
+
 # Boilerplate from the scanned HP drawing frame that wraps every page.
 FRAME = re.compile(
     r"HEW ?LET ?T|PAC ?K ?A ?R ?D|REVISIONS|SUPERSEDES|SHEET|DWG|Fiasconaro"

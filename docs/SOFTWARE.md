@@ -64,7 +64,7 @@ save of an HP 7914 disc with an installed HP-UX 5.30 (97089C) system, the
 last release for the Series 500, plus a 5.05 customer update, a contrib
 tape, a BASIC 2.0 disc backup and Microtrak. This survey had looked at
 bitsavers' documentation and `HP_9000/HPUX_5/`, not at that collection.
-All of it is in `software/cct`.)*
+All of it is fetched into `software/cct` by `tools/fetch-media.sh`; `MEDIA.txt` has the URLs.)*
 
 ## Status summary
 

@@ -23,6 +23,10 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 - **Disc space:** about 3.5 GB free. A finished install measured 2.7 GB:
   a shallow MAME checkout of about 1.2 GB, its build tree, and the HP-UX
   machines in `var/` (about 400 MB).
+- **A network connection** for two downloads: MAME (about 210 MB, from
+  GitHub) and Hewlett-Packard's software (46 MB, from bitsavers.org or
+  its mirror). The repository does not carry HP's software or manuals;
+  [MEDIA.txt](MEDIA.txt) lists where each file is and what it hashes to.
 - **Time:** a first build compiles MAME's core, about 1,190 files. From a
   fresh clone it took 1 hour 9 minutes at `-j4` on a busy 8-core machine
   (and 2 hours on another occasion). Expect 20–40 minutes on an idle one.
@@ -58,7 +62,7 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 
 ## 2. Get it and build it
 
-    git clone <this repository> hpfocus
+    git clone https://github.com/retrac0/hpfocus.git
     cd hpfocus
     tools/setup.sh
 
@@ -71,9 +75,13 @@ emulated HP 9000 Model 540. It is an **alpha**: read
    registration patch, `tools/mame/focus-mame.patch`
    (`tools/link_into_mame.sh`).
 4. It builds `mame/focus`, logging to `var/setup/build.log`.
-5. It prepares the media:
-   - the HP-UX 5.30 disc, assembled from the two tape images in
-     `software/cct`;
+5. It fetches Hewlett-Packard's software (`tools/fetch-media.sh`): six
+   tape and disc images, 46 MB, from bitsavers.org, each checked against
+   the SHA-256 in `MEDIA.txt` before it is put in `software/cct`. The
+   files are HP's and stay out of git.
+6. It prepares the media:
+   - the HP-UX 5.30 disc, assembled from the two unit-save tapes just
+     fetched;
    - a fixed disc for BASIC, `software/hd/basic.img`: BASIC 2.0 with its
      English error texts, I/O and mass-storage options installed, and two
      of HP's utilities on it;

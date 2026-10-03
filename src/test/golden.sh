@@ -43,7 +43,8 @@
 #   - three boot HP-UX from software/cct/7914_unitSave_hpux4.0.bin, the
 #     first unit-save tape decompressed in place, with software/cct/scm.nv
 #     as its battery if there is one. A fresh clone has neither (the tape
-#     is shipped compressed and tools/runhpux.sh assembles its disc under
+#     is fetched compressed (tools/fetch-media.sh) and tools/runhpux.sh
+#     assembles its disc under
 #     var/), so there these three are skipped, and say so. To have them:
 #     gunzip -k software/cct/7914_unitSave_hpux4.0.bin.gz
 

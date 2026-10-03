@@ -15,8 +15,8 @@ is in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), and what it was tested with is in
 
 ## Quick start (Linux)
 
-    git clone <this repository> hpfocus && cd hpfocus
-    tools/setup.sh                    # check, fetch MAME, build (long), prepare the discs
+    git clone https://github.com/retrac0/hpfocus.git && cd hpfocus
+    tools/setup.sh                    # check, fetch MAME, build (long), fetch HP's software, prepare the discs
     tools/smoketest.sh                # one-minute check: PASS or FAIL
     tools/runhpux.sh --multiuser      # HP-UX 5.30; log in as root, no password
 
@@ -29,6 +29,16 @@ Fedora, Arch and macOS, logging in, more terminals (`tools/hpuxterm.py 1`
 reset it. The first build compiles MAME's core: it took 1 hour 9 minutes
 at `-j4` on a busy 8-core machine (expect 20 to 40 minutes on an idle
 one), and the finished install is 2.7 GB.
+
+**HP's software and manuals are not in this repository.** They are
+Hewlett-Packard's, and third-party archives host them:
+[MEDIA.txt](MEDIA.txt) lists each file with its source and SHA-256.
+`tools/setup.sh` downloads the software the emulator boots (46 MB, from
+bitsavers.org) and checks it; `tools/fetch-media.sh --manuals` fetches the
+manuals the documentation cites (230 MB) and extracts their text. The
+BASIC, demo and diagnostic floppies and the HP-UX 5.01 tape came from the
+HP Computer Museum, whose downloads cannot be scripted, and are still
+carried here ([software/README.md](software/README.md)).
 
 ## What works
 
@@ -771,9 +781,10 @@ docs/
   HARDWARE.md          520/540 machine hardware: MPB, I/O, boot media
   SOFTWARE.md          target media, HP-UX versions, boot ordering
   opcodes.csv          full FOCUS opcode map, from ERS Appendix B
-  bitsavers/           11 primary PDFs (~46 MB)
-  hpjournal/           3 HP Journal issues on the Series 500
-  notes/               pdftotext extractions, Appendix B + loader flowchart
+  bitsavers/           HP's manuals: fetched by tools/fetch-media.sh --manuals
+  hpjournal/           3 HP Journal issues on the Series 500: fetched likewise
+  notes/               their text (extracted when they are fetched), the
+                       project's own OCR passes, Appendix B + loader flowchart
 software/
   README.md            provenance and per-image analysis
   97089C.hpi           HP-UX 5.01 tape (damaged; the 520 kernel survives)
@@ -882,8 +893,12 @@ plane bits, with `--plane` for one plane and `--ppm` for a picture.
 
 ## Documentation
 
-Eleven primary documents are in [docs/bitsavers/](docs/bitsavers/), mirrored
-from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
+The primary documents are HP's manuals on bitsavers.org
+(`pdf/hp/9000_500/`, `9000_cio/` and `disc/`). The repository points at
+them ([MEDIA.txt](MEDIA.txt)) rather than carrying them:
+`tools/fetch-media.sh --manuals` puts them in
+[docs/bitsavers/](docs/bitsavers/) under the names the notes cite. The two
+that matter most:
 
 - **FOCUS Instruction Set ERS** (Dec 1982, 150 sheets) — the CPU reference.
   Registers, addressing, segmentation, interrupts, every instruction, plus
@@ -892,7 +907,8 @@ from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
 - **FOCUS I/O ERS** (Dec 1982, 80 sheets) — the IOP, DMA, interrupts, and the
   interval timer.
 
-Both have usable OCR text layers, extracted into [docs/notes/](docs/notes/).
+Both have usable OCR text layers, which the fetch extracts into
+[docs/notes/](docs/notes/).
 
 Because that OCR is poor, the CPU is now specified afresh in
 [docs/FOCUS.md](docs/FOCUS.md)

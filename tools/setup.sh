@@ -42,7 +42,10 @@
 #      -j4 on a heavily loaded 8-core machine; expect 20-40 minutes on an
 #      idle 8-core one. Peak disc use about 700 MB more. The log is
 #      var/setup/build.log.
-#   5. media -- tools/runhpux.sh --prepare: the pristine HP-UX 5.30 disc
+#   5. media -- tools/fetch-media.sh: Hewlett-Packard's software, which the
+#      repository points at (MEDIA.txt) and does not carry, downloaded from
+#      bitsavers.org (46 MB) and checked against its SHA-256s. Then
+#      tools/runhpux.sh --prepare: the pristine HP-UX 5.30 disc
 #      assembled from the tapes (read-only), its primed battery, and the
 #      working copy runs use (var/, about 400 MB); and BASIC's fixed disc,
 #      software/hd/basic.img, for tools/runbasic-hd.sh: BASIC 2.0 with its
@@ -326,6 +329,14 @@ fi
 
 # ------------------------------------------------------------ 5. media
 if [ "$MEDIA" = 1 ]; then
+	# HP's software is not in the repository: MEDIA.txt points at it, and
+	# this downloads it (46 MB, from bitsavers.org or its mirror), checking
+	# every file's SHA-256. The manuals are a separate, larger download:
+	# tools/fetch-media.sh --manuals.
+	say "fetching Hewlett-Packard's software (MEDIA.txt)"
+	tools/fetch-media.sh | sed 's/^/   /' || die "the software could not be fetched; see the messages above.
+Run tools/setup.sh again when the network is there (finished files are kept),
+or tools/setup.sh --no-media to stop after the build."
 	say "preparing the HP-UX 5.30 machine"
 	tools/runhpux.sh --prepare | awk '/== volume header/ { skip = 1 } !skip { print "   " $0 }'
 	# BASIC's fixed disc for tools/runbasic-hd.sh: the two shipped boot

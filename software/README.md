@@ -3,7 +3,10 @@
 **Provenance: two sources.** `cct/` -- the HP-UX 5.30 disc unit save and
 four other Series 500 images -- comes from bitsavers' *Crisis Computer
 Tapes* collection (see [`cct/`](#cct--hp-7914-disc-unit-save-hp-ux-530)
-below and `cct/readme`). **Everything else in this directory came from the
+below and `cct/readme`). **Those six files are not in the repository:**
+[`MEDIA.txt`](../MEDIA.txt) records where each one is and its SHA-256, and
+`tools/fetch-media.sh` (which `tools/setup.sh` runs) downloads them into
+`cct/`. **Everything else in this directory came from the
 HP Computer Museum, <https://www.hpmuseum.net/>.** Their 500 Series
 software collection is at
 <https://www.hpmuseum.net/exhibit.php?swc=21>; downloads are CAPTCHA-gated and
@@ -27,14 +30,18 @@ software/
   demos/            BASIC demo suite, 7 discs
   test/             9020 System Functional Tests 3.00, 6 discs
   cct/              HP-UX 5.30 7914 unit save (2 tapes) + 4 more images,
-                    from bitsavers' Crisis Computer Tapes
+                    from bitsavers' Crisis Computer Tapes: fetched, not
+                    carried (MEDIA.txt, tools/fetch-media.sh)
 ```
 
 **On what terms.** These images are Hewlett-Packard's copyrighted
 software; HP-UX also carries AT&T and University of California code, and
-its boot banner prints HP's restricted-rights legend. They are here so the
-emulator has something to run. This project has no licence for them from
-HP and states no terms of its own for them. **The HP-UX 5.30 unit save is a
+its boot banner prints HP's restricted-rights legend. This project has no
+licence for them from HP and states no terms of its own for them. The
+`cct/` images are fetched from bitsavers to your machine and never
+redistributed from here; the museum's floppies and the 5.01 tape are
+still carried in the repository, because the museum's downloads sit
+behind a CAPTCHA and cannot be fetched by a script. **The HP-UX 5.30 unit save is a
 real site's working system from 1991**, and it holds that site's user
 accounts, home directories and mailboxes as they were. Please treat them
 accordingly: run the system, but do not republish what you find there.

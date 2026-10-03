@@ -47,6 +47,10 @@ def chart_mnemonics() -> set:
 
 TESS = ROOT / "docs/notes/FOCUS_Instruction_Set_ERS_Dec82.tesseract.txt"
 
+if not PDF.exists():
+    sys.exit(f"{PDF.relative_to(ROOT)} is not here: HP's manuals are fetched, not carried.\n"
+             "Run tools/fetch-media.sh --manuals (MEDIA.txt lists them).")
+
 # Filled on first use; a heading that reads as another chart mnemonic is
 # that instruction, not a misreading of this one.
 CHART = chart_mnemonics()

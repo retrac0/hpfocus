@@ -6,7 +6,9 @@
 # the next boot does depends on both. So there are three layers:
 #
 #   software/cct/7914_unitSave_hpux4.0*.bin.gz
-#        the two unit-save tapes, tracked in git. Never written.
+#        the two unit-save tapes. They are Hewlett-Packard's and are not
+#        in the repository: tools/fetch-media.sh downloads them from
+#        bitsavers and checks them against MEDIA.txt. Never written.
 #
 #   var/pristine/hpux530.bin       (read-only, mode 0444)
 #   var/pristine/hpux530-scm.nv    (read-only, mode 0444)
@@ -80,16 +82,22 @@ hpux_make_pristine() {
 	local tmp=$VAR/tmp tapes=() t made=()
 	mkdir -p "$PRISTINE_DIR" "$tmp" || hpux_die "cannot create $VAR"
 	for t in "$t1" "$t2"; do
+		# The tapes are fetched, not carried (MEDIA.txt). setup.sh does it;
+		# a run that finds one missing does it too, and says so.
+		if [ ! -f "$CCT/$t" ] && [ ! -f "$CCT/$t.gz" ]; then
+			"$FOCUS_REPO/tools/fetch-media.sh" "software/cct/$t.gz" \
+				|| hpux_die "the unit-save tape $CCT/$t.gz is missing and could not be fetched.
+Run tools/fetch-media.sh when the network is there, or see MEDIA.txt for
+where to download it by hand."
+		fi
 		if [ -f "$CCT/$t" ]; then
 			tapes+=("$CCT/$t")
-		elif [ -f "$CCT/$t.gz" ]; then
+		else
 			echo "decompressing $t..."
 			gzip -dc "$CCT/$t.gz" > "$tmp/$t.part" \
 				|| { rm -f "$tmp/$t.part"; hpux_die "cannot decompress $CCT/$t.gz"; }
 			mv -f "$tmp/$t.part" "$tmp/$t"
 			tapes+=("$tmp/$t"); made+=("$tmp/$t")
-		else
-			hpux_die "the unit-save tape $CCT/$t.gz is missing (is this a full clone?)"
 		fi
 	done
 	echo "assembling the pristine HP-UX 5.30 disc from the two unit-save tapes..."

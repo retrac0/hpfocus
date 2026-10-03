@@ -38,3 +38,20 @@ disasm/*
 # assembled from software/cct, and the working copies runs use and keep
 # (tools/lib/hpux.sh). All derived; --reset rebuilds them.
 /var/
+
+# Hewlett-Packard's software and manuals. The repository does not carry
+# them: MEDIA.txt says where each one is and what it hashes to, and
+# tools/fetch-media.sh fetches them to these paths (with --manuals for the
+# documents, whose text it then extracts into docs/notes). The notes that
+# stay tracked are the project's own OCR passes and page images.
+software/cct/*.gz
+docs/bitsavers/*
+!docs/bitsavers/README.md
+docs/hpjournal/*
+!docs/hpjournal/README.md
+docs/notes/*.txt
+!docs/notes/*.tesseract.txt
+!docs/notes/5955-3442_CS80_Instruction_Set_Programming_Manual.txt
+!docs/notes/MODCAL_6.3_ERS.txt
+# a download tools/fetch-media.sh has not finished
+*.part
