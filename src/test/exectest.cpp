@@ -4809,6 +4809,128 @@ static void test_unprivileged_exit_limits()
 	CHECK_EQ(st & (ST_M | ST_I | ST_P | ST_MI), ST_I | ST_P | ST_MI);
 }
 
+
+// "The microcode detects all attempts to access memory locations outside
+// of the following ranges: Code Segments PB to PL, Stack Segments SB to S,
+// Global Data Segments DB to DL" (ERS 2.2.5), and of MVB, "a bounds
+// violation will cause premature termination of the instruction and a
+// Bounds Violation Trap" (sheet 101). Only the FIRST byte of a string
+// operand used to be tested: a move or fill that began inside the global
+// segment or the stack ran on past its end for as long as the count said.
+static void test_string_segment_bounds()
+{
+	std::printf("string instructions stop at DL, S and PL\n");
+	const u16 MVB = u16((051 << 6) | (1 << 2) | 3);     // data source, SDEC 3
+	const u16 MVBC = u16((051 << 6) | 3);               // code source
+	const u16 FILB = u16((057 << 6) | 3);
+	const u16 CMPB = u16((054 << 6) | (1 << 2) | 3);
+	auto gptr = [](u32 off) { return (2u << 30) | off; };
+	auto sptr = [](u32 off) { return (3u << 30) | off; };
+
+	// FILB: 0x40 bytes from DB+0xff0, DL = DB+0xfff. Sixteen fit.
+	{
+		harness h;
+		h.cpu.push(0x58); h.cpu.push(gptr(0xff0)); h.cpu.push(0x40);
+		const u32 top = h.cpu.r.s;
+		CHECK(h.one(FILB) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.mem.read8(0x8fff), 0x58);            // the last byte of the segment
+		CHECK_EQ(h.mem.read8(0x9000), 0);               // and nothing after it
+		CHECK_EQ(h.mem.read8(0x9010), 0);
+		CHECK_EQ(h.cpu.r.s, top);                       // note 2: operands in place
+	}
+	// A fill that ends exactly on DL is not a violation.
+	{
+		harness h;
+		const u32 s0 = h.cpu.r.s;
+		h.cpu.push(0x58); h.cpu.push(gptr(0xff0)); h.cpu.push(0x10);
+		CHECK(h.one(FILB) == exec_trap::none);
+		CHECK_EQ(h.mem.read8(0x8fff), 0x58);
+		CHECK_EQ(h.cpu.r.s, s0);
+	}
+	// MVB, target running off the global segment: pending at the bound.
+	{
+		harness h;
+		for (u32 i = 0; i < 0x40; i++)
+			h.mem.write8(0x8100 + i, u8(0xa0 + i));
+		h.cpu.push(gptr(0x100)); h.cpu.push(gptr(0xff0)); h.cpu.push(0x40);
+		CHECK(h.one(MVB) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.x, 16);
+		CHECK_EQ(h.mem.read8(0x8fff), 0xaf);
+		CHECK_EQ(h.mem.read8(0x9000), 0);
+	}
+	// MVB, source running off the global segment: nothing past DL is read.
+	{
+		harness h;
+		h.mem.write32(0x9000, 0x5a5a5a5au);             // not this segment's
+		h.cpu.push(gptr(0xff8)); h.cpu.push(gptr(0x100)); h.cpu.push(0x10);
+		CHECK(h.one(MVB) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.x, 8);
+		CHECK_EQ(h.mem.read8(0x8108), 0);
+	}
+	// MVB descending, running below DB.
+	{
+		harness h;
+		h.mem.write32(0x7ffc, 0x5a5a5a5au);
+		h.cpu.push(gptr(0x3)); h.cpu.push(gptr(0x203)); h.cpu.push(8);
+		CHECK(h.one(u16(MVB | 0x1000)) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.x, u32(-4));
+		CHECK_EQ(h.mem.read8(0x81ff), 0);
+	}
+	// A target on the stack: S is the bound, and the words above it --
+	// here the move's own three parameters -- are not part of the area.
+	{
+		harness h;
+		h.cpu.r.s = h.cpu.r.q = 0x4103;
+		h.cpu.push(gptr(0x100)); h.cpu.push(sptr(0x100)); h.cpu.push(0x40);
+		CHECK_EQ(h.cpu.r.s, 0x410f);
+		CHECK(h.one(MVB) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.x, 16);                        // 0x4100 .. 0x410f
+		CHECK_EQ(h.mem.read32(0x4110), 0);
+	}
+	// A code source: PL addresses the segment's last word, so its last
+	// byte is PL+3 (convention note 18).
+	{
+		harness h;
+		h.mem.write32(0x1ffc, 0x01020304u);
+		h.mem.write32(0x2000, 0x5a5a5a5au);
+		h.cpu.push(0xff8); h.cpu.push(gptr(0x100)); h.cpu.push(0x10);
+		CHECK(h.one(MVBC) == exec_trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.x, 8);
+		CHECK_EQ(h.mem.read8(0x8107), 0x04);
+		CHECK_EQ(h.mem.read8(0x8108), 0);
+	}
+	// CMPB reads; it stops the same way.
+	{
+		harness h;
+		h.cpu.push(gptr(0x100)); h.cpu.push(gptr(0xff8)); h.cpu.push(0x10);
+		CHECK(h.one(CMPB) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+	}
+	// A doubleword whose first word is the segment's last has no second
+	// word: LDD DB+0xffc, and LDD of the top word of the stack.
+	{
+		harness h;
+		const u32 s0 = h.cpu.r.s;
+		CHECK(h.one(u32_insn(020, BASE_DB_PLUS, 0xffc)) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK_EQ(h.cpu.r.s, s0);
+		CHECK(h.one(u32_insn(020, BASE_DB_PLUS, 0xff8)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.s, s0 + 8);
+		h.cpu.r.s = s0;
+		h.cpu.push(1); h.cpu.push(2);
+		CHECK(h.one(u32_insn(020, BASE_S_MINUS, 0)) == exec_trap::address_error);
+		CHECK(h.cpu.last_addr_trap() == trap::bounds_violation);
+		CHECK(h.one(u32_insn(020, BASE_S_MINUS, 4)) == exec_trap::none);
+		CHECK_EQ(h.cpu.stk(0), 2);
+		CHECK_EQ(h.cpu.stk(1), 1);
+	}
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -4872,6 +4994,7 @@ int main()
 	test_pending_through_interrupt_and_tcb();
 	test_overflow_loaded_from_marker();
 	test_unprivileged_exit_limits();
+	test_string_segment_bounds();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

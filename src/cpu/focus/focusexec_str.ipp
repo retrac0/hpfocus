@@ -165,8 +165,11 @@ private:
 		c.disp = 0;
 		if (!is_ds)
 		{
+			// A local program pointer: bounded by PB and by the last
+			// byte of the segment's last word (convention note 18).
 			c.phys = code_phys;
-			c.left = 0x7fffffffu;
+			c.left = (dir > 0) ? (r.pl + 3 - code_phys + 1)
+					: (code_phys - r.pb + 1);
 			return exec_trap::none;
 		}
 		return cursor_resolve(c);
@@ -182,10 +185,19 @@ private:
 			c.phys = u32(s32(c.phys) + c.dir);
 			return exec_trap::none;
 		}
+		// The run is used up. For a code operand the next byte is past
+		// PB or PL, and for a stack or global pointer (bit 0 set) past
+		// the segment's bound -- said here, because stepping the pointer
+		// itself below offset zero would change its tag and be reported
+		// as some other pointer's fault. For an external data segment
+		// pointer the next byte is a reference of its own: another page,
+		// or outside the segment, which the evaluation reports.
 		if (!c.ds)
+			return exec_trap::bounds_violation;
+		if (ers32::get(c.ptr, 0, 1))
 		{
-			c.phys = u32(s32(c.phys) + c.dir);
-			return exec_trap::none;
+			m_addr_trap = trap::bounds_violation;
+			return exec_trap::address_error;
 		}
 		return cursor_resolve(c);
 	}
