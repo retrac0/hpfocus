@@ -26,6 +26,9 @@ Matrix cases:
   seven, seven-s1..s5       seven staggered logins at once, the schedule
                             shifted by 0..5 s (memory pressure on 2 MB)
   seven-p350..p450          the same at other IOP poll periods
+  busy                      four logins with three background jobs each: 44
+                            processes on 2 MB, so stacks and data segments
+                            are swapped out under tasks that are still live
   long600                   two sessions early, commands at 560-585 s
   ram3, ram4                a console session with 3 / 4 MB fitted
   poll300..poll700          boot and a console session at other poll periods
@@ -81,6 +84,37 @@ def seven(offset=0.0, **kw):
                 who_all=TERMS7, **kw)
 
 
+def busy():
+    """Four logins, three background jobs each -- find | sort, ls -lR, od,
+    cat | sum -- which is about 44 processes on 2 MB. The memory manager
+    swaps out stacks and global data segments their tasks have stored into
+    only through the registers; a build that loses those halts with
+    TRAP:00000012 some 35 s after the jobs start (the exact script matters:
+    the same jobs without their closing echo happen to survive). Every
+    terminal is asked a question 90 s into the load, and the console's
+    answer is the one checked."""
+    jobs = ("ls -lR /usr > /tmp/l%s 2>&1 && echo L%s''DONE &",
+            "find / -print 2>/dev/null | sort > /tmp/f%s && echo F%s''DONE &",
+            "od -x /bin/csh | tail -1 > /tmp/o%s && echo O%s''DONE &",
+            "cat /bin/* 2>/dev/null | sum > /tmp/s%s && echo S%s''DONE &")
+    k = Script()
+    terms = TERMS7[:4]
+    tags = ['c'] + ['m%d' % i for i in range(3)]
+    for n, term in enumerate(terms):
+        k.login(term, 90.0 + n)
+    for n, term in enumerate(terms):
+        for j in range(3):
+            tag = '%s%d' % (tags[n], j)
+            k.type(term, jobs[(n + j) % 4] % (tag, tag), 125.0 + n, run=3)
+        k.type(term, 'ps -ef | wc -l', None, run=5)
+    for n, term in enumerate(terms):
+        k.type(term, "who | wc -l && echo LA''TE%s" % tags[n], 235.0 + n, run=5)
+    # The clock is pinned: the run is then the same run every time, on any
+    # host and day, which is what lets a broken build fail it reliably.
+    return k.spec(46, nv='keep', tap='console', want=['LATEc'],
+                  env={'FOCUS_RTCTIME': '2026-10-01T12:00:00'})
+
+
 def cases():
     c = collections.OrderedDict()
     c['boot-keep'] = dict(secs=200, nv='keep', tap='all', expect_banners=7)
@@ -94,6 +128,7 @@ def cases():
         c['seven-s%d' % shift] = seven(shift)
     for p in (350, 380, 420, 450):
         c['seven-p%d' % p] = seven(env={'FOCUS_IOPPOLL': str(p)})
+    c['busy'] = busy()
     c['long600'] = dict(secs=600, nv='keep', tap='console,2:3',
                         type=session('console') + ';' + session('2:3')
                         + ';@console=date\\n;@2:3=date\\n;@console=who\\n;@2:3=ps -ef\\n',
@@ -210,6 +245,9 @@ def score(name, spec, t, rc):
             fails.append('logins missing: %s' % ','.join(sorted(missing)))
     if spec.get('late_dates') and len(dates) < 2 + spec['late_dates']:
         fails.append('late commands unanswered (dates=%d)' % len(dates))
+    for w in spec.get('want', []):
+        if w not in t:
+            fails.append('%s never printed' % w)
     r['ok'] = not fails
     r['why'] = '; '.join(fails)
     return r
