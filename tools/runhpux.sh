@@ -461,7 +461,9 @@ for t in ${TERMS[@]+"${TERMS[@]}"}; do
 		[ "$DRYRUN" = 0 ] && inner=$(awk -v n="$name" '$1 == n { print $2 }' "$RUNDIR/hub.ready")
 		MARGS+=("-$slot" null_modem "-$b" "socket.127.0.0.1:$inner")
 		if [ "$name" = console ]; then pub=$PORT_BASE; dev=console; else pub=$((PORT_BASE + name)); dev=tty0$name; fi
-		CONNECT+=("$(printf '  %-8s tools/hpuxterm.py %-8s (TCP 127.0.0.1:%s)' "$dev" "$name" "$pub")")
+		# hpuxterm.py's N means port 4000+N unless it is told the base too.
+		hubase=; [ "$PORT_BASE" = 4000 ] || hubase="--base $PORT_BASE "
+		CONNECT+=("$(printf '  %-8s tools/hpuxterm.py %s%-8s (TCP 127.0.0.1:%s)' "$dev" "$hubase" "$name" "$pub")")
 		;;
 	pty)
 		MARGS+=("-$slot" pty)
