@@ -71,6 +71,8 @@ enum class trap_cause : u8
 	reset                     = 010,
 	page_table_violation      = 011,
 	inconsistent_registers    = 012,
+	eds_bounds_violation      = 013,
+	eds_pointer_violation     = 015,
 	pointer_conversion        = 016,
 	external_program_pointer  = 017,
 	unimplemented_instruction = 020,
@@ -425,8 +427,17 @@ public:
 		if (m_traps_enabled && r.sl != 0 && r.s > r.sl)
 			return stack_overflow_trap();
 
+		// Instruction Sequencing Bounds Violation, condition 5 of the same
+		// list: "P>PL is detected during normal instruction sequencing"
+		// (ERS sheet 50, cause 055), a trap the OS handles like any other
+		// fault -- HP-UX signals the process. Returned bare, as this used
+		// to be, the host latched the whole machine as "stopped, trap" for
+		// every user because one program ran off the end of its segment.
+		// Before a handler segment exists the caller is told, as for any
+		// other fault.
 		if (!m_au.in_code(r.p))
-			return exec_trap::code_bounds;
+			return m_traps_enabled ? vector_fault(exec_trap::code_bounds)
+					: exec_trap::code_bounds;
 
 		// Machine Instruction Trap, condition 8 of the same list: "prior
 		// to every machine instruction if the Machine Instruction Trap
@@ -520,9 +531,21 @@ public:
 	{
 		switch (m_addr_trap)
 		{
-		case trap::eds_pointer_violation:    return trap_cause::unexpected_pointer_type;
+		// The external data segment causes have STT entries of their own:
+		// "1) Bounds Violation. An address is outside of the limits for
+		// the program, stack or global data segments", "13) External Data
+		// Segment Bounds Violation ... of an external data segment or a
+		// set of linked external data segments. See notes 2 and 4", "15)
+		// External Data Segment Pointer Violation. An external data
+		// segment pointer contains a data segment number of either zero
+		// or 2048" (ERS sheets 45-46). Both were folded into causes 001
+		// and 030 (Unexpected Pointer Type, "a pointer type which it
+		// cannot handle"). HP-UX 5.30's TRAP HANDLERS installs distinct
+		// vectors at 013 and 015, among the per-cause stubs it has for
+		// every entry of its STT.
+		case trap::eds_pointer_violation:    return trap_cause::eds_pointer_violation;
 		case trap::dst_violation:            return trap_cause::dst_violation;
-		case trap::eds_bounds_violation:     return trap_cause::bounds_violation;
+		case trap::eds_bounds_violation:     return trap_cause::eds_bounds_violation;
 		case trap::data_seg_write_violation: return trap_cause::data_segment_write;
 		case trap::priv_mode_data_violation: return trap_cause::privileged_mode_data;
 		case trap::absent_segment:           return trap_cause::absent_data_segment;

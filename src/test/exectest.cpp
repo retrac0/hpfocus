@@ -2695,6 +2695,83 @@ static void test_cst_reference()
 	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 31, 1), 0);   // never "absent"
 }
 
+// The segment-bound causes each have their own STT entry in segment 1: an
+// address outside an external data segment is cause 013 and a pointer to
+// data segment 0 cause 015, not 001 and 030 (ERS sheets 45-46); running off
+// the end of the code segment is cause 055, Instruction Sequencing Bounds
+// Violation (sheet 50), not a latched machine.
+static void test_segment_causes()
+{
+	std::printf("EDS bounds 013, EDS pointer 015, sequencing 055\n");
+	auto setup = [](harness &h) {
+		const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+		h.mem.write32(0, CST);
+		h.mem.write32(CST, 16 * 8);
+		h.mem.write32(CST + 16 + 4, HLEN - 1);
+		h.mem.write32(CST + 16 + 8, HB);
+		h.mem.write32(CST + 80 + 4, 0xfff);
+		h.mem.write32(CST + 80 + 8, 0x1000);
+		const u32 HPL = HB + (HLEN - 1) - 3;
+		for (u32 c : {001u, 013u, 015u, 030u, 055u})
+			h.mem.write32(HPL - 4 * c, 0x100 + 4 * c);  // a vector per cause
+		h.cpu.enable_traps(true);
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::CSN, 5);
+	};
+	const u32 HB = 0x2000;
+
+	// User segment 1: 64 bytes, unpaged, writable, no link.
+	harness h;
+	setup(h);
+	const u32 dst_base = 0x20000;
+	h.cpu.r.dst = dst_base;
+	h.mem.write32(dst_base, 16 * 4);
+	h.mem.write32(dst_base + 16, ers32::set(0, 27, 1, 1));
+	h.mem.write32(dst_base + 20, 63);
+	h.mem.write32(dst_base + 24, 0x30000);
+	u32 ptr = ers32::set(0, 1, 1, 1);
+	ptr = ers32::set(ptr, 2, 11, 1);
+	ptr = ers32::set(ptr, 13, 19, 64);         // one past the end
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(005)) == exec_trap::none);  // LSI
+	CHECK(unsigned(h.cpu.last_trap()) == 013u);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100 + 4 * 013);
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.q, 2), 0);   // returns to the LSI
+
+	// A pointer to data segment 0.
+	harness z;
+	setup(z);
+	z.cpu.push(ers32::set(0, 13, 19, 8));
+	CHECK(z.one(f4(005)) == exec_trap::none);
+	CHECK(unsigned(z.cpu.last_trap()) == 015u);
+	CHECK_EQ(z.cpu.r.p, HB + 0x100 + 4 * 015);
+
+	// A global pointer out of DB..DL is still cause 1.
+	harness g;
+	setup(g);
+	g.cpu.push((2u << 30) | 0x100000);
+	CHECK(g.one(f4(005)) == exec_trap::none);
+	CHECK(g.cpu.last_trap() == trap_cause::bounds_violation);
+	CHECK_EQ(g.cpu.r.p, HB + 0x100 + 4 * 001);
+
+	// P past PL: the trap, with the marker pointing at the offending P.
+	harness s;
+	setup(s);
+	s.cpu.r.p = s.cpu.r.pl + 4;
+	const u32 q0 = s.cpu.r.q;
+	CHECK(s.cpu.step() == exec_trap::none);
+	CHECK(s.cpu.last_trap() == trap_cause::instruction_sequencing);
+	CHECK_EQ(s.cpu.r.p, HB + 0x100 + 4 * 055);
+	CHECK_EQ(s.cpu.r.q, q0 + 16);
+	CHECK_EQ(s.cpu.word_below_pub(s.cpu.r.q, 2), 0x1000 + 0xfff - 3 + 4 - 0x1000);
+	CHECK(!s.cpu.halted());
+
+	// Without a handler segment it is still reported to the caller.
+	harness n;
+	n.cpu.r.p = n.cpu.r.pl + 4;
+	CHECK(n.cpu.step() == exec_trap::code_bounds);
+}
+
 // LHSI and PLHA sign extend (ERS 4.5 and 12.2: "(S)(0:16) := (S)(16:1)"),
 // exactly as LDH does, and set CCA on the extended value. Both used to
 // zero extend.
@@ -3046,6 +3123,7 @@ int main()
 	test_bit_restart();
 	test_halfword_sign();
 	test_cst_reference();
+	test_segment_causes();
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
