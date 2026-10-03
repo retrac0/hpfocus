@@ -2564,6 +2564,12 @@ static void test_up_down()
 	harness h;
 	h.cpu.r.put(sf::M, 1);                       // privileged
 
+	// The plain form takes a data segment pointer and ",B" an absolute
+	// address (focusexec_alu.ipp; 796 of HP-UX 5.01's 876 plain sites are
+	// fed by LRA, LRAS or CPTR,B, none of its 288 ",B" sites are). This
+	// test once gave the tagged pointer to ",B", which then read 0x80000040
+	// as an address, blocked on empty memory and wrecked the frame for
+	// every check after it.
 	const u32 sem = h.cpu.r.db + 0x40;           // via a global pointer
 	const u32 ptr = (2u << 30) | 0x40;
 	h.mem.write32(sem, 0);                       // no waiters
@@ -2571,20 +2577,43 @@ static void test_up_down()
 
 	// DOWN acquires without blocking while the count is positive.
 	h.cpu.push(ptr);
-	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK(h.one(f4(021)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 	CHECK_EQ(h.cpu.r.s, s32(h.cpu.r.sb + 3));    // popped
 
 	// UP releases it.
 	h.cpu.push(ptr);
+	CHECK(h.one(f4(020)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 1);
+
+	// ",B" takes the raw absolute address.
+	h.cpu.push(sem);
+	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(sem + 4), 0);
+	CHECK_EQ(h.cpu.r.s, s32(h.cpu.r.sb + 3));    // popped
+	h.cpu.push(sem);
 	CHECK(h.one(f4(020, true)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 1);
 
-	// A raw absolute address works too: as an external pointer it would
-	// name segment zero, which is invalid, so the encoding means
-	// absolute.
+	// The readings do not overlap. A raw address given to the plain form
+	// is an external pointer to segment zero, which is no segment: it
+	// faults BEFORE anything is popped or counted, so the instruction can
+	// be retried once a handler has dealt with it.
 	h.cpu.push(sem);
-	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK(h.one(f4(021)) == exec_trap::address_error);
+	CHECK_EQ(h.mem.read32(sem + 4), 1);          // untouched
+	CHECK_EQ(h.cpu.stk(0), sem);                 // operand still there
+	h.cpu.pop();
+
+	// Both are privileged.
+	h.cpu.r.put(sf::M, 0);
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(021)) == exec_trap::unimplemented);
+	CHECK_EQ(h.mem.read32(sem + 4), 1);
+	h.cpu.pop();
+	h.cpu.r.put(sf::M, 1);
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(021)) == exec_trap::none);    // take it again
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 
 	// The pointer is popped with or without the b bit: HP-UX 5.30's
@@ -2611,7 +2640,7 @@ static void test_up_down()
 
 	h.cpu.r.msg = 0;
 	h.cpu.push(ptr);
-	CHECK(h.one(f4(020, true)) == exec_trap::none);
+	CHECK(h.one(f4(020)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 	CHECK_EQ(h.mem.read32(sem), 0);              // unlinked
 	CHECK_EQ(h.mem.read32(TCB + 8), 0x00050001); // ready
