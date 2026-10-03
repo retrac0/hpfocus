@@ -3424,6 +3424,32 @@ static void test_segment_causes()
 	CHECK(unsigned(h.cpu.last_trap()) == 013u);
 	CHECK_EQ(h.cpu.r.p, HB + 0x100 + 4 * 013);
 	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.q, 2), 0);   // returns to the LSI
+	// Note 4: cause 13 clears EM before pushing the marker, as the absent
+	// causes do, so the LSI it returns to is not handed a second Machine
+	// Instruction Trap.
+	{
+		harness em;
+		setup(em);
+		em.cpu.r.dst = dst_base;
+		em.mem.write32(dst_base, 16 * 4);
+		em.mem.write32(dst_base + 16, ers32::set(0, 27, 1, 1));
+		em.mem.write32(dst_base + 20, 63);
+		em.mem.write32(dst_base + 24, 0x30000);
+		em.cpu.r.put(sf::EM, 1);
+		em.cpu.push(ptr);
+		CHECK(em.one(f4(005)) == exec_trap::none);
+		CHECK(unsigned(em.cpu.last_trap()) == 013u);
+		CHECK_EQ(em.cpu.word_below_pub(em.cpu.r.q, 1) & ers32::mask(9, 1), 0);
+		// Cause 1 is note 2 only: EM stays in its marker.
+		harness g1;
+		setup(g1);
+		g1.cpu.r.put(sf::EM, 1);
+		g1.cpu.push((2u << 30) | 0x100000);
+		CHECK(g1.one(f4(005)) == exec_trap::none);
+		CHECK(g1.cpu.last_trap() == trap_cause::bounds_violation);
+		CHECK_EQ(g1.cpu.word_below_pub(g1.cpu.r.q, 1) & ers32::mask(9, 1),
+				ers32::mask(9, 1));
+	}
 
 	// A pointer to data segment 0.
 	harness z;
