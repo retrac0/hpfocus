@@ -201,7 +201,14 @@ def hub(names, base, ready):
         s.close()
         setattr(p, which, None)
 
+    # The hub belongs to the run that started it. If that run is killed
+    # outright (kill -9 skips its cleanup), the hub is re-parented, and it
+    # must go too: otherwise it holds the ports and the next run cannot
+    # listen on them.
+    parent = os.getppid()
     while not stop:
+        if os.getppid() != parent:
+            break
         try:
             events = sel.select(timeout=0.5)
         except InterruptedError:
