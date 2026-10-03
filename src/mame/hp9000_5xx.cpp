@@ -1400,8 +1400,12 @@ private:
 	{ return m_cpu->memory(); }
 	virtual void iop_interrupt(bool state) override
 	{
-		// Message register bit 16 upward are the I/O device interrupts
-		// (Instruction Set ERS sheet 13).
+		// The IOP's level line. Interrupts reach the CPU as Message
+		// register bits 16 up (ERS sheet 13), posted per level by
+		// deliver_iop_interrupts(), and the CPU device accepts this input
+		// and ignores it (focus.cpp execute_set_input). The call is kept
+		// because MAME's input-line handling also reschedules the CPU, and
+		// the machine's timing was measured with it in place.
 		m_cpu->set_input_line(16, state ? ASSERT_LINE : CLEAR_LINE);
 	}
 
