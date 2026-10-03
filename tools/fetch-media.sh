@@ -75,6 +75,8 @@ done
 
 have() { command -v "$1" >/dev/null 2>&1; }
 mb() { echo $(( ($1 + 524288) / 1048576 )); }
+# A size a person reads: "81 KB", "19 MB".
+human() { if [ "$1" -lt 1048576 ]; then echo "$(( ($1 + 512) / 1024 )) KB"; else echo "$(mb "$1") MB"; fi; }
 
 # ------------------------------------------------------------ the manifest
 # Parallel arrays (bash 3.2 has no associative ones): F_* the files, with
@@ -374,7 +376,7 @@ announce() {
 		if [ "${F_WANT[k]}" = 1 ] && [ ! -f "${F_PATH[k]}" ]; then n=$((n + 1)); b=$((b + F_SIZE[k])); fi
 		k=$((k + 1))
 	done
-	echo "fetching $n file(s), $(mb "$b") MB, of Hewlett-Packard's software and manuals."
+	echo "fetching $n file(s), $(human "$b"), of Hewlett-Packard's software and manuals."
 	echo "They are HP's, not this project's, and come from third-party archives"
 	echo "(MEDIA.txt lists each file, its source and its SHA-256):"
 	k=0
@@ -454,7 +456,7 @@ fetch_one() {
 			if [ -f "$part" ] && [ "$(size_of "$part")" = "$size" ]; then
 				:	# complete already: straight to the check
 			else
-				echo "  fetching $p ($(mb "$size") MB) from $(host_of "$url")"
+				echo "  fetching $p ($(human "$size")) from $(host_of "$url")"
 				if ! download "$url" "$part"; then
 					if [ "$REFUSED" = resume ]; then
 						# The server would not resume; PART is gone, start over.
