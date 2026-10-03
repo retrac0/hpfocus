@@ -98,9 +98,9 @@ public:
 // Resolution of an external data segment reference to an absolute address.
 //
 // The full walk -- Data Segment Table entry, segment chaining, and the paged
-// path with its page table -- is specified on ERS sheets 30-36 and 55-56 and
-// needs the DST entry bit layout, which is not yet transcribed. This is the
-// seam where that goes; until then a test double stands in.
+// path with its page table -- is specified on ERS sheets 30-36 and 55-56;
+// dst_walker (focusdst.h) implements it, and unit tests can plug a double
+// in here instead.
 class eds_resolver
 {
 public:

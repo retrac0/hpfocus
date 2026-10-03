@@ -30,6 +30,13 @@ private:
 	// anything, so the trap returns to an instruction that can simply run
 	// again. A doubleword that runs off the end of an unchained segment
 	// is a bounds violation of its own the same way.
+	//
+	// The ERS says as much in Appendix G, among the bugs CPU 4.0 fixed:
+	// on 3.3 and earlier "LDD(S), LDSI, STD, SDSI ... can access
+	// non-existent memory ... if the first word accessed is the last word
+	// in a segment or page and there is no memory mapped immediately after
+	// this first word" -- the old silicon ran on into the physically next
+	// word, which is what this emulated. This core poses as CPU 4.0.
 	bool ea_double(base_reg base, u32 offset, bool ind, bool idx, bool modify,
 			u32 &out, u32 &out2)
 	{
