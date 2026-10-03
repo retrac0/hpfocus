@@ -463,6 +463,77 @@ static void test_divide_by_zero_trap()
 	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x21);
 }
 
+// Integer overflow is the same User Trap, condition 0: it stands "whenever
+// both the overflow and trap bits are set", clears Overflow when taken, and
+// returns past the instruction (note 1). BASIC's DOUBLE arithmetic depends
+// on it to report ERROR 23 instead of printing a wrapped result.
+static void test_overflow_trap()
+{
+	std::printf("integer overflow trap\n");
+	harness h;
+	const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);
+	h.mem.write32(CST + 16 + 4, HLEN - 1);
+	h.mem.write32(CST + 16 + 8, HB);
+	const u32 HPL = HB + (HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 031, 0x100);
+	h.cpu.enable_traps(true);
+	const u32 s0 = h.cpu.r.s, q0 = h.cpu.r.q;
+	auto reset = [&](bool t) {
+		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+		h.cpu.r.s = s0; h.cpu.r.q = q0;
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::T, t ? 1 : 0);
+		h.cpu.r.put(sf::M, 1);
+	};
+	auto param = [&]() { return h.mem.read32(h.cpu.r.q + 12); };
+	auto ret = [&]() { return h.cpu.word_below_pub(h.cpu.r.q, 2); };
+
+	// T clear: Overflow only.
+	reset(false);
+	h.cpu.push(0x7fffffffu); h.cpu.push(1);
+	CHECK(h.one(f3(020)) == exec_trap::none);        // ADD
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.r.pb, 0x1000);
+
+	// T set: the trap, Overflow cleared, back to the next instruction.
+	reset(true);
+	h.cpu.push(0x7fffffffu); h.cpu.push(1);
+	CHECK(h.one(f3(020)) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x01);
+	CHECK_EQ(ret(), 0x1002 - 0x1000);
+	CHECK(!h.cpu.r.test(sf::O));
+
+	// No overflow, no trap.
+	reset(true);
+	h.cpu.push(2); h.cpu.push(3);
+	CHECK(h.one(f3(022)) == exec_trap::none);        // MPY
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.stk(0), 6);
+
+	reset(true);
+	h.cpu.push(123456789); h.cpu.push(987);
+	CHECK(h.one(f3(022)) == exec_trap::none);        // MPY overflows
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x01);
+
+	reset(true);
+	h.cpu.push(0x12345);
+	CHECK(h.one(f3(034)) == exec_trap::none);        // ISC: a halfword check
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x00);
+
+	reset(true);
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);        // DIV: doubleword
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x04);
+}
+
 // The logical group as multiple precision limbs (ERS sheet 76, 61.1-61.3):
 // the b bit chains Carry in, LSUB's borrow travels inverted (Carry set =
 // no borrow), and the code is CCG/CCE with a zero limb leaving it alone
@@ -3119,6 +3190,7 @@ int main()
 	test_divide_extremes();
 	test_logical_carry_chain();
 	test_divide_by_zero_trap();
+	test_overflow_trap();
 	test_negate();
 	test_stack_ops();
 	test_condition_codes();
