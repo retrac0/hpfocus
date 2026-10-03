@@ -306,14 +306,18 @@ void focus_device::execute_run()
 void focus_device::execute_set_input(int inputnum, int state)
 {
 	// External interrupts arrive as bits in the Message register, gated by
-	// the Mask register and by STATUS bit I (ERS sheets 13, 38-43). The
-	// interrupt handler and IXIT are not implemented yet, so the line is
-	// recorded but not acted on.
-	if (inputnum >= 0 && inputnum < 32)
-	{
-		if (state)
-			m_core.r.msg |= (1u << (31 - inputnum));
-		else
-			m_core.r.msg &= ~(1u << (31 - inputnum));
-	}
+	// the Mask register and by STATUS bit I (ERS sheets 13, 38-43) -- but
+	// not through here. The IOP posts each accepted request as a message
+	// at 16 + the device's level (raise_message, from the driver's
+	// deliver_iop_interrupts), which is what the microcode interrupt
+	// handler consumes, level by level, clearing a bit only when that
+	// level's list is empty. The IOP's level line, which the driver still
+	// drives on input 16, used to be mirrored into MSG bit 16 here: every
+	// post set the level-0 request whatever the device's level was, and
+	// every de-assert after a CIRQ or DCE cleared it, erasing a genuine
+	// pending level-0 request of another device still linked on the
+	// list. An input line carries nothing the Message register does not
+	// already have, so it is accepted and ignored.
+	(void)inputnum;
+	(void)state;
 }
