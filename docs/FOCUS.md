@@ -1069,15 +1069,21 @@ stack. *CCA on the new value.*
 
 ***Overflow.*** The ERS makes `STATUS.O` sticky — "cleared only by the
 Branch on Overflow, Branch on No Overflow, and Set Registers instructions"
-(sheet 12) — and, with `STATUS.T` set, any instruction that sets it raises
-User Trap 031 with parameter `0x0t` (t the result type), clearing it. The
-core models neither half: `ADD`, `SUB`, `MPY`, `ASL`, `ISC` and `FIXD`/`FIXS`
-*assign* Overflow (so a later operation that does not overflow clears it),
-`ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`, `DECM`,
-`INCF` and `DECF` never set it, and no integer-overflow trap is taken. HP-UX
-does not notice: its user-trap handler ignores integer overflow, and at
-every `BOV`/`BNO` executed in boots and compile sessions a sticky flag
-would have read the same. Only divide by zero honours `T` (above).
+(sheet 12) — and the integer-overflow User Trap (031) "occurs whenever both
+the overflow and trap bits are set", clearing Overflow, with parameter
+`0x0t` (t the result type: 1 for 32 bits, 4 for `DIV`'s doubleword, 0 for
+`ISC`'s halfword). The core takes the trap at the end of any instruction
+that leaves both bits set. BASIC depends on it: its DOUBLE arithmetic runs
+with T set, and the trap is how `DISP 2147483647+1` becomes *ERROR 23:
+DOUBLE overflow* rather than a wrapped −2147483648. HP-UX runs user code
+with T set too, but its handler ignores integer overflow; its kernel runs
+with T clear. What the core does **not** model is the stickiness: `ADD`,
+`SUB`, `MPY`, `ASL`, `ISC` and `FIXD`/`FIXS` *assign* Overflow (so a later
+operation that does not overflow clears it, which matters only with T
+clear), and `ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`,
+`INCM`, `DECM`, `INCF` and `DECF` never set it. At every `BOV`/`BNO`
+executed in HP-UX boots and compile sessions a sticky flag would have read
+the same.
 
 ### 10.6 The X register
 
