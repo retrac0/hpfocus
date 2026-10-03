@@ -451,9 +451,9 @@ inline constexpr spec CATALOGUE[] = {
   "\"never set\", which is the path HP-UX's first boot takes (error 941) "
   "and what BASIC reports as \"Clock and date not set\". 'now' takes the "
   "host's wall clock; a fixed moment is what a reproducible run wants. "
-  "This seeds the HARDWARE: HP-UX 5.30 still clears the century and year "
-  "during bring-up and sets its own, and the clock check byte that "
-  "probably gates that is not known." },
+  "HP-UX keeps GMT in the chip (set FOCUS_RTCUTC=1 for it; tools/runhpux.sh "
+  "does), BASIC local time. A battery HP-UX has not yet initialised takes "
+  "the seed from its second boot; HP-UX 5.30 accepts 1970..2038-01-19." },
 { "FOCUS_RTCUTC", "", group::machine, true,
   "Take FOCUS_RTCTIME=now as UTC rather than as the host's local time." },
 { "FOCUS_SCMNV", "<file>", group::machine, true,

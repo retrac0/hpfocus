@@ -3356,14 +3356,18 @@ void hp9000_5xx_state::save_battery(focus::rtc_nvm &part, const char *knobname,
 // needs. "now" takes the host's wall clock; a fixed moment is what a
 // reproducible run wants.
 //
-// WHAT THIS DOES NOT YET DO. Seeding puts the moment in both parts -- the
-// clock and the NVM's copy of the same map -- and HP-UX 5.30 then clears
-// the century and the year again during its bring-up and sets its own. So
-// this seeds the HARDWARE, and the OS does not yet accept what it finds.
-// The likely gate is map offset 1, the manuals' "Clock Check Byte", whose
-// value is not known: a battery a real run wrote holds 1 in the clock and
-// 14 in the NVM there, and nothing here writes either. Until that is read
-// off a run, do not expect a seeded date to reach the OS's own clock.
+// What the OS makes of it. Both clocks are the same digit chip, its year,
+// century and clock check byte kept in the NVM beside it (focusrtc.h), and
+// seeding writes all of them, so HP-UX 5.30, HP-UX 5.01 and BASIC all read
+// a seeded moment as a set clock. HP-UX keeps GMT in the chip and converts
+// with its TZ, BASIC keeps local time -- which is the OS's choice, not the
+// machine's, so FOCUS_RTCUTC is left to whoever knows which OS is booting
+// (tools/runhpux.sh sets it). Two things still stand between a seed and
+// HP-UX's clock, and both are said out loud below rather than discovered:
+// a battery HP-UX has never initialised fails its NVM checksum, and the
+// kernel rewrites the whole part -- check byte included -- so the seed
+// takes from the next boot; and 5.30 accepts a boot-time clock only from
+// 1970 to 2038-01-19 03:14:07 GMT, booting at time 0 outside it.
 void hp9000_5xx_state::seed_clocks()
 {
 	const char *const e = knob::text("FOCUS_RTCTIME").get();
@@ -3412,6 +3416,17 @@ void hp9000_5xx_state::seed_clocks()
 		osd_printf_error("FOCUS_RTCTIME=%s is not a moment a clock can "
 				"hold\n", e);
 		return;
+	}
+	if (!has_internal_disc())
+	{
+		if (!m_scm.nv().hpux_checksum_ok())
+			osd_printf_warning("clock: this battery has not been initialised by "
+					"HP-UX; it rewrites the NVM on this boot, and the seeded clock "
+					"takes from the next one\n");
+		const long long t = c.to_epoch();
+		if (c.year < 1970 || t > 2147483647LL)
+			osd_printf_warning("clock: %04d is outside the 1970-2038 range HP-UX "
+					"5.30 accepts; it will boot at time 0\n", c.year);
 	}
 	m_scm.nv().set_time(c);
 	m_scm.nv().set_time_mirror(c);
