@@ -375,7 +375,7 @@ user_set() { local a; for a in ${ARGS[@]+"${ARGS[@]}"}; do [ "$a" = "$1" ] && re
 # Feature check: the console card's rs232 port came with the terminals
 # lane's change. Ask the binary rather than guess.
 console_has_rs232() {
-	"$FOCUS_BIN" hp9040 -listslots 2>/dev/null | grep -q 'asi:rs232\|cio0:asi:rs232'
+	"$FOCUS_BIN" hp9040 -listslots 2>/dev/null | grep -q 'asi:rs232'
 }
 if [ "$CONSOLE" = tcp ] || [ "$CONSOLE" = pty ]; then
 	if [ "$DRYRUN" = 0 ] && ! console_has_rs232; then

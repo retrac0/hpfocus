@@ -313,8 +313,8 @@ macOS is untested for this alpha. What should differ:
   tools. They use `sysctl` where Linux has `nproc`, `cp -c` (an APFS
   clone) where Linux has `cp --reflink`, and Python for checksums. None of
   this has been run on a Mac.
-- **Python:** the Xcode tools' `python3` (3.9) is new enough for the
-  HP-UX tools. Some developer tools need 3.10 without the toolstests fixes.
+- **Python:** the Xcode tools' `python3` (3.9) is new enough: the tools
+  need 3.8 or later.
 - **Pseudo terminals** are named `/dev/ttysNNN`.
 - **Scroll Lock:** Mac keyboards have no Scroll Lock key. Reassign MAME's
   "UI Toggle" in its Input menu (Tab) if you need it.

@@ -95,7 +95,7 @@ hpux_make_pristine() {
 	echo "assembling the pristine HP-UX 5.30 disc from the two unit-save tapes..."
 	rm -f "$PRISTINE_DISC.new"
 	if ! python3 "$FOCUS_REPO/tools/mkhpuxdisc.py" "${tapes[@]}" "$PRISTINE_DISC.new"; then
-		rm -f "$PRISTINE_DISC.new" "${made[@]}"
+		rm -f "$PRISTINE_DISC.new" ${made[@]+"${made[@]}"}
 		hpux_die "tools/mkhpuxdisc.py failed"
 	fi
 	rm -f ${made[@]+"${made[@]}"}

@@ -243,7 +243,7 @@ fi
 
 # ------------------------------------------------------------ 3. wiring
 say "wiring this tree into MAME"
-tools/link_into_mame.sh | sed -n '/^\(ok\|linked\|applied\) /s/^/   /p'
+tools/link_into_mame.sh | awk '/^(ok|linked|applied) / { print "   " $0 }'
 
 # ------------------------------------------------------------ 4. build
 if [ "$BUILD" = 1 ]; then
@@ -292,7 +292,10 @@ if [ "$BUILD" = 1 ]; then
 If the failure is a warning treated as an error on a newer compiler, try:
   tools/setup.sh -- NOWERROR=1"
 	fi
-	if ! ./mame/focus -listfull hp9040 2>/dev/null | grep -q '^hp9040'; then
+	# (Into a variable, not straight into grep -q: under pipefail an early
+	# grep exit could fail the pipeline on SIGPIPE.)
+	listed=$(./mame/focus -listfull hp9040 2>/dev/null || true)
+	if ! printf '%s\n' "$listed" | grep '^hp9040' >/dev/null; then
 		die "mame/focus was built but does not know the hp9040 machine:
 is tools/mame/focus-mame.patch applied? (tools/link_into_mame.sh --check)"
 	fi
