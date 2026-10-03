@@ -33,20 +33,27 @@ as the first task is dispatched. The file system is rebuilt here rather
 than patched, so `--copy` can put files in it; tools/sdfwrite.py holds the
 structures.
 
-    tools/installbasic.py disc.img --basic software/basic/img/500BT1.img \\
-        software/basic/img/500BT2.img --option /tmp/opt1/ERRORS_ENG ...
+    tools/installbasic.py disc.img --basic software/basic/500BT1.TD0 \\
+        software/basic/500BT2.TD0 --option /tmp/opt1/ERRORS_ENG ...
     tools/installbasic.py disc.img --basic ... \\
-        --copy software/basic/img/500OPT1.img:BUILD_BOOT,CAT_BOOT
+        --copy software/basic/500OPT1.TD0:BUILD_BOOT,CAT_BOOT
+
+A volume may be given as the shipped Teledisk file or as a raw image
+(tools/td0.py --raw); a .TD0 is decoded here, so nothing has to make the
+gitignored software/basic/img/ first.
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 
 import argparse
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import sdfread
 import sdfwrite
+import td0
 
 BLOCK = 256
 DESC = 0x400
@@ -91,6 +98,17 @@ def module(path: Path) -> tuple[bytes, str]:
     return d[:take], d[28:44].decode("ascii", "replace").rstrip()
 
 
+def volume_bytes(path) -> bytes:
+    """A volume's raw image: a Teledisk file is decoded the way
+    `td0.py --raw` decodes it, sectors in (cylinder, head, sector) order."""
+    data = Path(path).read_bytes()
+    if data[:2] == b"TD":
+        good = sorted((s for s in td0.parse(data) if s[5] is not None),
+                      key=lambda s: (s[0], s[1], s[2]))
+        return b"".join(s[5] for s in good)
+    return data
+
+
 def copies(specs: list[str]) -> list[tuple[str, bytes, int]]:
     """Files pulled out of shipped SDF volumes, BASIC file type and all.
 
@@ -102,7 +120,7 @@ def copies(specs: list[str]) -> list[tuple[str, bytes, int]]:
     out = []
     for spec in specs:
         path, _, names = spec.partition(":")
-        vol = sdfread.SDF(Path(path).read_bytes())
+        vol = sdfread.SDF(volume_bytes(path))
         want = [n for n in names.split(",") if n] or None
         have = {name: vol.inode(ino) for name, ino in vol.readdir(vol.root())}
         for name in (want if want is not None else list(have)):
@@ -128,15 +146,23 @@ def main() -> int:
 
     # Assemble the boot image from its volumes with the existing tool, so
     # there is one implementation of the volume-descriptor rules.
-    tmp = args.image or Path("/tmp/hpfocus-boot.bin")
-    r = subprocess.run([sys.executable, str(Path(__file__).parent / "bootimage.py"),
-            str(tmp), *[str(p) for p in args.basic]],
-            capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    if r.returncode:
-        sys.stderr.write(r.stderr)
-        return r.returncode
-    image = tmp.read_bytes()
+    # A private directory holds the decoded volumes and the image, so two
+    # runs never share a file.
+    with tempfile.TemporaryDirectory() as work:
+        vols = []
+        for i, p in enumerate(args.basic):
+            raw = Path(work) / f"volume{i + 1}.img"
+            raw.write_bytes(volume_bytes(p))
+            vols.append(str(raw))
+        tmp = args.image or Path(work) / "boot.bin"
+        r = subprocess.run([sys.executable,
+                str(Path(__file__).parent / "bootimage.py"), str(tmp), *vols],
+                capture_output=True, text=True)
+        sys.stdout.write(r.stdout)
+        if r.returncode:
+            sys.stderr.write(r.stderr)
+            return r.returncode
+        image = tmp.read_bytes()
 
     end, segs = chain_end(image)
     print(f"\nboot image: {len(image):,} bytes, {segs} segments, "

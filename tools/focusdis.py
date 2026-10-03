@@ -18,6 +18,7 @@ and a field written (N:M) is M bits starting at bit N. Instruction layouts
 Usage:
   focusdis.py <image> [--start N] [--count N] [--end N] [--stats]
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import argparse
 import csv
 import struct

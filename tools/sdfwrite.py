@@ -12,8 +12,8 @@ look like.
     block 0        superblock: label, block size, boot area, FA location
     blocks 1..n    the boot area, if there is one (tools/installbasic.py)
     FA file        128-byte records: 0 the FA file's own i-node, 1 the root
-                   directory's, 2 the head of the free-block chain, then one
-                   per file
+                   directory's, 2 the free-record cache, 3.. the free-block
+                   bitmap, then one per file, then unused (type 5) records
     then           the root directory's data, then each file's data
 
 Why it matters: a disc whose file area is merely zeroed is not an empty
@@ -30,22 +30,29 @@ Field notes, all from the media:
   * `uftype` at +6 is the BASIC file type -- 0xe9f1, 0xe9d0 and so on. It
     is preserved when a file is copied from one volume to another, because
     it is how BASIC tells a stored program from data.
-  * The free-block chain is records of 31 block numbers: +0 type (6 head,
-    5 continuation), +2 the next record, then the numbers, -1 ending the
-    used part. 500BT1, which has no free space at all, carries a head with
-    link 0 and a single -1, and that is the shape an empty volume takes.
+  * Free space is a BITMAP, FA records 3 onward (fs(5): "a bit for each
+    block on the device. If a bit is set, the corresponding block is
+    free", zero-padded to a whole record), most significant bit first --
+    sized from s_maxblk, which is the largest block number, not the count.
+    BASIC reads it so: on a 9,664-block disc it reads records 3..12 and
+    reports AVAILABLE SPACE as four 256-byte records per set bit. The
+    7914 HP-UX volume and every BASIC floppy are laid out this way.
+  * Record 2 is not about blocks at all. It is a type-6 cache of free FA
+    RECORD numbers -- +2 a count, then up to 31 record numbers -- that
+    CREATE pops an i-node slot from (the floppies carry 35..57, 27..34;
+    500BT1 and the 7914 an empty one). Unused records are type 5.
 """
 
 import struct
 
 FA_REC = 128
 DIRENT = 24
-FREE_PER_REC = 31
+SPARE_RECS = 64     # unused FA records left for the files BASIC will create
 
-# i-node type codes, as the records carry them at +0.
+# FA record type codes, as the records carry them at +0.
 T_INODE = 1
-T_FREE_CONT = 5
-T_FREE_HEAD = 6
+T_UNUSED = 5        # a free FA record, ready to become an i-node
+T_FREE_RECS = 6     # record 2: the cache of free FA record numbers
 
 FT_FILE = 0
 FT_DIR = 1
@@ -84,29 +91,28 @@ class Volume:
     def _nblocks(self, nbytes):
         return (nbytes + self.blksz - 1) // self.blksz
 
+    def _bitmap_records(self):
+        """Free-map records for blocks 0..s_maxblk, one bit each."""
+        return (self.blocks + 8 * FA_REC - 1) // (8 * FA_REC)
+
     def _plan(self):
-        """Where everything goes. The FA file's own size depends on how many
-        free-chain records the free space needs, which depends on where the
-        FA file ends, so the size is settled by iterating -- two rounds are
-        always enough, and the loop is bounded anyway."""
+        """Where everything goes: the FA file right after the boot area,
+        holding the bitmap, one i-node per file and some spare records;
+        then the root directory's data, then each file's data."""
         fa_start = 1 + self.boot_blocks
-        dir_bytes = DIRENT * len(self.files)
-        fa_blocks = 1
-        for _ in range(8):
-            data_start = fa_start + fa_blocks
-            at = data_start + self._nblocks(dir_bytes)
-            extents = []
-            for _name, data, _t in self.files:
-                n = self._nblocks(len(data)) or 1
-                extents.append((at, n))
-                at += n
-            free = list(range(at, self.blocks))
-            chain = max(1, (len(free) + FREE_PER_REC - 1) // FREE_PER_REC)
-            need = self._nblocks((3 + len(self.files) + chain - 1) * FA_REC)
-            if need == fa_blocks:
-                return fa_start, fa_blocks, data_start, extents, free
-            fa_blocks = need
-        raise RuntimeError("FA size did not settle")
+        nrec = 3 + self._bitmap_records() + len(self.files) + SPARE_RECS
+        fa_blocks = self._nblocks(nrec * FA_REC)
+        data_start = fa_start + fa_blocks
+        at = data_start + self._nblocks(DIRENT * len(self.files))
+        extents = []
+        for _name, data, _t in self.files:
+            n = self._nblocks(len(data)) or 1
+            extents.append((at, n))
+            at += n
+        if at > self.blocks:
+            raise ValueError("the files do not fit on the volume")
+        free = list(range(at, self.blocks))
+        return fa_start, fa_blocks, data_start, extents, free
 
     # -- records ----------------------------------------------------
     @staticmethod
@@ -126,55 +132,52 @@ class Volume:
         struct.pack_into(">H", r, 0x72, perm)
         return bytes(r)
 
-    @staticmethod
-    def _free_record(kind, link, blocks):
-        r = bytearray(FA_REC)
-        struct.pack_into(">HH", r, 0x00, kind, link)
-        for i in range(FREE_PER_REC):
-            n = blocks[i] if i < len(blocks) else -1
-            struct.pack_into(">i", r, 0x04 + 4 * i, n)
-            if i >= len(blocks):
-                break
-        return bytes(r)
-
     def _fa(self, fa_start, fa_blocks, data_start, extents, free):
-        recs = [b""] * (3 + len(self.files))
+        nrec = fa_blocks * self.blksz // FA_REC
+        nbm = self._bitmap_records()
+        first_ino = 3 + nbm
+        # Unused records as the media carry them: type 5, then 0xff on the
+        # 256-byte-block floppies and zeros on the 1024-byte-block volumes
+        # (500BT2, 500ENV3, the 7914).
+        fill = b"\xff" if self.blksz < 1024 else b"\x00"
+        unused = bytes([0, T_UNUSED]) + fill * (FA_REC - 2)
+        recs = [unused] * nrec
         recs[0] = self._inode(FT_FILE, fa_blocks, MX_FA, fa_blocks,
                 [(fa_start, fa_blocks)], fa_blocks * self.blksz, 0, "", PERM_FA)
         dir_bytes = DIRENT * len(self.files)
         dir_ext = ([(data_start, self._nblocks(dir_bytes))] if dir_bytes else [])
         recs[1] = self._inode(FT_DIR, self._nblocks(dir_bytes), MX_DIR, 2,
                 dir_ext, dir_bytes, 1, self.label, PERM_DIR)
+
+        # The free map: a set bit is a free block, MSB first.
+        bm = bytearray(nbm * FA_REC)
+        for b in free:
+            bm[b >> 3] |= 0x80 >> (b & 7)
+        for i in range(nbm):
+            recs[3 + i] = bytes(bm[i * FA_REC:(i + 1) * FA_REC])
+
         for i, ((name, data, uftype), ext) in enumerate(zip(self.files, extents)):
-            recs[3 + i] = self._inode(FT_FILE, ext[1], MX_FILE, 0xffff,
+            recs[first_ino + i] = self._inode(FT_FILE, ext[1], MX_FILE, 0xffff,
                     [ext], len(data), 0, "", PERM_FILE, uftype)
 
-        # The free chain: the head is record 2, continuations are appended
-        # after the files. A volume with nothing free carries a head whose
-        # link is 0 and whose first entry is -1, exactly as 500BT1 does.
-        chunks = [free[i:i + FREE_PER_REC]
-                  for i in range(0, len(free), FREE_PER_REC)] or [[]]
-        first = len(recs)
-        for i, chunk in enumerate(chunks):
-            last = i == len(chunks) - 1
-            link = 0 if last and i == 0 else (0xffff if last else first + i)
-            kind = T_FREE_HEAD if i == 0 else T_FREE_CONT
-            rec = self._free_record(kind, link, chunk)
-            if i == 0:
-                recs[2] = rec
-            else:
-                recs.append(rec)
-
-        fa = bytearray(b"".join(recs))
-        fa += bytes(fa_blocks * self.blksz - len(fa))
-        return bytes(fa)
+        # Record 2: the cache of free FA records CREATE takes i-nodes from,
+        # left empty the way 500BT1 and the 7914 carry it ("0006 0000
+        # ffffffff"); BASIC refills it from the type-5 records itself. (A
+        # cache primed with 31 entries made BASIC spill it and then halt
+        # with TRAP 030; empty, and primed with 5, CREATE works.)
+        r2 = bytearray(FA_REC)
+        struct.pack_into(">HHi", r2, 0, T_FREE_RECS, 0, -1)
+        recs[2] = bytes(r2)
+        return b"".join(recs)
 
     def _header(self):
         h = bytearray(self.blksz)
         struct.pack_into(">HH", h, 0x00, 0x0700, 0)       # s_format, corrupt
         h[0x04:0x14] = self.label.encode("ascii").ljust(16)[:16]
+        # s_maxblk is the largest block number (fs(5); 500BT1 is 264
+        # blocks and says 263), and the free map is sized from it.
         struct.pack_into(">6I", h, 0x1c, self.blksz, 1, self.boot_blocks,
-                1 + self.boot_blocks, self.version, self.blocks)
+                1 + self.boot_blocks, self.version, self.blocks - 1)
         return bytes(h)
 
     # -- output -----------------------------------------------------
@@ -189,7 +192,7 @@ class Volume:
         for i, (name, _data, _t) in enumerate(self.files):
             e = bytearray(DIRENT)
             e[0:16] = name.encode("ascii").ljust(16)[:16]
-            struct.pack_into(">i", e, 20, 3 + i)
+            struct.pack_into(">i", e, 20, 3 + self._bitmap_records() + i)
             dirdata += e
         image[data_start * self.blksz:data_start * self.blksz + len(dirdata)] \
                 = dirdata

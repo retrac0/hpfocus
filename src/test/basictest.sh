@@ -45,7 +45,12 @@ STOP=${FOCUS_BASICTEST_STOP:-30}
 # it becomes a pass.
 #
 # Cases marked WORKS are regression guards -- they pass today and must go on
-# passing. 22 of the 24 do; `concat` and `real-add` are the work list.
+# passing. 22 of the 24 do; `concat` and `real-add` are the work list, named
+# in KNOWN_FAIL below: they score XFAIL (or XPASS, once fixed -- then take
+# them off the list) and do not count against the exit status.
+#
+# Exit status: 0 every scored case as expected, 1 a case failed that should
+# pass, 2 nothing could be scored (no binary, no disc, BASIC never booted).
 CASES=(
 	# --- these pass today ------------------------------------- WORKS
 	"disp-int      | DISP 7\n              | 7"
@@ -96,13 +101,20 @@ CASES=(
 	"real-add      | DISP 4.5+1\n         | 5.5"
 )
 
+# Still wrong on a26b01c, checked by hand: `DISP "A"&"B"` halts with
+# TRAP:00000001 and `DISP 4.5+1` shows 5.49999999907.
+KNOWN_FAIL=" concat real-add "
+
 # ------------------------------------------------------------------ options
 ONLY=""
 KEEP=0
 LIST=0
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--only) ONLY=",$2,"; shift ;;
+		--only)
+			[ $# -ge 2 ] && [ -n "$2" ] \
+				|| { echo "--only needs a case name" >&2; exit 2; }
+			ONLY=",$2,"; shift ;;
 		--list) LIST=1 ;;
 		--keep) KEEP=1 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
@@ -133,8 +145,16 @@ fi
 # in the environment for anything it invokes directly.
 export SDL_VIDEODRIVER=dummy
 
+# GNU timeout guards against a run that never ends; macOS has it only as
+# gtimeout (coreutils), and without either the runs go unguarded.
+if command -v timeout >/dev/null; then TIMEOUT=timeout
+elif command -v gtimeout >/dev/null; then TIMEOUT=gtimeout
+else TIMEOUT=""
+fi
+guard() { if [ -n "$TIMEOUT" ]; then "$TIMEOUT" "$@"; else shift; "$@"; fi; }
+
 mkdir -p "$WORK"
-pass=0; fail=0; skip=0
+pass=0; fail=0; skip=0; xfail=0; xpass=0
 
 echo "BASIC behaviour ($(basename "$DISC"), keystrokes at ${TYPEAT}s, stop at ${STOP}s)"
 echo
@@ -162,7 +182,7 @@ for c in "${CASES[@]}"; do
 		FOCUS_HDNOSAVE=1 FOCUS_DIMDUMP=180 \
 		FOCUS_TRAPLOG=1 FOCUS_TRAPFROM=$((${at%%,*} - 1)) \
 		FOCUS_TYPE="$keys" FOCUS_TYPEAT="$at" \
-			timeout $((stop * 20)) "$ROOT/tools/runbasic-hd.sh" "$DISC" \
+			guard $((stop * 20)) "$ROOT/tools/runbasic-hd.sh" "$DISC" \
 				-- -str "$stop" -video none >"$log" 2>&1
 		rc=$?
 		if grep -q 'BASIC Ready for use' "$log"; then booted=1; break; fi
@@ -186,9 +206,18 @@ for c in "${CASES[@]}"; do
 		continue
 	fi
 
+	known=0
+	case "$KNOWN_FAIL" in *" $name "*) known=1 ;; esac
+
 	if echo "$screen" | sed 's/^ *//;s/ *$//' | grep -qxF -- "$want"; then
-		printf '  %-14s PASS  %s\n' "$name" "$want"
-		pass=$((pass + 1))
+		if [ "$known" = 1 ]; then
+			printf '  %-14s XPASS %s  (fixed? take it off KNOWN_FAIL)\n' \
+				"$name" "$want"
+			xpass=$((xpass + 1))
+		else
+			printf '  %-14s PASS  %s\n' "$name" "$want"
+			pass=$((pass + 1))
+		fi
 	else
 		if echo "$screen" | grep -q 'System halted'; then
 			got=$(echo "$screen" | grep -o 'TRAP:[0-9A-F]*' | head -1)
@@ -197,14 +226,20 @@ for c in "${CASES[@]}"; do
 			got=$(echo "$screen" | sed 's/^ *//;s/ *$//' | grep -v '^$' \
 				| tail -2 | tr '\n' '/' | sed 's:/$::')
 		fi
-		printf '  %-14s FAIL  want %-8s got %s%s\n' "$name" "$want" \
+		verdict=FAIL
+		[ "$known" = 1 ] && verdict=XFAIL
+		printf '  %-14s %-5s want %-8s got %s%s\n' "$name" "$verdict" "$want" \
 			"${got:-<nothing>}" \
 			"$([ "$traps" -gt 0 ] && echo "  [$traps traps]")"
-		fail=$((fail + 1))
+		if [ "$known" = 1 ]; then xfail=$((xfail + 1)); else fail=$((fail + 1)); fi
 	fi
 done
 
 echo
-echo "$pass passed, $fail failed$([ $skip -gt 0 ] && echo ", $skip skipped")"
+echo "$pass passed, $fail failed$([ $xfail -gt 0 ] && echo ", $xfail known failures")$([ $xpass -gt 0 ] && echo ", $xpass unexpectedly passed")$([ $skip -gt 0 ] && echo ", $skip skipped")"
 [ "$KEEP" = 1 ] && echo "logs in $WORK"
+if [ $((pass + fail + xfail + xpass)) -eq 0 ]; then
+	echo "nothing was scored"
+	exit 2
+fi
 [ "$fail" = 0 ]

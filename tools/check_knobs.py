@@ -14,6 +14,7 @@ A knob is named by a "FOCUS_..." string literal, wherever it appears and
 whichever reader consumes it, so this does not have to know the shape of
 every call site and cannot drift as new ones are added.
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import re
 import sys
 from pathlib import Path

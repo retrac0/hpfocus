@@ -74,6 +74,7 @@ def unix_time(rec, off):
 class SDF:
     def __init__(self, data: bytes, blksz=None, skew=0, fa=None):
         self.d = data
+        self._faext = None      # the FA file's extents, read on first use
         if blksz is not None:
             # Salvage mode: geometry supplied because block 0 is missing.
             self.blksz, self.skew = blksz, skew
@@ -98,8 +99,53 @@ class SDF:
         return self.d[off:off + count * self.blksz]
 
     def fa_record(self, ino: int) -> bytes:
-        off = self.fa * self.blksz + ino * FA_REC
-        return self.d[off:off + FA_REC]
+        """FA record `ino`, found through the FA file's own extents.
+
+        The FA file is one run from s_fa only while it is small. BASDEM7's
+        is three extents, (514,29),(799,29),(345,29), and the 7914 HP-UX
+        volume's is seventeen -- four in its own i-node (record 0) and
+        thirteen in the extent map that i-node names (record 129). Reading
+        every record as if the file were contiguous resolves only the first
+        extent correctly: the rest are read from whatever blocks follow it,
+        and the walk drops their files without a word (the HP-UX volume
+        listed no names at all). Salvage mode, which has no trustworthy
+        record 0, keeps the contiguous reading.
+        """
+        if self._faext is None:
+            self._faext = self._fa_extents()
+        want, seen = ino * FA_REC, 0
+        for start, n in self._faext:
+            if want < seen + n * self.blksz:
+                off = (start - self.skew) * self.blksz + (want - seen)
+                return self.d[off:off + FA_REC]
+            seen += n * self.blksz
+        return b""
+
+    def _fa_extents(self) -> list:
+        # Bootstrap: the first extent always holds record 0, and the extent
+        # map records are read with whatever extents are known so far.
+        whole = [(self.fa, max(0, len(self.d) // self.blksz + self.skew - self.fa))]
+        self._faext = whole
+        if self.name == "(no superblock)":
+            return whole
+        r0 = self.inode(0)
+        if r0 is None or r0["type"] != 1 or not r0["extents"] \
+                or r0["extents"][0][0] != self.fa:
+            return whole
+        ext = [e for e in r0["extents"] if e[0] > 0 and e[1] > 0]
+        nxt, guard = r0["exmap"], 0
+        while nxt >= 0 and guard < 256:
+            guard += 1
+            self._faext = ext
+            e = self.fa_record(nxt)
+            if len(e) < FA_REC or struct.unpack(">H", e[0:2])[0] != 2:
+                break
+            cnt = struct.unpack(">H", e[2:4])[0]
+            ext = ext + [x for x in (struct.unpack(">ii", e[24 + 8 * i:32 + 8 * i])
+                                     for i in range(min(cnt, 13)))
+                         if x[0] > 0 and x[1] > 0]
+            nxt = struct.unpack(">i", e[8:12])[0]
+        return ext
 
     # -- i-nodes ----------------------------------------------------
     def inode(self, ino: int) -> dict:
@@ -152,7 +198,10 @@ class SDF:
             if start <= 0 or n <= 0:
                 continue
             buf += self.block(start, n)
-        return bytes(buf[:ino["size"]]) if ino["size"] > 0 else bytes(buf)
+        # A size of 0 is an empty file or directory, not "unknown": handing
+        # back the whole extent there lists an empty directory's stale
+        # blocks as entries (tools/sdf7914.py already reads it so).
+        return bytes(buf[:ino["size"]]) if ino["size"] >= 0 else bytes(buf)
 
     # -- directories ------------------------------------------------
     def readdir(self, ino: dict) -> list:
@@ -206,13 +255,12 @@ class SDF:
         """Yield (path, inode) for every name in the tree.
 
         The recursion guard is the ancestor stack, not a set of everything
-        visited. A global set looks equivalent but silently mis-files:
-        BASDEM7 carries a stale i-node (63) that duplicates /DEMO's name,
-        parent and extents and is reached as /DEMO/DIR/9845c_data/land, so
-        a depth-first walk claims MAIN_MENU and eight other programs under
-        that alias and then skips them when it reaches the real /DEMO. The
-        ancestor stack breaks the loop without deciding which name wins, so
-        every name is reported and nothing lands in the wrong directory.
+        visited: a global set would silently mis-file a name reached twice,
+        while the ancestor stack breaks a loop without deciding which name
+        wins. (BASDEM7 once seemed to need it -- an "i-node 63" duplicating
+        /DEMO, reached as /DEMO/DIR/9845c_data/land -- but that was record
+        63 read from the wrong block, before fa_record followed the FA
+        file's extents; it is a 9,980-byte data file.)
         """
         if ino is None:
             ino = self.root()
