@@ -213,38 +213,57 @@ private:
 			const bool tbl_is_ds = ((operand >> 2) & 1) != 0;
 
 			const s32 count = s32(stk(0));
-			u32 tblba;
-			const exec_trap st = string_source(stk(2), tbl_is_ds, tblba);
+			const u32 tblptr = stk(2);
+			u32 tblba, tblrun;
+			const exec_trap st = string_source(tblptr, tbl_is_ds, tblba,
+					&tblrun);
 			if (st != exec_trap::none) return st;
 
+			// Translation is in place, so a restart from the first byte
+			// would put the bytes already done through the table a second
+			// time: an interrupted TRAN is pending and goes on from X, as
+			// MVB does (see string_resume).
+			s32 x = string_resume(d, count);
 			byte_cursor dst;
 			{
-				const exec_trap t2 = cursor_open(dst, stk(1), true, true, d);
+				const exec_trap t2 = cursor_open(dst, u32(s32(stk(1)) + x),
+						true, true, d);
 				if (t2 != exec_trap::none) return t2;
 			}
 
-			s32 x = 0;
 			while (count > d * x)
 			{
-				m_mem.write8(dst.phys, m_mem.read8(tblba + m_mem.read8(dst.phys)));
-				x += d;
-				if (count > d * x)
+				// The table is 256 bytes of a data segment like any other
+				// and can straddle a page boundary: an entry beyond the
+				// first page's run is a reference of its own, not a byte
+				// of whatever frame follows physically.
+				const u32 idx = m_mem.read8(dst.phys);
+				u32 entry = tblba + idx;
+				exec_trap t = exec_trap::none;
+				if (idx >= tblrun)
 				{
-					const exec_trap t = cursor_step(dst);
-					if (t != exec_trap::none)
-					{
-						// Translation is in place, so a restart from the
-						// original pointer would put bytes already done
-						// through the table a second time. Leave the
-						// resumable state MVB leaves: the remainder, the
-						// target advanced past the work, X the progress.
-						r.x = u32(x);
-						set_stk(0, u32(count - d * x));
-						set_stk(1, u32(s32(stk(1)) + x));
-						return t;
-					}
+					const ea_result e = m_au.resolve_data_pointer(tblptr,
+							false, false, idx);
+					m_addr_trap = e.t;
+					entry = e.addr;
+					if (!e.ok())
+						t = exec_trap::address_error;
+				}
+				if (t == exec_trap::none)
+				{
+					m_mem.write8(dst.phys, m_mem.read8(entry));
+					x += d;
+					if (count > d * x)
+						t = cursor_step(dst);
+				}
+				if (t != exec_trap::none)
+				{
+					r.x = u32(x);
+					r.put(sf::P, 1);
+					return t;
 				}
 			}
+			r.put(sf::P, 0);
 			r.x = u32(x);
 			set_stk(0, u32(count - d * x));
 			r.s -= 4 * sdec;
@@ -257,6 +276,12 @@ private:
 			// names -- the bytes, a size word above them and a fresh
 			// descriptor above that. The source string is not modified.
 			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+			// Interrupted in its move: the descriptor is long gone, the
+			// temp is built and the move's three parameters are on top.
+			// See string_move.
+			if (r.test(sf::P))
+				return do_mvb(1, 3, src_is_ds);
 
 			str_desc d;
 			d.maxlen = s32(stk(3));
@@ -296,7 +321,7 @@ private:
 			set_stk(2, sptr);
 			set_stk(1, stack_pointer_to(tempadr + 4));
 			set_stk(0, u32(d.len));
-			return do_mvb(1, 3, src_is_ds);
+			return string_move(1, src_is_ds);
 		}
 
 		case 026: {                                               // SVAL
@@ -325,6 +350,9 @@ private:
 			const bool src_is_ds = ((operand >> 2) & 1) != 0;
 			const bool from_temp = (operand & 1) != 0;
 			const bool tneg_ok   = ((operand >> 1) & 1) != 0;
+
+			if (r.test(sf::P))                  // interrupted in its move
+				return do_mvb(1, 3, src_is_ds);
 
 			str_desc s;
 			s.maxlen = s32(stk(3));
@@ -410,7 +438,7 @@ private:
 			set_stk(2, msrc);
 			set_stk(1, mdst);
 			set_stk(0, u32(s.len));
-			return do_mvb(1, 3, src_is_ds);
+			return string_move(1, src_is_ds);
 		}
 
 		case 030: {                                               // SAS
@@ -422,6 +450,14 @@ private:
 			const bool from_temp  = (operand & 1) != 0;         // CIR(31:1)
 			const bool fill       = ((operand >> 3) & 1) != 0;  // CIR(28:1)
 			const bool tneg_ok    = ((operand >> 1) & 1) != 0;  // CIR(30:1)
+
+			// Interrupted in its move. Which way the move was going is in
+			// the condition code, where SAS put it -- "CC is set according
+			// to move direction used" -- and the trap's marker brought it
+			// back with the rest of STATUS.
+			if (r.test(sf::P))
+				return do_mvb(r.condition_code() == CCG ? 1 : -1, 3,
+						src_is_ds);
 
 			str_desc s;
 			s.maxlen = s32(stk(3));
@@ -512,7 +548,7 @@ private:
 			set_stk(2, msrc);
 			set_stk(1, mdst);
 			set_stk(0, u32(mvlen));
-			return do_mvb(backward ? -1 : 1, 3, src_is_ds);
+			return string_move(backward ? -1 : 1, src_is_ds);
 		}
 
 		case 031: {                                               // PMPB

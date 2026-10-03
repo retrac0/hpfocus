@@ -190,6 +190,44 @@ private:
 		return cursor_resolve(c);
 	}
 
+	// Where an interruptible byte-string instruction takes up its work.
+	// The loop on every one of these sheets begins `X := 0`, and that is
+	// all a first execution can do. One that a trap cut short comes back
+	// with the Instruction Pending bit set: "P = Instruction Pending Bit
+	// - set to 1 by an instruction if it gets interrupted. This bit is
+	// cleared when the instruction is finally completed" (ERS sheet 11).
+	// The instruction set it, the trap's marker saved it with the rest of
+	// STATUS and X, the handler's EXIT restored both -- and the
+	// instruction goes on from X, with its stack exactly as the program
+	// wrote it. A progress count that cannot be one (the wrong sign, or
+	// past the count) is not believed.
+	s32 string_resume(int d, s32 count) const
+	{
+		if (!r.test(sf::P))
+			return 0;
+		const s32 x = s32(r.x);
+		if (d * x < 0 || d * x > count)
+			return 0;
+		return x;
+	}
+
+	// The last step of SLD, SAS and SCON: "Execute MVB Instruction" on the
+	// three parameters they have just stacked (ERS sheets 108-112). By then
+	// the descriptors they were given are gone and the stack rearranged,
+	// so a trap in the move -- the source or target running into an
+	// absent page -- cannot send the instruction back to its beginning:
+	// it would take the MVB parameters for a descriptor. It is pending
+	// from here on instead, X counting the bytes moved, which is what the
+	// three sheets' "the original content of X is destroyed early in the
+	// instruction" is saying; the re-executed instruction sees STATUS.P
+	// and finishes the move.
+	exec_trap string_move(int d, bool src_is_ds)
+	{
+		r.x = 0;
+		r.put(sf::P, 1);
+		return do_mvb(d, 3, src_is_ds);
+	}
+
 	// The body of MVB, which SLD, SAS and SCON all finish by executing
 	// with parameters of their own making (ERS sheets 108-112).
 	exec_trap do_mvb(int d, unsigned sdec, bool src_is_ds)
@@ -197,8 +235,12 @@ private:
 		const s32 count = s32(stk(0));
 		if (count > 0x1000000 || count < -0x1000000)
 			knob::alarm("[core] MVB count %d at P=%08x\n", count, r.p);
-		const u32 tptr = stk(1);
-		const u32 sptr = stk(2);
+		// The pointers as the program stacked them, and how far along
+		// them a move that was interrupted had got.
+		s32 x = string_resume(d, count);
+		const u32 tptr = u32(s32(stk(1)) + x);
+		const u32 sptr = u32(s32(stk(2)) + x);
+		const s32 rem = count - d * x;      // bytes still to move
 
 		u32 sba;
 		const exec_trap st = string_source(sptr, src_is_ds, sba);
@@ -237,11 +279,10 @@ private:
 		// BASIC, and FOCUS_MVBLOG says the rest -- across a whole BASIC
 		// boot and a stored program that runs correctly, the ONLY
 		// overlapping moves are the four the display self test makes.
-		s32 x = 0;
 		static const knob::flag as_memmove("FOCUS_MVBMEMMOVE");
 		const bool clash = (d > 0)
-				? (tba > sba && tba < sba + u32(count))
-				: (tba < sba && sba < tba + u32(-count));
+				? (tba > sba && tba < sba + u32(rem))
+				: (tba < sba && sba < tba + u32(rem));
 		// Which way an overlapping move has to run is the one place the
 		// two readings of this instruction disagree, so every instance
 		// is reportable: FOCUS.md says byte-at-a-time in the chosen
@@ -261,8 +302,8 @@ private:
 		{
 			// Same bytes, opposite order: start at the last element and
 			// walk back toward the first.
-			u32 tb2 = u32(s32(tba) + d * (count - d));
-			u32 sb2 = u32(s32(sba) + d * (count - d));
+			u32 tb2 = u32(s32(tba) + d * (rem - 1));
+			u32 sb2 = u32(s32(sba) + d * (rem - 1));
 			while (count > d * x)
 			{
 				m_mem.write8(tb2, m_mem.read8(sb2));
@@ -283,14 +324,20 @@ private:
 						t = cursor_step(dst);
 					if (t != exec_trap::none)
 					{
-						// Resumable. The ERS's loop begins `X := 0` and
-						// HP's code never clears X before an MVB, so a
-						// restart cannot be told from a first execution:
-						// the stack has to carry the whole state. That
-						// means all three words -- the count reduced to
-						// the remainder AND both pointers advanced past
-						// the bytes already moved -- with X reporting the
-						// progress. Updating the count alone was the
+						// Resumable: X holds the bytes done and STATUS.P
+						// says the instruction is pending (see
+						// string_resume), which is how the re-executed
+						// instruction tells a continuation from a first
+						// execution -- its loop begins `X := 0`, and HP's
+						// code never clears X before an MVB. The stack is
+						// left exactly as the program wrote it, so a move
+						// that was interrupted ends as one that was not:
+						// X the whole count, the count word reduced by
+						// it, and any pointer an SDEC below 3 leaves on
+						// the stack still the one the program pushed.
+						//
+						// This once reported the remainder in the count
+						// word and left the pointers alone, which was the
 						// bug that lost HP-UX's init its /etc/passwd
 						// parser: the exec loader copies a 1 KB file
 						// block into a paged data segment, the copy
@@ -303,33 +350,44 @@ private:
 						// each group the pager maps, all lost their first
 						// 0x138 bytes the same way; getpwnam("root")
 						// then found no digits in "0" and init went
-						// single-user.
+						// single-user. The fix that followed rewrote the
+						// count AND both pointer words on the stack,
+						// which moved the right bytes but ended with X
+						// short by the bytes moved before the trap and
+						// with any pointer an SDEC < 3 keeps changed
+						// under the program -- what the program sees
+						// depended on whether a page happened to fault.
 						if (mvblog)
 							mvblog("[mvb TRAP src=%08x dst=%08x n=%d done=%d "
-									"p=%08x seg=%u x_in=%08x]\n", sptr, tptr,
+									"p=%08x seg=%u x_in=%08x]\n", stk(2), stk(1),
 									count, x, r.p - r.pb, r.get(sf::CSN), r.x);
 						r.x = u32(x);
-						set_stk(0, u32(count - d * x));
-						set_stk(1, u32(s32(tptr) + x));
-						set_stk(2, u32(s32(sptr) + x));
+						r.put(sf::P, 1);
 						return t;
 					}
 				}
 			}
+		r.put(sf::P, 0);
 		r.x = u32(x);
 		set_stk(0, u32(count - d * x));
 		r.s -= 4 * sdec;
 		return exec_trap::none;
 	}
 
-	exec_trap string_source(u32 ptr, bool is_ds, u32 &out)
+	// `run`, when asked for, gets how many bytes from `out` are physically
+	// contiguous (ea_result::run_fwd; a code operand is all one piece).
+	exec_trap string_source(u32 ptr, bool is_ds, u32 &out, u32 *run = nullptr)
 	{
+		if (run)
+			*run = 0x7fffffffu;
 		if (is_ds)
 		{
 			const ea_result e = m_au.resolve_data_pointer(ptr, false, false);
 			m_addr_trap = e.t;
 			if (!e.ok()) return exec_trap::address_error;
 			out = e.addr;
+			if (run)
+				*run = e.run_fwd;
 			return exec_trap::none;
 		}
 		// A local program pointer keeps flags in its top two bits and the
