@@ -293,6 +293,7 @@ public:
 		m_timer_start = 0;
 		m_timer_count = 0;
 		m_timer_enabled = false;
+		m_timer_frac = 0;
 		m_led = false;
 		m_lockout = false;
 		m_enabled = true;
@@ -1180,26 +1181,53 @@ public:
 				run_dma(pa, true);
 	}
 
-	// Advance the interval timer by `units` counts (one count is
-	// (1)*512 clock periods = 28.4 us on real hardware; hosts pass
-	// however many of those their tick represents).
+	// Advance the interval timer by `units` counts (one count is 512
+	// periods of the 18 MHz clock, 28.4 us; hosts pass however many of
+	// those their tick represents).
+	//
+	// "The length of the interval is exactly (Timer Start(0:24)+1)*512*(one
+	// clock period)" (I/O ERS 7.2): the count runs down from Start through
+	// zero, and the NEXT count is the underflow that reloads it, so a
+	// period is Start+1 counts, and whatever is left of this call's counts
+	// after an underflow belongs to the next period. This used to reload on
+	// `count <= units` and drop the remainder, which made every period a
+	// whole number of calls: HP-UX's Start of 350 came out as ten 35-count
+	// calls where the hardware takes 351 counts, a Start of 351 would have
+	// taken eleven, and no period could be shorter than one call. A count
+	// that reached zero also used to stop the timer for good.
+	//
+	// A timer nobody has programmed (start and count both zero) stays quiet,
+	// as it always has.
 	void timer_tick(u32 units = 1)
 	{
-		if (m_timer_count == 0)
+		if (m_timer_count == 0 && m_timer_start == 0)
 			return;
-		if (m_timer_count <= units)
+		while (units > m_timer_count)
 		{
 			// Underflow "is the setting of the Timer Interrupt Request
 			// message bit 13 and sending a message to the CPU" (I/O ERS
 			// 7.1) -- a plain CPU message, not a device interrupt
 			// through the DRT lists. The host forwards the event as
 			// raise_message(13).
+			units -= m_timer_count + 1;
 			m_timer_count = m_timer_start;
 			if (m_timer_enabled)
 				m_timer_event = true;
 		}
-		else
-			m_timer_count -= units;
+		m_timer_count -= units;
+	}
+
+	// A millisecond of the timer. 18 MHz / 512 is 35.15625 counts a
+	// millisecond -- 2250/64 exactly -- and the sixty-fourths are carried
+	// from call to call. A flat 35 a millisecond ran the timer 0.44% slow;
+	// HP-UX programs Start = 350, adds the 9984 us that 351 counts really
+	// are to its software clock on every tick, and so lost 0.16% (with the
+	// old rounding) against emulated time: two and a quarter minutes a day.
+	void timer_tick_ms()
+	{
+		m_timer_frac += 2250;
+		timer_tick(m_timer_frac >> 6);
+		m_timer_frac &= 63;
 	}
 
 	// True once per timer underflow; the host forwards it to the CPU
@@ -1439,6 +1467,7 @@ private:
 	u32 m_timer_count = 0;
 	bool m_timer_enabled = false;
 	bool m_timer_event = false;
+	u32 m_timer_frac = 0;   // sixty-fourths of a count, for timer_tick_ms()
 	u32 m_raise_events = 0;
 	bool m_led = false;
 	bool m_lockout = false;

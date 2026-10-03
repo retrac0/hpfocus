@@ -375,9 +375,16 @@ static void test_poll_and_timer()
 	// pending message-13 event only once enabled (I/O ERS 7.1: underflow
 	// sets "message bit 13", a CPU message, not a device interrupt).
 	// Timer registers carry the count in bits 0:24 (value << 8).
+	//
+	// "The length of the interval is exactly (Timer Start(0:24)+1)*512*(one
+	// clock period)" (I/O ERS 7.2): a Start of 3 is FOUR counts, the count
+	// running 3, 2, 1, 0 and the fourth taking it negative.
 	CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 3 << 8));
 	for (int i = 0; i < 3; i++)
 		iop.timer_tick();
+	CHECK(iop.io_read(tgt(CMD_RTM, 1, 0), v));
+	CHECK_EQ(v, 0u);                     // at zero, not yet under
+	iop.timer_tick();
 	CHECK(!iop.take_timer_event());      // not enabled yet
 	CHECK(!h.irq);                       // and never a device interrupt
 	CHECK(iop.io_read(tgt(CMD_RTM, 1, 0), v));
@@ -386,9 +393,57 @@ static void test_poll_and_timer()
 	CHECK(iop.io_control(tgt(CMD_ETMI, 1, 0)));
 	for (int i = 0; i < 3; i++)
 		iop.timer_tick();
+	CHECK(!iop.take_timer_event());
+	iop.timer_tick();
 	CHECK(iop.take_timer_event());
 	CHECK(!iop.take_timer_event());      // one event per underflow
 	CHECK(!h.irq);
+
+	// Counts left over after an underflow belong to the next period, so a
+	// period need not be a whole number of host calls. Start = 350 is what
+	// HP-UX programs: 351 counts, 9.984 ms at 35.15625 counts a millisecond.
+	// Ten seconds of millisecond ticks hold 351,562.5 counts -- 1001 whole
+	// periods -- where the old arithmetic (reload on count <= units, the
+	// remainder dropped, a flat 35 a call) gave exactly 1000.
+	{
+		CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 350 << 8));
+		unsigned events = 0;
+		for (int ms = 0; ms < 10000; ms++)
+		{
+			iop.timer_tick_ms();
+			events += iop.take_timer_event() ? 1 : 0;
+		}
+		CHECK_EQ(events, 1001u);
+		// A Start of 351 is 352 counts: 998 periods, not the 909 that
+		// eleven-call periods gave.
+		CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 351 << 8));
+		events = 0;
+		for (int ms = 0; ms < 10000; ms++)
+		{
+			iop.timer_tick_ms();
+			events += iop.take_timer_event() ? 1 : 0;
+		}
+		CHECK_EQ(events, 998u);
+		// And a period shorter than a call still underflows: Start = 9 is
+		// 10 counts, so every millisecond call carries an underflow (the
+		// message bit is one bit; the CPU sees one per call).
+		CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 9 << 8));
+		events = 0;
+		for (int ms = 0; ms < 1000; ms++)
+		{
+			iop.timer_tick_ms();
+			events += iop.take_timer_event() ? 1 : 0;
+		}
+		CHECK_EQ(events, 1000u);
+		// A count written to zero runs on into an underflow and reloads;
+		// it used to stop the timer for good.
+		CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 5 << 8));
+		CHECK(iop.io_write(tgt(CMD_WTMC, 1, 0), 0));
+		iop.timer_tick();
+		CHECK(iop.take_timer_event());
+		CHECK(iop.io_read(tgt(CMD_RTM, 1, 0), v));
+		CHECK_EQ(v, 5u << 8);
+	}
 }
 
 
