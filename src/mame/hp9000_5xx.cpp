@@ -3577,14 +3577,20 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	core.r.sl = (top - 4) | 3;
 	core.r.q  = core.r.sb + 0x203;
 	core.r.s  = core.r.q + 0x200;
-	// The handoff was written around a half-megabyte window, so say so
-	// when the image has eaten into it -- the boot may still be fine,
-	// since powerup uses only a few hundred bytes of this stack, but a
-	// machine this tight is worth another RAM board (-mpb5 1m and up).
+	// The handoff was written around a half-megabyte window, and an image
+	// can eat into it. That is not a fault: powerup uses a few hundred
+	// bytes of this stack -- Q-0xef to Q+96; [SB, Q-0xf0) and the rest
+	// up to S are never touched (IMPLEMENTATION.md, "The loader hand-off,
+	// validated") -- and boot_image_fits() has already insisted on
+	// BOOT_STACK_MIN. HP-UX 5.30's 597 KB image on the 2 MB machine
+	// every HP-UX result was measured on leaves 424 KB, and this used to
+	// be a warning printed on every one of those boots, which read as a
+	// misconfiguration of the documented configuration. It is a -verbose
+	// note now.
 	if (LOAD == 0x100000 && core.r.sb + 0x80000 > top)
-		osd_printf_warning("boot: the %u KB image leaves the loader only "
-				"%u KB of stack under the %u KB fitted, not the half "
-				"megabyte the handoff assumes\n",
+		osd_printf_verbose("boot: the %u KB image leaves the loader %u KB "
+				"of stack under the %u KB fitted (the handoff allows up "
+				"to 512 KB; powerup uses a few hundred bytes)\n",
 				size / 1024, (top - core.r.sb) / 1024, top / 1024);
 	core.r.db = 0;
 	core.r.dl = 0xffffff | 3;
