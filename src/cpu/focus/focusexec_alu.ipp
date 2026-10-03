@@ -271,7 +271,12 @@ private:
 			return exec_trap::none;
 		}
 		case 024: {                                            // NEG
-			const u32 v = u32(-s32(pop()));
+			// Negated in unsigned arithmetic: -s32 of -2^31 is undefined
+			// in C++. That one value is also the overflow the indicator
+			// line ("CCA, Overflow") is there for -- it negates to itself.
+			const u32 x = pop(), v = 0u - x;
+			if (x == 0x80000000u)
+				r.put(sf::O, 1);
 			push(v); cca(v);
 			return exec_trap::none;
 		}
@@ -626,8 +631,14 @@ private:
 				// floor(log10) is computed instead -- the caller's loop
 				// adjusts in both directions, so being right first time
 				// only makes it converge on the first pass.
+				// An infinity or a NaN has no decimal exponent, and
+				// converting its log to an integer is undefined in C++;
+				// it is the FP Operand Trap's case on the hardware (cause
+				// 34), which is not modelled, so it gets 0 -- the plain
+				// form then reports the mantissa out of range and the
+				// caller's rescaling ends in POT's Exponent Size trap.
 				const double n = pop_double();
-				const s32 i = (n == 0.0) ? 0
+				const s32 i = (n == 0.0 || !std::isfinite(n)) ? 0
 						: s32(std::floor(std::log10(std::fabs(n))));
 				push(u32(i));
 				cca(u32(i));
@@ -649,13 +660,13 @@ private:
 			const double ip = std::floor(a);
 			if (ip < 1.0)
 			{
-				r.s -= 8; set_stk(0, u32(i - 1));
+				r.s -= 8; set_stk(0, u32(i) - 1u);
 				r.put(sf::CC, CCL);
 				return exec_trap::none;
 			}
 			if (ip > 9.0)
 			{
-				r.s -= 8; set_stk(0, u32(i + 1));
+				r.s -= 8; set_stk(0, u32(i) + 1u);
 				r.put(sf::CC, CCG);
 				return exec_trap::none;
 			}

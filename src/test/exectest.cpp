@@ -611,6 +611,31 @@ static void test_logical_carry_chain()
 	CHECK_EQ(h.cpu.r.condition_code(), CCE);
 }
 
+// NEG works in unsigned arithmetic -- -s32 of -2^31 is undefined in C++ --
+// and that one value, which negates to itself, sets Overflow (ERS sheet 76:
+// "Indicators = CCA, Overflow"). Overflow is only ever set by it, never
+// cleared: BOV, BNO and SETR clear it (sheet 11).
+static void test_negate()
+{
+	std::printf("negate\n");
+	harness h;
+	h.cpu.push(0x80000000u);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x80000000u);
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop(); h.cpu.push(5);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -5);
+	CHECK(h.cpu.r.test(sf::O));                     // still set
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.r.put(sf::O, 0);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 5);
+	CHECK(!h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+}
+
 // Every instruction whose ERS entry names an indicator has to set one. The
 // condition code is the easiest effect in this architecture to leave out:
 // nothing in an instruction's own test looks at it, and an omission only
@@ -2521,6 +2546,14 @@ static void test_decimal_conversion()
 	reset(); pushd(0.0);
 	CHECK(h.one(f4(001, true)) == exec_trap::none);
 	CHECK_EQ(s32(h.cpu.stk(0)), 0);
+	// An infinity or a NaN has no exponent; converting log10 of one to an
+	// integer is undefined behaviour in the host, so it is pinned to 0.
+	for (double n : { HUGE_VAL, -HUGE_VAL, std::nan("") })
+	{
+		reset(); pushd(n);
+		CHECK(h.one(f4(001, true)) == exec_trap::none);
+		CHECK_EQ(s32(h.cpu.stk(0)), 0);
+	}
 
 	// ---- POT: A and B with A/B = 10^I --------------------------------
 	for (int i : { 0, 1, -1, 22, -22, 307, -307 })
@@ -3086,6 +3119,7 @@ int main()
 	test_divide_extremes();
 	test_logical_carry_chain();
 	test_divide_by_zero_trap();
+	test_negate();
 	test_stack_ops();
 	test_condition_codes();
 	test_branches();
