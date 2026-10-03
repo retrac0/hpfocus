@@ -71,8 +71,6 @@ enum class trap_cause : u8
 	reset                     = 010,
 	page_table_violation      = 011,
 	inconsistent_registers    = 012,
-	eds_bounds_violation      = 013,
-	eds_pointer_violation     = 015,
 	pointer_conversion        = 016,
 	external_program_pointer  = 017,
 	unimplemented_instruction = 020,
@@ -106,7 +104,11 @@ enum class trap_cause : u8
 	message_trap              = 054,
 	instruction_sequencing    = 055,
 	start_of_line_check       = 056,
-	data_segment_write        = 057
+	data_segment_write        = 057,
+	// The external data segment's own bound and pointer causes (ERS
+	// sheets 45-46; see addr_trap_cause).
+	eds_bounds_violation      = 013,
+	eds_pointer_violation     = 015
 };
 
 class cpu_core
