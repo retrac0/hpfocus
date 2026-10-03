@@ -1264,11 +1264,13 @@ private:
 	}
 
 	// An announcement the host has not acted on describes a record that
-	// is no longer there.
+	// is no longer there -- and the record that takes its place has not
+	// been announced yet, so the once-per-record mark goes too.
 	void forget_announcement()
 	{
 		m_async.erase(std::remove(m_async.begin(), m_async.end(),
 				u8(AEV_DATA)), m_async.end());
+		m_rx_told = false;
 	}
 
 	// Sense an asynchronous event. The mask decides whether it is
