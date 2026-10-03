@@ -71,7 +71,9 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 5. It prepares the media:
    - the HP-UX 5.30 disc, assembled from the two tape images in
      `software/cct`;
-   - a fixed disc for BASIC, `software/hd/basic.img`.
+   - a fixed disc for BASIC, `software/hd/basic.img`: BASIC 2.0 with its
+     English error texts, I/O and mass-storage options installed, and two
+     of HP's utilities on it.
 
 Every step is idempotent. If anything stops it (the network, a missing
 package, ^C), fix the cause and run `tools/setup.sh` again. It carries on
@@ -105,10 +107,6 @@ It should end with `PASS`. Then boot HP-UX with a window:
 
 What happens:
 
-- **MAME's warning screen comes first.** It says the loader ROM
-  `09020-80001.bin` is missing and that the machine "might not run
-  correctly". Press any key. This is expected: no dump of that ROM exists,
-  and the emulator does the loader's job itself.
 - **The window is the system console.** The kernel prints its copyright
   banner and `/etc/rc` runs. About 90 seconds after power-on, `login:`
   appears on the console and on the six terminal ports.
@@ -119,12 +117,16 @@ What happens:
   came from. Try `who`, `ls -l /`, `ps -ef` and `df`.
 
 Without `--multiuser`, `tools/runhpux.sh` boots to **single-user mode**.
-There, root's csh runs on the console with no login: press Return at its
-`TERM =` prompt and you get the prompt `gator#`.
+There, root's shell runs on the console with no login: press Return at its
+`TERM =` prompt. On a machine that has never been booted multiuser the
+shell is csh and its prompt `gator#`. A multiuser boot changes root's
+login shell to sh, and from then on the single-user prompt is `unrcad#`
+too.
 
-**Keys:** the window passes your typing to the emulated terminal. If
-MAME's own keys get in the way (Tab opens its menu), press Scroll Lock to
-toggle MAME's UI keys on and off.
+**Keys:** the window passes every key to the emulated terminal, and
+MAME's own keys start switched off. Scroll Lock switches them on (Tab
+opens MAME's menu, P pauses, Esc quits) and off again; MAME shows which
+in a pop-up.
 
 ## 4. More terminals
 
@@ -151,16 +153,17 @@ multiplexer). Log in as above.
   sane`, or `socat -,rawer,escape=0x1d TCP:127.0.0.1:4001`. HP-UX does the
   echoing, so your local terminal must not.
 - **The ports already in use?** `--port-base 5000` moves them to
-  5001–5006.
+  5001–5006. Then connect with `tools/hpuxterm.py --base 5000 1`, as the
+  run prints it, or set `HPFOCUS_PORT_BASE=5000` for both.
 - **Pseudo terminals instead:** `--ports pty` fits a pty to each port.
-  The build prints `cio2:mux6:port0: pseudo terminal /dev/pts/N`, and you
+  The run prints `cio2:mux6:port0: pseudo terminal /dev/pts/N`, and you
   attach with `tools/hpuxterm.py /dev/pts/N`, `screen /dev/pts/N 9600`
   or `picocom -b 9600 /dev/pts/N`.
 - **A MAME window per port:** add `-cio2:mux6:port0 terminal`, and so on.
-- **The console somewhere else:** `--console tcp` (port 4000,
-  `tools/hpuxterm.py console`) or `--console pty`. Both need a build whose
-  console card has an rs232 port. The script checks, and says so if yours
-  does not.
+  Ports you fit yourself replace the script's: it then puts none on TCP.
+- **The console somewhere else:** `--console tcp` (port 4000, through
+  the same relay: `tools/hpuxterm.py console`) or `--console pty`. Either
+  runs without a window, and works in single-user mode too.
 
 ## 5. Stopping cleanly
 
@@ -171,14 +174,19 @@ system at boot: `/etc/bcheckrc` on this disc is empty. To stop:
 2. Close the MAME window. For a run without a window, press ^C in the
    terminal that started it.
 
-`tools/runhpux.sh` turns ^C, `kill` and a closed terminal into a clean exit
-(`tools/mame/stopfile.lua`): MAME stops and the disc and battery files are
-saved. A second ^C sends SIGTERM to MAME, and a third sends SIGKILL.
+^C, `kill` and a closed terminal end a run cleanly: MAME stops at the
+next emulated millisecond and saves the battery file. Every disc block
+HP-UX writes has already reached the disc file as it was written, so even
+a crash or `kill -9` keeps it; what any stop loses is what HP-UX has not
+yet written, which is why `sync` comes first.
 
-Avoid `kill -9` on MAME itself. On a build where disc writes reach the
-image only at exit, it loses the whole session. (The storage changes in
-this alpha write each disc block through as HP-UX writes it, but the
-battery file is still saved at exit.)
+- **While the machine is paused** (MAME's P key, or its menu open), no
+  emulated time passes, so the first ^C does nothing until you resume.
+- **A second ^C kills MAME at once.** The disc is safe as above; battery
+  changes from the last 30 seconds are lost.
+
+MAME's soft reset (F3, with MAME's keys switched on) reboots the machine.
+To HP-UX that is the reset button, so `sync` first there too.
 
 HP-UX's own `/etc/shutdown` exists on the disc. It has not been tested on
 the emulator.
@@ -206,18 +214,21 @@ password you set. Commands for managing this state:
 
 The run level is set on every boot: `--multiuser` boots run level 2 and the
 default boots single-user (`tools/hpuxconfig.py`). Switching between them
-keeps everything else on the disc.
+keeps everything else on the disc. The first multiuser boot also makes
+three lasting changes: root's passwd entry (no expired password, sh for a
+shell), gettys on tty01 to tty06, and those six device files pointed at
+the emulated multiplexer.
 
 Only one run can use a machine at a time. A second run on the same
 `--state` is refused.
 
 **The date.** The scripts set the clock from your computer at every boot,
 in GMT (`FOCUS_RTCTIME=now`, `FOCUS_RTCUTC=1`). HP-UX shows it in Pacific
-time, because that is the `TZ` this disc was set up with. Set `TZ` inside
-HP-UX for your own zone. Set `FOCUS_RTCTIME=none` for an unset clock, or
-an ISO date to pin one. On a build without the clock fixes of this alpha,
-the seed is ignored and HP-UX reports `CLOCK AND DATE NOT SET` and a date
-in 2036.
+standard time, because that is the `TZ` this disc was set up with (its
+daylight-saving rules are from the 1980s). Set `TZ` inside HP-UX for your
+own zone. A date set with HP-UX's `date` lasts only until the next boot,
+when the script sets the clock again; `FOCUS_RTCTIME=none` leaves the clock
+as the battery file holds it, and an ISO date there pins one.
 
 **Upgrading from an earlier tree:** `tools/runhpux.sh` used to boot
 `software/cct/7914_hpux_volume.bin` in place. That file is no longer used,
@@ -240,8 +251,8 @@ A typed session in single-user mode, as a batch job:
 
     FOCUS_TYPE='\n;ls /\n' FOCUS_TYPEAT=30,40 tools/runhpux.sh --seconds 60
 
-The first `\n` answers csh's `TERM =` prompt (at about 24 s), and then
-`ls /` runs at 40 s. In multiuser mode, `@<terminal>=` addresses one
+The first `\n` answers the shell's `TERM =` prompt (at about 24 s), and
+then `ls /` runs at 40 s. In multiuser mode, `@<terminal>=` addresses one
 terminal (`console`, or `2:0` … `2:5` for tty01 … tty06):
 
     FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' FOCUS_TYPEAT=100,110,118,126 \
@@ -256,16 +267,51 @@ options, and `--dry-run` prints the MAME command line it would run.
     tools/runbasic.sh        BASIC 2.0 from its two boot floppies, in a window
     tools/runbasic-hd.sh     BASIC from the 520's fixed disc (setup.sh built software/hd/basic.img)
 
-`BASIC Ready for use.` appears after about 55 emulated seconds. Type at the
-window, and Enter runs the line. To build `software/hd/diag.img`, which
-holds HP's 9020 diagnostics environment, run `tools/mkdiagdisc.sh`.
+- **MAME's red warning comes first.** The 520 is still flagged "not
+  working" in MAME, so each windowed run opens on MAME's warning screen.
+  Press any key and the machine starts. (The 540 has no such screen.)
+- **`BASIC Ready for use.`** appears after about 55 emulated seconds from
+  the floppies, and within 20 from the fixed disc.
+- **Return is ENTER, Insert is EXECUTE.** The 520's keyboard has both
+  keys. Return (ENTER) stores a numbered program line. **Insert**, or
+  Ctrl-J, is EXECUTE: it runs a command such as `DISP 7`, `LIST` or `RUN`.
+  A command ended with Return answers `IMPROPER LINE NUMBER`. So, to type
+  and run a program:
+
+      10 FOR I=1 TO 3      Return
+      20 PRINT I*I         Return
+      30 NEXT I            Return
+      40 END               Return
+      RUN                  Insert
+
+  A program needs its `END`; without it RUN stops with `ERROR 5`.
+- **The fixed disc is the better BASIC.** It has the error texts and the
+  I/O and mass-storage options installed, so `CAT`, `CREATE`, `STORE` and
+  `LOAD` work on it, and HP's `CAT_BOOT` and `BUILD_BOOT` utilities are on
+  it. From the floppies BASIC comes up without options: errors are bare
+  numbers and `CREATE` is an `IMPROPER COMMAND`. What you store on the
+  fixed disc reaches the image file when MAME exits cleanly (close the
+  window, or ^C once); a crash or a kill loses that session's changes.
+- **An older `software/hd/basic.img`** (built before this alpha's disc-tool
+  fixes) boots, but BASIC reports the wrong AVAILABLE SPACE and cannot
+  CREATE or STORE on it (`ERROR 455`). `tools/setup.sh` keeps an existing
+  image, and both it and `tools/runbasic-hd.sh` warn when it is such a
+  one: delete it and run `tools/setup.sh` again.
+- **The diagnostics:** `tools/mkdiagdisc.sh` builds `software/hd/diag.img`,
+  which holds HP's 9020 diagnostics environment; its header says how to
+  boot it with the test disc.
+
+HP-UX 5.01 runs on the same machine:
 
     tools/runhpux.sh --release 5.01 --headless
 
 This boots HP-UX 5.01's kernel, from the damaged release tape, on the 520.
-It prints the copyright banner and stops there, because the tape's userland
-is lost (`docs/HPUX.md` section 11). The 5.01 run mounts the pristine 5.30
-disc read-only.
+It runs for 100 emulated seconds and shows the screen: the copyright
+banner and the terminal's softkey labels. That is as far as 5.01 gets,
+because the tape's userland is lost (`docs/HPUX.md` section 11). The 5.01
+run mounts the pristine 5.30 disc read-only. (Sent to a file or a pipe,
+the output is the raw frame-buffer dump: pipe it through
+`tools/screen.py`.)
 
 ## 9. Troubleshooting
 
@@ -280,12 +326,17 @@ whether the boot was `--fresh`.
   MAME revision, or someone edited the two patched files. Run
   `git -C mame checkout -- scripts/src/cpu.lua src/mame/mame.lst` and
   `tools/setup.sh` again.
-- **The window stays on MAME's warning:** press any key (section 3).
+- **The 520's window stays on a red MAME warning:** press any key
+  (section 8). The 540 shows no warning.
+- **BASIC answers `IMPROPER LINE NUMBER` to a command:** you ended it with
+  Return. Press Insert (EXECUTE) instead (section 8).
+- **^C does not stop a run:** the machine is paused. Resume it, or press
+  ^C again to kill it (section 5).
 - **No `login:` after two minutes:** run `tools/smoketest.sh`. If it
   passes, your working machine's state is the difference: try
   `tools/runhpux.sh --scratch --multiuser`, and `--reset` if that boots.
-  Multiuser boots are known to be timing-sensitive in some
-  configurations: see KNOWN-ISSUES.md.
+  On a heavily loaded computer the window can simply be slow: the logins
+  come at about 90 *emulated* seconds.
 - **`another run (pid N) is using var/hpux530`:** a run is still going.
   Stop it, or use `--scratch` or `--state DIR`. If no such process
   exists, the lock is stale and is ignored automatically.

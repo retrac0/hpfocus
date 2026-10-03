@@ -9,8 +9,9 @@ general-purpose registers. Its architecture is the HP 3000's widened to
 
 **Status: first alpha.** HP-UX 5.30 boots on the emulated 9000/540 and
 runs multiuser, with a root login on the console and on all six ports of an
-emulated HP 27140A multiplexer. Expect rough edges.
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md) lists the known ones.
+emulated HP 27140A multiplexer. It is an alpha: what is known to be wrong
+is in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), and what it was tested with is in
+[docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests).
 
 ## Quick start (Linux)
 
@@ -21,20 +22,25 @@ emulated HP 27140A multiplexer. Expect rough edges.
 
 [INSTALL.md](INSTALL.md) covers the rest: prerequisites for Debian/Ubuntu,
 Fedora, Arch and macOS, logging in, more terminals (`tools/hpuxterm.py 1`
-.. `6`), stopping cleanly, and what persists between runs and how to reset
-it.
+.. `6`), stopping cleanly (type `sync` first), and what persists between
+runs and how to reset it.
 
 ## What works
 
 - **HP-UX 5.30 on the 9000/540**, from a unit save of a real 1991
-  installation. It runs `/etc/rc`, single-user or multiuser, with logins on
-  the console and six terminal ports, and runs ordinary commands and
-  sessions. The alpha's regression runs include seven users logging in at
-  once and sessions still answering after 600 seconds.
+  installation. It boots single-user or multiuser, runs `/etc/rc`, and
+  takes logins on the console (a window, a TCP port or a pty) and on six
+  terminal ports you can leave and come back to. It compiles and runs C
+  programs, and what it writes is kept on a working copy of the disc.
+  The release tests are a 28-case matrix of boots and sessions, seven
+  users logging in at once at 30 different timings, and a
+  compile-copy-checksum workload on three terminals that is checked again
+  after a reboot. All of them pass on this release
+  ([docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests)).
 - **BASIC 2.0 on the 9000/520**, on its own rendered display with a live
   keyboard. It boots from the shipped floppies or from an installed fixed
   disc, and runs typed and stored programs (`tools/runbasic.sh`,
-  `tools/runbasic-hd.sh`).
+  `tools/runbasic-hd.sh`; `src/test/basictest.sh` checks 25 cases).
 - **HP's 9020 factory diagnostics** boot and run. The display self test
   passes, the graphics controller draws and the thermal printer prints
   (`tools/mkdiagdisc.sh`, docs/DIAGNOSTICS.md).
@@ -43,17 +49,28 @@ it.
 
 ## What does not work, yet
 
-- HP-UX can crash under several simultaneous logins in 2 MB, and some
-  non-default I/O timings stall the boot.
-- Floating-point traps and rounding modes are not modelled, and a few
-  condition-code and overflow details are wrong.
-- There is no networking, and no HP terminal emulation (the terminals are
-  generic).
-- HP-UX 5.01 has no userland. The tape lost it.
-- No dump of the SCM loader ROM exists, so the emulator performs the
-  loader's job itself.
+- **Stopping HP-UX is a power cut.** There is no shutdown and no `fsck`:
+  type `sync` before you stop, and `tools/runhpux.sh --reset` if a disc
+  goes bad.
+- **No networking**, and the terminals are generic, not HP 262x: screen
+  programs such as `vi` need a `TERM` your terminal matches. No Break key,
+  and ^S/^Q do not pause output.
+- **HP-UX 5.01 has no userland.** The tape lost it, so it stops at its
+  banner.
+- **Floating-point traps and rounding modes** are not modelled, and a few
+  overflow and condition-code details are wrong. Two instructions known
+  only from HP's assembler (`CTCB`, `GMPY`) are not implemented.
+- **The 520** is still flagged "not working" in MAME (its window opens on
+  a warning screen), and in its window Return is BASIC's ENTER key, not
+  EXECUTE, which is Insert. Most of HP's BASIC demo programs do not run
+  yet.
+- **No loader ROM.** No dump of the SCM loader ROM exists, so the emulator
+  performs the loader's job itself.
+- **Linux only so far.** The scripts are written for macOS too, but nothing
+  has been built or run there.
 
-The details are in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+The details, and what to do about each, are in
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
 ## Where things are
 
@@ -65,7 +82,7 @@ The details are in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the 520/540 hardware: memory, I/O, cards, boot media |
 | [docs/HPUX.md](docs/HPUX.md) | HP-UX on the emulator: kernel map, debugging tools, how each milestone was reached |
 | [docs/SOFTWARE.md](docs/SOFTWARE.md), [software/README.md](software/README.md) | the software images, where they came from, what is on them |
-| [docs/VALIDATION.md](docs/VALIDATION.md), [src/test/](src/test/) | unit tests, differential tests, golden and BASIC harnesses (`make -C src/test test`) |
+| [docs/VALIDATION.md](docs/VALIDATION.md), [src/test/](src/test/) | the evidence: unit and differential tests (`make -C src/test test`), the BASIC suite (`src/test/basictest.sh`), the HP-UX matrix, stress and soak (`src/test/hpuxtest.py`) |
 | `src/cpu/focus/`, `src/iop/`, `src/mame/` | the CPU core, the I/O processor and cards, the hp9020/hp9040 driver |
 | `tools/` | run scripts, disc and media tools, disassembler (`tools/focusdis.py`) |
 
