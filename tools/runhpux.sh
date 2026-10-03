@@ -14,13 +14,14 @@
 #                        type with FOCUS_TYPE; ^C stops the run cleanly
 #     --seconds N        stop after N emulated seconds, unthrottled (batch);
 #                        -str N / -seconds_to_run N mean the same
-#     --console MODE     window | stdout | tcp | pty -- where the console is.
-#                        tcp and pty need a build whose console card has an
-#                        rs232 port (checked; the terminals lane's change)
+#     --console MODE     window | stdout | tcp | pty -- where the console is
+#                        (tcp: port N below, `tools/hpuxterm.py console`)
 #     --ports MODE       tcp (default) | pty | none -- how the six terminal
 #                        ports of the multiplexer reach this host
 #     --port-base N      the console's TCP port, if tcp; tty0K is N+K
-#                        (default 4000, so tty01..tty06 are 4001..4006)
+#                        (default 4000, so tty01..tty06 are 4001..4006;
+#                        HPFOCUS_PORT_BASE sets it for this script and for
+#                        tools/hpuxterm.py alike)
 #     --ram MB           2 (default), 3 or 4 MB of memory
 #
 #   which machine
@@ -461,7 +462,10 @@ for t in ${TERMS[@]+"${TERMS[@]}"}; do
 		[ "$DRYRUN" = 0 ] && inner=$(awk -v n="$name" '$1 == n { print $2 }' "$RUNDIR/hub.ready")
 		MARGS+=("-$slot" null_modem "-$b" "socket.127.0.0.1:$inner")
 		if [ "$name" = console ]; then pub=$PORT_BASE; dev=console; else pub=$((PORT_BASE + name)); dev=tty0$name; fi
-		CONNECT+=("$(printf '  %-8s tools/hpuxterm.py %-8s (TCP 127.0.0.1:%s)' "$dev" "$name" "$pub")")
+		# hpuxterm.py counts from 4000 unless told otherwise, so a moved
+		# base goes into the command the user is told to run.
+		via=$name; [ "$PORT_BASE" = 4000 ] || via="--base $PORT_BASE $name"
+		CONNECT+=("$(printf '  %-8s tools/hpuxterm.py %-8s (TCP 127.0.0.1:%s)' "$dev" "$via" "$pub")")
 		;;
 	pty)
 		MARGS+=("-$slot" pty)
@@ -473,7 +477,14 @@ done
 # MAME is run as a child, and ^C, kill or a closed terminal reach this
 # script, which asks MAME to exit through tools/mame/stopfile.lua (MAME
 # then runs every exit notifier: the disc and the battery are written as
-# at any clean exit). A second ^C sends SIGTERM, a third SIGKILL.
+# at any clean exit). A ^C typed at the terminal reaches MAME as well, and
+# the driver's own handler asks for the same exit at its next emulated
+# millisecond, so neither acts while the machine is paused (P, or MAME's
+# menu open): the stop happens when it resumes. The driver's handler puts
+# the default action back, so a second ^C kills MAME at once; this script
+# then sends SIGTERM, and SIGKILL on a third. A kill loses no disc block
+# HP-UX has written (they go through as they land) -- only HP-UX's own
+# unsynced buffer cache, and battery changes younger than its 30 s save.
 STOPFILE=$RUNDIR/stop
 rm -f "$STOPFILE"
 user_set -autoboot_script || MARGS+=(-autoboot_script "$FOCUS_REPO/tools/mame/stopfile.lua")
@@ -503,7 +514,7 @@ fi
 	for c in ${CONNECT[@]+"${CONNECT[@]}"}; do echo "$c"; done
 	if [ "$MULTIUSER" = 1 ] && [ "$PORTS" = pty ]; then
 		echo "  tty01-06  pseudo terminals, named below once MAME opens them"
-		echo "            (a build without the terminals lane's change does not name them)"
+		echo "            (attach with tools/hpuxterm.py /dev/pts/N)"
 	fi
 	if [ "$MULTIUSER" = 1 ]; then
 		echo "  login     root, no password; Return at the two TERM = prompts"
@@ -522,7 +533,7 @@ fi
 on_signal() {
 	SIGNALS=$((SIGNALS + 1))
 	case "$SIGNALS" in
-		1) echo "[runhpux: stopping cleanly -- the disc and battery are being saved; ^C again to hurry]" >&2
+		1) echo "[runhpux: stopping cleanly -- the disc and battery are being saved; ^C again kills it]" >&2
 		   : > "$STOPFILE" ;;
 		2) echo "[runhpux: SIGTERM to MAME]" >&2; kill -TERM "$MAME_PID" 2>/dev/null ;;
 		*) echo "[runhpux: SIGKILL to MAME: what was not yet written is lost]" >&2; kill -KILL "$MAME_PID" 2>/dev/null ;;
