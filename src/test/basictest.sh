@@ -138,12 +138,12 @@ if [ "$LIST" = 1 ]; then
 	exit 0
 fi
 
-if [ ! -x "$ROOT/mame/focus" ]; then
-	echo "mame/focus is not built; run:"
-	echo "  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9000_5xx.cpp -j8"
+# HPFOCUS_BIN names another build, as it does for the run scripts.
+if [ ! -x "${HPFOCUS_BIN:-$ROOT/mame/focus}" ]; then
+	echo "${HPFOCUS_BIN:-mame/focus} is not built; run tools/setup.sh"
 	exit 2
 fi
-[ -f "$DISC" ] || { echo "no fixed disc at $DISC (tools/mkharddisc.py)"; exit 2; }
+[ -f "$DISC" ] || { echo "no fixed disc at $DISC (tools/setup.sh builds it)"; exit 2; }
 
 # Never open a window: these runs are headless by definition. The run
 # scripts set this themselves for -video none, but basictest also wants it
