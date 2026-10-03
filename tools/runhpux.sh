@@ -50,10 +50,13 @@
 # was --fresh when you report a problem; `tools/runhpux.sh --status` says
 # what the machine is. The emulator writes each block HP-UX writes through
 # to disc.bin as it lands, so a crash or a kill -9 keeps everything HP-UX
-# had written -- but stopping is still a power cut to HP-UX, whose buffer
-# cache holds what it has not yet written, and HP-UX does not check its
-# file system at boot (its /etc/bcheckrc is empty). So `sync` at a root
-# shell before stopping a run.
+# had written -- but stopping the emulator is still a power cut to HP-UX:
+# its buffer cache holds what it has not yet written, the free blocks it
+# has taken for swap space stay marked in use, and HP-UX does not check
+# its file system at boot (its /etc/bcheckrc is empty). So stop HP-UX
+# first: `cd /` and `/etc/stopsys` at a root shell, and when it has said
+# "The system is stopped." stop the run. (`sync` instead keeps the files
+# and leaks the swap blocks, 0.3 to 0.9 MB a time: KNOWN-ISSUES.md.)
 #
 # TWO RELEASES, TWO MACHINES, AND TWO QUITE DIFFERENT KINDS OF MEDIA. It
 # is worth being clear about which is which, because they arrive here by
@@ -481,13 +484,13 @@ done
 # script, which asks MAME to exit through tools/mame/stopfile.lua (MAME
 # then runs every exit notifier: the disc and the battery are written as
 # at any clean exit). A ^C typed at the terminal reaches MAME as well, and
-# the driver's own handler asks for the same exit at its next emulated
-# millisecond, so neither acts while the machine is paused (P, or MAME's
-# menu open): the stop happens when it resumes. The driver's handler puts
-# the default action back, so a second ^C kills MAME at once; this script
-# then sends SIGTERM, and SIGKILL on a third. A kill loses no disc block
-# HP-UX has written (they go through as they land) -- only HP-UX's own
-# unsynced buffer cache, and battery changes younger than its 30 s save.
+# the driver's own handler asks for the same exit. Both are looked for on
+# every frame as well as on emulated time, so a machine that is paused (F5,
+# or MAME's menu open) stops too. The driver's handler puts the default
+# action back, so a second ^C kills MAME at once; this script then sends
+# SIGTERM, and SIGKILL on a third. A kill loses no disc block HP-UX has
+# written (they go through as they land) -- only HP-UX's own unsynced
+# buffer cache, and battery changes younger than its 30 s save.
 STOPFILE=$RUNDIR/stop
 rm -f "$STOPFILE"
 user_set -autoboot_script || MARGS+=(-autoboot_script "$FOCUS_REPO/tools/mame/stopfile.lua")
@@ -525,10 +528,18 @@ fi
 	else
 		echo "  shell     root's shell on the console; Return at its TERM = prompt"
 	fi
+	# Stopping the emulator is a power cut to HP-UX, and each one leaves
+	# swap blocks marked in use on the disc; /etc/stopsys is HP-UX's own
+	# stop, and leaves none (KNOWN-ISSUES.md). A scratch machine is thrown
+	# away, so there is nothing to look after.
+	how=$( [ "$CONSOLE" = window ] && echo "close the window" || echo "^C here")
 	if [ -n "$SECONDS_RUN" ]; then
 		echo "  stops     after $SECONDS_RUN emulated seconds"
+	elif [ "$SCRATCH" = 1 ]; then
+		echo "  stop      $how"
 	else
-		echo "  stop      sync at a root shell, then $( [ "$CONSOLE" = window ] && echo "close the window" || echo "^C here")"
+		echo "  stop      at a root shell: cd /   then   /etc/stopsys"
+		echo "            and after \"The system is stopped.\", $how"
 	fi
 	echo
 } >&2

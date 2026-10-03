@@ -28,6 +28,24 @@
 #
 # Exit status: 0 every compared probe identical, 1 something differs, 2 the
 # run could not be made (build, media, no baseline, bad arguments).
+#
+# WHAT IT NEEDS. This is a tool for the person changing the emulator, used
+# as a pair -- `capture` on the tree before the change, `check` on the tree
+# after -- and not a release test: there is no baseline in the repository,
+# and a tree compared with itself passes whatever it does. Of its nineteen
+# probes,
+#   - ten need only a C++ compiler and the shipped floppies (the six unit
+#     harnesses, the disassembler difftest and three bootrun traces):
+#     `--quick` runs exactly these;
+#   - six boot BASIC under MAME and need what tools/setup.sh makes: the
+#     emulator (mame/focus, or the build HPFOCUS_BIN names),
+#     software/hd/basic.img and software/hd/diag.img;
+#   - three boot HP-UX from software/cct/7914_unitSave_hpux4.0.bin, the
+#     first unit-save tape decompressed in place, with software/cct/scm.nv
+#     as its battery if there is one. A fresh clone has neither (the tape
+#     is shipped compressed and tools/runhpux.sh assembles its disc under
+#     var/), so there these three are skipped, and say so. To have them:
+#     gunzip -k software/cct/7914_unitSave_hpux4.0.bin.gz
 
 set -uo pipefail
 
@@ -38,6 +56,9 @@ GOLDEN=${FOCUS_GOLDEN:-/tmp/focus-golden}
 BASE="$GOLDEN/baseline"
 WORK="$GOLDEN/work"
 MEDIA="$GOLDEN/media"
+# The emulator the MAME probes run: another build than mame/focus if
+# HPFOCUS_BIN names one, as for the run scripts.
+BIN=${HPFOCUS_BIN:-$ROOT/mame/focus}
 
 # How deep the two bootrun traces go. Large enough that the whole launch
 # chain, the trap machinery and the dispatcher are all exercised; small
@@ -225,7 +246,7 @@ if [ "$QUICK" = 1 ]; then
 else
 	echo
 	echo "MAME boots (state dumps at fixed emulated times):"
-	if [ -x "$ROOT/mame/focus" ]; then
+	if [ -x "$BIN" ]; then
 		# FOCUS_HDNOSAVE keeps the run from writing the fixed disc back,
 		# which would make the next run start somewhere else.
 		# Headless: no window, no SDL video init (see tools/runbasic-hd.sh).
@@ -252,18 +273,19 @@ else
 				&& [ -f "$HPUX_DISC" ]; then
 			run mame-hpux with_nv "$WORK/hpux-mame.nv" \
 				in_mame env FOCUS_SCMNV="$WORK/hpux-mame.nv" \
-				./focus hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
+				"$BIN" hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
 				-nothrottle -video none -sound none -str 20
 			run mame-hpux-firstboot in_mame env -u FOCUS_SCMNV \
-				./focus hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
+				"$BIN" hp9040 -mpb3 1m -mpb4 1m -hard1 "$HPUX_DISC" \
 				-nothrottle -video none -sound none -str 20
 		elif want mame-hpux; then
-			echo "  mame-hpux        the 7914 unit save is not unpacked -- skipped"
-			skip=$((skip + 1))
+			echo "  mame-hpux        software/cct/7914_unitSave_hpux4.0.bin is not there -- skipped"
+			echo "  mame-hpux-firstboot  (the tape is shipped compressed: see the header)"
+			skip=$((skip + 2))
 		fi
 	else
-		echo "  mame/focus is not built -- skipped"
-		skip=$((skip + 1))
+		echo "  $BIN is not built -- the four MAME boots skipped"
+		skip=$((skip + 4))
 	fi
 fi
 
@@ -283,8 +305,11 @@ run knobs-bootrun env FOCUS_IOPLOG=1 FOCUS_IOALL=1 FOCUS_IOPDBG=1 \
 	"$TEST/bootrun" "$MEDIA/basic.bin" --steps "$STEPS" \
 	--io --far --semlog --kbdlog --probelog
 
-if [ "$QUICK" = 1 ] || [ ! -x "$ROOT/mame/focus" ]; then
-	echo "  (MAME knob probes skipped)"
+if [ "$QUICK" = 1 ]; then
+	echo "  (MAME knob probes skipped: --quick)"
+elif [ ! -x "$BIN" ]; then
+	echo "  $BIN is not built -- the five MAME knob probes skipped"
+	skip=$((skip + 5))
 else
 	export FOCUS_HDNOSAVE=1
 	unset FOCUS_STATEAT
@@ -326,9 +351,12 @@ else
 			in_mame env FOCUS_SCMNV="$WORK/hpux-knobs.nv" \
 			FOCUS_HPIBLOG=1 FOCUS_ASIDBG=1 FOCUS_ASILOG=1 FOCUS_SEMLOG=1 \
 			FOCUS_SEMALL=1 FOCUS_ICEILOG=1 FOCUS_IOALL=1 FOCUS_ESCLOG=1 \
-			./focus hp9040 -mpb3 1m -mpb4 1m \
+			"$BIN" hp9040 -mpb3 1m -mpb4 1m \
 			-hard1 "$ROOT/software/cct/7914_unitSave_hpux4.0.bin" \
 			-nothrottle -video none -sound none -str 20
+	elif want knobs-hpux; then
+		echo "  knobs-hpux       software/cct/7914_unitSave_hpux4.0.bin is not there -- skipped"
+		skip=$((skip + 1))
 	fi
 fi
 

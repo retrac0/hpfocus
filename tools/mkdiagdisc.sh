@@ -22,12 +22,18 @@
 #   tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
 #       -flop1 "$PWD/software/test/500MFTST.TD0"
 #
-# and, at the BASIC prompt, LOAD "TEST" and RUN -- each ended with Insert,
-# which is the 520's EXECUTE key in the window (Return is its ENTER key).
+# and, at the BASIC prompt, LOAD "TEST" and RUN -- each ended with Ctrl-J
+# (or Insert), which is the 520's EXECUTE key in the window; Return is its
+# ENTER key.
+# tools/setup.sh builds software/hd/diag.img with this script, and
+# `src/test/hpuxtest.py matrix --only diag` runs the test driver on it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:-software/hd/diag.img}"
+# software/hd is gitignored, so a fresh clone has no such directory until
+# tools/setup.sh's media step has run.
+mkdir -p "$(dirname "$OUT")"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 

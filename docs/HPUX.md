@@ -256,9 +256,11 @@ before                              after
 model, not the poll: the ASI raised a device interrupt for every event it
 announced and timed its Pause instead of waiting for Resume Subchannel.
 With both modelled, HP-UX boots and runs sessions from 220 to 1000 us, and
-the release matrix runs 300 to 700. The 520's lower edge, below about
-200 us, is still there and still unexplained. `FOCUS_ASIPAUSE` now
-defaults to 0, "wait for Resume". The table is the 2026-08-25
+the release matrix runs 300 to 700. The 520's lower edge is gone too: on
+the release build BASIC boots and answers `DISP 3*4` at 50, 100, 150 and
+200 us from the fixed disc, and at 100 from the flexible discs. Which fix
+removed it was not traced. `FOCUS_ASIPAUSE` now defaults to 0, "wait for
+Resume". The table, and the paragraph under it, are the 2026-08-25
 measurement.)*
 
 `FOCUS_IOPPOLL` defaults to **400 us**, in the middle of it:
@@ -1087,10 +1089,10 @@ and a login typed into any of them reaches a root shell:
     tools/runhpux.sh --multiuser --seconds 140
 
 *(Updated for the alpha: the times were 50,58,64,70 with -str 80. The
-logins now come up at about 90 s, after the whole of /etc/rc, which is
-where the alpha's regression matrix types; typed earlier, the first line
-can land before the prompt. Add --scratch to leave your own machine
-untouched.)*
+logins now come up after the whole of /etc/rc, at about 40 emulated
+seconds (measured on the release build: two of the seven prompts by 36 s,
+all seven by 40); the alpha's regression matrix types from 90. Add
+--scratch to leave your own machine untouched.)*
 
     login: root
     ... /etc/profile's banner, "You have mail." ...
@@ -1112,8 +1114,9 @@ and `FOCUS_TAP=bogus` lists them.
 not host load: it was the multiuser stall, `UP`/`DOWN` building wait lists
 HP-UX's own semaphore routines could not take apart (FOCUS.md 10.19), and
 a disc-write truncation behind it. With both fixed the logins are up by
-about 90 emulated seconds in every run of the release matrix; a run that
-does not reach them is a result, and a bug.)*
+about 40 emulated seconds, and the release matrix, which types from 90,
+finds them there in every run; a run that does not reach them is a
+result, and a bug.)*
 
 ### 10.5 Terminals: addressing them, and using them from the host
 

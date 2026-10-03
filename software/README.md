@@ -42,8 +42,8 @@ accordingly: run the system, but do not republish what you find there.
 **Derived files.** Nothing here is ever written by the tools. What they
 derive is gitignored: the HP-UX machines in `var/` (tools/lib/hpux.sh),
 the 5.01 kernel `cct/hpux501.bin`, raw decodes in `basic/img/`, and the
-fixed discs in `hd/` (tools/setup.sh builds `hd/basic.img`,
-tools/mkdiagdisc.sh `hd/diag.img`).
+fixed discs in `hd/` (tools/setup.sh builds `hd/basic.img` and, through
+tools/mkdiagdisc.sh, `hd/diag.img`).
 
 All disc images are Teledisk 2.1, 5.25″ DS/DD, **35 cyl × 2 heads × 16 sectors
 × 256 bytes = 286,720 bytes** each, signature `TD` (no LZH stage). Every one

@@ -588,10 +588,9 @@ all. As of the alpha:
 | `muxtest` | 97, 0 | 97, 0 | -- |
 
 *(Those counts are the harness repairs alone. The fixes that followed
-added their own checks: on the release candidate `make test` runs statetest
-81, addrtest 35, dsttest 87, exectest 2907, ioptest 509, muxtest 101,
-hpibtest 70 and asitest 62 checks, none failing, and the disassembler
-difftest is identical over 550,030 instructions.)*
+added their own checks, and `hpibtest` and `asitest` joined the list; what
+`make test` runs on the release, and its counts, are with the results in
+section 8.)*
 
 `make test` now runs check_knobs and every harness whatever an earlier one
 reports, and ends with one line: `make test: every harness passed (...)`,
@@ -603,6 +602,22 @@ on a fresh clone recorded bootimage.py's traceback as two baselines). A
 `check` with no baseline to compare -- the default `/tmp/focus-golden` does
 not survive a reboot -- says `NOTHING COMPARED` and exits 2 instead of
 `PASS`. Exit codes: 0 identical, 1 differs, 2 could not be run.
+
+`golden.sh` is not a release test, and sections 4 and 5's "all seventeen
+golden probes" should be read with that in mind. It compares a tree with a
+baseline captured from the tree before a change; no baseline is shipped,
+and a tree compared with itself passes whatever it does. It has nineteen
+probes now, and what they need differs:
+
+| probes | need |
+|---|---|
+| 10: the six unit harnesses it runs, the disassembler difftest, three `bootrun` traces (`--quick` runs these) | a C++ compiler and the shipped floppies |
+| 6: BASIC and the diagnostics environment booted under MAME, plain and with the logging knobs on | the emulator (`mame/focus`, or `HPFOCUS_BIN`), and `software/hd/basic.img` and `diag.img`, which `tools/setup.sh` builds |
+| 3: HP-UX booted under MAME (`mame-hpux`, `mame-hpux-firstboot`, `knobs-hpux`) | `software/cct/7914_unitSave_hpux4.0.bin`, the first unit-save tape decompressed in place (`gunzip -k`), and `software/cct/scm.nv` for a battery. A fresh clone has neither, so these three are skipped there, and the run says so |
+
+The three HP-UX probes boot the first tape alone, as the maintainer's tree
+did before `tools/runhpux.sh` assembled a disc from both; they say nothing
+about the machine section 8 tests.
 
 `basictest.sh` scores a case on its known-wrong list as XFAIL, outside the
 exit status: 0 all as expected, 1 a case that should pass failed, 2 nothing
@@ -634,30 +649,58 @@ a 3.9+ annotation -- not a run on a 3.8 interpreter.
 ## 8. The HP-UX release tests
 
 Sections 1 to 7 ask whether the core does what the ERS says. This one asks
-whether HP-UX runs, which is what the alpha claims. Three commands do the
-asking. Each boots its own machines, copies of the pristine one under
-`var/test/`, through `tools/runhpux.sh --state`, headless and unthrottled,
-types at them with `FOCUS_TYPE`, and scores what the terminals printed:
+whether the machines run, which is what the alpha claims. Each command
+below boots its own machines, copies of the pristine one under `var/`
+(nothing of yours is touched), through `tools/runhpux.sh --state` (or
+`tools/runbasic-hd.sh` for the 520),
+headless and unthrottled, types at them with `FOCUS_TYPE`, and scores what
+the terminals or the screen show:
 
     tools/smoketest.sh                # one multiuser boot and a console login; about a minute
-    src/test/hpuxtest.py matrix       # 28 cases; about 15 minutes at --jobs 3
+    src/test/hpuxtest.py matrix       # 30 cases, PASS or FAIL each
     src/test/hpuxtest.py stress       # seven logins at once, 30 timings
     src/test/hpuxtest.py soak         # a workload on three terminals, then a reboot
+    src/test/basictest.sh             # 25 BASIC cases, a boot each
+    make -C src/test test             # the unit harnesses and the disassembler difftest
+
+They need what `tools/setup.sh` makes: the emulator, the pristine HP-UX
+machine, and the two fixed discs for the 520, `software/hd/basic.img` and
+`software/hd/diag.img`. `make test` needs only a C++ compiler and Python.
+`HPFOCUS_BIN` names another build of the emulator and `HPFOCUS_VAR` another
+`var/`, as they do for the run scripts.
 
 | command | what it runs | passes when |
 |---|---|---|
 | `smoketest.sh` | one `--multiuser` boot of a fresh machine, root logs in on the console, `who`, `date`; `--twice` boots again on what the first left | MAME exits 0, `/etc/rc` finishes, all seven `login:` banners appear, `who` answers, and nothing halts, panics, memory-faults, dumps core or fails to open a terminal |
-| `matrix` | boots with and without a battery; a root session on the console and on multiplexer ports 0, 3 and 5; seven logins at once at six schedules and four more I/O poll periods; a 600-second run; 3 and 4 MB; a console session at five poll periods from 300 to 700 us; a second boot of a disc a full run wrote; and on the 520, two BASIC cases and the HP-UX 5.01 banner | every session's commands answer and the same nothing-bad list holds |
+| `matrix`, 26 HP-UX 5.30 cases | boots with and without a battery (2); a root session on the console and on multiplexer ports 0, 3 and 5 (4); seven logins at once at six schedules and four more I/O poll periods (10); `busy`; a 600-second run; 3 and 4 MB (2); a console session at five poll periods from 300 to 700 us (5); a second boot of a disc a full run wrote | every session's commands answer and the same nothing-bad list holds |
+| `matrix`, case `busy` | four logins with three background jobs each (`find / \| sort`, `ls -lR /usr`, `od`, `cat /bin/* \| sum`): about 44 processes in 2 MB, so the memory manager swaps out the stacks and data of tasks that are still live. The clock is pinned, so it is the same run on any host | the console still answers a command 90 s into the load, and nothing halts or faults |
+| `matrix`, 4 cases on the 520 | `basic-mul` and `basic-prog`: BASIC from the fixed disc, `DISP 3*4` and a typed four-line program. `diag`: HP's 9020 test driver, `LOAD "TEST"` and `RUN` on the diagnostics disc with the test floppy mounted, typed at four different moments (20/36, 26/48, 28/52 and 30/60 emulated seconds), a boot each. `ux501`: HP-UX 5.01's kernel from the release tape | the screen shows the answers; all four `diag` boots show `Welcome to the HP 9000 Test Supervisor`; 5.01 shows its copyright banner |
 | `stress` | seven users logging in at once in 2 MB, the login schedule shifted in half-second steps over 30 runs and five poll periods | all seven sessions answer in every run |
-| `soak` | on the console and two multiplexer ports at once: compile and run a C program, copy and `cmp` binaries, checksum a large file, `find`, `ls -lR`, `sort`; then reboot the disc it wrote and check everything again | every check agrees, before and after the reboot |
+| `soak` | on the console and two multiplexer ports at once: compile and run a C program, copy and `cmp` binaries, checksum a large file, `find`, `ls -lR /usr` into a 400 KB file, `sort` that file and verify the result with `sort -c`; then reboot the disc it wrote and check everything again. `--ram 3` runs it in 3 MB | every check agrees, before and after the reboot |
+| `basictest.sh` | 24 statements typed at BASIC on the fixed disc (`DISP`, arithmetic, `SQR`, `LET`, `NEW`, `LIST`, string concatenation) and one typed program, each on its own boot | the screen shows the expected line; exit 0 only if every case does |
+| `make test` | `check_knobs.py`, then statetest, addrtest, dsttest, exectest, ioptest, muxtest, hpibtest, asitest and the disassembler difftest against `tools/focusdis.py`; every harness runs whatever an earlier one reports | the last line is `make test: every harness passed (...)` |
 
-**Results for the release candidate** (the emulator built from `alpha-0.1`,
-95971d9): the smoke test
-passes, twice over; the matrix is 28 of 28; the stress grid is 30 of 30;
-the soak passes every check on both boots. BASIC's suite
-(`src/test/basictest.sh`) is 25 of 25 on the fixed disc `tools/setup.sh`
-builds, and `make -C src/test test` passes every harness. That is one run
-of each on one Linux machine.
+Two more tests are in `src/test` and are not part of `make test`:
+
+    src/test/hubtest.py               # the terminal relay; ten checks, no emulator needed
+    src/test/sigtest.sh               # SIGTERM to a running machine, SIGINT to a paused one
+
+`hubtest.py` runs `tools/hpuxterm.py`'s hub against fake machines on
+loopback ports: relay, backlog, takeover, and a user who stops reading
+(the other ports must go on working, and SIGTERM must end the hub).
+`sigtest.sh` starts a 540 with no disc and expects one signal to end the
+run with exit status 0 and the driver's `signal N: stopping the run`.
+
+**Results for this release.**
+
+RESULTS: to be filled from the final run
+
+<!-- For whoever fills this in: one run of each command above on the tagged
+commit. Record the commit, the host and its load, and per command: smoke
+test PASS or FAIL (and --twice); matrix n of 30; stress n of 30; soak PASS
+or FAIL at 2 MB (and --ram 3 if run); basictest n of 25; make test's last
+line and each harness's check count; hubtest n of 10; sigtest's last line.
+Say which of them were not run. -->
 
 (The BASIC suite depends on which disc it boots. Its two `LIST` cases
 check `AVAILABLE MEMORY = 487696`, the figure with the ERRORS_ENG, IO and
@@ -665,19 +708,78 @@ MS options installed; a fixed disc installed without options reads 573668
 and scores 23 of 25. `tools/setup.sh` installs the three options for that
 reason, from the shipped option disc.)
 
-**What these tests found.** The stress grid is the one that mattered. On
-the first round of the alpha's fixes it scored 14 of 30, and the soak
-failed: with seven users in 2 MB HP-UX swaps, and a CS/80 write that
-arrived in more than one leg was cut to its first, so every multi-kilobyte
-disc write, swap included, was silently short. Shells died with `Memory
-fault` or the kernel halted with `TRAP:00000012`, depending on timing. On
-the maintainer's tree before the alpha, HP-UX did not reach `login:` in
-these runs at all: the multiuser stall (`UP`/`DOWN`, FOCUS.md 10.19).
+**What these tests found.** Each of these was found by a test, or by the
+lack of one, during the alpha's review:
 
-**What they do not show.** They run for minutes, not days: the longest
-case is 600 emulated seconds. They type at fixed moments, so they say
-nothing about a person's timing beyond the 30 schedules tried. They use
-2, 3 and 4 MB and no other memory size, one disc image, and Linux on
-x86-64 only. And they score what terminals print: a wrong answer that
-looks right is not caught unless a check compares it (the soak's `cmp`
-and checksums are the checks that do).
+- *The stress grid.* On the first round of the alpha's fixes it scored 14
+  of 30, and the soak failed: with seven users in 2 MB HP-UX swaps, and a
+  CS/80 write that arrived in more than one leg was cut to its first, so
+  every multi-kilobyte disc write, swap included, was silently short.
+  Shells died with `Memory fault` or the kernel halted with
+  `TRAP:00000012`, depending on timing. On the maintainer's tree before
+  the alpha, HP-UX did not reach `login:` in these runs at all: the
+  multiuser stall (`UP`/`DOWN`, FOCUS.md 10.19).
+- *The `busy` case.* The matrix (then 28 cases), the stress grid and the
+  soak all passed on a build that halted every time a dozen processes
+  were busy: 27 of 27 runs with more than seven processes failed, with
+  `TRAP:00000012`, dead shells or a dead console. HP-UX's swap-out
+  discards a segment whose Dirty bit is clear without writing it, and the
+  emulator never set that bit for a task's stack and global data, which
+  are written through registers (FOCUS.md 5.2). Nothing in the tests
+  swapped out a live task's segments, so `busy` was added; it fails on
+  such a build with `halted=2; LATEc never printed`.
+- *The soak's sort.* The soak used to run `sort /tmp/lsr | wc -l && echo
+  SORTOK`. A pipeline's status is its last command's, so when `sort` died,
+  `wc` printed 0 and the check passed: it did in every soak of that build.
+  `sort` died because a program whose data passes 512 KB indexes from one
+  paged segment into the next, and the index did not carry (FOCUS.md 6.2).
+  The step is now `sort /tmp/lsr > /tmp/srt && sort -c /tmp/srt`.
+- *The `diag` case.* With the review's fixes merged, `RUN` of HP's test
+  driver halted with `TRAP:00000055` or `TRAP:00000020` at four of
+  thirteen typing times, among them the recipe in docs/DIAGNOSTICS.md,
+  while every test above passed: nothing ran the driver. `diag` types it
+  at four of the times that halted.
+
+**What they do not show.**
+
+- They run for minutes, not days: the longest case is 600 emulated
+  seconds.
+- They type at fixed moments, so they say nothing about a person's timing
+  beyond the schedules tried. `busy` is one schedule; the others take
+  their clock from the host (`tools/runhpux.sh` seeds it), so a failing
+  case is not exactly the same run twice.
+- They use 2, 3 and 4 MB and no other memory size, one disc image, and
+  Linux on x86-64 only.
+- They score what terminals print: a wrong answer that looks right is not
+  caught unless a check compares it (the soak's `cmp`, `sort -c` and
+  checksums are the checks that do).
+- Nothing in them opens a window.
+
+**Checked by hand during the review, not yet automated.** These were run
+once or a few times, on the builds named, with scripts that are not in the
+tree. They are the evidence behind statements in KNOWN-ISSUES.md and
+INSTALL.md, and each would make a test:
+
+| what | result, and the build it was run on |
+|---|---|
+| the `busy` case as a grid: five poll periods by four schedule offsets, 20 runs | 20 of 20 on the build with the two memory fixes, before the merge; 0 of 20 on the build without them |
+| C programs over the CPU's trap paths, in one HP-UX session: a `memcpy` that runs 3 MB off a 16-byte global, a NULL dereference, `7/0`, integer overflow, a `SIGALRM` handler re-armed over a `memcpy` loop, `cdb` breakpoints and single steps | `Memory fault - core dumped` with the machine still answering, `Memory fault`, `Floating exception`, the wrapped sum, `mv 3 31`, and a working debugger, on the build with the CPU fixes before the merge; the overrun again on the merged tree at 4 MB |
+| a program with a 700 KB global array (`memset`, then `memcpy` across the 512 KB segment boundary) | finishes with the right bytes on 3 and 4 MB on the merged tree; had not finished after 25 emulated minutes on 2 MB |
+| stopping: `/etc/stopsys`, then a boot; `sync` and a power cut, then a boot; the stock `bcheckrc` installed, then a boot after each | `fsclean` says `ok` after `stopsys` and `not ok, run fsck` after a power cut; with `bcheckrc` the boot after a power cut runs `fsck -P` and takes 70 s longer, and the boot after `stopsys` does not. Merged tree |
+| six boots of one disc with a power cut each, and `kill -9` of the emulator twice in the middle of a large write, the file system walked from outside after each | consistent every time; 0.3 to 0.9 MB of swap blocks lost per power cut; one empty nameless file per `kill -9`. The review's candidate |
+| a disc filled until `cannot fork: no swap space`, then a reboot and `rm` | the reboot comes up multiuser and the space comes back. Merged tree |
+| six emulated hours idle, multiuser | `cron`'s 04:00 accounting runs, the same 14 processes before and after, `cc` still works, the clock 17 s fast. Merged tree |
+| a ^C or `kill` to a paused `tools/runhpux.sh` run | exit 0, disc and battery saved, for a signal to the whole process group and for one to the script alone. Merged tree (`sigtest.sh` covers the driver's half) |
+| soft resets of a multiuser 540 at seven different moments, with sessions on a pty console and a multiplexer port; a hard reset; a soft reset after `/etc/stopsys` | every one boots again and takes logins. The first two on the review's builds before the merge, the last on the merged tree |
+| the 520 at I/O poll periods of 50, 100, 150 and 200 us | BASIC boots and answers `DISP 3*4` at each. Merged tree |
+| the graphics controller and the thermal printer: `PLOTTER IS 1,"INTERNAL"` and `FRAME`; `FOCUS_PRINTER=1`, `PRINTER IS 6` and `PRINT` | a rectangle round the 560 by 455 raster; `HELLO WORLD` and ` 42` on the paper file. Merged tree |
+| the 540's window: root logs in and types, `/etc/stopsys`, Scroll Lock and F3 (it boots again), the close button | as INSTALL.md describes, driven with synthetic key events under Xvfb; the close button gives exit 0 with the disc and battery saved. Merged tree |
+| the 520's window, on a fresh MAME configuration: the red warning; letter case with and without Caps Lock and Shift; Return, Insert, Ctrl-J and Esc; the four-line program of INSTALL.md section 8; Scroll Lock, F5 (pause), F3 (reset), Esc; the close button on a paused machine | as INSTALL.md describes: the program prints 1, 4 and 9; F5 stops and restarts the frame count; Esc and the close button give exit 0. Merged tree. Found this way, and in KNOWN-ISSUES.md: a character key held 150 ms or more when the warning is dismissed stops the 520's boot (nine runs of nine; none of fifteen with a shorter tap or with Shift), and BASIC takes no lower-case keywords, which is what plain typing sends |
+| exectest built with the address and undefined-behaviour sanitizers; a one-instruction fuzzer over the core | exectest: every check passes and nothing is reported, on the merged tree. The fuzzer found seven host-arithmetic faults the unit tests did not reach, since fixed, on the review's candidate. Neither is a `make` target |
+| `tools/setup.sh` from a fresh clone | exit 0 in 1 h 09 min at `-j4`, before the BASIC and diagnostics discs were added to its media step; that step has since been run on its own, with `--no-build` |
+
+**Never tested for this release:** MAME's debugger (`-debug`); save
+states; macOS; the Debian/Ubuntu and Fedora package lists; Python 3.8; a
+Wayland session; a person at a window on a real desktop (the window has
+only been driven under Xvfb); the `git submodule update` route to MAME;
+memory sizes other than 2, 3 and 4 MB.
