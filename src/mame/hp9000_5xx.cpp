@@ -50,6 +50,7 @@
 #include "sound/beep.h"  // terminal.cpp needs it linked; the scanner follows driver includes
 #include "emupal.h"
 
+#include <csignal>
 #include <map>
 #include <tuple>
 #include "imagedev/printer.h"
@@ -910,6 +911,44 @@ static void focus_cio_cards(device_slot_interface &device)
 
 
 namespace {
+
+//**************************************************************************
+//  HOST SIGNALS
+//**************************************************************************
+
+// What the host asking the emulator to stop has to mean. MAME's SDL
+// front end ends a run when its window is closed and on nothing else: SDL
+// turns SIGINT and SIGTERM into a quit event that only a pumped event
+// queue ever sees, and a headless run (-video none, how the HP-UX recipes
+// run) pumps none. So ^C and kill did nothing at all, and the run could
+// only be killed outright -- which skipped the exit, where the batteries
+// and the 520's fixed disc are saved. A closed terminal (SIGHUP) killed
+// it on the spot the same way.
+//
+// The first SIGINT, SIGTERM or SIGHUP now asks for the exit -seconds_to_run
+// makes, at the next millisecond tick, with every exit notifier run; the
+// handler also puts the default action back, so a second one still kills
+// a run too wedged to reach that tick. SIGPIPE is ignored: it is what
+// writing to a socket whose client has gone away raises -- quitting the nc
+// a port was attached through -- and its default action ended the run
+// mid-session. The write fails with EPIPE instead and the run goes on.
+volatile std::sig_atomic_t s_stop_signal = 0;
+
+void stop_signal(int sig)
+{
+	s_stop_signal = sig;
+	std::signal(sig, SIG_DFL);
+}
+
+void catch_stop_signals(void (*handler)(int))
+{
+	std::signal(SIGINT, handler);
+	std::signal(SIGTERM, handler);
+#ifdef SIGHUP
+	std::signal(SIGHUP, handler);
+#endif
+}
+
 
 //**************************************************************************
 //  HOST TERMINALS
@@ -2453,6 +2492,13 @@ void hp9000_5xx_state::machine_start()
 	install_debug_hooks();
 	start_timers();
 	schedule_scripts();
+	// Last, so they replace whatever the OSD installed during its own
+	// start; see catch_stop_signals.
+	s_stop_signal = 0;
+	catch_stop_signals(stop_signal);
+#ifdef SIGPIPE
+	std::signal(SIGPIPE, SIG_IGN);
+#endif
 }
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
@@ -2696,6 +2742,14 @@ void hp9000_5xx_state::deliver_iop_interrupts()
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
+	// The host asked the run to stop (see catch_stop_signals): end it the
+	// way -seconds_to_run does, exit notifiers and all.
+	if (const int sig = s_stop_signal)
+	{
+		s_stop_signal = 0;
+		osd_printf_info("\nsignal %d: stopping the run\n", sig);
+		machine().schedule_exit();
+	}
 	// The transfers the fast poll leaves alone, at the rate the devices
 	// driving them expect.
 	m_iop.pace_uncounted_dma();
@@ -2930,6 +2984,9 @@ void hp9000_5xx_state::term_put(u8 data)
 // rather than this emulator pretending to.
 void hp9000_5xx_state::machine_stop()
 {
+	// The files are being brought up to date: a second ^C must not cut
+	// that short. (The run is ending; nothing needs the handlers after.)
+	catch_stop_signals(SIG_IGN);
 	if (knob::flag("FOCUS_HDNOSAVE"))
 		return;
 	// The 520's internal Winchester, behind its own controller.
