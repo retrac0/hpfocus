@@ -10,8 +10,12 @@
 # select code 7, which then answers identity 5 -- a Winchester -- instead
 # of 8, a bare bootstrap loader card.
 #
-# Build the disc first (both steps are idempotent):
+# Build the disc first. tools/setup.sh does it (software/hd is gitignored,
+# so a fresh clone has none); by hand, all three steps idempotent:
 #
+#   mkdir -p software/basic/img software/hd
+#   for d in 500BT1 500BT2; do python3 tools/td0.py --raw \
+#       software/basic/img/$d.img software/basic/$d.TD0; done
 #   tools/mkharddisc.py software/hd/basic.img
 #   tools/installbasic.py software/hd/basic.img \
 #       --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
@@ -34,7 +38,10 @@ fi
 
 if [ ! -f "$DISC" ]; then
     echo "no fixed-disc image at $DISC."
-    echo "build one:"
+    echo "tools/setup.sh builds software/hd/basic.img; or build one by hand:"
+    echo "  mkdir -p software/basic/img"
+    echo "  for d in 500BT1 500BT2; do python3 tools/td0.py --raw \\"
+    echo "      software/basic/img/\$d.img software/basic/\$d.TD0; done"
     echo "  tools/mkharddisc.py $DISC"
     echo "  tools/installbasic.py $DISC --basic software/basic/img/500BT1.img \\"
     echo "      software/basic/img/500BT2.img"

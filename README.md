@@ -1,5 +1,88 @@
 # hpfocus
 
+An emulator of the **HP 9000 Series 500**, the machines built on HP's FOCUS
+processor, written as a [MAME](https://www.mamedev.org/) driver. FOCUS
+(1982) was the first commercial 32-bit microprocessor: a microcoded,
+segmented, stack-oriented machine with no programmer-visible
+general-purpose registers. Its architecture is the HP 3000's widened to
+32 bits. No other emulation of it exists.
+
+**Status: first alpha.** HP-UX 5.30 boots on the emulated 9000/540 and
+runs multiuser, with a root login on the console and on all six ports of an
+emulated HP 27140A multiplexer. Expect rough edges.
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) lists the known ones.
+
+## Quick start (Linux)
+
+    git clone <this repository> hpfocus && cd hpfocus
+    tools/setup.sh                    # check, fetch MAME, build (20-40 min), prepare the discs
+    tools/smoketest.sh                # one-minute check: PASS or FAIL
+    tools/runhpux.sh --multiuser      # HP-UX 5.30; log in as root, no password
+
+[INSTALL.md](INSTALL.md) covers the rest: prerequisites for Debian/Ubuntu,
+Fedora, Arch and macOS, logging in, more terminals (`tools/hpuxterm.py 1`
+.. `6`), stopping cleanly, and what persists between runs and how to reset
+it.
+
+## What works
+
+- **HP-UX 5.30 on the 9000/540**, from a unit save of a real 1991
+  installation. It runs `/etc/rc`, single-user or multiuser, with logins on
+  the console and six terminal ports, and runs ordinary commands and
+  sessions. The alpha's regression runs include seven users logging in at
+  once and sessions still answering after 600 seconds.
+- **BASIC 2.0 on the 9000/520**, on its own rendered display with a live
+  keyboard. It boots from the shipped floppies or from an installed fixed
+  disc, and runs typed and stored programs (`tools/runbasic.sh`,
+  `tools/runbasic-hd.sh`).
+- **HP's 9020 factory diagnostics** boot and run. The display self test
+  passes, the graphics controller draws and the thermal printer prints
+  (`tools/mkdiagdisc.sh`, docs/DIAGNOSTICS.md).
+- **HP-UX 5.01** boots on the 520 from the damaged release tape, as far as
+  its copyright banner (`tools/runhpux.sh --release 5.01 --headless`).
+
+## What does not work, yet
+
+- HP-UX can crash under several simultaneous logins in 2 MB, and some
+  non-default I/O timings stall the boot.
+- Floating-point traps and rounding modes are not modelled, and a few
+  condition-code and overflow details are wrong.
+- There is no networking, and no HP terminal emulation (the terminals are
+  generic).
+- HP-UX 5.01 has no userland. The tape lost it.
+- No dump of the SCM loader ROM exists, so the emulator performs the
+  loader's job itself.
+
+The details are in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+
+## Where things are
+
+| | |
+|---|---|
+| [INSTALL.md](INSTALL.md) | build, run, terminals, state, troubleshooting |
+| [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | what the alpha gets wrong |
+| [docs/FOCUS.md](docs/FOCUS.md) | the CPU: architecture and full opcode specification |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | the 520/540 hardware: memory, I/O, cards, boot media |
+| [docs/HPUX.md](docs/HPUX.md) | HP-UX on the emulator: kernel map, debugging tools, how each milestone was reached |
+| [docs/SOFTWARE.md](docs/SOFTWARE.md), [software/README.md](software/README.md) | the software images, where they came from, what is on them |
+| [docs/VALIDATION.md](docs/VALIDATION.md), [src/test/](src/test/) | unit tests, differential tests, golden and BASIC harnesses (`make -C src/test test`) |
+| `src/cpu/focus/`, `src/iop/`, `src/mame/` | the CPU core, the I/O processor and cards, the hp9020/hp9040 driver |
+| `tools/` | run scripts, disc and media tools, disassembler (`tools/focusdis.py`) |
+
+The sources in `src/` carry `license:BSD-3-Clause` headers. MAME, which
+they build into, is GPL-2.0-or-later as a whole. The HP software in
+`software/` is Hewlett-Packard's: see [software/README.md](software/README.md)
+for where each image came from.
+
+---
+
+# Research log
+
+Everything below is the project's working log, kept as it was written.
+Sections are dated, and where one says "the current frontier", read it as
+the frontier at the time. Recipes in it have been brought up to date only
+where they would otherwise fail, and are marked where they were.
+
 ## Introduction
 
 This is an ongoing quest to attempt to emulate the HP 9000 Series Model 520
@@ -634,7 +717,9 @@ So the remaining unknown is not what these instructions are for; it is the
 layout of the semaphore they point at and what the microcode does to the
 running task when the wait blocks. **They are deliberately still
 unimplemented**: a guessed P/V that quietly schedules wrong is worse than
-one that stops.
+one that stops. *(Superseded: UP and DOWN are implemented, and use HP-UX's
+own wait-list format, which is what got multiuser HP-UX past its stall;
+see docs/FOCUS.md and the alpha's commit a26b01c.)*
 
 ## Layout
 
@@ -681,10 +766,14 @@ under software/cct/ run:
 
 ```
 $ cd software/cct/
-$ gunzip 7914_unitSave_hpux4.0.bin.gz 
-$ gunzip 7914_unitSave_hpux4.0_tape2.bin.gz
-$ python ../../tools/sdf7914.py 7914_unitSave_hpux4.0.bin 7914_unitSave_hpux4.0_tape2.bin --extract out 
+$ gunzip -k 7914_unitSave_hpux4.0.bin.gz
+$ gunzip -k 7914_unitSave_hpux4.0_tape2.bin.gz
+$ python3 ../../tools/sdf7914.py 7914_unitSave_hpux4.0.bin 7914_unitSave_hpux4.0_tape2.bin --extract out
 ```
+
+*(Updated for the alpha: `-k` keeps the tracked `.gz` files, which plain
+`gunzip` deleted. The assembled volume that tools/runhpux.sh boots,
+`var/pristine/hpux530.bin`, can be listed in the same way with `--list`.)*
 
 ## Plan
 
@@ -707,10 +796,12 @@ spec: format 6's `BASE` width, the `BCCS`/`BCC` branch fields, the `EXF`/`DPF`
 sub-fields, and the full `STATUS` bit layout.
 
 ```sh
-git submodule update --init --depth 1 mame   # ~930 MB
-./tools/link_into_mame.sh
+tools/setup.sh --no-build    # MAME at the pinned commit, wired in (INSTALL.md)
 cd src/test && make test
 ```
+
+*(Updated for the alpha: the submodule commit this recipe fetched existed
+only on the maintainer's disc. The unit tests need no MAME at all.)*
 
 Two harnesses sit above the unit tests, because unit tests keep passing
 through a great many real regressions:
@@ -786,6 +877,8 @@ python3 tools/check_opcodes.py
 2. **The HP-UX tape is 77% lost.** The kernel survived; the entire userland
    (`SCOMMANDS`) did not. Full HP-UX needs a better image. BASIC and the
    diagnostics are undamaged, so this is not on the critical path.
+   *(Superseded: the HP-UX 5.30 unit save from the Crisis Computer Tapes
+   is that better image, and it runs multiuser.)*
 3. **Memory Controller ERS is missing** from bitsavers. Less of a hole than
    the references to it imply: the software-visible MPB semantics — slave
    registers, message bits, semaphores, the interrupt lists, all 46 MPB
@@ -799,7 +892,8 @@ python3 tools/check_opcodes.py
 2. **BASIC 2.0** — first realistic interactive milestone, undamaged media
 3. HP-UX kernel bring-up — complete kernel, but stops at `init`
 4. BASIC demos — graphics and I/O
-5. Full HP-UX — blocked on a better tape
+5. Full HP-UX — blocked on a better tape *(superseded: HP-UX 5.30 from the
+   7914 unit save runs multiuser)*
 
 See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
 

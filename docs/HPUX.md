@@ -842,7 +842,18 @@ image starts there; a whole-volume image shifts that by one block.
 
 ## 9. HP-UX RUNS COMMANDS AT THE SHELL (2026-08-28)
 
-    FOCUS_TYPE='\n;ls\n' FOCUS_TYPEAT=24,34 tools/runhpux.sh -str 60 -video none
+    FOCUS_TYPE='\n;ls /\n' FOCUS_TYPEAT=30,40 tools/runhpux.sh --seconds 60
+
+*(Updated for the alpha. The recipe as first written, `FOCUS_TYPE='\n;ls\n'
+FOCUS_TYPEAT=24,34 tools/runhpux.sh -str 60 -video none`, now stops at
+init's `ENTER RUN LEVEL (0-6,s, or S):`. Since the MVB fix (10.3), init
+reads root's passwd entry, so it no longer falls back to single user, and
+the shipped inittab has no initdefault. runhpux.sh now sets initdefault
+`s` on every single-user boot (`tools/hpuxconfig.py --runlevel s`), and
+init runs root's csh: the prompt is `gator#`, the shell asks `TERM =`
+once, and its working directory is /usr/root, hence `ls /`. The
+transcript below is the 2026-08-28 one, from the Bourne shell init fell
+back to then.)*
 
 answers `tset`'s terminal-type prompt and then runs `ls` at the root shell:
 
@@ -1028,8 +1039,14 @@ and a login typed into any of them reaches a root shell:
 
     FOCUS_TAP=2:0 FOCUS_TYPERATE=60 \
     FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' \
-    FOCUS_TYPEAT=50,58,64,70 \
-    tools/runhpux.sh --multiuser -str 80 -video none
+    FOCUS_TYPEAT=100,110,118,126 \
+    tools/runhpux.sh --multiuser --seconds 140
+
+*(Updated for the alpha: the times were 50,58,64,70 with -str 80. The
+logins now come up at about 90 s, after the whole of /etc/rc, which is
+where the alpha's regression matrix types; typed earlier, the first line
+can land before the prompt. Add --scratch to leave your own machine
+untouched.)*
 
     login: root
     ... /etc/profile's banner, "You have mail." ...
@@ -1039,9 +1056,10 @@ and a login typed into any of them reaches a root shell:
     unrcad# who
     root       tty01        Feb  6 22:29
 
-Interactively: `tools/runhpux.sh --multiuser -cio2:mux6:port0 null_modem
--bitb socket.127.0.0.1:4000` and `nc 127.0.0.1 4000`, or
-`-cio2:mux6:port0 terminal` for a window. Port N of the card is
+Interactively: `tools/runhpux.sh --multiuser` puts the six ports on
+127.0.0.1:4001-4006 behind a relay that takes any number of connections
+(`tools/hpuxterm.py 1` .. `6`; INSTALL.md section 4), or on ptys with
+`--ports pty`; `-cio2:mux6:port0 terminal` gives a port a window. Port N of the card is
 `/dev/tty0(N+1)`; `FOCUS_TAP=all` prints every terminal the machine has,
 and `FOCUS_TAP=bogus` lists them.
 
@@ -1249,7 +1267,14 @@ console and the six MUX ports all get their `login:`.
 
 ## 11. HP-UX 5.01 ON THE 520: the banner, off the release tape (2026-08-29)
 
-    tools/runhpux.sh --release 5.01 -str 100 -video none | tools/screen.py
+    tools/runhpux.sh --release 5.01 --headless
+
+*(Updated for the alpha: a headless 520 shows nothing without
+FOCUS_DIMDUMP, which the first recipe, `... -str 100 -video none |
+tools/screen.py`, left out. --headless sets it, runs 100 s and renders the
+screen; the old recipe works too now, because runhpux.sh sets
+FOCUS_DIMDUMP for any headless 5.01 run and leaves the rendering to the
+pipe.)*
 
                                               (c) Copyright 1983, 1984, 1985
      Hewlett-Packard Company,  All rights reserved.   (c) Copyright 1979 ...

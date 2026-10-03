@@ -1,0 +1,43 @@
+diff --git a/scripts/src/cpu.lua b/scripts/src/cpu.lua
+index f4e3f868..cff169d7 100644
+--- a/scripts/src/cpu.lua
++++ b/scripts/src/cpu.lua
+@@ -618,6 +618,23 @@ if opt_tool(CPUS, "PDP8") then
+ 	table.insert(disasm_files , MAME_DIR .. "src/devices/cpu/pdp8/pdp8dasm.h")
+ end
+ 
++--------------------------------------------------
++-- HP FOCUS
++--@src/devices/cpu/focus/focus.h,CPUS["FOCUS"] = true
++--------------------------------------------------
++
++if CPUS["FOCUS"] then
++	files {
++		MAME_DIR .. "src/devices/cpu/focus/focus.cpp",
++		MAME_DIR .. "src/devices/cpu/focus/focus.h",
++	}
++end
++
++if opt_tool(CPUS, "FOCUS") then
++	table.insert(disasm_files , MAME_DIR .. "src/devices/cpu/focus/focusdasm.cpp")
++	table.insert(disasm_files , MAME_DIR .. "src/devices/cpu/focus/focusdasm.h")
++end
++
+ --------------------------------------------------
+ -- F8
+ --@src/devices/cpu/f8/f8.h,CPUS["F8"] = true
+diff --git a/src/mame/mame.lst b/src/mame/mame.lst
+index b6edb7fa..fca0b464 100644
+--- a/src/mame/mame.lst
++++ b/src/mame/mame.lst
+@@ -21187,6 +21187,10 @@ hp64k
+ @source:hp/hp7596a.cpp
+ hp7596a
+ 
++@source:hp/hp9000_5xx.cpp
++hp9020
++hp9040
++
+ @source:hp/hp9825.cpp
+ hp9825a
+ hp9825b

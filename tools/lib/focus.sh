@@ -6,22 +6,32 @@
 # paragraph is three places for it to drift; this is that paragraph once.
 #
 #   focus_repo             cd to the repository root, set $FOCUS_REPO
-#   focus_built            check mame/focus exists, or say how to build it
-#   focus_run MACHINE ARGS run it, adding the throttle and video arguments
-#                          the rest of the command line implies
+#   focus_built            check the emulator exists, or say how to build it
+#   focus_args MACHINE ARGS  set FOCUS_CMD to the full command line: the
+#                          throttle and video arguments the rest implies
+#   focus_run MACHINE ARGS exec that command (in mame/, as MAME expects)
+#
+# HPFOCUS_BIN=<file> runs another build of the emulator than mame/focus --
+# a private build, or one made outside the tree. MAME still runs in mame/,
+# where it keeps its cfg/ and nvram/ directories.
 
 # The repository root, from the directory this file lives in.
 focus_repo() {
 	FOCUS_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+	FOCUS_BIN=${HPFOCUS_BIN:-$FOCUS_REPO/mame/focus}
 	cd "$FOCUS_REPO"
 }
 
 focus_built() {
-	if [ ! -x "$FOCUS_REPO/mame/focus" ]; then
-		echo "mame/focus is not built; run:"
-		echo "  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9000_5xx.cpp -j8"
+	if [ ! -x "$FOCUS_BIN" ]; then
+		echo "the emulator is not built ($FOCUS_BIN is missing)." >&2
+		echo "From a fresh clone, run:" >&2
+		echo "  tools/setup.sh" >&2
+		echo "which fetches MAME, wires this tree into it and builds it" >&2
+		echo "(INSTALL.md has the prerequisites)." >&2
 		exit 1
 	fi
+	[ -d "$FOCUS_REPO/mame" ] || mkdir -p "$FOCUS_REPO/mame"
 }
 
 # Throttling. A batch run wants to go as fast as it can; an interactive
@@ -44,7 +54,7 @@ focus_built() {
 # video subsystem even for -video none, which costs real time on a loaded
 # desktop and, on this machine, intermittently leaves the emulated boot
 # dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
-focus_run() {
+focus_args() {
 	local machine=$1; shift
 	local throttle=() arg
 	for arg in "$@"; do
@@ -55,6 +65,12 @@ focus_run() {
 	case " $* " in
 		*" -video none "*) export SDL_VIDEODRIVER=dummy ;;
 	esac
+	FOCUS_CMD=("$FOCUS_BIN" "$machine" ${throttle[@]+"${throttle[@]}"} \
+		-video soft -sound none "$@")
+}
+
+focus_run() {
+	focus_args "$@"
 	cd "$FOCUS_REPO/mame"
-	exec ./focus "$machine" "${throttle[@]}" -video soft -sound none "$@"
+	exec "${FOCUS_CMD[@]}"
 }

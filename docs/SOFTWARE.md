@@ -3,6 +3,15 @@
 The end goal is booting original Series 500 software. This tracks what exists,
 where it is, and what still has to be obtained.
 
+> **Status at the first alpha.** Much of this page predates the HP-UX 5.30
+> disc. That image is a 7914 unit save from bitsavers' *Crisis Computer
+> Tapes* (`software/cct`, provenance in `software/README.md`), and it is
+> now the main target: it boots to multiuser on the emulated 540
+> (`tools/runhpux.sh --multiuser`, INSTALL.md). Where this page calls full
+> HP-UX "blocked", or says no other Series 500 HP-UX exists online, read it
+> as the state before that disc was found. The sections are corrected in
+> place below.
+
 ## HP-UX versions on the Series 500
 
 **Earliest: 1.0. Latest: 5.3.** The 520 spans the whole range.
@@ -35,7 +44,8 @@ the Series 500 specifically.
 
 **Practical target: 5.01**, since that is the version actually in hand. It also
 satisfies the Rev B boot loader ROM constraint (which requires 4.0 or later),
-as does BASIC 2.0.
+as does BASIC 2.0. *(Superseded: 5.30, from the 7914 unit save, is in hand
+and is the target that runs. 5.01 reaches its banner on the 520.)*
 
 ### Availability of other versions
 
@@ -48,10 +58,19 @@ known to be public, and it is the damaged tape we already have.
 If a Series 500 HP-UX other than 5.01 turns up, it will almost certainly come
 from a private collection rather than an existing archive.
 
+*(Corrected: one did turn up in an existing archive. Bitsavers'
+`bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/` holds a two-tape unit
+save of an HP 7914 disc with an installed HP-UX 5.30 (97089C) system, the
+last release for the Series 500, plus a 5.05 customer update, a contrib
+tape, a BASIC 2.0 disc backup and Microtrak. This survey had looked at
+bitsavers' documentation and `HP_9000/HPUX_5/`, not at that collection.
+All of it is in `software/cct`.)*
+
 ## Status summary
 
 | Item | Acquired | State |
 |---|---|---|
+| HP-UX 5.30 installed system (7914 unit save, `cct/`) | **yes** | **intact**; boots multiuser on the emulated 540 |
 | HP-UX 5.01 system tape (`97089C.hpi`) | **yes** | **77% lost** — kernel intact, userland gone |
 | HP-UX kernel (`os.req`, incl. `SYSTEM POWERUP`) | **yes** | complete, from the tape |
 | BASIC Language System 2.0 (7 discs) | **yes** | **undamaged** |
@@ -233,7 +252,8 @@ Given what survived, the sensible sequence is:
    loaded and single-stepped, though it will stop when it reaches `init`.
 4. **BASIC demos** — graphics and I/O workout once console and display exist.
 5. **Full HP-UX** — blocked on a better tape image; `SCOMMANDS`, the entire
-   userland, is unrecoverable from the copy we have.
+   userland, is unrecoverable from the copy we have. *(Superseded: the
+   HP-UX 5.30 unit save is that image, and it runs multiuser.)*
 
 Note the shape of this: **the damaged tape is not on the critical path.** The
 undamaged BASIC and diagnostic discs carry the project through its first three
@@ -370,4 +390,6 @@ the last, reconstructs what was printed.
    Narrow in practice: the software-visible MPB semantics are covered by the
    I/O ERS and the Instruction Set ERS (HARDWARE.md §4); what is lost is
    bus-protocol detail and the MC's own channel-0 command set.
-3. **A clean HP-UX 5.0 image.**
+3. **A clean HP-UX 5.0 image.** *(Less pressing now: 5.30, the last
+   release, is in hand whole. A clean 5.01 would still give the 520 a
+   userland.)*

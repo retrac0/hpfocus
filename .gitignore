@@ -33,3 +33,8 @@ software/hd/*.img
 # shipped 500ENV discs in one command, so only the README is tracked
 disasm/*
 !disasm/README.md
+
+# The HP-UX machines tools/runhpux.sh boots: the pristine disc and battery
+# assembled from software/cct, and the working copies runs use and keep
+# (tools/lib/hpux.sh). All derived; --reset rebuilds them.
+/var/
