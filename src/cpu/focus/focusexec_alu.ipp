@@ -921,7 +921,9 @@ private:
 		}
 		case 051: {                                             // PLHA
 			if (!r.privileged()) return exec_trap::unimplemented;
-			const u32 v = m_mem.read16(stk(0) + xx);
+			// "(S)(0:16) := (S)(16:1) ... right justified and sign
+			// extended" (ERS 12.2), unlike PLBA's zero fill.
+			const u32 v = u32(s32(s16(m_mem.read16(stk(0) + xx))));
 			set_stk(0, v); cca(v);
 			return exec_trap::none;
 		}
@@ -1584,7 +1586,13 @@ private:
 			switch (width)
 			{
 			case 1: push(m_mem.read8(e.addr)); break;
-			case 2: push(m_mem.read16(e.addr)); break;
+			// LHSI: "(S+1)(0:16) := (S+1)(16:1)" -- right justified AND
+			// sign extended (ERS 4.5, sheet 59), as LDH is; it used to
+			// zero extend and set CCG for a negative halfword. HP's C
+			// compiler knows the difference: it loads an unsigned short
+			// as `LHSI; EXF 16,16` (HP-UX user segments 86, 89, 91) and
+			// a signed one as a bare LHSI.
+			case 2: push(u32(s32(s16(m_mem.read16(e.addr))))); break;
 			case 4: push(m_mem.read32(e.addr)); break;
 			case 8: push(m_mem.read32(e.addr));
 				push(m_mem.read32(e.addr + 4)); break;

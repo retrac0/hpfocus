@@ -2644,6 +2644,43 @@ static void restart_handler(harness &h)
 	h.cpu.r.put(sf::CSN, 5);
 }
 
+// LHSI and PLHA sign extend (ERS 4.5 and 12.2: "(S)(0:16) := (S)(16:1)"),
+// exactly as LDH does, and set CCA on the extended value. Both used to
+// zero extend.
+static void test_halfword_sign()
+{
+	std::printf("LHSI and PLHA sign extension\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);
+
+	const u32 addr = h.cpu.r.db + 16;
+	h.mem.write32(addr, 0xfffe7fffu);          // halfwords -2 and 32767
+
+	h.cpu.push((2u << 30) | 16);               // global pointer, DB+16
+	CHECK(h.one(f4(010)) == exec_trap::none);  // LHSI
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop();
+
+	h.cpu.push((2u << 30) | 18);
+	CHECK(h.one(f4(010)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x7fffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.pop();
+
+	h.cpu.push(addr);                          // absolute
+	CHECK(h.one(f4(051)) == exec_trap::none);  // PLHA
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop();
+
+	h.cpu.push(addr + 2);
+	CHECK(h.one(f4(051)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x7fffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.pop();
+}
+
 // LBIT and SBIT must leave their operands on the stack until the pointer
 // has evaluated: an absent page traps back to the instruction (note 2),
 // the marker is pushed on top of S, and the retry has to find the same
@@ -2956,6 +2993,7 @@ int main()
 	test_lra_index();
 	test_sbit();
 	test_bit_restart();
+	test_halfword_sign();
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
