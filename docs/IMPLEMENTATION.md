@@ -217,9 +217,15 @@ Code Segment Table exists. Until one does they are still reported to the
 caller, which is what unit tests want and what a cold machine has to do
 anyway.
 
-Step 3 of the sequence, adjusting code segment use counts, is not modelled:
-the counts exist for the operating system's benefit and nothing in the CPU
-depends on them.
+Step 3 of the sequence, adjusting code segment use counts, was not modelled
+when this was written, on the reasoning that the counts exist for the
+operating system's benefit and nothing in the CPU depends on them. HP-UX
+proved the first half of that sentence: its memory manager refuses to move
+or free a segment whose count is not zero. **The counts are modelled now**
+-- a trap, an interrupt and the dispatcher entry each take the count from
+the segment they leave and give it to the one they enter, and the matching
+EXIT or IXIT reverses it; segment 0 alone has no count (`docs/HPUX.md` 9a
+item 7, `docs/FOCUS.md` 7.1).
 
 The structured byte string group is in: `SVAL` supplies the descriptor
 checks of ERS §2.3.4 that the others are all specified in terms of, and
@@ -229,7 +235,9 @@ a later part of itself, and the blank-fill parameters SAS stacks for a
 following `FILB`. All four finish by running MVB, which is now a shared
 helper rather than a case body.
 
-Not yet: decimal (BCD), external interrupts and `IXIT`, and `RFC` — the
+Not yet *(at the time: decimal arithmetic, external interrupts, `IXIT` and
+external-pointer calls have all been implemented since; `RFC` has not)*:
+decimal (BCD), external interrupts and `IXIT`, and `RFC` — the
 last reads a word from an MPB channel, and with no memory controller
 modelled on the bus there is nothing to say what it should return, so it
 stays unimplemented rather than guessing. Procedure calls take local program

@@ -480,7 +480,21 @@ byte 240. What the guests then report, measured:
   a blank NVM fails its checksum and the OS rewrites it, check byte 15
   included, so **the first boot on a new battery file always says CLOCK AND
   DATE NOT SET**. Keep the battery file (`FOCUS_SCMNV`, `FOCUS_KBDNV`) and the
-  seed takes from the second boot on.
+  seed takes from the second boot on. The emulator says so when it seeds a
+  battery HP-UX has not initialised, and when the seeded date is outside
+  the range above.
+
+**What the run scripts do with this.** The emulator's own default is
+`FOCUS_RTCTIME=none`, an unset clock, so that test runs repeat exactly.
+`tools/runhpux.sh` passes `FOCUS_RTCTIME=now FOCUS_RTCUTC=1` for HP-UX 5.30
+unless you set them yourself, and starts every machine from a battery that
+one throwaway boot has already initialised (`var/pristine/hpux530-scm.nv`),
+so the first boot has the date too. It sets the clock at every power-up: a
+date set inside HP-UX lasts until the next boot unless you run with
+`FOCUS_RTCTIME=none`. The 520 scripts (`tools/runbasic.sh`,
+`tools/runbasic-hd.sh`, `tools/runhpux.sh --release 5.01`) do not seed the
+clock, and the BASIC ones keep no battery, so those systems report CLOCK AND
+DATE NOT SET until you pass `FOCUS_KBDNV` and `FOCUS_RTCTIME` yourself.
 
 ### 2.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 

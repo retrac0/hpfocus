@@ -1039,7 +1039,8 @@ doubleword. `b`=0: push the low word only; Overflow set unless the top 33
 bits of the product were all equal. *CCA, Overflow (single form).*
 
 **`MPYI`** — Multiply Immediate — `F5:6` — TOS × imm, in place. *CCA,
-Overflow* (Overflow not yet produced).
+Overflow* (set when the product does not fit 32 bits, as `MPY`'s single
+form).
 
 **`DIV`** — Divide — `F3:23`
 `(S-2,S-1)` is a **doubleword** dividend, `(S)` the word divisor. Result:
@@ -1124,8 +1125,9 @@ with T set too, but its handler ignores integer overflow; its kernel runs
 with T clear. What the core does **not** model is the stickiness: `ADD`,
 `SUB`, `MPY`, `ASL`, `ISC` and `FIXD`/`FIXS` *assign* Overflow (so a later
 operation that does not overflow clears it, which matters only with T
-clear), and `ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`,
-`INCM`, `DECM`, `INCF` and `DECF` never set it. At every `BOV`/`BNO`
+clear), and `ADDI`, `SUBI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`,
+`INCM`, `DECM`, `INCF` and `DECF` never set it (`MPYI` does, since the
+alpha). At every `BOV`/`BNO`
 executed in HP-UX boots and compile sessions a sticky flag would have read
 the same.
 

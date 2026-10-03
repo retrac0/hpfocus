@@ -271,6 +271,13 @@ Each disc carries a `/DEMO` directory with an uppercase `MAIN_MENU` and a
 crowd of lowercase-named programs; disc 2 also has `/DEMO/DIR/games/` with
 `BREAKOUT`, `MASTERMIND` and `CUBIE`.
 
+*(At the first alpha: this section is the first look at the discs, and
+several things in it have been overtaken. Lower-case `e` can be typed, the
+graphics display is modelled, string concatenation works, and two `LIST`s
+in a row no longer halt (`src/test/basictest.sh` guards the last two). The
+programs' own state, which ones run and where the others stop, is in
+DIAGNOSTICS.md, and KNOWN-ISSUES.md has the short version.)*
+
 **Where they get to.** `LOAD` works and `LIST` works -- a demo's source
 prints on the console, line numbers and all:
 

@@ -295,6 +295,14 @@ its own; `FOCUS_TYPE`'s `\x1d` presses it. Found by bisecting the keycodes
 STOP state` — it wants to `GET "SP1",1,1` into partitions, so partitions
 are its frontier and nothing to do with graphics.
 
+*(Measured again on the first alpha's release build, with the recipe
+above run to 150 s and `FOCUS_GFXDUMP`: `QIX` still loads, prints its
+partition table and asks `Steps per direction?  (CONT = 100)`, but after
+the three answers it no longer halts. The text screen clears, no trap is
+logged from 50 s on, and nothing has been drawn on the graphics plane by
+150 s. What it is waiting for was not investigated; the paragraphs below
+are the August measurement.)*
+
 **`QIX` halts with `TRAP:00000021`, an STT Violation**, and the rule behind
 it is clean. A stored program's file carries a transfer table, and the
 count is normally one per subprogram plus one — but some files ship with
