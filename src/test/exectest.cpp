@@ -1971,6 +1971,33 @@ static void test_string_concatenate()
 	// The source string is not modified.
 	CHECK_EQ(h.mem.read32(sadr), 20);
 	CHECK_EQ(h.mem.read8(sadr + 4), 'A');
+
+	// Two SHORT temps, the shape BASIC's `"A"&"B"` puts on the stack: each
+	// is a length word, one word of data, NWORDS and a descriptor, so the
+	// target's length word sits thirteen words under S. The bound is
+	// "TSTRINGADR > S-4" (ERS sheet 111) -- under the source descriptor --
+	// and a reading of it as S-14 refused exactly this with trap 1.
+	harness g;
+	const u32 gadr = g.cpu.r.db + SRC;
+	g.mem.write32(gadr, 2);
+	g.mem.write8(gadr + 4, 'A');
+	g.mem.write8(gadr + 5, 'B');
+	g.cpu.push(2); g.cpu.push(dsptr(SRC)); g.cpu.push(1); g.cpu.push(1);
+	const u32 ta = g.cpu.r.s - 15;
+	CHECK(g.one(f2(025, 4)) == exec_trap::none);        // SLD "A"
+	g.cpu.push(2); g.cpu.push(dsptr(SRC)); g.cpu.push(2); g.cpu.push(1);
+	CHECK(g.one(f2(025, 4)) == exec_trap::none);        // SLD "B"
+	const u32 s2 = g.cpu.r.s;
+	CHECK_EQ(s2 - 3 - ta, 13 * 4);
+	// Source is the temp on top (CIR(31:1)=1), both counts are -1.
+	CHECK(g.one(f2(027, 7, true)) == exec_trap::none);  // SCON
+	CHECK_EQ(g.mem.read32(ta), 2);
+	CHECK_EQ(g.mem.read8(ta + 4), 'A');
+	CHECK_EQ(g.mem.read8(ta + 5), 'B');
+	CHECK_EQ(g.cpu.r.s, s32(s2));
+	CHECK_EQ(g.cpu.stk(3), 2);
+	CHECK_EQ(g.cpu.stk(2), s32((3u << 30) | (ta - g.cpu.r.sb)));
+	CHECK_EQ(g.cpu.stk(0), -1);
 }
 
 // CPEP (ERS sheet 120): stack and global pointers become external data

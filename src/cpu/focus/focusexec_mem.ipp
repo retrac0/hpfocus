@@ -321,11 +321,19 @@ private:
 			if (!string_validate(g, true, tneg_ok, true, t, false))
 				return t;
 
-			// The target has to be a temp on this stack. The ERS writes
-			// the upper bound as "S-14"; read as words, the way "(S-n)"
-			// is read everywhere else and the way SAS's own "S-7" is,
-			// that means fourteen words clear of the top.
-			if (g.stringadr < r.q || g.stringadr > r.s - 3 - 4 * 14)
+			// The target has to be a temp on this stack, below the source
+			// descriptor: "If (TSTRINGADR < Q) or (TSTRINGADR > S-4) then
+			// Bounds Violation Trap" (ERS sheet 111), in words, the way
+			// "(S-n)" is read everywhere else and the way SAS's own "S-7"
+			// is. One OCR of that line reads "S- 14" and this used to
+			// follow it; the page image (PDF page 112) says S-4 -- the
+			// same glyph as the 4 of "NWORDS*4" two lines below -- and so
+			// does the tesseract pass in docs/notes. Fourteen refused
+			// every temp with fewer than five words of data under its
+			// descriptor: two one-character temps put the target's length
+			// word thirteen words under S, which is BASIC's `DISP "A"&"B"`
+			// halting with TRAP:00000001.
+			if (g.stringadr < r.q || g.stringadr > r.s - 3 - 4 * 4)
 				return take_trap(trap_cause::bounds_violation, r.p);
 
 			s32 tcurlen = g.curlen;
