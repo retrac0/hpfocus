@@ -225,9 +225,15 @@ struct mux_card : public iop_interface
 		{
 			// "The card ran out of buffer space when the character was
 			// received for that port. The data character in the quad is
-			// the last valid character for the port" (p.45).
-			if (!m_silo.empty())
-				m_silo.back().attr |= ATTR_OVERFLOW;
+			// the last valid character for the port" (p.45) -- FOR THE
+			// PORT: the newest quad of this port, not whichever port's
+			// quad happens to be last in the silo.
+			for (auto q = m_silo.rbegin(); q != m_silo.rend(); ++q)
+				if (q->port == port)
+				{
+					q->attr |= ATTR_OVERFLOW;
+					break;
+				}
 			return;
 		}
 		m_silo.push_back({u8(port), attr, c});

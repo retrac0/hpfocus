@@ -356,6 +356,19 @@ static void test_receive()
 	CHECK_EQ(blk.size(), 4 * mux_card::SILO + 25);
 	if (blk.size() == 4 * mux_card::SILO + 25)
 		CHECK_EQ(blk[4 * (mux_card::SILO - 1) + 1], mux_card::ATTR_OVERFLOW);
+	// ...the last quad of the port that overflowed, not the silo's last.
+	for (unsigned i = 0; i < mux_card::SILO - 1; i++)
+		r.card.receive(0, 'a');
+	r.card.receive(4, 'z');                  // the silo's last quad
+	r.card.receive(0, 'b');                  // port 0 overflows
+	blk = r.read(rig::RD, 8192);
+	CHECK_EQ(blk.size(), 4 * mux_card::SILO + 25);
+	if (blk.size() == 4 * mux_card::SILO + 25)
+	{
+		CHECK_EQ(blk[4 * (mux_card::SILO - 2) + 1], mux_card::ATTR_OVERFLOW);
+		CHECK_EQ(blk[4 * (mux_card::SILO - 1)], 4);
+		CHECK_EQ(blk[4 * (mux_card::SILO - 1) + 1], 0);
+	}
 }
 
 
