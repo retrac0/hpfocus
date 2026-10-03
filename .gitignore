@@ -5,6 +5,7 @@ src/test/bootrun
 src/test/dasmtest
 src/test/dsttest
 src/test/exectest
+src/test/hpibtest
 src/test/ioptest
 src/test/muxtest
 src/test/statetest

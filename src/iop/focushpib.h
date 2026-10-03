@@ -72,6 +72,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,11 @@ struct cs80_device
 
 	std::vector<u8> image;          // the medium, one byte per byte
 	bool loaded() const { return !image.empty(); }
+
+	// Told of every range of the medium a write has just changed, byte
+	// offset and length, as the data lands. The host keeps the file the
+	// medium came from up to date through it; nothing here needs it.
+	std::function<void(u64, u64)> on_write;
 	u32 blocks() const { return u32(image.size() / BLOCK); }
 
 	// QSTAT (CS/80 3-13): 0 normal, 1 hard error -- ask Request Status,
@@ -224,17 +230,21 @@ struct cs80_device
 		// ...and a write leaves the target after what it wrote, for the
 		// same reason as locate_read.
 		m_address = m_write_addr + u32((m_write_done + BLOCK - 1) / BLOCK);
-		if (m_write_done < m_write_len)
-			return;
-		// The length is satisfied: the message is over. "If a partial
-		// block is written, the remainder of the block is filled by
-		// duplicating the last data byte of the transfer" (2-10).
-		const u64 end = u64(m_write_addr) * BLOCK + m_write_done;
-		if (n && (m_write_done % BLOCK) != 0)
-			for (u64 k = end; k < end + BLOCK - m_write_done % BLOCK
-					&& k < image.size(); k++)
-				image[k] = data[n - 1];
-		m_writing = false;
+		u64 stored = n;
+		if (m_write_done >= m_write_len)
+		{
+			// The length is satisfied: the message is over. "If a partial
+			// block is written, the remainder of the block is filled by
+			// duplicating the last data byte of the transfer" (2-10).
+			const u64 end = u64(m_write_addr) * BLOCK + m_write_done;
+			if (n && (m_write_done % BLOCK) != 0)
+				for (u64 k = end; k < end + BLOCK - m_write_done % BLOCK
+						&& k < image.size(); k++, stored++)
+					image[k] = data[n - 1];
+			m_writing = false;
+		}
+		if (on_write && stored && off < image.size())
+			on_write(off, std::min<u64>(stored, image.size() - off));
 	}
 
 	bool writing() const { return m_writing; }

@@ -12,6 +12,7 @@ using u64 = std::uint64_t;
 
 #include <cstdio>
 #include <initializer_list>
+#include <utility>
 #include <vector>
 
 using namespace focus;
@@ -351,6 +352,44 @@ static void test_describe_size()
 }
 
 
+// The host keeps the image file up to date through on_write: every range
+// a write changes is reported as it lands, leg by leg, the partial-block
+// fill included, and nothing is reported for a write that was refused.
+static void test_on_write_reports_what_changed()
+{
+	std::printf("on_write reports each range a write changes\n");
+	hpib_card card;
+	card.disc.image.assign(16 * 1024, 0xee);
+	std::vector<std::pair<u64, u64>> seen;
+	card.disc.on_write = [&seen](u64 off, u64 n) { seen.push_back({ off, n }); };
+	collect_poweron(card);
+
+	write(card, 4, 2048, { std::vector<u8>(1024, 0x11),
+			std::vector<u8>(1024, 0x22) });
+	CHECK_EQ(seen.size(), 2);
+	if (seen.size() == 2)
+	{
+		CHECK_EQ(seen[0].first, 1024);
+		CHECK_EQ(seen[0].second, 1024);
+		CHECK_EQ(seen[1].first, 2048);
+		CHECK_EQ(seen[1].second, 1024);
+	}
+
+	seen.clear();
+	write(card, 20, 300, { std::vector<u8>(300, 0x33) });
+	CHECK_EQ(seen.size(), 1);
+	if (seen.size() == 1)
+	{
+		CHECK_EQ(seen[0].first, 20 * 256);
+		CHECK_EQ(seen[0].second, 512);  // the partial block's fill too
+	}
+
+	seen.clear();
+	write(card, 63, 1024, { std::vector<u8>(1024, 0x44) });   // past the end
+	CHECK_EQ(seen.size(), 0);
+}
+
+
 int main()
 {
 	test_write_in_several_legs();
@@ -360,6 +399,7 @@ int main()
 	test_write_past_the_end();
 	test_no_such_unit();
 	test_describe_size();
+	test_on_write_reports_what_changed();
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
 	return g_fail ? 1 : 0;
 }
