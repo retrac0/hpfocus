@@ -487,6 +487,11 @@ static void test_scm()
 	CHECK_EQ(scm.read_register(2) & (1u << 1), 1u << 1);
 	scm.set_battery_fail(true);
 	CHECK_EQ(scm.read_register(2) & (1u << 5), 1u << 5);
+	// The battery bit is latched at power-up from the battery, and the
+	// machine's reset runs after the battery has been read: it must not
+	// clear what the load found.
+	scm.reset();
+	CHECK_EQ(scm.read_register(2) & (1u << 5), 1u << 5);
 	scm.set_power_fail(false);
 	scm.set_battery_fail(false);
 

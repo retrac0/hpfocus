@@ -829,11 +829,15 @@ struct rtc_nvm
 	//----------------------------------------------------------------
 
 	// A reset is not a power cycle: the contents survive, which is what the
-	// battery is for. Only the run state goes.
+	// battery is for. Only the run state goes -- and the battery-fail bit is
+	// not run state. It is "latched at power-up" from the battery (both
+	// service manuals), and the machine's reset runs AFTER the battery has
+	// been read: clearing it here threw away what the load had just found,
+	// so a missing or corrupt battery file, and FOCUS_RTCBATFAIL, never
+	// reached the status register at all.
 	void power_on_reset()
 	{
 		latch = 0;
-		battery_fail = false;
 		seconds_since_power_on = 0;
 	}
 
