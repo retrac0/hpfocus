@@ -338,6 +338,43 @@ static void test_asi_events_are_attention()
 }
 
 
+// Pause waits for the host (27130A firmware IMS 13.2.8.9/10): the card
+// stops asking for orders until Resume Subchannel -- (4 << 4) | pa on FR9
+// -- or until it has something to report. It is not a timer.
+static void test_asi_pause()
+{
+	std::printf("ASI: Pause waits for Resume Subchannel\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	asi_card asi;
+	asi.iop = &iop;
+	asi.pa = 0;
+	iop.attach(0, &asi);
+	asi.write_fr(8, 0x20);                   // PAU
+	CHECK(!asi.poll_request());
+	for (int i = 0; i < 50; i++)
+		asi.tick();
+	CHECK(!asi.poll_request());             // still paused
+	asi.write_fr(9, 0x40);                   // RSC
+	CHECK(asi.poll_request());
+
+	// An order ends the pause; RSC to a card that is not paused does
+	// not invent a request (a CLC is waiting for its request block).
+	asi.write_fr(8, 0xb8);                   // CLC
+	CHECK(!asi.poll_request());
+	asi.write_fr(9, 0x40);
+	CHECK(!asi.poll_request());
+
+	// FOCUS_ASIPAUSE's limit is the old timed pause.
+	asi.pause_ms = 1;
+	asi.write_fr(8, 0x20);
+	CHECK(!asi.poll_request());
+	asi.tick();
+	CHECK(asi.poll_request());
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -1112,6 +1149,7 @@ int main()
 	test_interrupt_list();
 	test_wrif();
 	test_asi_events_are_attention();
+	test_asi_pause();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();

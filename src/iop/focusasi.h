@@ -146,12 +146,18 @@ struct asi_card : public iop_interface
 	// that nibble. FOCUS_ASICFGEVENT sweeps it.
 	u8 event_configured = EVENT_CONFIGURED;
 	unsigned event_delay_ms = 2;
-	// How long a Pause order pauses for, in milliseconds. The driver's
-	// idle loop is PAU then read transparent status, so this sets its
-	// cadence: 1 ms reproduces the ~1000 status reads a second the real
-	// driver makes (999 in the second before the console open).
-	// FOCUS_ASIPAUSE sweeps it.
-	unsigned pause_ms = 1;
+	// A limit on a Pause order, in milliseconds; 0, the default, is none.
+	// The firmware's PAUSE processor "set[s] the pause bit and exit[s]
+	// the ISR", and the card asks for its next order again only when the
+	// host resumes it -- "If the card is in the pause state, an SRQ for
+	// the next order will be sent to the host" (27130A firmware IMS
+	// 13.2.8.9/10, the firmware family this card shares with its driver)
+	// -- or when it has something on its RTS queue to report. This was a
+	// fixed 1 ms, a pause that ran out by itself, which turned the
+	// driver's idle list into a thousand interrupts a second and set the
+	// cadence everything else on the console was timed against.
+	// FOCUS_ASIPAUSE=1 puts that limit back, for A/B.
+	unsigned pause_ms = 0;
 
 	// The halfword the identify transaction answers, which is what types
 	// the slot -- and the CARD ID goes in its HIGH byte. Read off the
@@ -507,6 +513,14 @@ struct asi_card : public iop_interface
 			// the console bring-up stopped: no console, and interrupts
 			// disabled around it, so nothing else ran either.
 			m_config = v;
+			// Command 4 is RSC, Resume Subchannel (27110A 4-2), and
+			// HP-UX writes (4 << 4) | pa here before every transaction
+			// it starts, having aimed its polling list's branch at the
+			// transaction first. A paused card answers it with the SRQ
+			// the suspended list is waiting for; a card that is not
+			// paused has nothing to resume (27130A IMS 13.2.8.10).
+			if (((v >> 4) & 15) == 4 && m_paused)
+				resume("RSC");
 			arm_event(event_configured, "FR9 config");
 			start_event_timer();
 			break;
@@ -659,10 +673,6 @@ struct asi_card : public iop_interface
 			// clock running so nothing is stranded.
 			start_event_timer();
 		}
-		// The pause the PAU order asked for, counted out; when it runs
-		// down the card asks for its next order.
-		if (m_pause_ticks && --m_pause_ticks == 0)
-			m_want_order = true;
 		if (!m_rx.empty() && m_arq_enabled && !m_request && record_ready())
 		{
 			// "If no read request is pending, and the card has a record
@@ -687,9 +697,35 @@ struct asi_card : public iop_interface
 			raise_async(AEV_DATA, MASK_DATA, "record ready");
 			post(STAT_AES);
 		}
+		// A paused card asks for its next order as soon as it has
+		// something to report, so a typed record or an owed SWI/EDD is
+		// told within the tick; FOCUS_ASIPAUSE's limit, if set, also ends
+		// the pause.
+		if (m_paused && (report_waiting()
+				|| (m_pause_ticks && --m_pause_ticks == 0)))
+			resume(report_waiting() ? "report" : "pause limit");
 	}
 
 private:
+	// Has the card something a Read Transparent Status would tell? An
+	// owed report (SWI, EDD), or an asynchronous event with no
+	// transaction open to hold it back (see ORD_RTS).
+	bool report_waiting() const
+	{
+		return m_rts_report != 0
+				|| (!m_request && !no_async && !m_async.empty());
+	}
+
+	// End a pause: the card asks for its next order.
+	void resume(const char *why)
+	{
+		if (dbg())
+			dbg()("[%8.3fs asi%u pause ends (%s)]\n", stamp(), pa, why);
+		m_paused = false;
+		m_pause_ticks = 0;
+		m_want_order = true;
+	}
+
 	void write_control(u8 c)
 	{
 		// A write of 2 acknowledges the event code standing in FR9 -- the
@@ -744,6 +780,8 @@ private:
 	{
 		m_order = u8(o >> 4);
 		m_in.clear();
+		m_paused = false;           // any order ends a pause
+		m_pause_ticks = 0;
 		// The SRQ this models asks for one thing: "The CLC request is in
 		// response to an SRQ signal, requesting the next order, from the
 		// ASI" (4-2). So a CLC answers it and nothing else does --
@@ -854,8 +892,26 @@ private:
 			// driver's own task never runs, so its open times out.
 			// Measured: the whole open moved from 2.32 s to 4.42 s and
 			// the machine went from 147% speed to 75%.
+			//
+			// ...and what it waits for is the HOST, not a clock: the
+			// pause ends on Resume Subchannel (FR9, write_fr) or when the
+			// card has something to report (tick). The firmware tests
+			// its RTS queue first, "due to a race condition ... the card
+			// will get stuck with a 'continue' event on the RTS queue,
+			// and no SRQ" otherwise (27130A IMS 13.2.8.9), so a pause
+			// that arrives with a report already waiting does not pause.
+			//
+			// With the timed pause the idle console cost the CPU a
+			// thousand list runs, interrupts and stale dispatches a
+			// second, and every other card's timing was set against it.
+			if (report_waiting())
+			{
+				m_want_order = true;
+				break;
+			}
 			m_want_order = false;
-			m_pause_ticks = pause_ms ? pause_ms : 1;
+			m_paused = true;
+			m_pause_ticks = pause_ms;
 			break;
 		default:
 			// The card "will accept and discard (thus effectively
@@ -1303,7 +1359,8 @@ private:
 	bool m_keep_record = false; // the request block's S bit
 	bool m_block = false;       // ...and BLK
 	u8 m_card_status = 0;       // what subfunction 254 reports
-	unsigned m_pause_ticks = 0; // milliseconds left of a PAU order
+	unsigned m_pause_ticks = 0; // FOCUS_ASIPAUSE's limit, counting down
+	bool m_paused = false;      // a PAU order is waiting for RSC or a report
 	u8 m_rts_report = 0;        // a report owed to the host, or 0
 	u8 m_request_status = 0;    // byte 0 of the read-status block
 	u16 m_transferred = 0;      // ...and its length-of-transfer field
