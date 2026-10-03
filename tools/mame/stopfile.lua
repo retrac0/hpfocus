@@ -14,8 +14,9 @@
 -- The driver now stops cleanly on a signal by itself, which makes this
 -- redundant for a ^C that reaches MAME, but never wrong: two requests to
 -- exit are one exit. It is still what stops MAME when only the script is
--- signalled. Like the driver's own handler it waits for the machine to
--- run: nothing is polled while the emulation is paused.
+-- signalled. MAME goes on calling the periodic hook while the emulation is
+-- paused, so a paused machine is stopped too (measured: emu.pause() from a
+-- script, then SIGTERM to runhpux.sh alone).
 
 local path = os.getenv("HPFOCUS_STOPFILE")
 if path == nil or path == "" then
