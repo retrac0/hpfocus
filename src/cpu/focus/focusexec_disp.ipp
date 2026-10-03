@@ -152,12 +152,13 @@ private:
 		{
 			// The dispatcher's segment is entered like any other: the
 			// interrupted segment gives up its use count and the new
-			// one gains it (segment 0 is never counted).
-			if (r.get(sf::CSN) != 0 && csn != 0)
-			{
-				cst_use_count(r.get(sf::CSN), -1);
-				cst_use_count(csn, +1);
-			}
+			// one gains it, each on its own account (segment 0 has no
+			// count; see take_trap). HP-UX's dispatcher is segment 0, so
+			// skipping both whenever either side was 0 left every task
+			// that blocked holding a count on its segment, and gaining
+			// another each time it was dispatched back.
+			cst_use_count(r.get(sf::CSN), -1);
+			cst_use_count(csn, +1);
 			if (csn == 0)
 			{
 				r.pb = 0;
@@ -277,16 +278,10 @@ private:
 		const u32 location = m_mem.read32(entry + 8);
 		r.pb = location;
 		r.pl = location + len_m1 - 3;
-		// Counted like any other trap entry (ERS 5.2.1 step 3); see
-		// take_trap.
-		{
-			const u32 from = r.get(sf::CSN);
-			if (from != 0)
-			{
-				cst_use_count(from, -1);
-				cst_use_count(1, +1);
-			}
-		}
+		// Counted like any other trap entry (ERS 5.2.1 step 3), each
+		// side on its own account; see take_trap.
+		cst_use_count(r.get(sf::CSN), -1);
+		cst_use_count(1, +1);
 		r.status = ers32::mask(14, 1);
 		r.put(sf::CSN, 1);
 		const u32 vector = m_mem.read32(r.pl - 4 * cause);
@@ -399,22 +394,21 @@ private:
 			// "The interrupt handler decrements the use count for the
 			// current code segment, and increments the use count for the
 			// new segment. For the special case of code segment 0 the use
-			// count is neither incremented nor decremented" (sheet 43).
-			{
-				const u32 from = r.get(sf::CSN);
-				if (from != 0)
-				{
-					cst_use_count(from, -1);
-					cst_use_count(seg, +1);
-				}
-			}
+			// count is neither incremented nor decremented" (sheet 43):
+			// segment 0's own count, that is -- it has none. The other
+			// side of the transfer is counted (see take_trap).
+			cst_use_count(r.get(sf::CSN), -1);
+			cst_use_count(seg, +1);
 			r.status = ers32::mask(14, 1);   // privileged, all else clear
 			r.put(sf::CSN, seg);
 			branch_to(r.pb + ers32::get(slot, 2, 30));
 		}
 		else
 		{
-			// A local pointer runs absolute, the pre-CST convention.
+			// A local pointer runs absolute, the pre-CST convention:
+			// segment 0, which the interrupted segment's count is given
+			// up for like any other (the IXIT's EXIT takes it back).
+			cst_use_count(r.get(sf::CSN), -1);
 			r.pb = 0;
 			r.pl = 0xfffffffc;
 			r.status = ers32::mask(14, 1);

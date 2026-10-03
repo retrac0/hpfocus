@@ -3144,6 +3144,61 @@ static void test_mi_survives_interrupt()
 	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
 }
 
+// "The interrupt handler decrements the use count for the current code
+// segment, and increments the use count for the new segment. For the
+// special case of code segment 0 the use count is neither incremented
+// nor decremented" (sheet 43): segment 0 has no count, the segment on
+// the other side still does. HP-UX's dispatcher runs in segment 0.
+static void test_use_counts_through_segment_zero()
+{
+	std::printf("use counts balance when the dispatcher is in segment 0\n");
+	dmachine m(0);
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_CTCB, D_IXIT });
+	m.code(m.vector(020), { D_EXIT0 });
+	m.mem.write32(m.CST + 16 * 5, 0x2 | (1u << 19));    // the task is in 5
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: 5 -> 0
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 0);
+	CHECK_EQ(m.use_count(5), 0);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // a trap: 0 -> 1
+	CHECK_EQ(m.cpu.r.p, m.vector(020));
+	CHECK_EQ(m.use_count(1), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // its EXIT: 1 -> 0
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK_EQ(m.use_count(1), 0);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT: 0 -> 5
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.use_count(5), 1);
+
+	// An interrupt whose routine runs absolute (a local DRT pointer, so
+	// segment 0) gives up the task's count and its IXIT takes it back.
+	m.code(m.ISR, { D_IXIT });
+	CHECK(m.interrupt());
+	CHECK_EQ(m.use_count(5), 0);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT, through the TCB
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.use_count(5), 1);
+
+	// A message trap taken out of segment 0 and returned to it.
+	m.mem.write32(m.CST + 16 * 5, 0x2);
+	m.cpu.r.p = m.PROC;
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP again
+	CHECK(m.cpu.step() == exec_trap::none);         // CTCB trap
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	m.code(m.vector(054), { D_IXIT });
+	m.cpu.raise_message(13);
+	CHECK(m.cpu.service_interrupts());
+	CHECK_EQ(m.cpu.r.p, m.vector(054));
+	CHECK_EQ(m.use_count(1), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT back to it
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK_EQ(m.use_count(1), 0);
+}
+
 // STOP and INT are privileged (sheets 94 and 119): cause 026, parameter 1.
 // SETR may load only some of STATUS (sheet 71).
 static void test_stop_and_int_are_privileged()
@@ -3235,6 +3290,7 @@ int main()
 	test_mi_through_marker();
 	test_mi_single_step();
 	test_mi_survives_interrupt();
+	test_use_counts_through_segment_zero();
 	test_stop_and_int_are_privileged();
 	test_factorial();
 

@@ -77,8 +77,8 @@ private:
 	//   6  clear STATUS except the mode bit and the code segment number
 	//   7  set P from the STT entry
 	//
-	// Step 3 is not modelled: use counts exist for the operating system's
-	// benefit and nothing in the CPU depends on them yet.
+	// All seven are modelled; step 3 is in take_trap below.
+
 	// An operand that may be either a tagged pointer or a plain absolute
 	// address. A stack- or global-tagged pointer resolves against its
 	// base; anything else is the address itself. The privileged
@@ -209,14 +209,22 @@ private:
 		// the compactor could not clear the head of the pool for the
 		// pager's next 32 KB, and the shell's children died of their
 		// page-ins with "Killed".
-		{
-			const u32 from = r.get(sf::CSN);
-			if (from != 0)
-			{
-				cst_use_count(from, -1);
-				cst_use_count(1, +1);
-			}
-		}
+		//
+		// "For the special case of code segment 0 the use count is
+		// neither incremented nor decremented" (sheet 43) exempts segment
+		// 0's own count -- it has no CST entry -- not the other side of
+		// the transfer, and cst_use_count ignores segment 0 by itself.
+		// EXIT already reads it that way (leaving for segment 0 gives up
+		// the count, arriving from it takes one), so the entries have to
+		// as well. HP-UX's dispatcher runs in segment 0, and with every
+		// entry skipping the whole adjustment when either side was 0, a
+		// trap taken from the dispatcher entered CS1 uncounted and left
+		// it counted: CS1 and CS2 wrapped through 0 and 4095 hundreds of
+		// times in a boot (System Error 14 on the real machine, sheet 47)
+		// and the kernel segments a task blocked in sat at counts in the
+		// thousands, where the relocator would refuse to move them.
+		cst_use_count(r.get(sf::CSN), -1);
+		cst_use_count(1, +1);
 
 		// Only the mode bit survives, and the code segment number becomes
 		// 1 -- the handler segment the machine now executes in. (The old
