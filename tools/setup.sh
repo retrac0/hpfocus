@@ -322,6 +322,11 @@ if [ "$MEDIA" = 1 ]; then
 		python3 tools/installbasic.py software/hd/basic.img.new \
 			--basic software/basic/img/500BT1.img software/basic/img/500BT2.img >/dev/null
 		mv -f software/hd/basic.img.new software/hd/basic.img
+	else
+		# An existing disc is kept: it may hold the user's own BASIC files.
+		# One built by an older sdfwrite.py is named, with the way out.
+		source tools/lib/focus.sh
+		focus_basic_disc_warn software/hd/basic.img
 	fi
 else
 	say "skipping the media (--no-media); tools/runhpux.sh prepares them on first use"

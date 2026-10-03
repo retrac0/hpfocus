@@ -21,6 +21,13 @@
 #       --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
 #       --option <extracted option binaries...>
 #
+# A disc built before sdfwrite.py's free-map fix (0ec4035) boots, but BASIC
+# cannot CREATE or STORE on it (ERROR 455): this script says so when it is
+# given one. Delete it and build it again.
+#
+# The keys are tools/runbasic.sh's: Return is ENTER (store a program line),
+# Insert or Ctrl-J is EXECUTE (run a command).
+#
 #   tools/runbasic-hd.sh                 boot the fixed disc
 #   tools/runbasic-hd.sh other.img       boot a different one
 #   tools/runbasic-hd.sh -- -flop3 x.TD0 also mount a flexible volume
@@ -49,6 +56,7 @@ if [ ! -f "$DISC" ]; then
 fi
 
 focus_built
+focus_basic_disc_warn "$DISC"
 
 # An absolute path is used as given; a repo-relative one is resolved
 # before the cd into the MAME directory, so both forms work.
