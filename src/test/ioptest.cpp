@@ -100,6 +100,21 @@ static io_interface::target tgt(u8 opcode, u8 channel, u8 pa, u8 ic = 0)
 }
 
 
+// RDCS's DMA count, as software reads it. I/O ERS command 10: "Bits 0-15
+// should be interpreted as the 16-bit integer number of ... transfers
+// remaining ... Bits 16-31 are the DMA status bits" -- ERS bit 0 is the
+// MSB, so the count is the HIGH half -- and sheet 5.2: "Current count is
+// two less than the number of transfers remaining" (the kernel adds the 2
+// back). The IOP moved to that layout in 23d6c00 for HP-UX's transfer
+// classifier; these checks still read the low half until now. (The model
+// biases the count from the moment it is written, where the ERS says
+// "once a Start DMA has been issued"; nothing seen reads it in between.)
+// Sign-extended, since a DMA that ran to its count reads -2.
+static int rdcs_count(u32 v)
+{
+	return int(std::int16_t(v >> 16)) + 2;
+}
+
 static void test_registers()
 {
 	std::printf("IOP register commands\n");
@@ -117,11 +132,17 @@ static void test_registers()
 	CHECK(iop.io_write(tgt(CMD_WDA, 3, 2), 0x40000));
 	CHECK(iop.io_write(tgt(CMD_WDC, 3, 2), 0x20));
 	CHECK(iop.io_read(tgt(CMD_RDCS, 3, 2), v));
-	CHECK_EQ(v & 0xffff, 0x20);
+	CHECK_EQ(rdcs_count(v), 0x20);
+	CHECK_EQ(v & 0xffff, 0);             // status half: nothing has run
+
+	// WDC takes the length from ERS bits 16-31 only (command 4).
+	CHECK(iop.io_write(tgt(CMD_WDC, 3, 2), 0xabcd0020));
+	CHECK(iop.io_read(tgt(CMD_RDCS, 3, 2), v));
+	CHECK_EQ(rdcs_count(v), 0x20);
 
 	// Each peripheral address keeps its own set.
 	CHECK(iop.io_read(tgt(CMD_RDCS, 3, 0), v));
-	CHECK_EQ(v & 0xffff, 100);
+	CHECK_EQ(rdcs_count(v), 100);
 
 	// Interrupt mask and request.
 	CHECK(iop.io_write(tgt(CMD_WIMK, 3, 0), 0xf0));
@@ -305,6 +326,16 @@ static void test_dma()
 	CHECK_EQ(h.mem.read8(0x1004), 0);
 	CHECK(h.irq);
 
+	// RDCS reports it as the ERS words it, "If DMA terminates on count
+	// ... count will be -2", with the termination class in the low half.
+	{
+		u32 v = 0;
+		CHECK(iop.io_read(tgt(CMD_RDCS, 1, 2), v));
+		CHECK_EQ(v >> 16, 0xfffeu);
+		CHECK_EQ(rdcs_count(v), 0);
+		CHECK_EQ(v & 0xffff, 0x2000u);   // terminated on count
+	}
+
 	// Output: memory to card, F1 set; byte width again.
 	iop.reset();
 	iop.attach(2, &card);
@@ -431,7 +462,7 @@ static void test_cpu_to_iop()
 
 	u32 v = 0;
 	CHECK(iop.io_read(tgt(CMD_RDCS, 1, 2), v));
-	CHECK_EQ(v & 0xffff, 0x55);
+	CHECK_EQ(rdcs_count(v), 0x55);
 
 	// IOR CMD_RIRV: read the revision back onto the stack.
 	cpu.push(iface);
