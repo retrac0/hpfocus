@@ -545,7 +545,7 @@ The cause number *is* the STT entry in segment 1. In octal:
 | # | Cause | | # | Cause |
 |---|---|---|---|---|
 | 001 | Bounds Violation | | 030 | Unexpected Pointer Type |
-| 002 | Check Trap (`CHEK`, `CRB`) | | 031 | User Trap (param 1 = integer overflow, 2 = divide by zero) |
+| 002 | Check Trap (`CHEK`, `CRB`) | | 031 | User Trap (param bits 24–27: 0 overflow, 2 divide by zero; bits 28–31: 1 = 32-bit, 4 = 64-bit result) |
 | 004 | Machine Instruction Trap | | 032 | Illegal Decimal Number |
 | 005 | String Trap | | 033 | Exponent Size |
 | 010 | Reset | | 034 | FP Operand |
@@ -889,7 +889,9 @@ both, pushes the addressed bit as 0/1. X is left holding the byte offset.
 *CCA.*
 
 **`ZERO` / `DZRO`** — Push Zero / Double Push Zero — `F3:6` / `F3:7`
-Push one / two zero words. *CC unaffected.*
+Push one / two zero words. *CCA* (so always CCE). The core sets it for
+`ZERO` but not yet for `DZRO`, which no observed code follows with a
+branch.
 
 **`PSHN`** — Push N Words — `F3:5`
 Push X copies of zero (`b`=0) or of the popped TOS (`b`=1); X counts down
@@ -926,11 +928,13 @@ operands and writes the single bit. X is left holding the byte offset.
 Drop the top word / the second word / the top two words. *CC unaffected.*
 
 **`DUP`** — Duplicate A — `F3:45` · **`DDUP`** — Double Duplicate — `F3:46`
-Push a copy of the top word / of the top doubleword. *CC unaffected.*
+Push a copy of the top word / of the top doubleword. *CCA / CCA on the
+doubleword.*
 
 **`XCH`** — Exchange A and B — `F3:32` · **`DXCH`** — Double Exchange —
 `F3:16` (swaps doublewords AB and CD) · **`CAB`** — Rotate ABC — `F3:56`
-(C becomes the top: A B C → C A B). *CC unaffected.*
+(C becomes the top: A B C → C A B). *CCA on the new TOS (`DXCH`: on the
+new top doubleword).*
 
 **`ADDS` / `SUBS`** — Add to / Subtract from S — `F5:32` / `F5:33`
 `S ± 4·imm`: allocate or cut back stack space. *CC unaffected.*
@@ -975,34 +979,48 @@ word, then the CPU's MPB channel number. Privileged. *CC unaffected.*
 Pop two words, push `B + A` / `B − A` as two's complement. `b`: include
 Carry (`SUB` subtracts `1−C`), for multi-precision chains — and then CC is
 updated **only if the result is nonzero**, so a zero partial doesn't erase
-the class of the lower words. *CCA, Carry, Overflow.*
+the class of the lower words. The `b` form is the signed **top** limb of a
+chain whose lower limbs are `LADD`/`LSUB`. A borrow travels inverted
+throughout: after `SUB`, `LSUB` or `DLSB`, Carry set means *no* borrow.
+*CCA, Overflow* (the ERS lists no Carry for these two; the core leaves
+the carry out in it, the same way up as `LADD`/`LSUB`).
 
 **`ADDI` / `SUBI`** — Add / Subtract Immediate — `F5:4` / `F5:5`
-TOS ± the 8-bit immediate, in place. *CCA.*
+TOS ± the 8-bit immediate, in place. *CCA, Overflow* (Overflow not yet
+produced by the core — see *Overflow* below).
 
 **`MPY`** — Multiply — `F3:22`
 Pop two words, form the 64-bit signed product. `b`=1: push it as a
 doubleword. `b`=0: push the low word only; Overflow set unless the top 33
 bits of the product were all equal. *CCA, Overflow (single form).*
 
-**`MPYI`** — Multiply Immediate — `F5:6` — TOS × imm, in place. *CCA.*
+**`MPYI`** — Multiply Immediate — `F5:6` — TOS × imm, in place. *CCA,
+Overflow* (Overflow not yet produced).
 
 **`DIV`** — Divide — `F3:23`
 `(S-2,S-1)` is a **doubleword** dividend, `(S)` the word divisor. Result:
 doubleword quotient in `(S-2,S-1)`, remainder replacing `(S)` — depth
 unchanged. `b`=0: remainder takes the dividend's sign; `b`=1: remainder
-forced non-negative. Always `dividend = quotient·divisor + remainder`.
-Divide by zero raises User Trap (param 2). *CCA on quotient, Overflow.*
+forced non-negative — and the quotient moves with it, one step away from
+zero (−7 `DIV,B` 3 is −3 remainder 2), because always `dividend =
+quotient·divisor + remainder`. −2⁶³ ÷ −1 sets Overflow and leaves the
+dividend as the quotient with remainder 0. Divide by zero is a User Trap
+(cause 031): with `STATUS.T` set it traps with parameter `0x24` (invalid
+argument, 64-bit result) and clears Overflow; with T clear — the HP-UX
+kernel's state — it only sets Overflow and execution continues. *CCA on
+quotient, Overflow.*
 
 **`DIVS`** — Divide, Single-Word Dividend — `F3:33`
 `(S-1) ÷ (S)`: quotient replaces `(S-1)`, remainder `(S)`. Same `b` and
-trap rules as `DIV`. *CCA on quotient, Overflow.*
+trap rules as `DIV`; the divide-by-zero parameter is `0x21` (32-bit
+result), and −2³¹ ÷ −1 sets Overflow. *CCA on quotient, Overflow.*
 
 **`DIVI`** — Divide Immediate — `F5:7` — TOS ÷ imm, quotient only, in
-place. *CCA.*
-
-**`NEG`** — Negate — `F3:24` — Two's complement the TOS in place. *CCA,
+place; an immediate of 0 is a divide by zero (parameter `0x21`). *CCA,
 Overflow.*
+
+**`NEG`** — Negate — `F3:24` — Two's complement the TOS in place; −2³¹
+negates to itself and sets Overflow. *CCA, Overflow.*
 
 **`CMP`** — Compare — `F3:17`
 Set CCC from `(S-1)` (op1) versus `(S)` (op2). `b`=1 pops both; `b`=0 pops
@@ -1026,12 +1044,18 @@ Set Overflow if the TOS does not fit a halfword (`(0:17)` not all equal).
 Operand stays. *CCA, Overflow.*
 
 **`LADD` / `LSUB`** — Logical Add / Subtract — `F3:60` / `F3:61`
-Unsigned add/subtract of the top two words; Carry is the borrow/carry out,
-Overflow untouched — the multi-precision building block. *CCA, Carry.*
+Unsigned add/subtract of the top two words — the multi-precision building
+block. `b`: chain the carry in, `(S-1)+(S)+C` / `(S-1)−(S)−(1−C)`. Carry
+is the carry out, and for `LSUB` it is set when there was **no** borrow
+(as `DLSB`). Overflow untouched. *CCG if the result is nonzero; CCE if it
+is zero and `b`=0; unchanged if it is zero and `b`=1; Carry.* HP-UX's
+decimal-to-binary conversion (`atof`, and the C compiler's floating
+constants) is built from `LMPY`/`LADD`/`LADD,B`: drop the chained carry
+and `1.0` prints as `9.999993116074e-01`.
 
 **`LMPY`** — Logical Multiply — `F3:62`
-Unsigned 32×32 → full 64-bit product pushed as a doubleword. *CC
-unaffected.*
+Unsigned 32×32 → full 64-bit product pushed as a doubleword. *CCG if the
+product is nonzero, else CCE.*
 
 **`LCMP`** — Logical Compare — `F3:57`
 Pop two; CCC on the **unsigned** comparison of `(S-1)` vs `(S)`. *CCC.*
@@ -1043,21 +1067,34 @@ Add +1 / −1 to the word at E, in memory. *CCA on the new value.*
 Add +4 / −4 to the word at E — pointer stepping without touching the
 stack. *CCA on the new value.*
 
+***Overflow.*** The ERS makes `STATUS.O` sticky — "cleared only by the
+Branch on Overflow, Branch on No Overflow, and Set Registers instructions"
+(sheet 12) — and, with `STATUS.T` set, any instruction that sets it raises
+User Trap 031 with parameter `0x0t` (t the result type), clearing it. The
+core models neither half: `ADD`, `SUB`, `MPY`, `ASL`, `ISC` and `FIXD`/`FIXS`
+*assign* Overflow (so a later operation that does not overflow clears it),
+`ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`, `DECM`,
+`INCF` and `DECF` never set it, and no integer-overflow trap is taken. HP-UX
+does not notice: its user-trap handler ignores integer overflow, and at
+every `BOV`/`BNO` executed in boots and compile sessions a sticky flag
+would have read the same. Only divide by zero honours `T` (above).
+
 ### 10.6 The X register
 
-**`LDX`** — Load Index — `F6:26`, I X base — `X :=` word at E. *CC
-unaffected.*
+**`LDX`** — Load Index — `F6:26`, I X base — `X :=` word at E. *CCA.*
 **`LDXI` / `LDXN`** — Load X (Negative) Immediate — `F5:12` / `F5:13` —
-`X := ±imm`.
+`X := ±imm`. *CCA.*
 **`LDXA`** — Load X onto Stack — `F3:44` — push X. *CCA.*
-**`STAX`** — Store A in X — `F3:43` — pop TOS into X. `b` variants exist
-per the chart. *CC unaffected.*
-**`XAX`** — Exchange X and A — `F3:35` — swap TOS and X. *CC unaffected.*
-**`ADAX`** — Add A to X — `F3:36` — `X += (S)` (operand handling per `b`).
-*CC unaffected.*
-**`ADXA`** — Add X to A — `F3:37` — TOS `+= X` in place. *CCA.*
+**`STAX`** — Store A in X — `F3:43` — copy TOS into X, popping it when `b`
+is set. *CCA on the new X.*
+**`XAX`** — Exchange X and A — `F3:35` — swap TOS and X. *CCA on the new
+TOS.*
+**`ADAX`** — Add A to X — `F3:36` — `X += (S)`, popping it when `b` is set.
+*CCA, Overflow on the new X* (Overflow not yet produced).
+**`ADXA`** — Add X to A — `F3:37` — TOS `+= X` in place. *CCA, Overflow*
+(Overflow not yet produced).
 **`ADXI` / `SBXI`** — Add / Subtract Immediate to X — `F5:26` / `F5:27` —
-`X ±= imm`. *CC unaffected.*
+`X ±= imm`. *CCA, Overflow on X* (Overflow not yet produced).
 
 ### 10.7 Logical operations, shifts, bit fields
 
@@ -1071,12 +1108,15 @@ TOS op imm (zero-extended), in place. *CCA.*
 **`LSL` / `LSR`** — Logical Shift Left / Right — `F2:2` / `F2:3`
 **`ASL` / `ASR`** — Arithmetic Shift Left / Right — `F2:6` / `F2:7`
 **`CSL` / `CSR`** — Circular Shift Left / Right — `F2:4` / `F2:5`
-TOS shifted in place. Count = low 6 bits of `operand (+ X if b)`. `ASR`
-copies the sign in; `ASL` shifts like `LSL` but sets Overflow if the sign
-bit changes. Circular shifts rotate. *CCA (+ Overflow for `ASL`).*
+TOS shifted in place. Count = low 6 bits of `operand (+ X if b)`; a count
+of 32 or more shifts everything out (the rotates take it mod 32). `ASR`
+does **not** copy the sign in: a negative TOS is negated, the magnitude
+shifted right filling with zeros, and the result negated back, so it
+divides by 2ⁿ rounding toward zero (−1 `ASR` 1 is 0, not −1; `EXF` is the
+sign-extending tool). `ASL` shifts like `LSL` but sets Overflow if the
+sign bit changes. Circular shifts rotate. *CCA (+ Overflow for `ASL`).*
 
-**`LSXL`** — Logical Shift X Left — `F2:10` — `X <<= count`. *CC
-unaffected.*
+**`LSXL`** — Logical Shift X Left — `F2:10` — `X <<= count`. *CCA on X.*
 
 **`EXF`** — Extract Field — `F6:0`
 Pop a word; push the field of width `32−K` starting at bit `J`,
@@ -1098,11 +1138,22 @@ per `b`. *CC unaffected.*
 ### 10.8 Binary floating point
 
 Formats are IEEE Draft 5.11 single (binary32) and double (binary64); no
-extended format, no hardware sqrt/rem/integer-part. Rounding follows
-`STATUS.RM`; inexact operations set `STATUS.IR`. Operand/result traps: FP
-Operand (033/034 group) and FP Result. Doubles occupy two stack words, high
-word deeper. FP condition codes: `CCL` <, `CCE` =, `CCG` > (or sign class
-for the monadic ops).
+extended format, no hardware sqrt/rem/integer-part. Doubles occupy two
+stack words, high word deeper. FP condition codes: `CCL` <, `CCE` =,
+`CCG` > (or sign class for the monadic ops).
+
+The ERS also specifies, and **the core does not yet model**: rounding by
+`STATUS.RM` (`SRM` stores it; every operation rounds to nearest);
+`STATUS.IR` set by an inexact result (it is never set, so `BIR` never
+branches); the FP Operand Trap, cause 034 (an operand that is a NaN, an
+infinity or denormalized, a divide by zero, a double too large for
+`CDSF` — parameter: the operands' NaN/infinity/denormal bits in 10–15,
+CIR in 16–31); and the FP Result Trap, cause 035 (overflow or underflow —
+parameter: guard bits and overflow/underflow in 11–15, CIR in 16–31). The
+host's IEEE result — an infinity, a NaN, a zero — is pushed instead, so a
+C program's `1.0 / 0.0` or `1e300 * 1e300` carries on with an infinity
+where the real machine would deliver SIGFPE. HP-UX's own code stays in
+range (the kernel's only floating point is callout timing).
 
 Conformance *(ERS Appendix F, sheet 145)* is against Draft 5.11 of the
 proposed IEEE standard as published in the October 1979 ACM SIGNUM
@@ -1169,7 +1220,10 @@ chaining rule as `ADD`/`SUB`. *CCG/CCE + Carry.*
 `b`=0: pop a 3-word decimal float; treating its 17 digits as an integer
 (exponent forced to 16), push the binary-double equivalent. *CCA, IR.*
 `b`=1: pop the exponent word; push binary doubles A and B with
-`A/B = 10^(exponent−16)`, for the scale step. *CCG.* Traps Exponent Size
+`A/B = 10^(exponent−16)`, for the scale step. *CCG.* (The sheet's 17
+digits and 16 do not survive BASIC: the mantissa field is twenty digits
+and the offset 19 — see the comment on the decimal conversion group in
+`focusexec_alu.ipp`.) Traps Exponent Size
 outside −308 < e < 308. Appendix E of the ERS gives the full conversion
 routine built from these.
 

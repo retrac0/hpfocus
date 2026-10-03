@@ -614,7 +614,7 @@ static void test_logical_carry_chain()
 // NEG works in unsigned arithmetic -- -s32 of -2^31 is undefined in C++ --
 // and that one value, which negates to itself, sets Overflow (ERS sheet 76:
 // "Indicators = CCA, Overflow"). Overflow is only ever set by it, never
-// cleared: BOV, BNO and SETR clear it (sheet 11).
+// cleared: BOV, BNO and SETR clear it (sheet 12).
 static void test_negate()
 {
 	std::printf("negate\n");
