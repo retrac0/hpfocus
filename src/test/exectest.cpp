@@ -974,12 +974,15 @@ static void test_try_escp()
 	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), 0);          // chain head popped
 	CHECK_EQ(h.cpu.r.q, q0);                            // delta Q unwound
 
-	// INT sets and clears the interrupt enable bit.
+	// INT sets and clears the interrupt enable bit. It is privileged
+	// (ERS sheet 119); test_stop_and_int_are_privileged has the trap.
 	h.cpu.r.put(sf::I, 0);
+	h.cpu.r.put(sf::M, 1);
 	CHECK(h.one(u16((1 << 6) | 011 | 0x1000)) == exec_trap::none);
 	CHECK(h.cpu.r.test(sf::I));
 	CHECK(h.one(u16((1 << 6) | 011)) == exec_trap::none);
 	CHECK(!h.cpu.r.test(sf::I));
+	h.cpu.r.put(sf::M, 0);
 
 	// CPTR adds a byte offset to a global data segment pointer.
 	h.cpu.r.s = s0;
@@ -3025,6 +3028,86 @@ static void test_interrupted_dispatcher_resumes()
 	CHECK_EQ(m.cpu.r.s, 0x4003);
 	CHECK_EQ(m.cpu.r.mask, mask);
 }
+
+// "Wait for any unmasked Message bit" (sheet 94).
+static void test_stop_is_level_sensitive()
+{
+	std::printf("STOP,B does not sleep on a bit already standing\n");
+	dmachine m;
+	m.code(m.PROC, { D_STOPB, D_NOP });
+
+	// HP-UX's idle sequence: SMPB 2 consumes the doorbell, PMPB 1 / AND
+	// builds the mask, STOP,B. A doorbell rung between the SMPB and the
+	// STOP is in MSG when the STOP executes.
+	m.cpu.r.msg = 0x00200000u;
+	m.cpu.push(m.cpu.r.mask);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(!m.cpu.halted());
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+
+	// With nothing standing it sleeps, and a message wakes it.
+	m.cpu.r.msg = 0;
+	m.cpu.r.p = m.PROC;
+	m.cpu.push(m.cpu.r.mask);
+	CHECK(m.cpu.step() == exec_trap::halted);
+	CHECK(m.cpu.halted());
+	m.cpu.raise_message(13);
+	CHECK(!m.cpu.halted());
+
+	// A masked bit does not count.
+	m.cpu.r.msg = 0x00200000u;
+	m.cpu.r.p = m.PROC;
+	m.cpu.push(m.cpu.r.mask | 0x00200000u);
+	CHECK(m.cpu.step() == exec_trap::halted);
+}
+
+// STOP and INT are privileged (sheets 94 and 119): cause 026, parameter 1.
+// SETR may load only some of STATUS (sheet 71).
+static void test_stop_and_int_are_privileged()
+{
+	std::printf("STOP and INT trap in unprivileged mode; SETR's STATUS fields\n");
+	dmachine m;
+	m.code(m.PROC, { D_STOPB, f4(011), f4(011, true) });
+	m.cpu.r.status &= ~ST_M;
+	const u32 mask = m.cpu.r.mask;
+
+	m.cpu.push(0xffffffffu);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::privileged_mode);
+	CHECK(!m.cpu.halted());
+	CHECK_EQ(m.cpu.r.mask, mask);
+	CHECK_EQ(m.cpu.r.p, m.vector(026));
+	CHECK_EQ(m.cpu.stk(0), 1);                      // parameter 1
+
+	m.task();
+	m.cpu.r.status &= ~ST_M;
+	m.cpu.r.p = m.PROC + 2;
+	CHECK(m.cpu.step() == exec_trap::none);         // INT
+	CHECK_EQ(m.cpu.r.p, m.vector(026));
+	// The marker's STATUS still has I set: nothing was changed.
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & ST_I, ST_I);
+
+	// SETR 4 unprivileged: "only STATUS(0:9), STATUS(10:3), and
+	// STATUS(16:2) are modified" -- not M, not I, not the CSN.
+	const u16 SETR4 = f2(035, 4);
+	m.task();
+	m.cpu.r.status = ST_EM | 5;                     // user mode, I clear
+	m.code(m.PROC, { SETR4, SETR4 });
+	m.cpu.push(0xffffffffu);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.status & (ST_M | ST_I), 0);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 5);
+	CHECK(m.cpu.r.test(sf::O));
+	CHECK_EQ(m.cpu.r.status & ST_MI, ST_MI);
+	// Privileged: everything but EM, P and the CSN (HP-UX's KERNEL 254
+	// sets MI this way).
+	m.cpu.r.status = ST_M | ST_EM | 5;
+	m.cpu.push(ST_M | ST_I | ST_MI | 7);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.status & (ST_M | ST_I | ST_MI), ST_M | ST_I | ST_MI);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 5);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -3065,6 +3148,8 @@ int main()
 	test_pseb_restarts_dispatcher();
 	test_disp_sets_flag();
 	test_interrupted_dispatcher_resumes();
+	test_stop_is_level_sensitive();
+	test_stop_and_int_are_privileged();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

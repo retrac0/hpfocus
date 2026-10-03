@@ -1026,7 +1026,14 @@ private:
 		case 004: return r.test(sf::ES)                         // EOS
 				? take_trap(trap_cause::end_of_subroutine, 0)
 				: exec_trap::none;
-		case 011: r.put(sf::I, b3 ? 1 : 0);                     // INT
+		case 011:                                               // INT
+			// "This is a privileged instruction" (sheet 119), and has to
+			// be: with it any user program could hold off every
+			// interrupt for as long as it liked. Cause 026, parameter 1:
+			// a privileged instruction in unprivileged mode.
+			if (!r.privileged())
+				return take_trap(trap_cause::privileged_mode, 1);
+			r.put(sf::I, b3 ? 1 : 0);
 			return exec_trap::none;
 
 		case 040: {                                             // TRY
@@ -1544,8 +1551,33 @@ private:
 			// bit 3 the TOS is loaded into MASK first -- the dispatcher's
 			// idle sequence computes the sleep-time interrupt mask on the
 			// stack and hands it to STOP,B to arm atomically.
+			//
+			// "This is a privileged instruction" (sheet 94). Unchecked,
+			// the two bytes 10 7F in any user program loaded MASK from
+			// whatever was on its stack and stopped the machine for
+			// everybody.
+			if (!r.privileged())
+				return take_trap(trap_cause::privileged_mode, 1);
 			if (b3)
+			{
 				r.mask = pop();
+				// "Wait for any unmasked Message bit" tests the register,
+				// not an edge: with an unmasked bit already standing the
+				// machine does not sleep at all. raise_message() only
+				// un-halts a processor that is halted, so a bit that
+				// arrived between the dispatcher's last look at MSG and
+				// its STOP -- HP-UX's idle sequence is SMPB 2 (consume
+				// the doorbell), PMPB 1, LDI, NOT, AND, STOP,B, and an
+				// interrupt routine's UP can ring bit 10 anywhere in
+				// those five instructions -- left the CPU asleep with a
+				// ready task until some unrelated message came along.
+				//
+				// Not modelled: restoring MASK and STATUS when the wait
+				// ends ("MASK:=TEMP; STATUS:=OLDSTAT"). Both systems'
+				// idle loops are validated with the mask left as loaded.
+				if ((r.msg & ~r.mask) != 0)
+					return exec_trap::none;
+			}
 			// I is left as the dispatcher set it (INT,B each loop pass):
 			// a STOPped machine must vector an I/O interrupt the moment
 			// its message wakes it, or the dispatcher's own PMPB reads

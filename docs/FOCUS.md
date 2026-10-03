@@ -1614,6 +1614,12 @@ debug pad 5 (drives the self-test LED). *CC unaffected.*
 and replaced from the popped TOS, `STATUS.I` set, and the CPU waits for
 any unmasked MSG bit, then restores MASK and STATUS and continues. Either
 way `S−SB` is stored at `(SB−1)` when SB ≠ 0. Privileged. *CC unaffected.*
+The wait tests the register, not an edge: an unmasked bit already standing
+when `STOP,B` executes ends it at once (HP-UX's idle sequence leaves five
+instructions between consuming the doorbell and the `STOP,B`, and an
+interrupt routine's `UP` can ring it in any of them). The emulator does
+not restore MASK and STATUS at the wake, and treats `b`=0 like `b`=1; both
+systems' idle loops are validated that way.
 
 **`NOP`** — No Operation — `F3:0`. *CC unaffected.*
 
