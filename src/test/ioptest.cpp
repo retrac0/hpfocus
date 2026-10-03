@@ -8,6 +8,9 @@
 #include "../iop/focusgfx.h"
 #include "../iop/focusasi.h"
 #include "../cpu/focus/focusexec.h"
+// After the core: the disc model takes u64 from it (MAME's own headers
+// supply it in the real build).
+#include "../iop/focusdisc.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -1590,6 +1593,52 @@ static void test_reset_is_power_on()
 }
 
 
+// The 520's internal disc controller answers the powerup scan like any card
+// in the backplane, so a machine reset has to put it back where the scan
+// expects to find it. Left as the last run had it, FR1 read a status where
+// the presence test wants zero: the 520 came back from a soft reset with
+// "Self test error 1: IO address 7, 0 STATUS: 00000009" and BASIC's CAT
+// answered ERROR 474, "Device failed its self test or diagnostic".
+static void test_disc_reset_is_power_on()
+{
+	std::printf("520 internal disc: a machine reset returns the controller to power-on\n");
+	disc_card d;
+	d.identity = 3;
+	d.busy_ms = 2;
+	d.mount(std::vector<u8>(512, 0x11));
+	d.mount_fixed(std::vector<u8>(1024, 0x22));
+	d.reset_self_test();
+
+	// The powerup scan: FR1 zero, the FR0 pattern echoed from FR1, and
+	// only then a status register.
+	CHECK_EQ(d.read_fr(1), 0);
+	d.write_fr(0, 0x80);
+	CHECK_EQ(d.read_fr(1), 0x80);
+	d.tick();
+	d.tick();
+	CHECK_EQ(d.read_fr(1) & 0xc0, 0xc0);    // self test complete
+	d.write_fr(8, 0xfe00);                  // the fixed disc selected
+	CHECK_EQ(d.read_fr(3), 5);
+	d.m_fixed[700] = 0x77;                  // ...and the run wrote to it
+	// A second scan finds the card as the run left it.
+	CHECK(d.read_fr(1) != 0);
+
+	d.power_on_reset();
+
+	CHECK_EQ(d.read_fr(1), 0);
+	d.write_fr(0, 0x40);
+	CHECK_EQ(d.read_fr(1), 0x40);
+	CHECK_EQ(d.read_fr(1), 0x80);           // its self test is running again
+	CHECK_EQ(d.read_fr(3), 4);              // the flexible disc is selected
+	// The media are what the run left, and the card is still what it was
+	// configured to be.
+	CHECK(d.loaded() && d.fixed_loaded());
+	CHECK_EQ(d.m_fixed[700], 0x77);
+	CHECK_EQ(d.identity, 3);
+	CHECK_EQ(d.busy_ms, 2u);
+}
+
+
 int main()
 {
 	std::printf("FOCUS IOP tests\n\n");
@@ -1609,6 +1658,7 @@ int main()
 	test_rtc_nvm();
 	test_gfx();
 	test_reset_is_power_on();
+	test_disc_reset_is_power_on();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
 	std::printf(g_fail ? "FAIL\n" : "PASS\n");

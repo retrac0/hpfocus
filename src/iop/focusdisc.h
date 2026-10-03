@@ -265,6 +265,36 @@ struct disc_card : public iop_interface
 	}
 	void reset_self_test() { m_busy_left = busy_ms; }
 
+	// A machine reset. The controller goes back to power-on: its self
+	// test running, the presence echo armed for the powerup scan, the
+	// flexible disc selected, QSTAT 2 until a Request Status collects it,
+	// nothing queued and no transaction open. What is in the drives stays
+	// there, written to or not, and so does what the card was told it is
+	// (its identities, its self-test time, its log).
+	//
+	// Without this a reset left the card where the last run had it: the
+	// next powerup's presence test read a status where it wants zero, and
+	// the 520 came back with "Self test error 1: IO address 7, 0 STATUS:
+	// 00000009" and a mass storage system that answered every command
+	// with ERROR 474, "Device failed its self test or diagnostic".
+	void power_on_reset()
+	{
+		disc_card fresh;
+		fresh.iop = iop;
+		fresh.pa = pa;
+		fresh.log = log;
+		fresh.identity = identity;
+		fresh.id_fr3 = id_fr3;
+		fresh.id_fr3_alt = id_fr3_alt;
+		fresh.id_fr3_fixed = id_fr3_fixed;
+		fresh.busy_ms = busy_ms;
+		fresh.m_image = std::move(m_image);
+		fresh.m_fixed = std::move(m_fixed);
+		fresh.m_seq = m_seq;
+		*this = std::move(fresh);
+		reset_self_test();
+	}
+
 	// Put a medium in the drive. The bootstrap loader changes discs the
 	// way an operator does, one volume of a set after another.
 	void mount(std::vector<u8> medium)

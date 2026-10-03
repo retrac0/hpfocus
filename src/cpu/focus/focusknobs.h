@@ -140,8 +140,8 @@ inline constexpr spec CATALOGUE[] = {
   "polling continuously; this is the emulated stand-in, and it has to be "
   "short compared with what the CPU does between two entries of a command "
   "list or the two processors race over the list itself. Default 400 us. "
-  "HP-UX 5.30 boots and runs sessions from 220 to 1000 us; below ~200 the "
-  "520 stops reaching its banner." },
+  "HP-UX 5.30 boots and runs sessions from 220 to 1000 us; the 520 boots "
+  "BASIC from 50 us up and HP-UX 5.01 reaches its banner at 150." },
 { "FOCUS_IOPPARKALWAYS", "", group::iop, true,
   "Suspend a command list on every ICEI, even when the interface is already "
   "answering the poll. The A/B control for the continuous-poll model: with "

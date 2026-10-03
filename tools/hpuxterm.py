@@ -47,6 +47,15 @@ import sys
 
 DEFAULT_BASE = 4000
 BACKLOG = 4096          # bytes of output kept for a user who is not there yet
+# How far a peer may fall behind before the hub stops waiting for it. The
+# hub is one thread serving every port, so it never blocks on any socket:
+# what a peer cannot take yet is queued, and a queue has an end. A user
+# this far behind is not reading (a suspended client, a dead link) and is
+# disconnected -- the session on the port carries on and the last BACKLOG
+# bytes are there when they come back. Keystrokes for a machine that is not
+# reading (paused, stopped in the debugger) are dropped past the limit.
+USER_BEHIND = 1 << 18
+MACHINE_BEHIND = 1 << 16
 
 
 def parse_target(text, base):
@@ -144,6 +153,8 @@ class Port:
         self.machine = None          # MAME's connection
         self.user = None             # the attached user's connection
         self.backlog = bytearray()   # output while nobody is attached
+        self.to_user = bytearray()   # output the user has not taken yet
+        self.to_machine = bytearray()  # typing the machine has not taken yet
 
 
 def listener(port):
@@ -193,13 +204,42 @@ def hub(names, base, ready):
         if s is None:
             return
         if note:
+            # Best effort, after whatever was still queued for it.
             try:
-                s.sendall(note)
+                s.sendall(bytes(p.to_user) + note)
+                p.to_user.clear()
             except OSError:
                 pass
         sel.unregister(s)
         s.close()
         setattr(p, which, None)
+        if which == 'user':
+            # What it never took is the start of the next user's backlog.
+            p.backlog += p.to_user
+            del p.backlog[:-BACKLOG]
+            p.to_user.clear()
+        else:
+            p.to_machine.clear()
+
+    # Send what a peer will take now and leave the rest queued; the
+    # selector says when it will take more. Never blocks: a user who stops
+    # reading used to hold the hub in sendall(), and with it every other
+    # port and the SIGTERM that ends the run.
+    def flush(p, which):
+        s = getattr(p, which)
+        q = p.to_user if which == 'user' else p.to_machine
+        if s is None:
+            return
+        try:
+            if q:
+                del q[:s.send(q)]
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            drop(p, which)
+            return
+        sel.modify(s, selectors.EVENT_READ | (selectors.EVENT_WRITE if q else 0),
+                   (p, which))
 
     # The hub belongs to the run that started it. If that run is killed
     # outright (kill -9 skips its cleanup), the hub is re-parented, and it
@@ -213,8 +253,15 @@ def hub(names, base, ready):
             events = sel.select(timeout=0.5)
         except InterruptedError:
             continue
-        for key, _ in events:
+        for key, mask in events:
             p, kind = key.data
+            if kind in ('user', 'machine'):
+                if getattr(p, kind) is not key.fileobj:
+                    continue        # dropped earlier in this round
+                if mask & selectors.EVENT_WRITE:
+                    flush(p, kind)
+                if not mask & selectors.EVENT_READ or getattr(p, kind) is None:
+                    continue
             if kind == 'inner':
                 conn, _ = p.inner_listener.accept()
                 conn.setblocking(False)
@@ -228,13 +275,10 @@ def hub(names, base, ready):
                 p.user = conn
                 sel.register(conn, selectors.EVENT_READ, (p, 'user'))
                 if p.machine is None:
-                    conn.sendall(b'[hpuxterm: the machine is not connected to this port yet]\r\n')
-                if p.backlog:
-                    try:
-                        conn.sendall(bytes(p.backlog))
-                    except OSError:
-                        pass
-                    p.backlog.clear()
+                    p.to_user += b'[hpuxterm: the machine is not connected to this port yet]\r\n'
+                p.to_user += p.backlog
+                p.backlog.clear()
+                flush(p, 'user')
             elif kind == 'machine':
                 try:
                     data = p.machine.recv(4096)
@@ -246,16 +290,13 @@ def hub(names, base, ready):
                     drop(p, 'machine')
                     drop(p, 'user', b'\r\n[hpuxterm: the machine has stopped]\r\n')
                     continue
-                sent = False
                 if p.user is not None:
-                    try:
-                        p.user.setblocking(True)
-                        p.user.sendall(data)
-                        p.user.setblocking(False)
-                        sent = True
-                    except OSError:
+                    p.to_user += data
+                    if len(p.to_user) > USER_BEHIND:
                         drop(p, 'user')
-                if not sent:
+                    else:
+                        flush(p, 'user')
+                else:
                     p.backlog += data
                     del p.backlog[:-BACKLOG]
             elif kind == 'user':
@@ -269,12 +310,9 @@ def hub(names, base, ready):
                     drop(p, 'user')
                     continue
                 if p.machine is not None:
-                    try:
-                        p.machine.setblocking(True)
-                        p.machine.sendall(data)
-                        p.machine.setblocking(False)
-                    except OSError:
-                        drop(p, 'machine')
+                    p.to_machine += data
+                    del p.to_machine[MACHINE_BEHIND:]
+                    flush(p, 'machine')
     for p in ports:
         for which in ('user', 'machine'):
             drop(p, which)

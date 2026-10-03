@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Does a host signal stop the emulator cleanly, whatever it is doing?
+#
+#   src/test/sigtest.sh [binary]      (default: mame/focus of this tree)
+#
+# A 540 with no disc is started headless (nothing is written: FOCUS_HDNOSAVE,
+# a battery file in a temporary directory), and each case sends ONE signal
+# and expects the run to end by itself, exit status 0, with the driver's
+# "signal N: stopping the run" -- the exit -seconds_to_run takes, with its
+# exit notifiers (batteries, discs). A run still alive after the signal is a
+# failure: its only way out is a second signal, the default action, which
+# skips the exit.
+#
+#   running   SIGTERM to a machine that is running
+#   paused    SIGINT to a machine paused the way P or MAME's menu pauses it
+#             (emu.pause from a Lua script): emulated time stands still, so
+#             a check made only on an emulated tick never sees the signal
+#
+# Exit status 0 only if every case passed.
+
+set -u
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+bin=$(realpath "${1:-$repo/mame/focus}")
+[ -x "$bin" ] || { echo "sigtest: no emulator at $bin" >&2; exit 2; }
+work=$(mktemp -d "${TMPDIR:-/tmp}/sigtest.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+cat > "$work/req.lua" <<'EOF'
+local path = os.getenv("SIGTEST_REQ")
+emu.register_periodic(function()
+	local f = io.open(path, "r")
+	if not f then return end
+	local what = f:read("*l") or ""
+	f:close(); os.remove(path)
+	if what == "pause" then emu.pause(); print("[sigtest: paused]") end
+end)
+EOF
+
+failed=""
+one() {     # one <name> <signal> <pause: 0|1>
+	local name=$1 sig=$2 pause=$3 d="$work/$1"
+	mkdir -p "$d"
+	(cd "$(dirname "$bin")" && SIGTEST_REQ="$d/req" SDL_VIDEODRIVER=dummy \
+		FOCUS_SCMNV="$d/scm.nv" FOCUS_HDNOSAVE=1 \
+		exec "$bin" hp9040 -nothrottle -video none -sound none \
+			-autoboot_script "$work/req.lua" -str 600) > "$d/out.log" 2>&1 &
+	local pid=$! i
+	sleep 3
+	if [ "$pause" = 1 ]; then
+		echo pause > "$d/req"
+		for i in $(seq 1 50); do grep -q "sigtest: paused" "$d/out.log" && break; sleep 0.2; done
+	fi
+	kill -"$sig" "$pid"
+	for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid"; wait "$pid" 2>/dev/null
+		echo "  FAIL $name: still running 10 s after SIG$sig"; failed="$failed $name"; return
+	fi
+	wait "$pid"; local rc=$?
+	if [ "$rc" = 0 ] && grep -q "stopping the run" "$d/out.log"; then
+		echo "  pass $name: SIG$sig, exit 0"
+	else
+		echo "  FAIL $name: SIG$sig, exit $rc"; failed="$failed $name"
+	fi
+}
+
+echo "sigtest: $bin"
+one running TERM 0
+one paused INT 1
+if [ -n "$failed" ]; then echo "sigtest: FAILED:$failed"; exit 1; fi
+echo "sigtest: every case passed"
