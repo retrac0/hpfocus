@@ -119,6 +119,15 @@ private:
 	// counting the CPUs currently executing in the segment. Segment 0 and
 	// the sub-table bases have no entry -- their slot 0 is the table
 	// header -- so counting them would corrupt the table length.
+	//
+	// Gaining the count is entering the segment, which is the access the
+	// CST's reference bit records: "R = Reference bit - set to 1 when the
+	// segment is accessed" (ERS sheet 27; word 0 bit 29, with M at 30 and
+	// A at 31, the DST entry's layout). HP-UX ages code segments with the
+	// same sweep as data segments (see focusdst.h): a user program
+	// segment's word 0 is 0x00022908, which matches its "present, unused,
+	// referenced" test only once R is set, and the kernel clears R again
+	// each time it stamps the segment.
 	void cst_use_count(u32 seg, int delta)
 	{
 		u32 ea;
@@ -126,8 +135,10 @@ private:
 			return;
 		if (!cst_entry_addr(seg, ea))
 			return;
-		const u32 w0 = m_mem.read32(ea);
+		u32 w0 = m_mem.read32(ea);
 		const u32 n = ers32::get(w0, 1, 12);
+		if (delta > 0)
+			w0 = ers32::set(w0, 29, 1, 1);
 		m_mem.write32(ea, ers32::set(w0, 1, 12, u32(int(n) + delta) & 0xfff));
 	}
 
@@ -271,14 +282,11 @@ private:
 		r.put(sf::CSN, e.seg);
 		if (ers32::get(e.w0, 30, 1))        // M: executes privileged
 			r.put(sf::M, 1);
-		// This CPU joins the use count. The CST reference bit (word 0
-		// bit 31) is deliberately NOT set: SUNOS keeps one unified
-		// segment table, and bit 31 of word 0 is the DST layout's absent
-		// bit -- marking an executed segment "referenced" would make
-		// every later data access to it trap as absent. The powerup
-		// module initialises the flags with bit 31 clear and nothing in
-		// the OS ever clears it, so the hardware evidently does not
-		// write it either.
+		// This CPU joins the use count, and cst_use_count marks the
+		// segment referenced (word 0 bit 29) as it does. (This used to
+		// say the reference bit was bit 31 and must not be written, as
+		// the DST layout's absence bit; bit 31 is the absence bit in
+		// BOTH layouts, and R is 29 in both.)
 		cst_use_count(e.seg, +1);
 	}
 

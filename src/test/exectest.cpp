@@ -2644,6 +2644,57 @@ static void restart_handler(harness &h)
 	h.cpu.r.put(sf::CSN, 5);
 }
 
+// The CST reference bit, word 0 bit 29: "set to 1 when the segment is
+// accessed" (ERS sheet 27). Entering a segment -- a PCL into it, an EXIT
+// back to it -- marks it; leaving does not clear it (the OS does that), and
+// nothing else in the word moves except the use count.
+static void test_cst_reference()
+{
+	std::printf("CST reference bit on segment entry\n");
+	harness h;
+	const u32 CST = 0x200;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST, 16 * 8);
+	// Segment 5: the caller, where the harness runs (PB 0x1000, PL 0x1ffc).
+	h.mem.write32(CST + 80 + 0, ers32::set(0, 1, 12, 1));   // count 1, R clear
+	h.mem.write32(CST + 80 + 4, 0xfff);
+	h.mem.write32(CST + 80 + 8, 0x1000);
+	h.mem.write32(0x1ffc, 4);                               // STT: one entry
+	u32 xptr = ers32::set(0, 0, 1, 1);
+	xptr = ers32::set(xptr, 1, 19, 4);
+	xptr = ers32::set(xptr, 20, 12, 6);
+	h.mem.write32(0x1ff8, xptr);                            // -> seg 6, entry 1
+	// Segment 6: the callee, 256 bytes at 0xa000, entry 1 at +0x10.
+	h.mem.write32(CST + 96 + 0, 0x00000100u);               // an OS bit, R clear
+	h.mem.write32(CST + 96 + 4, 0xff);
+	h.mem.write32(CST + 96 + 8, 0xa000);
+	h.mem.write32(0xa0fc, 4);
+	h.mem.write32(0xa0f8, 0x10);
+	h.put(0xa010, f5(023, 0));                              // EXIT 0
+
+	h.cpu.r.status = 0;
+	h.cpu.r.put(sf::M, 1);
+	h.cpu.r.put(sf::CSN, 5);
+	CHECK(h.one(f5(022, 1)) == exec_trap::none);           // PCLS 1
+	CHECK_EQ(h.cpu.r.p, 0xa010);
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 6);
+	const u32 w6 = h.mem.read32(CST + 96);
+	CHECK_EQ(ers32::get(w6, 29, 1), 1);                    // referenced
+	CHECK_EQ(ers32::get(w6, 1, 12), 1);
+	CHECK_EQ(w6 & ~(ers32::mask(29, 1) | ers32::mask(1, 12)), 0x100u);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 1, 12), 0);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 29, 1), 0);
+
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT to seg 5
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 5);
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 29, 1), 1);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 1, 12), 1);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 29, 1), 1);   // still set
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 1, 12), 0);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 31, 1), 0);   // never "absent"
+}
+
 // LHSI and PLHA sign extend (ERS 4.5 and 12.2: "(S)(0:16) := (S)(16:1)"),
 // exactly as LDH does, and set CCA on the extended value. Both used to
 // zero extend.
@@ -2994,6 +3045,7 @@ int main()
 	test_sbit();
 	test_bit_restart();
 	test_halfword_sign();
+	test_cst_reference();
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
