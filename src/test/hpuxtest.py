@@ -416,8 +416,15 @@ def soak_boot1(**kw):
     k.type('2:0', 'find / -print | wc -l', 160, run=90)
     k.type('2:0', 'ps -ef | wc -l && ' + mark('PSOK'), run=8)
     k.type('2:1', 'ls -lR /usr > /tmp/lsr 2>/dev/null', 165, run=90)
-    k.type('2:1', 'sort /tmp/lsr | wc -l && ' + mark('SORTOK'), run=40)
-    return k.spec(60, tap='console,2:0,2:1', **kw)
+    # Not `sort | wc -l`: a pipeline's status is its last command's, and a
+    # sort that dies leaves wc to print 0 and succeed. /tmp/lsr is 400 KB,
+    # which takes sort's data past 512 KB and into a second paged segment.
+    k.type('2:1', 'sort /tmp/lsr > /tmp/srt && sort -c /tmp/srt && ' + mark('SORTOK'), run=40)
+    # The margin is for the console: with find and ls -lR running on the
+    # ports, its cp and cmp of /bin/csh alone take over 100 s, more on 3 MB
+    # than on 2 (measured: every check passes on both given 800 s, and the
+    # 3 MB run missed its sum and sync with the 60 s this used to allow).
+    return k.spec(200, tap='console,2:0,2:1', **kw)
 
 
 def soak_boot2(**kw):

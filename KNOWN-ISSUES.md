@@ -16,13 +16,22 @@ builds, the entry says so. Add to this file as you find more.
   sort`, `ls -lR /usr`, `od`, `cat /bin/* | sum`: 44 processes) need most
   of 50 emulated minutes on 2 MB, and the logins go on answering. Fit 3 or
   4 MB (`--ram 3`, `--ram 4`) for that kind of work.
-  A build without the fix `IXIT and XGDS mark the segments a task runs on
-  Referenced and Dirty` crashes here instead: `System halted due to system
-  error. TRAP:00000012`, or shells dying with `Memory fault` and `-sh: no
-  space`. On such a build that happens every time with a dozen busy
-  processes on 2 or 3 MB (on 4 MB a process dumped core), and in about
-  one run in a hundred of seven simultaneous logins on 2 MB. `src/test/hpuxtest.py matrix --only busy`
-  tells the two apart.
+- **Two crashes an older build still has.** Both were found and fixed at
+  the end of the alpha's review, and a build from before these two commits
+  has them:
+  - Without `IXIT and XGDS mark the segments a task runs on Referenced and
+    Dirty`, a busy machine crashes: `System halted due to system error.
+    TRAP:00000012`, or shells dying with `Memory fault` and `-sh: no
+    space`. That happens every time with a dozen busy processes on 2 or
+    3 MB (on 4 MB a process dumped core), and in about one run in a
+    hundred of seven simultaneous logins on 2 MB.
+  - Without `DST: an index carries a paged pointer into the next segment;
+    CPTR,B too`, any program whose data grows past 512 KB dies with
+    `Memory fault`, on an idle machine too: `sort` on a file of 275 KB
+    does.
+
+  `src/test/hpuxtest.py matrix --only busy` fails on a build with the
+  first, and `src/test/hpuxtest.py soak` on a build with the second.
 - **Some I/O timings stall the boot.** The emulator's default timing works.
   The non-default `FOCUS_IOPPOLL` values 450, 475 and 600 have been seen to
   stop `/etc/rc` or the console. If you set that knob, unset it.
@@ -41,10 +50,10 @@ builds, the entry says so. Add to this file as you find more.
   Nothing else goes wrong: after six such boots, and after two `kill -9`
   in the middle of a large write, HP-UX's own `/etc/fsck -n` reports only
   the lost blocks and one nameless empty file, and every file that had
-  been `sync`ed compares equal. To get the space back, either stop with
-  `/etc/stopsys` (nothing is lost, and the next boot's `/etc/fsclean -v`
-  says `ok`), or once, as root, `cp /etc/newconfig/bcheckrc /etc/bcheckrc`:
-  from then on a boot after a power cut runs `fsck -P`, which returns the
+  been `sync`ed compares equal. To lose none, stop with `/etc/stopsys`
+  (the next boot's `/etc/fsclean -v` then says `ok`). To get lost space
+  back, once, as root, `cp /etc/newconfig/bcheckrc /etc/bcheckrc`: from
+  then on a boot after a power cut runs `fsck -P`, which returns the
   blocks and adds about 70 seconds to that boot. `tools/runhpux.sh
   --reset` also does it, by starting over.
 - **At least 2 MB of memory.** `tools/runhpux.sh` fits 2 MB, and `--ram 3`
