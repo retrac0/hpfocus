@@ -207,8 +207,8 @@ bit  13   14   15    16-17   18   19   20-31
 | `C` | Carry out of an arithmetic operation |
 | `O` | Overflow — cleared only by `BOV`, `BNO`, and `SETR` |
 | `T` | User trap enable (integer overflow, divide by zero) |
-| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1. Cleared by the trap itself before its marker is pushed (note 4), set again when an instruction completes |
-| `MI` | Machine-Instruction trap request — trap before each instruction, **in either mode**. HP-UX 5.30 delivers signals with it: the syscall stub sets `MI` (`PSHR 4; OR #0x00200000; SETR 4`) and restarts the interrupted call without leaving the kernel, and the trap taken at the very next instruction is what builds the handler call. `MI` and `EM` are carried across `EXIT` and `IXIT` rather than restored from the marker — the handler's cleared status must survive its own return, or the trap re-fires on the instruction it returned to. Both facts were read off the kernel's code, not the ERS, and are the emulator's rule since 2026-08-28 |
+| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1. Cleared before the marker is pushed by causes 4, 13, 37, 40, 42 and 43 (note 4), set again when an instruction completes — **except** by an instruction that loads STATUS from a marker (`EXIT`, `IXIT`, `DISP`), which ends with the marker's `EM`. That exception is what lets the instruction a Machine Instruction Trap returns to run once untrapped |
+| `MI` | Machine-Instruction trap request — trap before each instruction, **in either mode**. Saved in markers and restored from them like the rest of STATUS (`STATUS := (S-1)`). HP-UX 5.30 delivers signals with it three ways, all read off its code: the syscall stub sets `MI` live (`PSHR 4; OR #0x00200000; SETR 4`, KERNEL 254) before restarting the interrupted call; the dispatcher, resuming a task with a signal pending, ORs `MI` into the STATUS word of the marker the task returns through (TRAP HANDLERS +0x102); and the signal hook withdraws a served request by clearing `MI` in the trap's own marker (KERNEL 340 +0x3b04). Left set in the marker, it single-steps. (From 2026-08-28 to the alpha the emulator carried `MI`/`EM` across `EXIT`/`IXIT` instead; that dropped every request made through a marker — `kill` of a process looping in user code did nothing) |
 | `RM` | FP rounding mode: `00` nearest-even, `01` toward +∞, `10` toward 0, `11` toward −∞ |
 | `I` | Interrupt enable for Message register interrupts |
 | `M` | Mode: 1 = privileged |
@@ -1673,27 +1673,55 @@ Privileged. *CC unaffected.*
 
 **`PSDB` / `PSEB`** — Pseudo Interrupt Disable / Enable — `F4:15` / `F4:17`
 Increment / decrement the dispatcher-disable count at `(QI−4)`. `PSEB` on
-a zero count raises Inconsistent Registers. While the count is nonzero,
-`DISP` defers (below) instead of dispatching. When `PSEB` takes the count
-to zero with a deferred `DISP` flagged at `(QI)(0:1)`, it carries it out
-(ERS sheet 99): the dispatcher itself is aborted and restarted, anything
-else executes `DISP`. HP-UX's dispatcher depends on the restart (`DISP;
-PSEB` when the task it picked has a segment swapped out). Privileged.
+a zero count raises System Error (cause 014, parameter 0, "too many PSEB
+instructions"). While the count is nonzero, `DISP` defers (below) instead
+of dispatching. When `PSEB` takes the count to zero with a deferred `DISP`
+flagged at `(QI)(0:1)`, it carries it out (ERS sheet 99) according to the
+**DISP FLAG**: set, the dispatcher itself is running, and it is aborted
+and restarted from its frame at QI (`(QI) := 0`; Q, SB, SL back to the
+ICS's); clear, `DISP` is executed — from a task that enters the
+dispatcher, on the ICS it merely leaves the request for `IXIT`. HP-UX
+depends on both: its dispatcher restarts itself with `DISP; PSEB` when the
+task it picked has a segment swapped out, and its wake-all routine (CORE
+SYSTEM file 0x1446c) is `PSDB … DISP … SMSG,B; PSEB; EXIT`, written to
+lose the processor at the `PSEB`. Privileged. *CCL*, or as set by `DISP`.
+
+**The DISP FLAG** is microcode state, not a register: "the dispatcher is
+what runs". Every entry to the dispatcher sets it (`DISP`, `IXIT` cases 7
+and 8, `PSEB`'s restart, and `IXIT` case 5's return to it); its `IXIT` to
+a task (case 1) clears it; an interrupt or message trap taken over the
+running dispatcher moves it into the top bit of the marker it pushes, and
+that marker's `IXIT` gives it back — restarting the dispatcher instead of
+resuming it (case 8) when the service routine asked for a dispatch.
 
 **`DISP`** — Dispatch — `F4:16`
 The only way into the dispatcher. If already on the ICS or
-pseudo-disabled, just set the deferred flag `(QI)(0:1)` and *CCG*/*CCL*;
-otherwise save the current process (marker; `S−SB` at `(SB−1)`), mount the
-ICS (`Q := QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the
-stack-base word from the global-segment pointer at `(Q+1)`, reload PB/PL
-from the CSN in `(Q−1)`, and enter the dispatcher with *CCE*. Privileged.
+pseudo-disabled, just set the deferred flag `(QI)(0:1)`; otherwise save
+the current process (marker; `S−SB` at `(SB−1)`), mount the ICS (`Q :=
+QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the stack-base
+word from the global-segment pointer at `(Q+1)`, reload PB/PL and STATUS
+from `(Q−1)`, and set the DISP FLAG. Privileged. The ERS gives the
+indicators as *CCE* (set before the marker is pushed) when the dispatcher
+is entered and *CCG* when the request is deferred; the emulator leaves CC
+alone on entry and sets *CCL* on deferral. Neither OS tests CC after a
+`DISP` (no conditional branch follows any of the 48 in HP-UX 5.30 or the
+57 in BASIC), so this is recorded rather than changed.
 
 **`IXIT`** — Interrupt Exit — `F4:74`
 Exit from trap handlers, interrupt service, and the dispatcher (all run on
 the ICS). Depending on `(Q)`, `(QI)` and the deferred-dispatch flag it:
 returns to the interrupted process (restoring DST and state from the TCB),
 returns to an interrupted handler or interrupted dispatcher, or (re)starts
-the dispatcher. Assumes the marker at Q with the global-segment pointer,
+the dispatcher. With the DISP FLAG set it is the dispatcher's exit to the
+task named by CTCBP (case 1), and MASK is left as the dispatcher has it;
+the other exits restore MASK from `(Q+2)`. A task's saved S may lie in the
+overflow area above its SL (an interrupt's marker on a nearly full stack):
+it is resumed, and Stack Overflow is reported before its next
+instruction; only S beyond the stack segment itself is Inconsistent
+Registers. Returning a task to a code segment that was swapped out while
+it waited raises Absent Code Segment in the task's own context, at its
+resume point (inferred from what HP-UX's handler accepts; the Appendix C
+flowchart is not available). Assumes the marker at Q with the global-segment pointer,
 previous mask, and device number at `(Q+1..Q+3)` (§7.3). Privileged. *CC
 unaffected.* Appendix C bug: on CPU ≤ 4.0, interrupts must be disabled
 around `IXIT`.
@@ -1712,6 +1740,12 @@ debug pad 5 (drives the self-test LED). *CC unaffected.*
 and replaced from the popped TOS, `STATUS.I` set, and the CPU waits for
 any unmasked MSG bit, then restores MASK and STATUS and continues. Either
 way `S−SB` is stored at `(SB−1)` when SB ≠ 0. Privileged. *CC unaffected.*
+The wait tests the register, not an edge: an unmasked bit already standing
+when `STOP,B` executes ends it at once (HP-UX's idle sequence leaves five
+instructions between consuming the doorbell and the `STOP,B`, and an
+interrupt routine's `UP` can ring it in any of them). The emulator does
+not restore MASK and STATUS at the wake, and treats `b`=0 like `b`=1; both
+systems' idle loops are validated that way.
 
 **`NOP`** — No Operation — `F3:0`. *CC unaffected.*
 
@@ -1731,8 +1765,8 @@ Instruction on execution.
 **`UP` / `DOWN`** — Semaphore Up / Down — `F4:20` / `F4:21`
 The semaphore signal/wait pair — the blocking counterpart to the
 `SEML`/`PSLA` atomic exchange (§10.15). Privileged. The assembler gives
-them the operand class of `PSHN` and `SRM`, so `b` is meaningful: set, the
-pointer is popped.
+them the operand class of `PSHN` and `SRM`, so `b` is meaningful: it
+selects how the operand names the semaphore. Both forms pop it.
 
 The semantics below are not read from any HP document. They are recovered
 from the BASIC kernel's *software* implementation of the same structure
@@ -1740,14 +1774,19 @@ from the BASIC kernel's *software* implementation of the same structure
 dispatcher that consumes its lists), which fixes every convention the
 microcode has to share with the OS around it.
 
-The operand is a pointer to a two-word semaphore: word 0 the wait-list
-head, doubling as the multiprocessor lock (−1 while held), word 1 the
-count. As with the other privileged instructions the pointer may be a
-tagged data segment pointer or a raw absolute address — an absolute reads
-as an external pointer with segment number zero, which is invalid as an
-EDS reference and so is free to carry that meaning. Both HP-UX kernels
-feed both forms; both their call sites use the same `{0, 1}` layout, an
-unlocked one-unit mutex.
+The operand names a two-word semaphore: word 0 the wait-list head,
+doubling as the multiprocessor lock (−1 while held), word 1 the count.
+The plain form takes a **data segment pointer** — HP-UX's unit semaphores
+arrive as `0x00780008` and `0x00780028`, external pointers to segment 15,
+whose blocks have counts initialised to 1. The `,B` form takes an
+**absolute address** — the kernel's first `DOWN,B` of the boot names
+`0x00ffe6f8`, up among the TCBs, which read as a pointer would be segment
+31 at offset half a megabyte. Reading every operand one way or the other
+was wrong in both directions: as pointers the boot panicked on its first
+`DOWN,B`, as addresses two tasks parked on untouched words. Both forms pop
+the operand (no site deletes anything after them; leaving it was a
+one-word stack leak per operation that overflowed the mount task's
+stack).
 
 `DOWN` decrements the count. If it stays non-negative the instruction is
 done. Otherwise the task blocks, and the list it joins is the one HP-UX's
@@ -1759,8 +1798,17 @@ the word at `CTCBP−12`**, smallest first and first-come-first-served among
 equals (`LLSH 3` from the head, limited to the waiters already queued,
 then `LINS` in front of where it stopped); the head moves to the new node
 only when the search did not advance. The state word at `CTCBP−16` takes
-2 in the low halfword, `CTCBP+104` records the operand, and the task
-leaves through the dispatcher exactly as `DISP` enters it.
+2 in the low halfword, `CTCBP+104` (node+112) records the **operand as
+given** — the pointer, for the plain form — and the task leaves through
+the dispatcher exactly as `DISP` enters it. The node+112 word is what the
+kernel's own blocking paths store just before their `DISP` (file 0xe796,
+0x13d5c, 0x13e6e, 0x14164 and others): their semaphore parameter,
+unconverted — the `CPAA` variant at
+0x13c18 converts the pointer for its own use and still stores the
+original. No reader of the word was found in the 5.30 kernel. A `DOWN`
+that does not block leaves the head alone: the kernel's routine writes
+zero there, but only because its `PSLA` lock overwrote the word, and with
+a positive count the head is nil anyway.
 
 `UP` increments the count. If it is still non-positive there is a waiter:
 when the count has reached zero it was the only one and the head simply

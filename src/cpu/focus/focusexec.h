@@ -71,6 +71,7 @@ enum class trap_cause : u8
 	reset                     = 010,
 	page_table_violation      = 011,
 	inconsistent_registers    = 012,
+	system_error              = 014,   // 0 = too many PSEBs, 1 = use count
 	pointer_conversion        = 016,
 	external_program_pointer  = 017,
 	unimplemented_instruction = 020,
@@ -140,6 +141,16 @@ public:
 		r = registers();
 		m_cir = 0;
 		m_halted = false;
+		// The microcode's flags are processor state like any register. A
+		// reset taken while the machine idles in its dispatcher -- which
+		// is where it nearly always is -- otherwise kept "on the ICS" and
+		// "dispatcher running", and the next boot's first interrupt
+		// pushed its frame on the interrupted stack instead of moving to
+		// the ICS.
+		m_ics_flag = false;
+		m_disp_flag = false;
+		m_exit_from_ixit = false;
+		m_status_loaded = false;
 	}
 
 	bool halted() const { return m_halted; }
@@ -388,25 +399,50 @@ public:
 
 	// MI (bit 10) and EM (bit 9) of STATUS. EM is "set and cleared
 	// appropriately by the microcode" (sheet 11): the trap clears it
-	// before pushing its marker, and completing an instruction sets it
-	// again, so a request is honoured before the very next instruction
-	// in whichever mode the processor is in -- HP-UX's syscall stub sets
-	// MI and then RESTARTS the interrupted call without ever leaving
-	// privileged mode, and the trap taken there is what turns the
-	// pending signal into a handler call. The two bits belong to the
-	// processor rather than to the frame: EXIT and IXIT restore the rest
-	// of STATUS from the marker but carry these across, which is what
-	// keeps the handler's cleared status from being undone by the
-	// marker's copy of MI on its way back out -- the trap would fire
-	// again before the instruction it had just returned to.
+	// before pushing its marker (note 4), and completing an instruction
+	// sets it again, so a request is honoured before the very next
+	// instruction in whichever mode the processor is in -- HP-UX's
+	// syscall stub sets MI and then RESTARTS the interrupted call without
+	// ever leaving privileged mode, and the trap taken there is what
+	// turns the pending signal into a handler call.
+	//
+	// Both bits live in the marker like the rest of STATUS, and EXIT and
+	// IXIT restore them from it: "STATUS := (S-1)" (sheet 96; DISP's
+	// "STATUS := (Q-1)", sheet 98). HP-UX is written to exactly that:
+	//
+	//   - its dispatcher, about to resume a task with a signal pending,
+	//     ORs 0x00200000 into the STATUS word of the marker the task
+	//     will return through (TRAP HANDLERS +0x102..+0x122, absolute
+	//     0x18298..0x182b2 at 2 MB) and lets IXIT load it -- the only
+	//     way a signal reaches a process computing in user code that
+	//     makes no system call;
+	//   - the signal hook withdraws a request it has served by clearing
+	//     the bit in the trap's own marker (KERNEL 340 +0x3b04..+0x3b14);
+	//   - ptrace's single step writes MI=1, EM=0 into a saved STATUS.
+	//
+	// The marker a Machine Instruction Trap pushes has MI=1, EM=0, so the
+	// instruction it returns to runs untrapped once -- provided the
+	// return does not set EM again on its own way out. That proviso is
+	// the whole trick: an instruction that LOADS STATUS from a marker
+	// ends with the marker's EM, not with "instruction complete, EM :=
+	// 1" (m_status_loaded). This core once set EM after every
+	// instruction including EXIT, saw the trap fire again before the
+	// instruction it had just returned to, and worked around that by
+	// carrying the live MI and EM across EXIT and IXIT instead of
+	// restoring them. The syscall stub's request survived that (KERNEL
+	// 254 sets MI in the live register), but every request made through
+	// a marker was silently dropped: `kill` of a process looping in user
+	// code did nothing, and an interrupt taken between KERNEL 254's SETR
+	// and the trap lost the trap on the IXIT back.
 	static constexpr u32 STATUS_MI_EM = 0x00600000u;   // bits 9 and 10 from the MSB
 	bool machine_instruction_trap_armed() const
 	{
 		return (r.status & STATUS_MI_EM) == STATUS_MI_EM;
 	}
-	u32 carry_trace_bits(u32 restored) const
+	u32 status_from_marker(u32 restored)
 	{
-		return (restored & ~STATUS_MI_EM) | (r.status & STATUS_MI_EM);
+		m_status_loaded = true;
+		return restored;
 	}
 
 	exec_trap step()
@@ -416,6 +452,7 @@ public:
 
 		m_addr_trap = trap::none;
 		m_branched = false;
+		m_status_loaded = false;
 		cycles = CYCLES_TYPICAL;
 
 		// Stack Overflow is condition 6 of the end-of-instruction list
@@ -496,8 +533,10 @@ public:
 
 		if (t == exec_trap::none && !m_branched)
 			r.p = m_next;
-		if (t == exec_trap::none)
-			r.status |= ers32::mask(9, 1);              // instruction complete: EM set again
+		// Instruction complete: EM set again -- unless the instruction's
+		// last act was to load STATUS from a marker, whose EM stands.
+		if (t == exec_trap::none && !m_status_loaded)
+			r.status |= ers32::mask(9, 1);
 		return t;
 	}
 
@@ -857,17 +896,20 @@ public:
 private:
 	u32 m_next = 0;
 	bool m_branched = false;
+	bool m_status_loaded = false;     // this step loaded STATUS from a marker
 	bool m_halted = false;
 	bool m_traps_enabled = false;
 	bool m_address_lockout = true;    // the default mode (ERS sheet 126)
 	u32 m_control_store_date = 0x19820319;   // CPU 4.0
-	bool m_disp_flag = false;         // the microcode dispatcher flag
+	// The microcode's DISP FLAG: the dispatcher is what is running. Set
+	// by every entry to it (DISP, IXIT cases 7 and 8, PSEB's restart --
+	// all through launch_ics_frame -- and IXIT case 5's return to it);
+	// cleared by its exit to a task (IXIT case 1) and handed to the
+	// marker of an interrupt that lands on top of it (enter_ics), whose
+	// IXIT gives it back. PSEB tests it to tell "abort the dispatcher and
+	// restart" from "execute DISP" (sheet 99).
+	bool m_disp_flag = false;
 	bool m_ics_flag = false;          // executing on the interrupt stack
-	// The dispatcher is on the ICS: launched from its frame at QI and not
-	// yet out through a task's TCB. With Q == QI it tells the dispatcher's
-	// own frame from a service routine nested above it, which is the
-	// "DISP FLAG" test PSEB makes (ERS sheet 99).
-	bool m_in_dispatcher = false;
 	// tcb_dispatch's EXIT into the task it has chosen is under way (see
 	// do_exit's absent-segment test).
 	bool m_exit_from_ixit = false;

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <map>
 #include <vector>
 
@@ -1430,12 +1431,15 @@ static void test_try_escp()
 	CHECK_EQ(h.mem.read32(h.cpu.r.sb + 8), 0);          // chain head popped
 	CHECK_EQ(h.cpu.r.q, q0);                            // delta Q unwound
 
-	// INT sets and clears the interrupt enable bit.
+	// INT sets and clears the interrupt enable bit. It is privileged
+	// (ERS sheet 119); test_stop_and_int_are_privileged has the trap.
 	h.cpu.r.put(sf::I, 0);
+	h.cpu.r.put(sf::M, 1);
 	CHECK(h.one(u16((1 << 6) | 011 | 0x1000)) == exec_trap::none);
 	CHECK(h.cpu.r.test(sf::I));
 	CHECK(h.one(u16((1 << 6) | 011)) == exec_trap::none);
 	CHECK(!h.cpu.r.test(sf::I));
+	h.cpu.r.put(sf::M, 0);
 
 	// CPTR adds a byte offset to a global data segment pointer.
 	h.cpu.r.s = s0;
@@ -3652,7 +3656,12 @@ static void test_up_down()
 	h.mem.write32(sem, 0);                       // no waiters
 	h.mem.write32(sem + 4, 1);                   // one unit free
 
-	// DOWN acquires without blocking while the count is positive.
+	// DOWN acquires without blocking while the count is positive. The
+	// plain form takes a data segment pointer (HP-UX's unit semaphores
+	// arrive as external pointers to segment 15); ",B" takes an absolute
+	// address (its first DOWN,B of the boot names 0x00ffe6f8). This test
+	// once handed the tagged pointer to the ",B" form, from before the
+	// kernels' operands settled what the bit means.
 	h.cpu.push(ptr);
 	CHECK(h.one(f4(021)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
@@ -3704,13 +3713,14 @@ static void test_up_down()
 	CHECK_EQ(h.mem.read32(sem + 4), 1);
 
 	// A waiter: park a fake TCB on the list the way a blocking DOWN
-	// does -- link node at CTCBP-8, state word at CTCBP-16 -- and check
-	// that UP unlinks it, marks it ready, and rings the doorbell bit.
+	// does -- link node at CTCBP-8, a ring of one (test_up_down_wait_list
+	// has the whole format), state word at CTCBP-16 -- and check that UP
+	// unlinks it, marks it ready, and rings the doorbell bit.
 	const u32 TCB = 0x3000;
 	h.mem.write32(16 * ers32::get(h.cpu.r.mask, 3, 3) + 4, TCB + 0x18);
 	const u32 link = TCB + 0x10;
-	h.mem.write32(link, 0);
-	h.mem.write32(link + 4, sem + 4);
+	h.mem.write32(link, link);
+	h.mem.write32(link + 4, link + 4);
 	h.mem.write32(sem, link);
 	h.mem.write32(sem + 4, u32(-1));             // one waiter
 	h.mem.write32(TCB + 8, 0x00050002);          // blocked
@@ -3883,6 +3893,510 @@ static void test_xgds_absent()
 	h.cpu.on_trap = nullptr;
 }
 
+//**************************************************************************
+//  THE DISPATCHER, STOP, AND THE MACHINE INSTRUCTION TRAP
+//**************************************************************************
+//
+// A machine with a Code Segment Table, a handler segment, an Interrupt
+// Control Stack with a dispatcher frame at QI, one task with a TCB and a
+// stack segment, and one device on the DRT. Every case is a sequence HP-UX
+// 5.30 executes, reduced to the few instructions that matter, checked
+// against the Instruction Set ERS text it depends on.
+
+static const u16 D_NOP   = f3(0);
+static const u16 D_PSDB  = f4(015);
+static const u16 D_DISP  = f4(016);
+static const u16 D_PSEB  = f4(017);
+static const u16 D_IXIT  = f4(074);
+static const u16 D_CTCB  = f4(024);      // unimplemented: raises cause 020
+static const u16 D_STOPB = f4(077, true);
+static const u16 D_EXIT0 = f5(023, 0);
+
+static constexpr u32 ST_M  = 0x00020000u;    // bit 14
+static constexpr u32 ST_I  = 0x00040000u;    // bit 13
+static constexpr u32 ST_MI = 0x00200000u;    // bit 10
+static constexpr u32 ST_EM = 0x00400000u;    // bit 9
+
+struct dmachine
+{
+	static constexpr u32 CST = 0x200;
+	static constexpr u32 HB = 0x2000, HLEN = 0x400, HPL = HB + HLEN - 1 - 3;
+	static constexpr u32 QI = 0x6103, SLI = 0x6fff;
+	static constexpr u32 TCB = 0x7000;
+	static constexpr u32 DED = 16;                  // channel 1
+	static constexpr u32 DEV = 0x90;                // channel 1, PA 1
+	static constexpr u32 ISR = 0x3000;              // absolute, segment 0
+	static constexpr u32 STK = 0x3ff0;              // the task's stack segment
+	static constexpr u32 PROC = 0x1000;             // the task's code, segment 5
+
+	sparse_memory mem;
+	cpu_core cpu{mem};
+
+	// disp_csn: the segment the dispatcher frame names (HP-UX uses 0).
+	explicit dmachine(u32 disp_csn = 1)
+	{
+		cpu.r.mask = ers32::set(0, 3, 3, 1);
+		mem.write32(0, CST);
+		mem.write32(CST, 16 * 64);
+		seg(1, HB, HLEN - 1);
+		seg(5, PROC, 0xfff);
+
+		mem.write32(DED + 4, TCB);
+		mem.write32(DED + 8, QI);
+		mem.write32(DED + 12, SLI);
+
+		// The dispatcher's frame (ERS sheet 41).
+		mem.write32(QI - 3 - 12, 0);
+		mem.write32(QI - 3 - 8, disp_csn ? 0x40 : HB + 0x40);
+		mem.write32(QI - 3 - 4, ST_M | ST_I | disp_csn);
+		mem.write32(QI - 3, 0);
+		mem.write32(QI - 3 + 4, (2u << 30) | 0x8000);
+
+		// The task: stack segment 5, global segment 6.
+		mem.write32(TCB, 0);
+		mem.write32(TCB + 4, 0);
+		mem.write32(TCB + 8, (5u << 16) | 6);
+		const u32 dst = dst_walker::SYSTEM_DST_BASE;
+		mem.write32(dst + 16 * 5 + 4, 0x1fff);
+		mem.write32(dst + 16 * 5 + 8, STK);
+		mem.write32(dst + 16 * 6 + 4, 0xfff);
+		mem.write32(dst + 16 * 6 + 8, 0x8000);
+		mem.write32(STK, 0x10);                     // SB = STK + 0x10
+		mem.write32(STK + 4, 0xfff);                // SL = SB + 0xfff
+
+		// The device: a global pointer for its data, a local program
+		// pointer -- absolute, segment 0 -- for its service routine.
+		mem.write32(DEV, 0);
+		mem.write32(DEV + 4, (2u << 30) | 0x8000);
+		mem.write32(DEV + 8, ISR);
+
+		// Trap vectors: each cause lands on its own EXIT.
+		for (unsigned c = 1; c < 060; c++)
+			mem.write32(HPL - 4 * c, 0x100 + 8 * c);
+
+		task();
+		cpu.enable_traps(true);
+	}
+
+	void seg(u32 n, u32 base, u32 len_m1)
+	{
+		mem.write32(CST + 16 * n, 0x2);             // M: privileged
+		mem.write32(CST + 16 * n + 4, len_m1);
+		mem.write32(CST + 16 * n + 8, base);
+	}
+
+	void task()
+	{
+		cpu.r.pb = PROC; cpu.r.pl = PROC + 0xfff - 3; cpu.r.p = PROC;
+		cpu.r.sb = 0x4000; cpu.r.s = 0x4003; cpu.r.q = 0x4003;
+		cpu.r.sl = 0x4fff;
+		cpu.r.db = 0x8000; cpu.r.dl = 0x8fff;
+		cpu.r.status = ST_M | ST_I | ST_EM | 5;
+	}
+
+	void put(u32 addr, u16 insn)
+	{
+		const u32 cell = addr & ~3u;
+		u32 v = mem.read32(cell);
+		if (addr & 2) v = (v & 0xffff0000u) | insn;
+		else          v = (v & 0x0000ffffu) | (u32(insn) << 16);
+		mem.write32(cell, v);
+	}
+
+	void code(u32 addr, std::initializer_list<u16> insns)
+	{
+		for (u16 i : insns) { put(addr, i); addr += 2; }
+	}
+
+	u32 use_count(u32 n) { return ers32::get(mem.read32(CST + 16 * n), 1, 12); }
+
+	// Queue the device at level 2 and let the microcode handler take it.
+	bool interrupt()
+	{
+		mem.write32(DEV, mem.read32(DEV) & 0xffffu);
+		mem.write32(1024 + 8 * 2, DEV);
+		mem.write32(1024 + 8 * 2 + 4, DEV);
+		cpu.raise_message(18);
+		return cpu.service_interrupts();
+	}
+
+	u32 vector(unsigned cause) const { return HB + 0x100 + 8 * cause; }
+};
+
+// "If (QI-4) = 0 then: if (QI)(0:1) = 1 then: if DISP FLAG = 1 then (QI)
+// := 0, abort dispatcher & restart, else execute DISP instruction" (ERS
+// sheets 98-99). From a task, the deferred DISP is carried out.
+static void test_pseb_dispatches()
+{
+	std::printf("PSEB honours a deferred DISP\n");
+	dmachine m;
+	m.code(m.PROC, { D_PSDB, D_DISP, D_PSEB, D_NOP });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // PSDB
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: deferred
+	CHECK_EQ(m.cpu.r.p, m.PROC + 4);
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // PSEB: now it happens
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 0);
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);               // in the dispatcher
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);            // (QI) := 0
+	// The task's marker returns past the PSEB, and S is saved at (SB-1).
+	CHECK_EQ(m.mem.read32(0x4013 - 3 - 8), 6);
+	CHECK_EQ(m.mem.read32(0x4000 - 4), 0x13);
+
+	// "If (QI-4) = 0 then System Error Trap": cause 014, parameter 0.
+	u32 param = 0xffffffffu;
+	m.cpu.on_trap = [&](trap_cause, u32 p) { param = p; };
+	m.code(m.HB + 0x40, { D_PSEB });
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::system_error);
+	CHECK_EQ(param, 0);
+	CHECK_EQ(m.cpu.r.p, m.vector(014));
+}
+
+// The same pair inside the dispatcher (DISP FLAG = 1) aborts it and starts
+// it over from its frame at QI: HP-UX's `DISP; PSEB` at TRAP HANDLERS
+// +0x1d6, when the task it picked has a segment swapped out.
+static void test_pseb_restarts_dispatcher()
+{
+	std::printf("PSEB in the dispatcher restarts it\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_PSDB, D_NOP, D_DISP, D_PSEB, D_NOP });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP from the task
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK(m.cpu.step() == exec_trap::none);         // PSDB
+	CHECK(m.cpu.step() == exec_trap::none);         // NOP
+	m.cpu.r.q += 8;                                 // wherever its Q went
+	m.cpu.r.s += 8;
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: on the ICS, deferred
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x46);
+	CHECK(m.cpu.step() == exec_trap::none);         // PSEB: abort and restart
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.cpu.r.s, m.QI + 12);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 0);
+}
+
+// "DISP FLAG := 1" (sheet 98); the interrupt handler moves the flag into
+// the marker it pushes, and IXIT restarts the dispatcher when (QI)(0:1)
+// is set under such a marker (case 8).
+static void test_disp_sets_flag()
+{
+	std::printf("an interrupted dispatcher is restarted by IXIT (case 8)\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_DISP, D_IXIT });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: enters
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK(m.cpu.step() == exec_trap::none);         // the dispatcher runs
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+
+	CHECK(m.interrupt());
+	CHECK_EQ(m.cpu.r.p, m.ISR);
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3) >> 31, 1); // marker flagged
+
+	CHECK(m.cpu.step() == exec_trap::none);         // the routine's DISP
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);               // restarted, not resumed
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);
+}
+
+// The same interruption with nothing requested is case 5: back to the
+// dispatcher where it was. (QI) is zero and the disable count is zero,
+// which is also how the boot handoff's IXIT finds them -- the two must
+// not be confused. And the dispatcher's own IXIT is case 1: the task's
+// registers come from its TCB, and MASK is left alone.
+static void test_interrupted_dispatcher_resumes()
+{
+	std::printf("an interrupted dispatcher with no request is resumed (case 5)\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.interrupt());
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK(m.cpu.last_trap() != trap_cause::inconsistent_registers);
+
+	m.mem.write32(m.QI - 3 + 8, 0x12345678u);       // a stale (QI+2)
+	const u32 mask = m.cpu.r.mask;
+	m.code(m.HB + 0x42, { D_IXIT });
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.cpu.r.s, 0x4003);
+	CHECK_EQ(m.cpu.r.mask, mask);
+}
+
+// "Wait for any unmasked Message bit" (sheet 94).
+static void test_stop_is_level_sensitive()
+{
+	std::printf("STOP,B does not sleep on a bit already standing\n");
+	dmachine m;
+	m.code(m.PROC, { D_STOPB, D_NOP });
+
+	// HP-UX's idle sequence: SMPB 2 consumes the doorbell, PMPB 1 / AND
+	// builds the mask, STOP,B. A doorbell rung between the SMPB and the
+	// STOP is in MSG when the STOP executes.
+	m.cpu.r.msg = 0x00200000u;
+	m.cpu.push(m.cpu.r.mask);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(!m.cpu.halted());
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+
+	// With nothing standing it sleeps, and a message wakes it.
+	m.cpu.r.msg = 0;
+	m.cpu.r.p = m.PROC;
+	m.cpu.push(m.cpu.r.mask);
+	CHECK(m.cpu.step() == exec_trap::halted);
+	CHECK(m.cpu.halted());
+	m.cpu.raise_message(13);
+	CHECK(!m.cpu.halted());
+
+	// A masked bit does not count.
+	m.cpu.r.msg = 0x00200000u;
+	m.cpu.r.p = m.PROC;
+	m.cpu.push(m.cpu.r.mask | 0x00200000u);
+	CHECK(m.cpu.step() == exec_trap::halted);
+}
+
+// HP-UX's dispatcher delivers a signal to a task that is not in a system
+// call by setting MI in the STATUS word of the marker the task resumes
+// through (TRAP HANDLERS +0x102..0x122), and IXIT's "STATUS := (Q-1)"
+// loads it. The signal hook withdraws the request the same way, clearing
+// the bit in the trap's own marker (KERNEL 340 +0x3b04..0x3b14).
+static void test_mi_through_marker()
+{
+	std::printf("MI set in a marker reaches the task; cleared there, it is gone\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+	m.code(m.vector(004), { D_EXIT0 });
+
+	CHECK(m.interrupt());
+	// The interrupted task's marker is at 0x4013; its STATUS at (Q-1).
+	const u32 st = 0x4013 - 3 - 4;
+	CHECK_EQ(m.mem.read32(st) & ST_MI, 0);
+	m.mem.write32(st, m.mem.read32(st) | ST_MI);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT, through the TCB
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.status & ST_MI, ST_MI);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // the trap, not the NOP
+	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+
+	// The trap's marker: MI still requested, EM cleared (note 4).
+	const u32 tst = m.cpu.r.q - 3 - 4;
+	CHECK_EQ(m.mem.read32(tst) & (ST_MI | ST_EM), ST_MI);
+
+	// The hook clears the request in the marker and returns.
+	m.mem.write32(tst, m.mem.read32(tst) & ~ST_MI);
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.status & ST_MI, 0);
+	CHECK(m.cpu.step() == exec_trap::none);         // the NOP at last
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+}
+
+// Left in the marker, MI is a single step: the instruction returned to
+// runs (EM came back clear), and the trap is taken before the next one.
+static void test_mi_single_step()
+{
+	std::printf("MI left in the trap marker single-steps\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP, D_NOP });
+	m.code(m.vector(004), { D_EXIT0 });
+	m.cpu.r.status |= ST_MI;
+
+	CHECK(m.cpu.step() == exec_trap::none);         // trap before PROC+0
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK(m.cpu.step() == exec_trap::none);         // PROC+0 executes
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK(m.cpu.step() == exec_trap::none);         // trap before PROC+2
+	CHECK_EQ(m.cpu.r.p, m.vector(004));
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 8), 2);   // marker names PROC+2
+}
+
+// I/O interrupts outrank the Machine Instruction Trap at the end of an
+// instruction (sheet 45, conditions 4 and 8), and "all tests that are
+// skipped ... will be performed again later when the interrupted code
+// sequence is resumed". HP-UX's system call stub requests the trap with
+// PSHR 4 / OR / SETR 4 (KERNEL 254); an interrupt in the gap must not
+// cost the task its signal.
+static void test_mi_survives_interrupt()
+{
+	std::printf("an interrupt between the request and the trap does not lose MI\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP });
+	m.code(m.ISR, { D_NOP, D_IXIT });
+	m.cpu.r.status |= ST_MI;                        // requested, EM set
+
+	CHECK(m.interrupt());
+	CHECK(m.cpu.step() == exec_trap::none);         // the routine runs
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+}
+
+// A task interrupted within four words of SL has its marker in the stack
+// overflow area (sheet 41). Resuming it is not an error; the overflow, if
+// there still is one, is reported as Stack Overflow before its next
+// instruction.
+static void test_resume_above_sl()
+{
+	std::printf("a task whose saved S is above SL is resumed, not refused\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+	m.cpu.r.s = m.cpu.r.q = m.cpu.r.sl - 8;
+
+	CHECK(m.interrupt());
+	CHECK(m.mem.read32(0x4000 - 4) + 0x4000 > 0x4fff);  // saved S > SL
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK(m.cpu.last_trap() != trap_cause::inconsistent_registers);
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.s, 0x4fff - 8);
+}
+
+// "The interrupt handler decrements the use count for the current code
+// segment, and increments the use count for the new segment. For the
+// special case of code segment 0 the use count is neither incremented
+// nor decremented" (sheet 43): segment 0 has no count, the segment on
+// the other side still does. HP-UX's dispatcher runs in segment 0.
+static void test_use_counts_through_segment_zero()
+{
+	std::printf("use counts balance when the dispatcher is in segment 0\n");
+	dmachine m(0);
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_CTCB, D_IXIT });
+	m.code(m.vector(020), { D_EXIT0 });
+	m.mem.write32(m.CST + 16 * 5, 0x2 | (1u << 19));    // the task is in 5
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: 5 -> 0
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 0);
+	CHECK_EQ(m.use_count(5), 0);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // a trap: 0 -> 1
+	CHECK_EQ(m.cpu.r.p, m.vector(020));
+	CHECK_EQ(m.use_count(1), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // its EXIT: 1 -> 0
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK_EQ(m.use_count(1), 0);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT: 0 -> 5
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.use_count(5), 1);
+
+	// An interrupt whose routine runs absolute (a local DRT pointer, so
+	// segment 0) gives up the task's count and its IXIT takes it back.
+	m.code(m.ISR, { D_IXIT });
+	CHECK(m.interrupt());
+	CHECK_EQ(m.use_count(5), 0);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT, through the TCB
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.use_count(5), 1);
+
+	// A message trap taken out of segment 0 and returned to it.
+	m.mem.write32(m.CST + 16 * 5, 0x2);
+	m.cpu.r.p = m.PROC;
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP again
+	CHECK(m.cpu.step() == exec_trap::none);         // CTCB trap
+	CHECK(m.cpu.step() == exec_trap::none);         // EXIT
+	m.code(m.vector(054), { D_IXIT });
+	m.cpu.raise_message(13);
+	CHECK(m.cpu.service_interrupts());
+	CHECK_EQ(m.cpu.r.p, m.vector(054));
+	CHECK_EQ(m.use_count(1), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT back to it
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK_EQ(m.use_count(1), 0);
+}
+
+// The microcode's ICS and dispatcher flags are cleared by reset.
+static void test_reset_clears_flags()
+{
+	std::printf("reset leaves the machine off the ICS\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	CHECK(m.cpu.step() == exec_trap::none);         // on the ICS now
+	CHECK_EQ(m.cpu.r.q, m.QI);
+
+	m.cpu.reset();
+	m.cpu.r.mask = ers32::set(0, 3, 3, 1);
+	m.task();
+	CHECK(m.interrupt());
+	CHECK_EQ(m.cpu.r.q, m.QI);                      // switched stacks
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 0);      // and flagged nothing
+}
+
+// STOP and INT are privileged (sheets 94 and 119): cause 026, parameter 1.
+// SETR may load only some of STATUS (sheet 71).
+static void test_stop_and_int_are_privileged()
+{
+	std::printf("STOP and INT trap in unprivileged mode; SETR's STATUS fields\n");
+	dmachine m;
+	m.code(m.PROC, { D_STOPB, f4(011), f4(011, true) });
+	m.cpu.r.status &= ~ST_M;
+	const u32 mask = m.cpu.r.mask;
+
+	m.cpu.push(0xffffffffu);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::privileged_mode);
+	CHECK(!m.cpu.halted());
+	CHECK_EQ(m.cpu.r.mask, mask);
+	CHECK_EQ(m.cpu.r.p, m.vector(026));
+	CHECK_EQ(m.cpu.stk(0), 1);                      // parameter 1
+
+	m.task();
+	m.cpu.r.status &= ~ST_M;
+	m.cpu.r.p = m.PROC + 2;
+	CHECK(m.cpu.step() == exec_trap::none);         // INT
+	CHECK_EQ(m.cpu.r.p, m.vector(026));
+	// The marker's STATUS still has I set: nothing was changed.
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & ST_I, ST_I);
+
+	// SETR 4 unprivileged: "only STATUS(0:9), STATUS(10:3), and
+	// STATUS(16:2) are modified" -- not M, not I, not the CSN.
+	const u16 SETR4 = f2(035, 4);
+	m.task();
+	m.cpu.r.status = ST_EM | 5;                     // user mode, I clear
+	m.code(m.PROC, { SETR4, SETR4 });
+	// Everything but T (bit 8): with both T and O set the integer-overflow
+	// User Trap stands at once (sheets 47-48), which is a different test.
+	m.cpu.push(0xffffffffu & ~0x00800000u);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.status & (ST_M | ST_I), 0);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 5);
+	CHECK(m.cpu.r.test(sf::O));
+	CHECK_EQ(m.cpu.r.status & ST_MI, ST_MI);
+	// Privileged: everything but EM, P and the CSN (HP-UX's KERNEL 254
+	// sets MI this way).
+	m.cpu.r.status = ST_M | ST_EM | 5;
+	m.cpu.push(ST_M | ST_I | ST_MI | 7);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.status & (ST_M | ST_I | ST_MI), ST_M | ST_I | ST_MI);
+	CHECK_EQ(m.cpu.r.get(sf::CSN), 5);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -3931,6 +4445,18 @@ int main()
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
+	test_pseb_dispatches();
+	test_pseb_restarts_dispatcher();
+	test_disp_sets_flag();
+	test_interrupted_dispatcher_resumes();
+	test_stop_is_level_sensitive();
+	test_mi_through_marker();
+	test_mi_single_step();
+	test_mi_survives_interrupt();
+	test_resume_above_sl();
+	test_use_counts_through_segment_zero();
+	test_reset_clears_flags();
+	test_stop_and_int_are_privileged();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

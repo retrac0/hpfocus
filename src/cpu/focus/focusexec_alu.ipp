@@ -1115,7 +1115,14 @@ private:
 		case 004: return r.test(sf::ES)                         // EOS
 				? take_trap(trap_cause::end_of_subroutine, 0)
 				: exec_trap::none;
-		case 011: r.put(sf::I, b3 ? 1 : 0);                     // INT
+		case 011:                                               // INT
+			// "This is a privileged instruction" (sheet 119), and has to
+			// be: with it any user program could hold off every
+			// interrupt for as long as it liked. Cause 026, parameter 1:
+			// a privileged instruction in unprivileged mode.
+			if (!r.privileged())
+				return take_trap(trap_cause::privileged_mode, 1);
+			r.put(sf::I, b3 ? 1 : 0);
 			return exec_trap::none;
 
 		case 040: {                                             // TRY
@@ -1457,29 +1464,34 @@ private:
 			const u32 qi = m_mem.read32(ded_base() + 8);
 			const u32 a = qi - 3 - 16;
 			const u32 n = m_mem.read32(a);
+			// "If (QI-4) = 0 then System Error Trap" -- cause 014 with
+			// parameter 0, "Too many PSEB instructions executed" (ERS
+			// 5.2.2), not Inconsistent Registers, which is IXIT's and
+			// SETR's.
 			if (n == 0)
-				return take_trap(trap_cause::inconsistent_registers, 0);
+				return take_trap(trap_cause::system_error, 0);
 			m_mem.write32(a, n - 1);
 			// CCL says "no dispatch happened"; a deferred DISP that is
 			// carried out below reports through the dispatcher instead.
 			r.put(sf::CC, CCL);
 			if (n - 1 == 0 && ers32::get(m_mem.read32(qi - 3), 0, 1))
 			{
-				if (m_ics_flag)
+				// DISP FLAG is the test, exactly as the pseudocode has it:
+				// set, the dispatcher itself is running, and it is
+				// abandoned and started again from its frame at QI --
+				// wherever its own Q has got to, which is why Q, SB and
+				// SL are all put back to the ICS's. Clear, this is a
+				// task or a service routine, and DISP does what DISP
+				// does: enter the dispatcher from a task, or (on the ICS)
+				// leave the request in (QI) for the IXIT to honour.
+				if (m_disp_flag)
 				{
-					// The dispatcher's own frame is the bottom one on
-					// the ICS. A service routine nested above it, or one
-					// that interrupted a task, would only defer a DISP
-					// again, so its PSEB leaves the flag for IXIT.
-					if (m_in_dispatcher && r.q == qi)
-					{
-						r.sb = (qi & ~3u) - 256;
-						r.sl = m_mem.read32(ded_base() + 12);
-						return launch_ics_frame();   // clears (QI)
-					}
+					r.q = qi;
+					r.sb = (qi & ~3u) - 256;
+					r.sl = m_mem.read32(ded_base() + 12);
+					return launch_ics_frame();       // clears (QI)
 				}
-				else
-					return do_disp();
+				return do_disp();
 			}
 			return exec_trap::none;
 		}
@@ -1628,8 +1640,33 @@ private:
 			// bit 3 the TOS is loaded into MASK first -- the dispatcher's
 			// idle sequence computes the sleep-time interrupt mask on the
 			// stack and hands it to STOP,B to arm atomically.
+			//
+			// "This is a privileged instruction" (sheet 94). Unchecked,
+			// the two bytes 10 7F in any user program loaded MASK from
+			// whatever was on its stack and stopped the machine for
+			// everybody.
+			if (!r.privileged())
+				return take_trap(trap_cause::privileged_mode, 1);
 			if (b3)
+			{
 				r.mask = pop();
+				// "Wait for any unmasked Message bit" tests the register,
+				// not an edge: with an unmasked bit already standing the
+				// machine does not sleep at all. raise_message() only
+				// un-halts a processor that is halted, so a bit that
+				// arrived between the dispatcher's last look at MSG and
+				// its STOP -- HP-UX's idle sequence is SMPB 2 (consume
+				// the doorbell), PMPB 1, LDI, NOT, AND, STOP,B, and an
+				// interrupt routine's UP can ring bit 10 anywhere in
+				// those five instructions -- left the CPU asleep with a
+				// ready task until some unrelated message came along.
+				//
+				// Not modelled: restoring MASK and STATUS when the wait
+				// ends ("MASK:=TEMP; STATUS:=OLDSTAT"). Both systems'
+				// idle loops are validated with the mask left as loaded.
+				if ((r.msg & ~r.mask) != 0)
+					return exec_trap::none;
+			}
 			// I is left as the dispatcher set it (INT,B each loop pass):
 			// a STOPped machine must vector an I/O interrupt the moment
 			// its message wakes it, or the dispatcher's own PMPB reads

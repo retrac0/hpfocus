@@ -102,7 +102,18 @@ private:
 		const u32 sb = loc + m_mem.read32(loc);
 		const u32 sl = sb + m_mem.read32(loc + 4);
 		const u32 s = sb + m_mem.read32(sb - 4);
-		if (sb < loc || sl > loc + len || s < sb || s > sl)
+		// S may stand above SL. "Each stack segment must also have a
+		// stack overflow area of at least 64 words" beyond SL "so that
+		// ... all pending traps and interrupts can be processed" (sheet
+		// 41), and Stack Overflow ranks below the I/O interrupts at the
+		// end of an instruction (sheet 45): a task whose last push crossed
+		// SL, or that was within four words of it, has its interrupt or
+		// DISP marker saved above SL. Resumed, it takes Stack Overflow
+		// before its next instruction (step()), whose handler grows the
+		// stack -- the recoverable report. Refusing it here made that
+		// Inconsistent Registers on the ICS, which HP-UX treats as a
+		// system error. The segment's own end is still a hard bound.
+		if (sb < loc || sl > loc + len || s < sb || s > loc + len)
 		{
 			static knob::channel dispdbg("FOCUS_DISPDBG");
 			if (dispdbg)
@@ -115,7 +126,6 @@ private:
 		r.s = s;
 		r.q = s;
 		m_ics_flag = false;
-		m_in_dispatcher = false;
 		m_exit_from_ixit = true;
 		const exec_trap t = do_exit(0);
 		m_exit_from_ixit = false;
@@ -124,10 +134,23 @@ private:
 
 	// Unwind the dispatcher-entry frame at Q on the ICS: (Q-1) status,
 	// (Q-2) PB-relative P, (Q-3) X, with the global data segment pointer
-	// at (Q+1). Shared by DISP and IXIT cases 7 and 8.
+	// at (Q+1). Shared by DISP, IXIT cases 7 and 8 and PSEB's restart.
+	//
+	// Every one of them ends "DISP FLAG := 1" (DISP's pseudocode, sheet
+	// 98; IXIT and PSEB enter the dispatcher the same way): from here on
+	// the dispatcher is what runs. The flag used to be set only by IXIT's
+	// case 5, so a dispatcher entered by DISP -- every blocking DOWN
+	// enters it that way -- ran with it clear, and two things went wrong.
+	// An interrupt taken over it pushed an unflagged marker, so the
+	// service routine's IXIT returned to the dispatcher as to any
+	// interrupted routine even when the routine had asked for a dispatch
+	// (case 8 never happened); and the dispatcher's own IXIT to its
+	// chosen task was taken for the last interrupt frame on the ICS,
+	// which "restored" MASK from the stale word at QI+2 -- whatever the
+	// last interrupted task had -- instead of leaving the dispatcher's.
 	exec_trap launch_ics_frame()
 	{
-		m_in_dispatcher = true;
+		m_disp_flag = true;
 		set_qword(0, 0);
 		const exec_trap t = set_dbdl_from_pointer(qword(1));
 		if (t != exec_trap::none)
@@ -140,12 +163,13 @@ private:
 		{
 			// The dispatcher's segment is entered like any other: the
 			// interrupted segment gives up its use count and the new
-			// one gains it (segment 0 is never counted).
-			if (r.get(sf::CSN) != 0 && csn != 0)
-			{
-				cst_use_count(r.get(sf::CSN), -1);
-				cst_use_count(csn, +1);
-			}
+			// one gains it, each on its own account (segment 0 has no
+			// count; see take_trap). HP-UX's dispatcher is segment 0, so
+			// skipping both whenever either side was 0 left every task
+			// that blocked holding a count on its segment, and gaining
+			// another each time it was dispatched back.
+			cst_use_count(r.get(sf::CSN), -1);
+			cst_use_count(csn, +1);
 			if (csn == 0)
 			{
 				r.pb = 0;
@@ -160,7 +184,7 @@ private:
 				r.pl = r.pb + m_mem.read32(ea + 4);
 			}
 		}
-		r.status = carry_trace_bits(sta);
+		r.status = status_from_marker(sta);
 		r.x = qword(-3);
 		// The marker's return word is a program pointer: flags in the top
 		// two bits, byte offset in the low thirty, as do_call reads an STT
@@ -265,16 +289,10 @@ private:
 		const u32 location = m_mem.read32(entry + 8);
 		r.pb = location;
 		r.pl = location + len_m1 - 3;
-		// Counted like any other trap entry (ERS 5.2.1 step 3); see
-		// take_trap.
-		{
-			const u32 from = r.get(sf::CSN);
-			if (from != 0)
-			{
-				cst_use_count(from, -1);
-				cst_use_count(1, +1);
-			}
-		}
+		// Counted like any other trap entry (ERS 5.2.1 step 3), each
+		// side on its own account; see take_trap.
+		cst_use_count(r.get(sf::CSN), -1);
+		cst_use_count(1, +1);
 		r.status = ers32::mask(14, 1);
 		r.put(sf::CSN, 1);
 		const u32 vector = m_mem.read32(r.pl - 4 * cause);
@@ -387,22 +405,21 @@ private:
 			// "The interrupt handler decrements the use count for the
 			// current code segment, and increments the use count for the
 			// new segment. For the special case of code segment 0 the use
-			// count is neither incremented nor decremented" (sheet 43).
-			{
-				const u32 from = r.get(sf::CSN);
-				if (from != 0)
-				{
-					cst_use_count(from, -1);
-					cst_use_count(seg, +1);
-				}
-			}
+			// count is neither incremented nor decremented" (sheet 43):
+			// segment 0's own count, that is -- it has none. The other
+			// side of the transfer is counted (see take_trap).
+			cst_use_count(r.get(sf::CSN), -1);
+			cst_use_count(seg, +1);
 			r.status = ers32::mask(14, 1);   // privileged, all else clear
 			r.put(sf::CSN, seg);
 			branch_to(r.pb + ers32::get(slot, 2, 30));
 		}
 		else
 		{
-			// A local pointer runs absolute, the pre-CST convention.
+			// A local pointer runs absolute, the pre-CST convention:
+			// segment 0, which the interrupted segment's count is given
+			// up for like any other (the IXIT's EXIT takes it back).
+			cst_use_count(r.get(sf::CSN), -1);
 			r.pb = 0;
 			r.pl = 0xfffffffc;
 			r.status = ers32::mask(14, 1);
@@ -442,7 +459,7 @@ private:
 		r.sl = m_mem.read32(ded + 12);
 		r.sb = (qi & ~3u) - 256;            // QI - 64 words
 		m_ics_flag = true;
-		return launch_ics_frame();
+		return launch_ics_frame();          // DISP FLAG := 1
 	}
 
 	// IXIT (sheets 96-98, flowchart sheet 141): exit from trap handlers,
@@ -497,9 +514,20 @@ private:
 				}
 				// Pseudo-disabled: fall through as cases 3 and 6.
 			}
-			else if (m_mem.read32(qi - 3) == 0
+			else if (!m_ics_flag && m_mem.read32(qi - 3) == 0
 					&& m_mem.read32(qi - 3 - 16) == 0)
 			{
+				// Only OFF the ICS. On it, a flagged marker with (QI)
+				// clear and dispatching enabled is the commonest case 5
+				// of all: a service routine returning to a dispatcher it
+				// interrupted at its idle STOP. Once DISP set the
+				// dispatcher flag as it should, that return would come
+				// through here and dispatch through whatever TCB was
+				// current -- the idle one -- instead of resuming the
+				// dispatcher (exectest's interrupted-dispatcher case; a
+				// reviewer's first build without this test halted at
+				// 1.3 s). The handoff's marker is on the powerup
+				// module's own stack, never the ICS.
 				// The frame at QI is empty AND dispatching is not
 				// pseudo-disabled: there is no interrupted dispatcher to
 				// return to, only a dispatcher to enter.

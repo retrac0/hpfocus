@@ -636,7 +636,24 @@ private:
 			if (operand & 32) { r.flags = u8(stk(0)); r.s -= 4; }
 			if (operand & 16) { r.brkpt = pop(); }
 			if (operand & 8)  { r.dst = pop(); }
-			if (operand & 4)  { r.status = pop(); }
+			if (operand & 4)
+			{
+				// Not the whole word (sheet 71): "In unprivileged mode
+				// ... only STATUS(0:9), STATUS(10:3), and STATUS(16:2) are
+				// modified. In privileged mode it is not possible to
+				// modify STATUS(9:1), STATUS(19:1), and STATUS(20:12)."
+				// Loaded whole, any user program could make itself
+				// privileged, or turn interrupts off, with PSHR 4 / OR /
+				// SETR 4. HP-UX's own use -- KERNEL 254's PSHR 4; OR
+				// #0x00200000; SETR 4, which sets MI -- is within both.
+				const u32 v = pop();
+				const u32 keep = r.privileged()
+						? ers32::mask(9, 1) | ers32::mask(19, 1)
+							| ers32::mask(20, 12)
+						: ~(ers32::mask(0, 9) | ers32::mask(10, 3)
+							| ers32::mask(16, 2));
+				r.status = (v & ~keep) | (r.status & keep);
+			}
 			if (operand & 2)  { r.q = pop() + r.sb; }
 			if (operand & 1)  { r.s = stk(0) + r.sb; }
 			return exec_trap::none;
