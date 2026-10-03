@@ -44,6 +44,12 @@
 #include "iop/focushpib.h"
 #include "iop/focusmux.h"
 #include "bus/rs232/rs232.h"
+#include "dipty.h"
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -631,20 +637,100 @@ public:
 	virtual void focus_configure(focus::iop_core &iop, unsigned sc) { }
 };
 
-class hp27128_asi_device : public device_t, public device_focus_cio_interface
+// The 27128A, and the line it drives. The card model works at the level of
+// its firmware's records; what reaches the far end of the cable is the same
+// characters at the line's own pace, so the card carries an rs232 slot, as
+// each channel of the 27140A does. That is what makes the 540's system
+// console reachable without a window:
+//
+//   -cio0:asi:rs232 pty                            a pseudo terminal
+//   -cio0:asi:rs232 null_modem -bitb socket.127.0.0.1:4000
+//
+// The slot starts empty, and with nothing fitted nothing below runs: the
+// console is then what it always was, the terminal window and stdout.
+// Whatever is fitted, every character the card sends still reaches the
+// machine's terminal registry (stdout, the window, FOCUS_TRIP), and a
+// character arriving on the line is typed at the card exactly as one from
+// the window or FOCUS_TYPE is.
+class hp27128_asi_device : public device_t, public device_focus_cio_interface,
+		public device_serial_interface
 {
 public:
 	hp27128_asi_device(const machine_config &mconfig, const char *tag,
 			device_t *owner, u32 clock)
 		: device_t(mconfig, HP27128_ASI, tag, owner, clock)
 		, device_focus_cio_interface(mconfig, *this)
+		, device_serial_interface(mconfig, *this)
+		, m_rs232(*this, "rs232")
 	{
 	}
 
 	focus::asi_card card;
 
+	// Every character the card puts on the line, for the machine's
+	// terminal registry.
+	std::function<void(u8)> on_output;
+
+	void rx_w(int state) { device_serial_interface::rx_w(state); }
+
 protected:
 	virtual void device_start() override {}
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD
+	{
+		RS232_PORT(config, m_rs232, default_rs232_devices, nullptr);
+		m_rs232->rxd_handler().set(FUNC(hp27128_asi_device::rx_w));
+	}
+	virtual void device_reset() override
+	{
+		// 9600 baud, 8 bits, no parity: the console as the CE handbook
+		// has the terminal set up (9030/40 CE Handbook 2-3), and what
+		// the card's switches report (focusasi.h, `switches`). DTR and
+		// RTS are held up for whatever is fitted, as a hard-wired port.
+		set_data_frame(1, 8, PARITY_NONE, STOP_BITS_1);
+		set_rate(9600);
+		receive_register_reset();
+		transmit_register_reset();
+		m_txq.clear();
+		m_rs232->write_txd(1);
+		m_rs232->write_dtr(0);
+		m_rs232->write_rts(0);
+	}
+	virtual void tra_callback() override
+	{
+		m_rs232->write_txd(transmit_register_get_data_bit());
+	}
+	virtual void tra_complete() override
+	{
+		if (!m_txq.empty())
+		{
+			const u8 c = m_txq.front();
+			m_txq.pop_front();
+			transmit_register_setup(c);
+		}
+	}
+	virtual void rcv_complete() override
+	{
+		receive_register_extract();
+		card.type(get_received_char());
+	}
+
+private:
+	required_device<rs232_port_device> m_rs232;
+	// The card's firmware hands characters over as fast as the host
+	// writes them; the line takes them at 9600 baud.
+	std::deque<u8> m_txq;
+
+	void char_out(u8 c)
+	{
+		if (on_output)
+			on_output(c);
+		if (!m_rs232->get_card_device())
+			return;
+		if (m_txq.empty() && is_transmit_register_empty())
+			transmit_register_setup(c);
+		else
+			m_txq.push_back(c);
+	}
 
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
@@ -653,6 +739,7 @@ public:
 	{
 		card.iop = &iop;
 		card.pa = sc;
+		card.on_char = [this](u8 c) { char_out(c); };
 		arm_log(card.log, "asi", sc, "FOCUS_ASILOG");
 		// FOCUS_ASILOGMAX raises the line cap: a driver polling
 		// status outruns 2000 lines long before the interesting
@@ -1236,6 +1323,9 @@ struct host_terminal
 	// their output would corrupt the match, and a port nobody asked to
 	// hear is not what a trip text is being waited for on.
 	bool watch = false;
+	// What it has printed since its last line went to stdout, when the
+	// tap is writing lines (see select_taps).
+	std::string line;
 };
 
 class hp9000_5xx_state : public driver_device, public focus::iop_core::host
@@ -1427,9 +1517,23 @@ private:
 	int find_terminal(const std::string &name) const;
 	void terminal_output(unsigned id, u8 c);
 	void select_taps();
+	// The stdout tap as lines: one byte in, a line out when it is whole,
+	// and the partial lines a terminal leaves standing -- a prompt --
+	// written out once it has gone quiet.
+	void tap_char(unsigned id, u8 c);
+	void tap_emit(unsigned id, bool newline);
+	void tap_break();
+	TIMER_CALLBACK_MEMBER(tap_flush);
+	bool m_tap_lines = false;     // lines, rather than the raw byte stream
+	bool m_tap_prefix = false;    // more than one terminal is listened to
+	int m_tap_open = -1;          // whose partial line stdout is part-way through
+	emu_timer *m_tap_timer = nullptr;
 	// Type a byte at a terminal, or say once that the name went nowhere.
 	void type_at(int id, u8 c, bool raw);
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
+	// Name every pseudo terminal fitted to a port, once.
+	void report_ptys();
+	bool m_ptys_reported = false;
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
 	// machine_start, in the order it does them.
@@ -1452,16 +1556,20 @@ private:
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_iop_poll_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
-	emu_timer *m_type_timer = nullptr;
-	std::string m_type_text;
-	size_t m_type_pos = 0;
 	// FOCUS_TYPE may hold several scripts, each with its own start time
 	// and its own terminal: a run that logs in on three multiplexer
 	// ports is three scripts at three destinations, which is not
 	// something one global destination could say.
 	std::vector<std::string> m_type_scripts;
 	std::vector<std::string> m_type_dest;   // "" = wherever FOCUS_TYPEPORT says
-	int m_type_term = -1;                   // the running script's terminal
+	// ...and so one timer, one cursor and one terminal PER SCRIPT. There
+	// used to be one of each for the whole run, so a script that started
+	// while the one before it was still typing took over its timer and
+	// its cursor: '@2:0=root\n;@2:1=root\n' half a second apart typed
+	// "roo" at port 0 and logged in on port 1 only.
+	std::vector<emu_timer *> m_type_timers;
+	std::vector<size_t> m_type_pos;
+	std::vector<int> m_type_terms;          // -1 until the script starts
 	attotime m_type_rate;
 	u32 m_prev_rq = 0;
 	// The discs in the drive, in the order the loader asks for them: a
@@ -2220,10 +2328,18 @@ void hp9000_5xx_state::configure_peripherals()
 		bind_terminal("console",
 				[this](u8 c, bool raw) { if (raw) m_console6.type(c);
 						else kbd_put(c); }, true);
-	m_iop.attach(6, &m_console6);
-	// SC6 keyboard interrupts are enabled by the hardware itself; the
-	// internal disc's select code is armed the same way when present.
-	m_iop.enable_interrupt(6);
+	// The keyboard board is the 520's: select code 6 of a 530/540 is a
+	// backplane slot like 0-5 (530/540 Service 2-27), and a 540 with
+	// nothing in it must read as an empty slot, not as a keyboard that
+	// is not there. HP-UX's scan skipped the phantom board only because
+	// it answers FR3 = 2; an empty -cio6 used to be outranked by it.
+	if (has_internal_disc())
+	{
+		m_iop.attach(6, &m_console6);
+		// SC6 keyboard interrupts are enabled by the hardware itself;
+		// the internal disc's select code is armed the same way.
+		m_iop.enable_interrupt(6);
+	}
 	// The 520's internal disc is built-in hardware, always present, at
 	// its own select code -- where the 530/540 put the SCM instead.
 	if (has_internal_disc())
@@ -2341,7 +2457,7 @@ void hp9000_5xx_state::configure_backplane()
 						card->type(raw || c != '\n' ? c : u8('\r'));
 					},
 					console);
-			card->on_char = [this, id](u8 c) { terminal_output(id, c); };
+			asi->on_output = [this, id](u8 c) { terminal_output(id, c); };
 		}
 		m_iop.attach(sc, iface);
 		osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
@@ -2696,7 +2812,11 @@ void hp9000_5xx_state::schedule_scripts()
 			}
 			m_type_dest.push_back(dest);
 		}
-		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
+		for (size_t i = 0; i < m_type_scripts.size(); i++)
+			m_type_timers.push_back(
+					timer_alloc(FUNC(hp9000_5xx_state::type_tick), this));
+		m_type_pos.assign(m_type_scripts.size(), 0);
+		m_type_terms.assign(m_type_scripts.size(), -1);
 		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
 		// mimics fast human typing; the display driver drops or reorders
 		// characters pushed faster than it redraws the input line.
@@ -2815,11 +2935,125 @@ void hp9000_5xx_state::terminal_output(unsigned id, u8 c)
 	// console prints; there is only ever one of them.
 	if (m_terminal && int(id) == m_console_term)
 		m_terminal->write(c);
-	if (t.echo)
+	if (!t.echo)
+		return;
+	if (m_tap_lines)
 	{
-		std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
-		std::fflush(stdout);
+		tap_char(id, c);
+		return;
 	}
+	std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+	std::fflush(stdout);
+}
+
+
+// The tap as a reader wants it: CR dropped and LF a real newline, and --
+// when more than one terminal is being listened to -- every line whole and
+// labelled with the terminal it came from:
+//
+//   console| HP-UX 5.30 (unknown)
+//   2:0    | login: root
+//
+// rather than the raw stream, in which six ports logging in at once come
+// out as 'lHoPg-iUnX:' and a whole console session is one line of '.'s.
+// A line is written when its LF arrives; one that stops short of it -- a
+// prompt, or what is being typed after one -- is written once its terminal
+// has been quiet for a tenth of an emulated second, and continued on the
+// same output line if nothing else has been written in between.
+void hp9000_5xx_state::tap_char(unsigned id, u8 c)
+{
+	host_terminal &t = m_terms[id];
+	switch (c)
+	{
+	case '\n':
+		tap_emit(id, true);
+		return;
+	case '\r':
+	case 0x07:          // BEL
+	case 0x00:          // NUL, the padding some terminals are sent
+		return;
+	case 0x08:          // BS takes back what has not been written yet
+		if (!t.line.empty())
+		{
+			t.line.pop_back();
+			return;
+		}
+		t.line.push_back('\b');
+		break;
+	case '\t':
+		t.line.push_back('\t');
+		break;
+	default:
+		t.line.push_back((c >= 32 && c < 127) ? char(c) : '.');
+		break;
+	}
+	if (!m_tap_prefix || t.line.size() >= 160)
+		tap_emit(id, false);
+	else if (m_tap_timer)
+		m_tap_timer->adjust(attotime::from_msec(100));
+}
+
+
+void hp9000_5xx_state::tap_emit(unsigned id, bool newline)
+{
+	host_terminal &t = m_terms[id];
+	if (m_tap_open >= 0 && m_tap_open != int(id))
+	{
+		std::fputc('\n', stdout);
+		m_tap_open = -1;
+	}
+	if (m_tap_open != int(id) && m_tap_prefix)
+		std::printf("%-7s| ", t.name.c_str());
+	std::fputs(t.line.c_str(), stdout);
+	t.line.clear();
+	if (newline)
+		std::fputc('\n', stdout);
+	m_tap_open = newline ? -1 : int(id);
+	std::fflush(stdout);
+}
+
+
+// Something else is about to write to stdout: end the partial line it
+// would otherwise land in the middle of.
+void hp9000_5xx_state::tap_break()
+{
+	if (m_tap_open < 0)
+		return;
+	std::fputc('\n', stdout);
+	std::fflush(stdout);
+	m_tap_open = -1;
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::tap_flush)
+{
+	for (unsigned id = 0; id < m_terms.size(); id++)
+		if (!m_terms[id].line.empty())
+			tap_emit(id, false);
+}
+
+
+// A pseudo terminal fitted to a port (-cio0:asi:rs232 pty, or
+// -cio2:mux6:port0 pty) gets its name from the host when it opens, and
+// MAME shows that name only in a menu, which a headless run does not
+// have. Say it once, where the run's output begins, in a form a script
+// can pick up:
+//
+//   cio0:asi:rs232: pseudo terminal /dev/pts/7
+void hp9000_5xx_state::report_ptys()
+{
+	if (m_ptys_reported)
+		return;
+	m_ptys_reported = true;
+	for (device_pty_interface &pty :
+			pty_interface_enumerator(machine().root_device()))
+		if (pty.is_open())
+		{
+			const device_t &port = pty.device().owner()
+					? *pty.device().owner() : pty.device();
+			osd_printf_info("%s: pseudo terminal %s\n", port.tag() + 1,
+					pty.slave_name().c_str());
+		}
 }
 
 
@@ -2887,6 +3121,32 @@ void hp9000_5xx_state::select_taps()
 	// out of it.
 	for (host_terminal &t : m_terms)
 		t.watch = t.echo || t.name.find(':') == std::string::npos;
+
+	// How the tap writes: lines (tap_char) when a person is reading it --
+	// stdout is a terminal -- and the raw byte stream, every byte that is
+	// not printable ASCII as '.', when it is going to a file or a pipe,
+	// because that is the stream every script and test of this tree
+	// parses. FOCUS_TAPRAW=1 asks for the raw stream on a terminal and
+	// FOCUS_TAPRAW=0 for lines in a file.
+	if (const char *v = knob::text("FOCUS_TAPRAW").get())
+		m_tap_lines = std::strcmp(v, "0") == 0;
+	else
+#if defined(_WIN32)
+		m_tap_lines = _isatty(_fileno(stdout)) != 0;
+#else
+		m_tap_lines = isatty(fileno(stdout)) != 0;
+#endif
+	unsigned listened = 0;
+	for (const host_terminal &t : m_terms)
+		listened += t.echo ? 1 : 0;
+	m_tap_prefix = listened > 1;
+	if (m_tap_lines && m_tap_prefix)
+		m_tap_timer = timer_alloc(FUNC(hp9000_5xx_state::tap_flush), this);
+	// A prompt left standing at the end of the run is still a line; the
+	// exit's own messages start on one of their own.
+	if (m_tap_lines)
+		machine().add_notifier(MACHINE_NOTIFY_EXIT, machine_notify_delegate(
+				&hp9000_5xx_state::tap_break, this), true);
 }
 
 
@@ -2904,13 +3164,15 @@ void hp9000_5xx_state::type_at(int id, u8 c, bool raw)
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 {
-	m_type_text = m_type_scripts[size_t(param)];
-	m_type_pos = 0;
+	const size_t i = size_t(param);
+	m_type_pos[i] = 0;
 	// Where this script types: its own @name, else FOCUS_TYPEPORT's
-	// port, else the machine's console.
-	const std::string &want = m_type_dest[size_t(param)];
-	m_type_term = want.empty() ? m_console_term : find_terminal(want);
-	if (m_type_term < 0)
+	// port, else the machine's console. A script with nowhere to go
+	// never starts its timer, so nothing ever indexes a terminal it
+	// does not have.
+	const std::string &want = m_type_dest[i];
+	const int term = want.empty() ? m_console_term : find_terminal(want);
+	if (term < 0)
 	{
 		osd_printf_error("type: script %d has nowhere to go (%s); "
 				"this machine has", int(param) + 1,
@@ -2920,29 +3182,37 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 		osd_printf_error("\n");
 		return;
 	}
-	m_type_timer->adjust(attotime::zero, 0, m_type_rate);
+	m_type_terms[i] = term;
+	m_type_timers[i]->adjust(attotime::zero, param, m_type_rate);
 }
 
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 {
-	if (m_type_pos == 0)
-		std::printf("[typing at %s starts, disc blocks %u, sc6 writes %u]\n",
-				m_terms[size_t(m_type_term)].name.c_str(),
-				m_disc.m_seq, m_console6.writes);
-	if (m_type_pos < m_type_text.size())
+	const size_t i = size_t(param);
+	const std::string &text = m_type_scripts[i];
+	size_t &pos = m_type_pos[i];
+	const int term = m_type_terms[i];
+	if (pos == 0)
 	{
-		const u8 c = u8(m_type_text[m_type_pos++]);
+		tap_break();
+		std::printf("[typing at %s starts, disc blocks %u, sc6 writes %u]\n",
+				m_terms[size_t(term)].name.c_str(),
+				m_disc.m_seq, m_console6.writes);
+	}
+	if (pos < text.size())
+	{
+		const u8 c = u8(text[pos++]);
 		// A \xNN escape: the byte after the marker goes in as it
 		// stands -- a keycode at the 520's keyboard, the byte itself
 		// on a serial line.
-		if (c == RAW_KEY && m_type_pos < m_type_text.size())
-			type_at(m_type_term, u8(m_type_text[m_type_pos++]), true);
+		if (c == RAW_KEY && pos < text.size())
+			type_at(term, u8(text[pos++]), true);
 		else
-			type_at(m_type_term, c, false);
+			type_at(term, c, false);
 	}
 	else
-		m_type_timer->adjust(attotime::never);
+		m_type_timers[i]->adjust(attotime::never);
 }
 
 
@@ -3533,7 +3803,10 @@ void hp9000_5xx_state::machine_reset()
 	}
 	else
 		m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_iop.attach(6, &m_console6);
+	// The keyboard board at select code 6 is the 520's alone; see
+	// configure_peripherals().
+	if (has_internal_disc())
+		m_iop.attach(6, &m_console6);
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 		if (m_cio[sc])
 			if (focus::iop_interface *const iface = m_cio[sc]->iface())
@@ -3542,8 +3815,10 @@ void hp9000_5xx_state::machine_reset()
 				m_iop.enable_interrupt(sc);
 			}
 	attach_probes();
-	m_iop.enable_interrupt(6);
+	if (has_internal_disc())
+		m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
+	report_ptys();
 
 	// A loader ROM image would be installed here. None is dumped, so the
 	// SCM answers the select-code scan but has nothing to hand over; see
@@ -3831,14 +4106,20 @@ void hp9000_5xx_state::install_boot_image(const std::vector<u8> &base,
 	core.r.sl = (top - 4) | 3;
 	core.r.q  = core.r.sb + 0x203;
 	core.r.s  = core.r.q + 0x200;
-	// The handoff was written around a half-megabyte window, so say so
-	// when the image has eaten into it -- the boot may still be fine,
-	// since powerup uses only a few hundred bytes of this stack, but a
-	// machine this tight is worth another RAM board (-mpb5 1m and up).
+	// The handoff was written around a half-megabyte window, and an image
+	// can eat into it. That is not a fault: powerup uses a few hundred
+	// bytes of this stack -- Q-0xef to Q+96; [SB, Q-0xf0) and the rest
+	// up to S are never touched (IMPLEMENTATION.md, "The loader hand-off,
+	// validated") -- and boot_image_fits() has already insisted on
+	// BOOT_STACK_MIN. HP-UX 5.30's 597 KB image on the 2 MB machine
+	// every HP-UX result was measured on leaves 424 KB, and this used to
+	// be a warning printed on every one of those boots, which read as a
+	// misconfiguration of the documented configuration. It is a -verbose
+	// note now.
 	if (LOAD == 0x100000 && core.r.sb + 0x80000 > top)
-		osd_printf_warning("boot: the %u KB image leaves the loader only "
-				"%u KB of stack under the %u KB fitted, not the half "
-				"megabyte the handoff assumes\n",
+		osd_printf_verbose("boot: the %u KB image leaves the loader %u KB "
+				"of stack under the %u KB fitted (the handoff allows up "
+				"to 512 KB; powerup uses a few hundred bytes)\n",
 				size / 1024, (top - core.r.sb) / 1024, top / 1024);
 	core.r.db = 0;
 	core.r.dl = 0xffffff | 3;
@@ -4200,7 +4481,16 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 			std::string line;
 			for (unsigned c = 0; c < focus::dim_card::COLUMNS; c++)
 			{
-				const u8 ch = u8(m_dim.vram[r * focus::dim_card::COLUMNS + c]);
+				// 4096 cells is fifty-one rows and sixteen cells over, so
+				// the last row runs off the end of the frame buffer. It
+				// used to be read anyway: sixty-four cells of whatever
+				// the card object holds next, printed into a stream the
+				// tests compare, and different from one run of the same
+				// binary to the next. Past the end there is nothing.
+				const unsigned cell = r * focus::dim_card::COLUMNS + c;
+				if (cell >= focus::dim_card::CELLS)
+					break;
+				const u8 ch = u8(m_dim.vram[cell]);
 				line.push_back((ch >= 32 && ch < 127) ? char(ch) : '.');
 			}
 			if (line.find_first_not_of(' ') != std::string::npos)

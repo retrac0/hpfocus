@@ -12,7 +12,7 @@ CORE      = $(SRCDIR)/focusexec.h $(wildcard $(SRCDIR)/focusexec_*.ipp) \
             $(SRCDIR)/focusdst.h $(SRCDIR)/focusaddr.h \
             $(SRCDIR)/focusstate.h $(KNOBS)
 
-all: dasmtest statetest addrtest dsttest exectest ioptest muxtest hpibtest bootprobe bootrun
+all: dasmtest statetest addrtest dsttest exectest ioptest muxtest hpibtest asitest bootprobe bootrun
 
 dasmtest: dasmtest.cpp $(SRCDIR)/focusdasm.cpp $(SRCDIR)/focusdasm.h \
           $(SRCDIR)/focusdasm_tables.ipp emu.h
@@ -41,6 +41,9 @@ muxtest: muxtest.cpp ../iop/focusiop.h ../iop/focusmux.h $(CORE)
 hpibtest: hpibtest.cpp ../iop/focusiop.h ../iop/focushpib.h $(CORE)
 	$(CXX) $(CXXFLAGS) hpibtest.cpp -o $@
 
+asitest: asitest.cpp ../iop/focusiop.h ../iop/focusasi.h $(CORE)
+	$(CXX) $(CXXFLAGS) asitest.cpp -o $@
+
 # Not a test: an experiment harness for locating a boot module's entry point.
 bootprobe: bootprobe.cpp ../iop/focusiop.h ../iop/focusscm.h $(CORE)
 	$(CXX) $(CXXFLAGS) bootprobe.cpp -o $@
@@ -61,7 +64,7 @@ $(SRCDIR)/focusdasm_tables.ipp: ../../docs/opcodes.csv ../../tools/gen_dasm_tabl
 # disassembler difftest went unrun all that time. check_knobs.py is a
 # source check, not a run: the knob catalogue against the source that
 # names them.
-TESTS = statetest addrtest dsttest exectest ioptest muxtest hpibtest run_difftest.sh
+TESTS = statetest addrtest dsttest exectest ioptest muxtest hpibtest asitest run_difftest.sh
 
 .PHONY: all test clean
 test: all
@@ -78,4 +81,4 @@ test: all
 	echo "make test: every harness passed (check_knobs $(TESTS))"
 
 clean:
-	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest hpibtest bootprobe bootrun
+	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest hpibtest asitest bootprobe bootrun

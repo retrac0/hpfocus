@@ -1051,7 +1051,7 @@ this driver and on the one before it alike. A run that does not reach it
 is a lost measurement, not a result — retry, as `src/test/basictest.sh`
 does for the BASIC prompt.
 
-### 10.5 Addressing terminals
+### 10.5 Terminals: addressing them, and using them from the host
 
 Everything the host says to and hears from this machine goes through one
 registry now (`host_terminal` in the driver). A terminal has a name, and
@@ -1069,7 +1069,110 @@ serial terminal listens to that one anyway, while a 520 talks to its
 screen and is read with `FOCUS_DIMDUMP`. A `FOCUS_TYPE` script opening
 `@<name>=` types at that one, so a single run can drive the console and
 several ports at once — before this there was one destination for the
-whole run. `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they meant.
+whole run. Scripts whose times overlap each keep their own cursor (they
+used to share one, so '@2:0=root\n;@2:1=root\n' half a second apart typed
+'roo' at port 0). `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they
+meant.
+
+**What the tap prints.** When stdout is a terminal the tap writes lines:
+CR dropped, LF a newline, and with more than one terminal listened to,
+each line whole and labelled with its terminal:
+
+    console| HP-UX 5.30 (unknown)
+    console| login:
+    2:0    | HP-UX 5.30 (unknown)
+    2:0    | login:
+
+Into a file or a pipe it writes the raw stream it always has -- every byte
+that is not printable ASCII as `.`, the terminals interleaved byte by
+byte -- because that is what the scripts parse (`hpuxmatrix.py` finds the
+end of `/etc/rc` by `Nodename: unknown.`, whose `.` is the LF).
+`FOCUS_TAPRAW=0` asks for lines in a file, `FOCUS_TAPRAW=1` for the raw
+stream on a terminal.
+
+#### Using the machine interactively
+
+All of these were run headless by a script that connects, logs in as root
+and runs a command (`scratch/alpha/lanes/terminals/ux.sh` and
+`contest.sh` during the alpha); the window path was driven through MAME's
+natural keyboard, which is the path a key pressed in the window takes.
+
+**The console, in a window.** `tools/runhpux.sh` (single-user) or
+`tools/runhpux.sh --multiuser`. The MAME window *is* the 540's console
+terminal; type into it. If MAME's own keys get in the way (Tab opens its
+menu), toggle its UI controls with Scroll Lock.
+
+**The console, on a pseudo terminal.**
+
+    tools/runhpux.sh --multiuser -video none -cio0:asi:rs232 pty
+
+prints `cio0:asi:rs232: pseudo terminal /dev/pts/N` as it starts; attach
+with `screen /dev/pts/N 9600`, `picocom -b 9600 /dev/pts/N`,
+`minicom -D /dev/pts/N`, or `socat -,rawer,escape=0x1d /dev/pts/N,rawer`
+(^] leaves). Detaching and attaching again is fine: the session goes on.
+
+**The console, on a TCP socket.**
+
+    tools/runhpux.sh --multiuser -video none \
+        -cio0:asi:rs232 null_modem -bitb socket.127.0.0.1:4000
+    socat -,rawer,escape=0x1d TCP:127.0.0.1:4000
+
+MAME's bitbanger socket takes **one** connection per run: when the client
+goes, the port cannot be reached again until the next run. For a TCP
+port that can be left and come back to, put a pty behind socat instead:
+
+    tools/runhpux.sh --multiuser -video none -cio0:asi:rs232 pty
+    socat TCP-LISTEN:4000,reuseaddr,fork /dev/pts/N,rawer &
+    socat -,rawer,escape=0x1d TCP:127.0.0.1:4000    # as often as you like
+
+Plain `nc` works too -- HP-UX ends a canonical-mode line on LF as well as
+CR -- but run it as `stty raw -echo; nc 127.0.0.1 4000; stty sane`: the
+card echoes, so the local terminal must not. `telnet` is a poor fit: with
+no telnet server at the far end it falls back to local echo and sends
+every line as CR LF, which is two lines here.
+
+**Logins on the multiplexer.** The same attachments on the 27140A's
+ports, `/dev/tty0(N+1)` for port N:
+
+    tools/runhpux.sh --multiuser -video none \
+        -cio2:mux6:port0 pty \
+        -cio2:mux6:port1 null_modem -bitb socket.127.0.0.1:4001
+
+`-cio2:mux6:port0 terminal` gives a port its own MAME window. Log in as
+`root` (no password on this disc) and answer the two `TERM =` prompts.
+
+Two things that look like faults and are not. A port's `login:` is
+printed once, when getty starts; whatever connects later sees a blank
+screen until it presses Return, which gets a fresh prompt. And getty
+flushes the line just after printing `login:` (a control-card flush,
+measured), so a name typed in the first second after the prompt appears
+is discarded -- the real machine does the same.
+
+#### What the console card does itself
+
+HP-UX hands the 27128A the console's line discipline: on every open and
+mode change it writes the card's whole configuration block, and the card
+does the rest (27128A Tech Ref 4-5..4-15, 4-30, 4-41..4-58). For a tty in
+canonical mode (`b2 00 00 00 00 02 08 15 01 76 ...`) the card echoes,
+erases with BS and kills the line with ^U, ends a record on NL, CR or
+EOT, turns ^C and ^\ into events and expands LF to CR-LF on output; in
+any other mode (`00 00 00 01 ...`, and csh's `82 ... 1d`) it passes each
+character straight up ("alert 1") and HP-UX echoes and edits itself.
+`src/iop/focusasi.h` models that pipeline -- signal characters, the
+handshake characters, edit mode, stripping, single text terminators,
+end on count, the 200-byte limit, alert 1, echo and the output
+separators -- and `src/test/asitest.cpp` drives it with the two measured
+blocks. Before it, the console had no echo at a canonical prompt, BS and
+^U arrived as data, ^C did nothing, output staircased on bare LFs and a
+line reached the host only at Return. Measured over a socket on the
+single-user disc: 's' echoes at ENTER RUN LEVEL; `ecko^H^Hho bs` runs
+`echo bs`; `sleep 30` then ^C gives the prompt back at once; `cat` with
+`one`, `tw^Ho`, ^D prints `one` and `to` and ends.
+
+Not modelled: double text terminators and prompt sequences (HP-UX does
+not configure them), and the software handshakes' pacing -- a device's
+X-ON/X-OFF and the ACK to a host ENQ are taken out of the input, but
+output is not held for them, and the card never sends ENQ.
 
 ### 10.1 The card
 

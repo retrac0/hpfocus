@@ -1,5 +1,6 @@
 # Build artifacts -- everything src/test/Makefile builds
 src/test/addrtest
+src/test/asitest
 src/test/bootprobe
 src/test/bootrun
 src/test/dasmtest
