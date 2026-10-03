@@ -3262,12 +3262,9 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_poll_tick)
 
 
 // Every accepted device raise is one message at 16 + its level (the
-	// microcode handler maps it back and pulls the device from the
-	// level's list). The attention poll reaches the CPU as message 14
-	// (I/O ERS section 2.1).
-// is one message at 16 + its level (the microcode handler maps it back and
-// pulls the device from the level's list). The attention poll reaches the
-// CPU as message 14 (I/O ERS section 2.1).
+// microcode handler maps it back and pulls the device from the level's
+// list). The attention poll reaches the CPU as message 14 (I/O ERS
+// section 2.1).
 void hp9000_5xx_state::deliver_iop_interrupts()
 {
 	const u32 raised = m_iop.take_raise_events();
@@ -3282,7 +3279,7 @@ void hp9000_5xx_state::deliver_iop_interrupts()
 // The host asked the run to stop (see catch_stop_signals): end it the way
 // -seconds_to_run does, exit notifiers and all. Looked for on the
 // millisecond tick and on every frame. The tick alone is emulated time,
-// which stands still while the machine is paused (P, or MAME's menu in a
+// which stands still while the machine is paused (F5, or MAME's menu in a
 // window): a ^C there did nothing, and the second one -- back to the default
 // action -- killed the run without its exit, losing the batteries and the
 // 520's fixed disc. A paused machine still draws frames, so the frame
