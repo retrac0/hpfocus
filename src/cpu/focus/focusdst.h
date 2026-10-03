@@ -258,14 +258,39 @@ public:
 						return false;
 					}
 
-					// The referenced and dirty bits are NOT maintained.
-					// SUNOS keeps one table serving as both CST and DST,
-					// and the DST reference bit (word 0 bit 29) is the
-					// CST layout's absence bit: setting it on a data
-					// access to a code segment would make every later
-					// procedure call into it trap as absent. The powerup
-					// module initialises flags with bits 28-29 clear and
-					// nothing in the OS clears them again.
+					// "R := 1; If mod mem inst then D := 1" (ERS sheet 55;
+					// sheet 32: R is "set to 1 when data in the segment or
+					// the page table is accessed", D "when the [unpaged]
+					// data segment is altered").
+					//
+					// These went unmaintained for a while, on the reading
+					// that bit 29 was the CST layout's ABSENCE bit, so
+					// that SUNOS's one table serving as both CST and DST
+					// would trap every call into a code segment once it
+					// had been read as data. That reading was wrong: a CST
+					// entry's A is bit 31 as a DST entry's is, R 29 and M
+					// 30 (sheet 27; check_external has read A at 31 since
+					// 2026-08-28). And HP-UX consumes R: its memory
+					// manager ages segments with a sweep (TRAP HANDLERS
+					// +0x6390) that semaphore-reads each DST entry and,
+					// when (w0 & 0x7ff9a005) == 0x2004 -- unpaged,
+					// present, no users, referenced -- stamps the
+					// segment's last-use time and writes the entry back
+					// with R cleared. With R never set no segment was ever
+					// stamped, so whatever chooses by those stamps saw
+					// every segment as old as the day it was loaded.
+					//
+					// An entry the OS holds semaphore-locked reads as -1,
+					// which is paged and absent and never gets this far,
+					// so this write cannot undo a lock.
+					{
+						dst_entry m = e;
+						m.set_referenced();
+						if (modify)
+							m.set_dirty();
+						if (m.w0 != e.w0)
+							m_mem.write32(entry_addr, m.w0);
+					}
 
 					m_use_slot = entry_addr;
 					addr = e.location() + offset;
