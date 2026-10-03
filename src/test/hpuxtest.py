@@ -5,7 +5,8 @@
     src/test/hpuxtest.py stress [--runs N] [--jobs N]
     src/test/hpuxtest.py soak   [--ram MB] [--poll US]
 
-matrix  every case below, PASS or FAIL each, about 15 minutes at --jobs 3
+matrix  every case below, PASS or FAIL each: about ten minutes on a quiet
+        8-core machine (measured: 9 min 13 s at --jobs 2)
 stress  seven simultaneous logins on 2 MB, over a grid of login schedules
         and IOP poll periods (the case that found the swap corruption)
 soak    a multi-user workload -- compile and run a C program, copy and cmp
@@ -16,7 +17,8 @@ Every case boots its OWN machine, made from the pristine one by
 tools/runhpux.sh --state (var/test/<command>.<pid>/<case>); nothing of yours
 is touched, and the machines are deleted afterwards unless --keep. Needs
 what tools/setup.sh makes: mame/focus, the pristine HP-UX machine, and for
-the 520 cases software/hd/basic.img and the 5.01 kernel (built on demand).
+the 520 cases software/hd/basic.img, software/hd/diag.img and the 5.01
+kernel (built on demand).
 HPFOCUS_BIN and HPFOCUS_VAR name another build and another var/, as they do
 for the run scripts.
 
@@ -36,6 +38,9 @@ Matrix cases:
   poll300..poll700          boot and a console session at other poll periods
   second-boot               a session on the disc a full earlier run wrote
   basic-mul, basic-prog     BASIC on the 520's fixed disc: DISP 3*4, a loop
+  diag                      HP's 9020 diagnostics: LOAD "TEST" and RUN typed
+                            at four different moments, each on a boot of its
+                            own, must each reach the Test Supervisor
   ux501                     HP-UX 5.01 on the 520 reaches its banner
 
 Exit status 0 only if everything that ran passed.
@@ -54,6 +59,8 @@ RUNHPUX = os.path.join(ROOT, 'tools', 'runhpux.sh')
 RUNBASIC = os.path.join(ROOT, 'tools', 'runbasic-hd.sh')
 SCREEN = os.path.join(ROOT, 'tools', 'screen.py')
 BASICIMG = os.path.join(ROOT, 'software', 'hd', 'basic.img')
+DIAGIMG = os.path.join(ROOT, 'software', 'hd', 'diag.img')
+DIAGFLOP = os.path.join(ROOT, 'software', 'test', '500MFTST.TD0')
 BANNER = "HP-UX 5.30 (unknown)login: "
 RATE = 0.06                       # FOCUS_TYPERATE=60: seconds per keystroke
 
@@ -152,6 +159,15 @@ def cases():
     c['basic-prog'] = dict(kind='basic',
                            keys='10 FOR I=1 TO 3\\r;20 PRINT I*I\\r;30 NEXT I\\r;40 END\\r;RUN\\n',
                            at='20,26,32,38,44', stop=56, want=['1', '4', '9'])
+    # HP's test driver on the diagnostics disc. A build that halted here
+    # (System halted ... TRAP:00000055 or 00000020, after a disc read lost
+    # during the LOAD) did it at some typing times and not at others: when
+    # the commands are typed sets the phase between the instruction stream
+    # and the I/O processor's poll. With no timing tried at all, the fault
+    # went unseen through three rounds of validation. These four are ones
+    # it halted at; the first pair is docs/DIAGNOSTICS.md's own recipe.
+    c['diag'] = dict(kind='diag', at=['20,36', '26,48', '28,52', '30,60'],
+                     want='Welcome to the HP 9000 Test Supervisor')
     c['ux501'] = dict(kind='ux501', want=['Hewlett-Packard Company'])
     return c
 
@@ -274,7 +290,36 @@ def screen_of(log):
     return p.stdout.decode('latin1')
 
 
+def run_diag(name, spec, out, keep):
+    """LOAD "TEST" then RUN on the diagnostics disc, once per typing time,
+    each on its own boot with the test disc in the flexible drive. The
+    driver's first screen is up within 30 s of RUN."""
+    for f in (DIAGIMG, DIAGFLOP):
+        if not os.path.exists(f):
+            return {'case': name, 'ok': False,
+                    'why': 'no %s (tools/setup.sh and tools/mkdiagdisc.sh make the disc)' % f}
+    fails = []
+    for at in spec['at']:
+        log = os.path.join(out, '%s-%s.log' % (name, at.replace(',', '-')))
+        env = {'FOCUS_HDNOSAVE': '1', 'FOCUS_DIMDUMP': '60',
+               'FOCUS_TYPE': 'LOAD "TEST"\\n;RUN\\n', 'FOCUS_TYPEAT': at}
+        stop = int(at.split(',')[-1]) + 30
+        rc = run([RUNBASIC, DIAGIMG, '--', '-mpb3', '1m', '-mpb4', '1m', '-flop1', DIAGFLOP,
+                  '-str', str(stop), '-video', 'none'], env, log, timeout=900)
+        scr = screen_of(log)
+        if rc != 0:
+            fails.append('%s: exit %d' % (at, rc))
+        elif spec['want'] not in scr:
+            m = re.search(r'TRAP:[0-9A-F]+', scr)
+            last = [l.strip() for l in scr.splitlines() if l.strip()]
+            fails.append('%s: %s' % (at, 'halted, ' + m.group(0) if m else
+                                     'no Test Supervisor (screen ends %r)' % (last[-1:] or [''])[0]))
+    return {'case': name, 'ok': not fails, 'why': '; '.join(fails)}
+
+
 def run_520(name, spec, out, keep):
+    if spec['kind'] == 'diag':
+        return run_diag(name, spec, out, keep)
     log = os.path.join(out, name + '.log')
     if spec['kind'] == 'basic':
         if not os.path.exists(BASICIMG):
