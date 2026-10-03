@@ -20,10 +20,14 @@
 # /tmp/focus-golden), because it is a few hundred megabytes of trace and it
 # belongs to a working tree state rather than to the project.
 #
-# Two probes fail today and are expected to: exectest reports 15 failures and
-# ioptest 3 (docs -- these are the recorded baseline, not regressions). This
-# harness compares *output*, so a failing test whose failures do not change is
-# a pass here. What it catches is any change at all.
+# This harness compares *output*, not verdicts: a unit harness whose
+# failures do not change is a pass here, and one whose output changes at all
+# is not. A `check` that finds no baseline to compare against says NOTHING
+# COMPARED and exits 2 rather than passing -- the default baseline is in
+# /tmp, which a reboot empties.
+#
+# Exit status: 0 every compared probe identical, 1 something differs, 2 the
+# run could not be made (build, media, no baseline, bad arguments).
 
 set -uo pipefail
 
@@ -51,13 +55,16 @@ MODE=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		capture|check|list) MODE=$1 ;;
-		--only) ONLY=",$2,"; shift ;;
+		--only)
+			[ $# -ge 2 ] && [ -n "$2" ] \
+				|| { echo "--only needs a probe name" >&2; exit 2; }
+			ONLY=",$2,"; shift ;;
 		--quick) QUICK=1 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 	shift
 done
-[ -n "$MODE" ] || { sed -n '2,28p' "$0" | sed 's/^# \?//'; exit 2; }
+[ -n "$MODE" ] || { sed -n '2,31p' "$0" | sed 's/^# \?//'; exit 2; }
 
 mkdir -p "$BASE" "$WORK" "$MEDIA"
 
@@ -169,20 +176,27 @@ if [ "$MODE" = list ]; then
 fi
 
 # ---------------------------------------------------------------- media
-# The boot images bootrun needs are assembled from the shipped discs. Both
-# steps are idempotent and cheap, but not free, so they are cached.
+# The boot images bootrun needs are assembled from the shipped discs, every
+# one decoded from its TD0 here: software/basic/img/, which this once read,
+# is gitignored and made by nothing, so on a fresh clone bootimage.py died
+# and the two bootrun probes recorded its traceback as their baseline. Any
+# failure now stops the run. Both steps are cached.
 media() {
 	[ -f "$MEDIA/basic.bin" ] && [ -f "$MEDIA/diag.bin" ] && return 0
 	echo "assembling boot images..."
-	python3 "$ROOT/tools/bootimage.py" "$MEDIA/basic.bin" \
-		"$ROOT/software/basic/img/500BT1.img" \
-		"$ROOT/software/basic/img/500BT2.img" >/dev/null
-	for v in 500ENV1 500ENV2 500ENV3; do
-		python3 "$ROOT/tools/td0.py" --raw "$MEDIA/$v.img" \
-			"$ROOT/software/test/$v.TD0" >/dev/null
+	local v ok=1
+	for v in basic/500BT1 basic/500BT2 test/500ENV1 test/500ENV2 test/500ENV3; do
+		python3 "$ROOT/tools/td0.py" "$ROOT/software/$v.TD0" \
+			--raw "$MEDIA/${v#*/}.img" >/dev/null || { ok=0; break; }
 	done
-	python3 "$ROOT/tools/bootimage.py" "$MEDIA/diag.bin" \
-		"$MEDIA/500ENV1.img" "$MEDIA/500ENV2.img" "$MEDIA/500ENV3.img" >/dev/null
+	[ "$ok" = 1 ] && python3 "$ROOT/tools/bootimage.py" "$MEDIA/basic.bin.part" \
+		"$MEDIA/500BT1.img" "$MEDIA/500BT2.img" >/dev/null \
+	&& python3 "$ROOT/tools/bootimage.py" "$MEDIA/diag.bin.part" \
+		"$MEDIA/500ENV1.img" "$MEDIA/500ENV2.img" "$MEDIA/500ENV3.img" >/dev/null \
+	&& mv "$MEDIA/basic.bin.part" "$MEDIA/basic.bin" \
+	&& mv "$MEDIA/diag.bin.part" "$MEDIA/diag.bin" \
+	|| { echo "could not assemble the boot images from software/*/*.TD0" >&2
+	     rm -f "$MEDIA"/*.part; exit 2; }
 }
 
 echo "building..."
@@ -326,5 +340,10 @@ fi
 printf '%d identical, %d differing, %d skipped' "$pass" "$fail" "$skip"
 [ "$retried" -gt 0 ] && printf ' (%d needed a retry)' "$retried"
 echo
+if [ $((pass + fail)) -eq 0 ]; then
+	echo "NOTHING COMPARED -- no baseline in $BASE? run '$0 capture' first"
+	exit 2
+fi
+[ "$skip" -gt 0 ] && echo "($skip probe(s) had no baseline or could not run: not compared)"
 [ "$fail" -eq 0 ] && echo PASS || echo FAIL
 exit $((fail > 0))
