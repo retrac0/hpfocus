@@ -51,26 +51,28 @@ bootrun: bootrun.cpp ../iop/focusiop.h ../iop/focusscm.h ../iop/focuscards.h \
 $(SRCDIR)/focusdasm_tables.ipp: ../../docs/opcodes.csv ../../tools/gen_dasm_tables.py
 	python3 ../../tools/gen_dasm_tables.py
 
+# Every harness runs, whatever an earlier one reported, and the target
+# ends with one line naming the ones that failed (and exits non-zero) or
+# saying that all passed. It used to stop at the first failure, and as
+# exectest carried stale failures for weeks, ioptest, muxtest and the
+# disassembler difftest went unrun all that time. check_knobs.py is a
+# source check, not a run: the knob catalogue against the source that
+# names them.
+TESTS = statetest addrtest dsttest exectest ioptest muxtest run_difftest.sh
+
 .PHONY: all test clean
 test: all
-	@# A source check, not a run: the knob catalogue against the source
-	@# that names them. First, because it costs nothing and because
-	@# exectest below still has its 15 recorded failures.
-	@python3 ../../tools/check_knobs.py
-	@echo
-	@./statetest
-	@echo
-	@./addrtest
-	@echo
-	@./dsttest
-	@echo
-	@./exectest
-	@echo
-	@./ioptest
-	@echo
-	@./muxtest
-	@echo
-	@./run_difftest.sh
+	@failed=""; \
+	python3 ../../tools/check_knobs.py || failed="$$failed check_knobs"; \
+	for t in $(TESTS); do \
+		echo; \
+		./$$t || failed="$$failed $$t"; \
+	done; \
+	echo; \
+	if [ -n "$$failed" ]; then \
+		echo "make test: FAILED:$$failed"; exit 1; \
+	fi; \
+	echo "make test: every harness passed (check_knobs $(TESTS))"
 
 clean:
 	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest bootprobe bootrun
