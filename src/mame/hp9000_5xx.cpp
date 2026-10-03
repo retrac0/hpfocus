@@ -50,10 +50,22 @@
 #include "sound/beep.h"  // terminal.cpp needs it linked; the scanner follows driver includes
 #include "emupal.h"
 
+#include <cerrno>
+#include <csignal>
+#include <cstring>
 #include <map>
 #include <tuple>
 #include "imagedev/printer.h"
 #include "screen.h"
+
+#if defined(_WIN32)
+#include <cstdio>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 // The run-time knobs: one catalogue, printed by FOCUS_HELP=1.
 // See src/cpu/focus/focusknobs.h.
@@ -153,6 +165,10 @@ public:
 	hp_focus_media_device &set_hard() { m_hard = true; return *this; }
 	const std::vector<u8> &data() const { return m_data; }
 	bool has_media() const { return !m_data.empty(); }
+	// Whether the file holds the medium byte for byte. A Teledisk file
+	// is decoded on the way in; writing the decoded sectors over it
+	// would destroy it, so only a raw image is ever written back.
+	bool raw() const { return m_raw; }
 
 protected:
 	virtual void device_start() override ATTR_COLD { }
@@ -162,6 +178,7 @@ private:
 
 	std::vector<u8> m_data;
 	bool m_hard = false;
+	bool m_raw = true;
 };
 
 DEFINE_DEVICE_TYPE(HP_FOCUS_MEDIA, hp_focus_media_device, "hpfocus_media",
@@ -185,12 +202,16 @@ std::pair<std::error_condition, std::string> hp_focus_media_device::call_load()
 		if (!decode_td0(raw, m_data))
 			return std::make_pair(image_error::INVALIDIMAGE,
 					"Teledisk image did not decode");
+		m_raw = false;
 	}
 	else if (raw.size() >= 12 && raw[0] == 't' && raw[1] == 'd')
 		return std::make_pair(image_error::UNSUPPORTED,
 				"Teledisk advanced (LZH) compression is not supported");
 	else
+	{
 		m_data = std::move(raw);
+		m_raw = true;
+	}
 
 	if (m_data.empty() || (m_data.size() % 256) != 0)
 		return std::make_pair(image_error::INVALIDIMAGE,
@@ -291,6 +312,161 @@ bool hp_focus_media_device::decode_td0(const std::vector<u8> &in,
 	return !out.empty();
 }
 
+
+// The file behind a disc this machine writes to, held open for the whole
+// run. Opening it takes the run's claim on it: an advisory lock, which a
+// second emulator started on the same image finds taken -- two runs
+// writing one file system would leave one that is neither's, and the
+// last to exit used to erase the other's session without a word. Writes
+// go to the byte offset they belong at; nothing else in the file moves.
+class disc_file
+{
+public:
+	disc_file() = default;
+	disc_file(const disc_file &) = delete;
+	disc_file &operator=(const disc_file &) = delete;
+	~disc_file() { close(); }
+
+	// False if the file cannot be opened for writing, with the reason;
+	// `busy` when it is because another run holds it.
+	bool open(const std::string &path, std::string &why, bool &busy)
+	{
+		close();
+		busy = false;
+#if defined(_WIN32)
+		m_file = std::fopen(path.c_str(), "r+b");
+		if (!m_file)
+		{
+			why = std::strerror(errno);
+			return false;
+		}
+#else
+		m_fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+		if (m_fd < 0)
+		{
+			why = std::strerror(errno);
+			return false;
+		}
+		if (::flock(m_fd, LOCK_EX | LOCK_NB) != 0)
+		{
+			busy = (errno == EWOULDBLOCK);
+			why = busy ? "another run has it open" : std::strerror(errno);
+			::close(m_fd);
+			m_fd = -1;
+			return false;
+		}
+#endif
+		m_path = path;
+		return true;
+	}
+
+	bool is_open() const
+	{
+#if defined(_WIN32)
+		return m_file != nullptr;
+#else
+		return m_fd >= 0;
+#endif
+	}
+	const std::string &path() const { return m_path; }
+	const char *error() const { return std::strerror(m_errno); }
+
+	bool size(u64 &n)
+	{
+#if defined(_WIN32)
+		if (std::fseek(m_file, 0, SEEK_END) != 0)
+			return fail();
+		const long at = std::ftell(m_file);
+		if (at < 0)
+			return fail();
+		n = u64(at);
+#else
+		struct stat st;
+		if (::fstat(m_fd, &st) != 0)
+			return fail();
+		n = u64(st.st_size);
+#endif
+		return true;
+	}
+
+	bool write(u64 off, const u8 *p, size_t n)
+	{
+#if defined(_WIN32)
+		return (std::fseek(m_file, long(off), SEEK_SET) == 0
+				&& std::fwrite(p, 1, n, m_file) == n) || fail();
+#else
+		while (n)
+		{
+			const ssize_t done = ::pwrite(m_fd, p, n, off_t(off));
+			if (done < 0 && errno == EINTR)
+				continue;
+			if (done <= 0)
+				return fail();
+			p += done;
+			off += u64(done);
+			n -= size_t(done);
+		}
+		return true;
+#endif
+	}
+
+	bool read(u64 off, u8 *p, size_t n)
+	{
+#if defined(_WIN32)
+		return (std::fseek(m_file, long(off), SEEK_SET) == 0
+				&& std::fread(p, 1, n, m_file) == n) || fail();
+#else
+		while (n)
+		{
+			const ssize_t done = ::pread(m_fd, p, n, off_t(off));
+			if (done < 0 && errno == EINTR)
+				continue;
+			if (done <= 0)
+				return fail(done == 0 ? EIO : errno);
+			p += done;
+			off += u64(done);
+			n -= size_t(done);
+		}
+		return true;
+#endif
+	}
+
+	// Onto the medium under the file, not just into the host's cache.
+	bool sync()
+	{
+#if defined(_WIN32)
+		return std::fflush(m_file) == 0 || fail();
+#else
+		return ::fsync(m_fd) == 0 || fail();
+#endif
+	}
+
+	bool close()
+	{
+		bool ok = true;
+#if defined(_WIN32)
+		if (m_file)
+			ok = std::fclose(m_file) == 0 || fail();
+		m_file = nullptr;
+#else
+		if (m_fd >= 0)
+			ok = ::close(m_fd) == 0 || fail();   // the lock goes with it
+		m_fd = -1;
+#endif
+		return ok;
+	}
+
+private:
+	bool fail(int e = errno) { m_errno = e; return false; }
+
+#if defined(_WIN32)
+	FILE *m_file = nullptr;
+#else
+	int m_fd = -1;
+#endif
+	std::string m_path;
+	int m_errno = 0;
+};
 
 class mpb_ram256k_device;
 class mpb_ram512k_device;
@@ -548,6 +724,31 @@ public:
 
 	hp_focus_media_device &media() { return *m_media; }
 
+	// The image file the drive's medium came from, when it came from the
+	// -hard image device and this run may write it: every write HP-UX
+	// makes goes through to it as it lands (see claim_discs). A medium
+	// handed over with FOCUS_HPIBDISC is never written back.
+	disc_file file;
+	bool from_media = false;
+	bool write_failed = false;      // a write-through failed; save at exit
+	u64 written = 0;                // bytes written through this run
+
+	// A write has just changed the medium: the same bytes go to the file.
+	void write_through(u64 off, u64 n)
+	{
+		if (write_failed || !file.is_open())
+			return;
+		if (file.write(off, &card.disc.image[off], size_t(n)))
+		{
+			written += n;
+			return;
+		}
+		write_failed = true;
+		osd_printf_error("disc: writing to %s failed (%s); the rest of this "
+				"run is kept in memory and written at exit\n",
+				file.path().c_str(), file.error());
+	}
+
 protected:
 	virtual void device_start() override {}
 	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD
@@ -561,7 +762,35 @@ private:
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
 	virtual void focus_tick() override { card.tick(); }
+
+	// A machine reset is a reset of the card and the drive: both go back
+	// to power-on -- the drive answering QSTAT 2 until a Request Status
+	// collects it, the card's presence echo armed for the powerup scan,
+	// no transaction, order or event left over. Its MEDIUM stays exactly
+	// as the run left it: it is a disc, and what was written to it is not
+	// unwritten by pressing reset. Nor is the file behind it let go.
+	void reset_card()
+	{
+		focus::iop_core *const iop = card.iop;
+		if (!iop)
+			return;
+		const unsigned sc = card.pa;
+		std::vector<u8> medium = std::move(card.disc.image);
+		std::function<void(u64, u64)> on_write = std::move(card.disc.on_write);
+		card = focus::hpib_card();
+		apply_knobs(*iop, sc);
+		card.disc.image = std::move(medium);
+		card.disc.on_write = std::move(on_write);
+	}
+
 	virtual void focus_configure(focus::iop_core &iop, unsigned sc) override
+	{
+		apply_knobs(iop, sc);
+		configure_medium(iop, sc);
+	}
+
+private:
+	void apply_knobs(focus::iop_core &iop, unsigned sc)
 	{
 		card.iop = &iop;
 		card.pa = sc;
@@ -575,18 +804,33 @@ public:
 		card.amigo_id = u16(knob::number("FOCUS_CS80ID", card.amigo_id, 16));
 		card.system_controller =
 				knob::number("FOCUS_HPIBSC", card.system_controller ? 1 : 0) != 0;
+	}
+
+	void configure_medium(focus::iop_core &iop, unsigned sc)
+	{
 		// The drive on this card's bus. Its medium is the card's own
 		// image device; FOCUS_HPIBDISC remains as a way to hand a raw
 		// file to a card without going through MAME's media system.
 		if (media().has_media())
+		{
 			card.disc.image = media().data();
+			from_media = true;
+		}
 		if (const char *v = knob::text("FOCUS_HPIBDISC").get())
 		{
 			bool short_read = false;
 			if (!read_file(v, card.disc.image, short_read))
 				osd_printf_error("FOCUS_HPIBDISC: cannot open %s\n", v);
-			else if (short_read)
-				osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
+			else
+			{
+				// Whatever was mounted is no longer what is in the drive,
+				// and this medium has no image device to go back to.
+				from_media = false;
+				if (short_read)
+					osd_printf_error("FOCUS_HPIBDISC: short read on %s\n", v);
+				osd_printf_info("FOCUS_HPIBDISC: %s is read into memory and "
+						"never written back\n", v);
+			}
 		}
 		if (card.disc.loaded())
 			osd_printf_info("cio%u: CS/80 drive at HP-IB address %u, "
@@ -912,6 +1156,44 @@ static void focus_cio_cards(device_slot_interface &device)
 namespace {
 
 //**************************************************************************
+//  HOST SIGNALS
+//**************************************************************************
+
+// What the host asking the emulator to stop has to mean. MAME's SDL
+// front end ends a run when its window is closed and on nothing else: SDL
+// turns SIGINT and SIGTERM into a quit event that only a pumped event
+// queue ever sees, and a headless run (-video none, how the HP-UX recipes
+// run) pumps none. So ^C and kill did nothing at all, and the run could
+// only be killed outright -- which skipped the exit, where the batteries
+// and the 520's fixed disc are saved. A closed terminal (SIGHUP) killed
+// it on the spot the same way.
+//
+// The first SIGINT, SIGTERM or SIGHUP now asks for the exit -seconds_to_run
+// makes, at the next millisecond tick, with every exit notifier run; the
+// handler also puts the default action back, so a second one still kills
+// a run too wedged to reach that tick. SIGPIPE is ignored: it is what
+// writing to a socket whose client has gone away raises -- quitting the nc
+// a port was attached through -- and its default action ended the run
+// mid-session. The write fails with EPIPE instead and the run goes on.
+volatile std::sig_atomic_t s_stop_signal = 0;
+
+void stop_signal(int sig)
+{
+	s_stop_signal = sig;
+	std::signal(sig, SIG_DFL);
+}
+
+void catch_stop_signals(void (*handler)(int))
+{
+	std::signal(SIGINT, handler);
+	std::signal(SIGTERM, handler);
+#ifdef SIGHUP
+	std::signal(SIGHUP, handler);
+#endif
+}
+
+
+//**************************************************************************
 //  HOST TERMINALS
 //**************************************************************************
 
@@ -1005,8 +1287,16 @@ private:
 	// The HP-IB card carrying the system disc, or null when no slot has
 	// one -- a 540 with nothing to boot from.
 	focus::hpib_card *system_disc();
-	void write_back(const std::vector<u8> &now, hp_focus_media_device &media,
+	// The discs this machine writes to and the files behind them: claimed
+	// at start, kept up to date while the run writes, settled at exit.
+	void claim_discs();
+	bool write_back(const std::vector<u8> &now, const std::vector<u8> *was,
+			disc_file &file, const char *what);
+	void save_aside(const std::vector<u8> &now, const std::string &path,
 			const char *what);
+	disc_file m_fixed_file;         // the 520's fixed disc, when claimed
+	void reset_cards();
+	bool m_reset_seen = false;      // a machine_reset has run already
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 	void gfx_dump(screen_device &screen);
@@ -2453,6 +2743,14 @@ void hp9000_5xx_state::machine_start()
 	install_debug_hooks();
 	start_timers();
 	schedule_scripts();
+	claim_discs();
+	// Last, so they replace whatever the OSD installed during its own
+	// start; see catch_stop_signals.
+	s_stop_signal = 0;
+	catch_stop_signals(stop_signal);
+#ifdef SIGPIPE
+	std::signal(SIGPIPE, SIG_IGN);
+#endif
 }
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::find_tick)
@@ -2696,6 +2994,14 @@ void hp9000_5xx_state::deliver_iop_interrupts()
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 {
+	// The host asked the run to stop (see catch_stop_signals): end it the
+	// way -seconds_to_run does, exit notifiers and all.
+	if (const int sig = s_stop_signal)
+	{
+		s_stop_signal = 0;
+		osd_printf_info("\nsignal %d: stopping the run\n", sig);
+		machine().schedule_exit();
+	}
 	// The transfers the fast poll leaves alone, at the rate the devices
 	// driving them expect.
 	m_iop.pace_uncounted_dma();
@@ -2924,52 +3230,260 @@ void hp9000_5xx_state::term_put(u8 data)
 
 // A fixed disc is not a shipped medium: it is a disc this machine owns and
 // writes to, so what the running system does to it has to survive the run.
-// The card holds the medium, so the image goes back to the file it came
-// from at the end -- which is what makes INITIALIZE, STORE and the rest
-// mean anything, and what lets HP's own utilities build the file system
-// rather than this emulator pretending to.
-void hp9000_5xx_state::machine_stop()
+// That is what makes INITIALIZE, STORE and the rest mean anything, and what
+// lets HP's own utilities build the file system rather than this emulator
+// pretending to.
+//
+// When it reaches the file is the question. It used to be at the end of the
+// run only, so anything but an orderly exit -- a crash, a kill -9, a closed
+// terminal -- lost the whole session, `sync` and all. But the end of a run
+// is no cleaner a moment than any other: HP-UX is not shut down by -str or
+// by ^C, so the image an exit wrote was already a disc after a power cut,
+// one that the next boot mounts and carries on with (nothing in the image
+// runs fsck). Writing each block through as HP-UX writes it gives a file
+// that is ALWAYS that disc -- at a kill as at an exit -- and makes `sync`
+// mean what it says. So the CS/80 drives on the HP-IB cards write through:
+// a few hundred kilobyte-sized writes a session, each to its own offset.
+// The 520's internal disc is written at the end of the run, as before.
+//
+// Claimed here at start: the file must be a raw image of the medium (not a
+// Teledisk file, not a member of an archive) and not in use by another run.
+// A disc whose file cannot be claimed is still saved at the end, beside its
+// file as <file>.unsaved, so the session is never silently dropped.
+void hp9000_5xx_state::claim_discs()
 {
 	if (knob::flag("FOCUS_HDNOSAVE"))
 		return;
+	auto claim = [](hp_focus_media_device &media, u64 size, disc_file &file,
+			const char *what) -> bool
+	{
+		const char *const path = media.filename();
+		if (!path || !*path)
+			return false;
+		if (!media.raw())
+		{
+			osd_printf_warning("disc: %s is a Teledisk image, which cannot be "
+					"written back; what this run writes to the %s will be "
+					"saved in %s.unsaved\n", path, what, path);
+			return false;
+		}
+		std::string why;
+		bool busy = false;
+		if (!file.open(path, why, busy))
+		{
+			if (busy)
+				throw emu_fatalerror("disc: %s is in use by another run of "
+						"this emulator. Two runs writing one disc leave a file "
+						"system that is neither's: stop the other run, or give "
+						"this one FOCUS_HDNOSAVE=1 to use the disc without "
+						"writing to it.\n", path);
+			osd_printf_error("disc: cannot open %s for writing (%s); what this "
+					"run writes to the %s will be saved in %s.unsaved\n",
+					path, why.c_str(), what, path);
+			return false;
+		}
+		u64 n = 0;
+		if (!file.size(n) || n != size)
+		{
+			osd_printf_error("disc: %s is not a raw image of the %s (%llu bytes "
+					"in the file, %llu in the drive); what this run writes to "
+					"it will be saved in %s.unsaved\n", path, what,
+					(unsigned long long)n, (unsigned long long)size, path);
+			file.close();
+			return false;
+		}
+		return true;
+	};
 	// The 520's internal Winchester, behind its own controller.
 	if (m_hard && m_hard->has_media() && m_disc.fixed_loaded())
-	{
-		m_disc.select_device(1);
-		write_back(m_disc.medium(), *m_hard, "fixed disc");
-	}
+		claim(*m_hard, m_disc.m_fixed.size(), m_fixed_file, "fixed disc");
 	// Every CS/80 drive on a card in the backplane -- the 540's system
 	// disc among them, which HP-UX writes to from its first boot.
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 		if (m_cio[sc])
 			if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
 					m_cio[sc]->get_card_device()))
-				if (hpib->media().has_media())
-					write_back(hpib->card.disc.image, hpib->media(),
-							"system disc");
+				if (hpib->from_media && hpib->card.disc.loaded()
+						&& claim(hpib->media(), hpib->card.disc.image.size(),
+								hpib->file, "system disc"))
+					hpib->card.disc.on_write = [hpib](u64 off, u64 n)
+					{ hpib->write_through(off, n); };
 }
 
 
-// A disc this machine owns and writes to: what the running system did to
-// it has to survive the run, so the medium goes back to the file it came
-// from. Unchanged media are left alone, which keeps a read-only run from
-// touching the file's timestamp.
-void hp9000_5xx_state::write_back(const std::vector<u8> &now,
-		hp_focus_media_device &media, const char *what)
+void hp9000_5xx_state::machine_stop()
 {
-	if (now.empty() || now == media.data())
+	// The files are being brought up to date: a second ^C must not cut
+	// that short. (The run is ending; nothing needs the handlers after.)
+	catch_stop_signals(SIG_IGN);
+	if (knob::flag("FOCUS_HDNOSAVE"))
 		return;
-	const std::string path = media.filename() ? media.filename() : "";
-	if (path.empty())
-		return;
-	if (FILE *f = fopen(path.c_str(), "r+b"))
+	auto unsaved = [this](const std::vector<u8> &now,
+			hp_focus_media_device &media, const char *what)
 	{
-		fwrite(now.data(), 1, now.size(), f);
-		fclose(f);
-		osd_printf_info("disc: %s written back to %s\n", what, path.c_str());
+		if (media.filename() && *media.filename())
+			save_aside(now, std::string(media.filename()) + ".unsaved", what);
+	};
+	if (m_hard && m_hard->has_media() && m_disc.fixed_loaded())
+	{
+		if (m_fixed_file.is_open())
+			write_back(m_disc.m_fixed, &m_hard->data(), m_fixed_file,
+					"fixed disc");
+		else if (m_disc.m_fixed != m_hard->data())
+			unsaved(m_disc.m_fixed, *m_hard, "fixed disc");
+		m_fixed_file.close();
 	}
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+		if (m_cio[sc])
+			if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(
+					m_cio[sc]->get_card_device()))
+			{
+				if (!hpib->from_media)
+					continue;
+				const std::vector<u8> &now = hpib->card.disc.image;
+				disc_file &file = hpib->file;
+				if (!file.is_open())
+				{
+					if (now != hpib->media().data())
+						unsaved(now, hpib->media(), "system disc");
+					continue;
+				}
+				// Written through as it ran: what is left is to see it onto
+				// the host's disc. After a failed write-through the file is
+				// partly this run's and partly not, and the lock says nobody
+				// else has touched it, so the whole medium goes back.
+				if (hpib->write_failed)
+					write_back(now, nullptr, file, "system disc");
+				else if (hpib->written && !file.sync())
+					osd_printf_error("disc: %s: the host could not flush it "
+							"(%s)\n", file.path().c_str(), file.error());
+				else if (hpib->written)
+					osd_printf_info("disc: system disc written through to %s "
+							"(%llu KB this run)\n", file.path().c_str(),
+							(unsigned long long)((hpib->written + 1023) / 1024));
+				hpib->card.disc.on_write = nullptr;
+				file.close();
+			}
+}
+
+
+// A disc this machine owns and writes to, brought up to date in its file:
+// only the 256-byte sectors that differ from `was` -- what the file is known
+// to hold -- or, with no `was`, all of it. An unchanged medium is left
+// alone, which keeps a read-only run from touching the file's timestamp.
+// Before anything is written the file is checked against `was`: a tool run
+// against the image mid-session (the claim's lock is advisory) must not
+// have its work interleaved with this run's, so a file that changed under
+// the run is left as it is and the run is saved beside it. It used to
+// rewrite all 128 MB in place, unchecked: a disc full, an I/O error or a
+// kill in the middle still printed "written back".
+bool hp9000_5xx_state::write_back(const std::vector<u8> &now,
+		const std::vector<u8> *was, disc_file &file, const char *what)
+{
+	if (was && now == *was)
+		return true;
+	const char *const path = file.path().c_str();
+	if (was)
+	{
+		bool same = was->size() == now.size();
+		std::vector<u8> chunk(1 << 20);
+		for (size_t off = 0; same && off < was->size(); off += chunk.size())
+		{
+			const size_t n = std::min(chunk.size(), was->size() - off);
+			same = file.read(off, chunk.data(), n)
+					&& !std::memcmp(chunk.data(), was->data() + off, n);
+		}
+		if (!same)
+		{
+			osd_printf_error("disc: %s changed on the host while this run had "
+					"it -- NOT written back\n", path);
+			save_aside(now, file.path() + ".unsaved", what);
+			return false;
+		}
+	}
+	static constexpr size_t SECTOR = 256;
+	auto differs = [&now, was](size_t at)
+	{
+		return !was || std::memcmp(&now[at], &(*was)[at],
+				std::min(SECTOR, now.size() - at)) != 0;
+	};
+	bool ok = true;
+	size_t changed = 0;
+	for (size_t off = 0; ok && off < now.size(); )
+	{
+		if (!differs(off))
+		{
+			off += SECTOR;
+			continue;
+		}
+		// A run of changed sectors goes out as one write.
+		size_t end = off;
+		while (end < now.size() && differs(end))
+			end += std::min(SECTOR, now.size() - end);
+		ok = file.write(off, &now[off], end - off);
+		changed += end - off;
+		off = end;
+	}
+	ok = ok && file.sync();
+	if (!ok)
+	{
+		osd_printf_error("disc: writing the %s back to %s FAILED (%s); the "
+				"file may hold part of this run's changes\n", what, path,
+				file.error());
+		save_aside(now, file.path() + ".unsaved", what);
+		return false;
+	}
+	osd_printf_info("disc: %s written back to %s (%llu KB%s)\n", what,
+			path, (unsigned long long)((changed + 1023) / 1024),
+			was ? " changed" : ", the whole medium");
+	return true;
+}
+
+
+// The last resort for a run whose disc could not go back to its own file:
+// the whole medium, beside it, under a name that says what it is.
+void hp9000_5xx_state::save_aside(const std::vector<u8> &now,
+		const std::string &path, const char *what)
+{
+	FILE *const f = std::fopen(path.c_str(), "wb");
+	bool ok = f && std::fwrite(now.data(), 1, now.size(), f) == now.size();
+	if (f && std::fclose(f) != 0)
+		ok = false;
+	if (ok)
+		osd_printf_error("disc: this run's %s is saved in %s\n", what,
+				path.c_str());
 	else
-		osd_printf_error("disc: cannot write %s back\n", path.c_str());
+		osd_printf_error("disc: cannot save this run's %s in %s (%s): what "
+				"it wrote is LOST\n", what, path.c_str(), std::strerror(errno));
+}
+
+
+// Every card in the backplane back to power-on, its wiring kept: the
+// model object is replaced by a fresh one and given its knobs again, and
+// what the machine hung on it -- the console's output, the drive's medium
+// and the file it writes through to -- is put back.
+void hp9000_5xx_state::reset_cards()
+{
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+	{
+		if (!m_cio[sc])
+			continue;
+		device_t *const dev = m_cio[sc]->get_card_device();
+		if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(dev))
+			hpib->reset_card();
+		else if (auto *asi = dynamic_cast<hp27128_asi_device *>(dev))
+		{
+			std::function<void(u8)> on_char = std::move(asi->card.on_char);
+			asi->card = focus::asi_card();
+			asi->focus_configure(m_iop, sc);
+			asi->card.on_char = std::move(on_char);
+		}
+		else if (auto *mux = dynamic_cast<hp27140_mux_device *>(dev))
+		{
+			mux->card = focus::mux_card();
+			mux->focus_configure(m_iop, sc);
+		}
+	}
 }
 
 
@@ -2991,6 +3505,20 @@ void hp9000_5xx_state::machine_reset()
 	// actually has. Which of the two is right for the hardware is an
 	// emulation question and not a tidying one; the difference is left
 	// standing and written down rather than unified by hand.
+	// A reset after the first is a soft reset of a machine that has run
+	// (MAME's F3, its UI's Reset, a script's soft_reset), and every card
+	// in the backplane goes back to power-on with it -- MAME resets its
+	// own devices, but the card models' state lives in plain objects. Left
+	// as they were, the console card was still in the middle of the last
+	// run's dialogue and the HP-IB card still answered the powerup scan's
+	// presence test as already found; with the IOP's channel number also
+	// fixed (focusiop.h) but the cards stale, HP-UX's second boot halted
+	// with system error 116. The cold start is left exactly as it was:
+	// the first reset follows machine_start, which has just configured
+	// every card.
+	if (m_reset_seen)
+		reset_cards();
+	m_reset_seen = true;
 	m_iop.reset();
 	m_scm.reset();
 	m_console6.reset();

@@ -68,9 +68,11 @@
 
 #include "focusiop.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,11 @@ struct cs80_device
 
 	std::vector<u8> image;          // the medium, one byte per byte
 	bool loaded() const { return !image.empty(); }
+
+	// Told of every range of the medium a write has just changed, byte
+	// offset and length, as the data lands. The host keeps the file the
+	// medium came from up to date through it; nothing here needs it.
+	std::function<void(u64, u64)> on_write;
 	u32 blocks() const { return u32(image.size() / BLOCK); }
 
 	// QSTAT (CS/80 3-13): 0 normal, 1 hard error -- ask Request Status,
@@ -114,14 +121,34 @@ struct cs80_device
 		{
 			const u8 op = cmd[i++];
 			// Set Unit 0x20+u, unit 15 the controller (CS/80 2-12).
+			// "An illegal unit number (one that does not reside on the
+			// addressed device) produces a Module Addressing status
+			// error", and so does a volume the unit does not have (2-13).
+			// Either is a reject error -- an error in the command message
+			// (2-39) -- so nothing after it runs. It used to be flagged and
+			// then carried out against unit 0's medium: a Describe of unit
+			// 1 described the system disc, and a write to unit 1 would
+			// have landed on it, reported only afterwards.
 			if (op >= 0x20 && op <= 0x2f)
 			{
 				m_unit = op & 15;
 				if (m_unit != 0 && m_unit != 15)
+				{
 					set_flag(6);        // module addressing
+					return;
+				}
 				continue;
 			}
-			if (op >= 0x40 && op <= 0x47) { m_volume = op & 7; continue; }
+			if (op >= 0x40 && op <= 0x47)
+			{
+				m_volume = op & 7;
+				if (m_volume != 0)
+				{
+					set_flag(6);        // module addressing: volume 0 only
+					return;
+				}
+				continue;
+			}
 			if (op >= 0x48 && op <= 0x4f) { continue; }  // return addressing mode
 			switch (op)
 			{
@@ -136,7 +163,7 @@ struct cs80_device
 					m_length = (m_length << 8) | cmd[i++];
 				break;
 			case 0x00: locate_read(out); break;
-			case 0x02: m_writing = true; m_write_addr = m_address; break;
+			case 0x02: locate_write(); break;
 			// Cold load read: the boot path's own Locate and Read. Only
 			// this side decodes it -- LCS80 boots the internal disc a
 			// different way and never sends one.
@@ -174,26 +201,59 @@ struct cs80_device
 		}
 	}
 
-	// A write's data arrived.
+	// A write's data arrived -- all of it, or the next part of it. "The
+	// amount of data bytes defined by the power-on or last set length
+	// value are accepted and written to the device" (CS/80 2-10, Locate and
+	// Write): the execution message is as long as the Set Length said,
+	// however the host chooses to feed it to the card, and HP-UX feeds it
+	// a buffer at a time. A write of N file system blocks is ONE Locate
+	// and Write with Set Length N KB, followed by N DMA legs of 1024
+	// bytes from N different pages.
+	//
+	// This used to close the write on its first leg: the first kilobyte
+	// went to the medium and the rest was thrown away under a QSTAT of 0.
+	// `cp /bin/ls /x1; sync; cmp /bin/ls /x1` in a root session answered
+	// "differ: char 2049", and on the image written back afterwards /x1,
+	// a 29 KB copy, was wrong in 26 of its 29 blocks -- only the first
+	// block of each extent had arrived. HP-UX's own i-node and free-map
+	// updates of 2 and 3 KB, which /etc/rc makes on every boot, lost all
+	// but their first kilobyte the same way.
 	void commit_write(const std::vector<u8> &data)
 	{
 		if (!m_writing)
 			return;
-		m_writing = false;
-		if (image.empty())
-		{
-			set_flag(35);               // not ready
-			return;
-		}
-		u64 off = u64(m_write_addr) * BLOCK;
-		for (size_t k = 0; k < data.size() && off + k < image.size(); k++)
+		const u64 off = u64(m_write_addr) * BLOCK + m_write_done;
+		const u64 n = std::min<u64>(data.size(), m_write_len - m_write_done);
+		for (u64 k = 0; k < n && off + k < image.size(); k++)
 			image[off + k] = data[k];
+		m_write_done += n;
 		// ...and a write leaves the target after what it wrote, for the
 		// same reason as locate_read.
-		m_address = m_write_addr + u32((data.size() + BLOCK - 1) / BLOCK);
+		m_address = m_write_addr + u32((m_write_done + BLOCK - 1) / BLOCK);
+		u64 stored = n;
+		if (m_write_done >= m_write_len)
+		{
+			// The length is satisfied: the message is over. "If a partial
+			// block is written, the remainder of the block is filled by
+			// duplicating the last data byte of the transfer" (2-10).
+			const u64 end = u64(m_write_addr) * BLOCK + m_write_done;
+			if (n && (m_write_done % BLOCK) != 0)
+				for (u64 k = end; k < end + BLOCK - m_write_done % BLOCK
+						&& k < image.size(); k++, stored++)
+					image[k] = data[n - 1];
+			m_writing = false;
+		}
+		if (on_write && stored && off < image.size())
+			on_write(off, std::min<u64>(stored, image.size() - off));
 	}
 
 	bool writing() const { return m_writing; }
+
+	// The transaction a write belonged to is over -- the card has started
+	// another -- so whatever arrives from now on is not its data. A write
+	// the host abandoned short of its length must not take the next
+	// transaction's bytes.
+	void end_write() { m_writing = false; }
 
 	// Read `count` bytes from block `block` through the device's own
 	// Locate-and-Read path -- the bootstrap loader reads the system disc
@@ -252,6 +312,43 @@ private:
 		m_address += (len + BLOCK - 1) / BLOCK;
 	}
 
+	// Locate and Write opens the execution message; commit_write takes its
+	// data as it comes. The target is checked here, before any data, as a
+	// read's is: a write that would run off the end of the volume is an
+	// address bounds error (status bit 7), its data is sunk -- "the device
+	// will sink data until the execution phase is complete" -- and QSTAT
+	// says so in this transaction's own status block. It used to be
+	// accepted and then clipped at the end of the image, a write that
+	// vanished with a QSTAT of 0. A length of all ones is "a transfer size
+	// equal to the selected volume" (2-16): from the target to the end.
+	void locate_write()
+	{
+		m_writing = false;
+		if (image.empty())
+		{
+			set_flag(35);               // not ready
+			return;
+		}
+		const u64 off = u64(m_address) * BLOCK;
+		if (off >= image.size())
+		{
+			set_flag(7);                // address bounds
+			return;
+		}
+		const u64 len = (m_length == 0xffffffffu) ? image.size() - off : m_length;
+		if (off + len > image.size())
+		{
+			set_flag(7);                // address bounds
+			return;
+		}
+		if (len == 0)
+			return;                     // a locate only: no data (2-16)
+		m_writing = true;
+		m_write_addr = m_address;
+		m_write_len = len;
+		m_write_done = 0;
+	}
+
 	// Describe (CS/80 2-25, table 2-4): 5 controller bytes, 19 unit,
 	// 13 volume. Addressed to the controller only the first field comes
 	// back; addressed to a unit, all three.
@@ -286,13 +383,22 @@ private:
 		// 91. So the geometry is real: a 7914's 7 heads of 64 sectors,
 		// and as many cylinders as the image needs (a 7914 has 1152;
 		// tools/mkhpuxdisc.py pads its volume to whole cylinders).
+		//
+		// Whole cylinders only, rounded DOWN: an image that ends part way
+		// through a cylinder describes the cylinders it has, and the
+		// partial one at the end goes unused. Rounding up described
+		// blocks the image does not hold -- HP-UX would allocate there,
+		// and every write to them was dropped. The pristine volume is
+		// exactly 1168 cylinders and describes as it always did. An
+		// image smaller than one cylinder describes its own block count.
 		const u32 sectors = u32(image.size() / BLOCK);
-		const u32 cyls = (sectors + HEADS * SECTORS - 1) / (HEADS * SECTORS);
+		const u32 cyls = sectors / (HEADS * SECTORS);
 		const u32 maxcyl = cyls ? cyls - 1 : 0;
 		b(u8(maxcyl >> 16)); b(u8(maxcyl >> 8)); b(u8(maxcyl));
 		b(HEADS - 1);
 		b(0); b(SECTORS - 1);
-		const u32 maxblk = sectors ? cyls * HEADS * SECTORS - 1 : 0;
+		const u32 maxblk = cyls ? cyls * HEADS * SECTORS - 1
+				: (sectors ? sectors - 1 : 0);
 		b(0); b(0); b(0);
 		b(u8(maxblk >> 16)); b(u8(maxblk >> 8)); b(u8(maxblk));
 		b(1);                               // current interleave
@@ -331,6 +437,8 @@ private:
 	u32 m_address = 0;
 	u32 m_length = 0xffffffffu;
 	u32 m_write_addr = 0;
+	u64 m_write_len = 0;            // bytes the open write will accept
+	u64 m_write_done = 0;           // ...and how many have arrived
 	bool m_writing = false;
 	bool m_poweron = true;
 	u8 m_flags[8] = {};
@@ -802,9 +910,13 @@ private:
 			dbg()("[%8.3fs hpib%u data block %u bytes%s]\n", stamp(), pa,
 					unsigned(raw.size()),
 					m_write_pending && disc.writing() ? " (written)" : "");
+		// One leg of the write's data. A long write comes as several legs
+		// under one WD order, and the drive knows from its Set Length when
+		// the last has arrived; until then the write stays pending.
 		if (m_write_pending && disc.writing())
 			disc.commit_write(raw);
-		m_write_pending = false;
+		if (!disc.writing())
+			m_write_pending = false;
 	}
 
 	// A CS/80 transaction (4-30/4-31): bytes 1-8 are the card's own
@@ -825,6 +937,9 @@ private:
 			m_tstat = 0x0e;
 			return;
 		}
+		// A new transaction: a write the last one left short of its
+		// length is over, and none of what follows is its data.
+		disc.end_write();
 		disc.command(cmd, m_out, &log);
 		if (log && !m_out.empty())
 		{

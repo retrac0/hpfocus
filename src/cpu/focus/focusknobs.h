@@ -420,8 +420,11 @@ inline constexpr spec CATALOGUE[] = {
   "the 520's clock is volatile, so what BASIC's SET TIMEDATE writes dies "
   "with the run." },
 { "FOCUS_HDNOSAVE", "", group::machine, true,
-  "Do not write the fixed disc back to its file at exit. A run that must "
-  "not change what the next run starts from." },
+  "Do not write any disc back to its file: neither the CS/80 drives' "
+  "writes, which otherwise go through to the image as HP-UX makes them, "
+  "nor the 520's fixed disc at exit. The file is not claimed either, so "
+  "a run that has it open does not stop this one. A run that must not "
+  "change what the next run starts from." },
 { "FOCUS_NVLOG", "", group::machine, false,
   "Report every battery load, save and battery-fail decision, with the "
   "file's header fields." },
