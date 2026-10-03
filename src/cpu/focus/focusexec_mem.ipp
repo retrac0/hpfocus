@@ -141,8 +141,8 @@ private:
 			while (count > d * x)
 			{
 				m_mem.write8(tba, m_mem.read8(sba));
-				tba = u32(s32(tba) + d);
-				sba = u32(s32(sba) + d);
+				tba += u32(d);
+				sba += u32(d);
 				x += d;
 			}
 			r.x = u32(x);
@@ -305,13 +305,13 @@ private:
 			// Byte FIRST of a string sits FIRST+3 past the pointer: one
 			// word of current length, and FIRST counts from one.
 			u32 sptr;
-			if (!string_offset(d.ptr, d.first + 3, false, sptr, t))
+			if (!string_offset(d.ptr, wadd(d.first, 3), false, sptr, t))
 				return t;
 
 			// The temp starts where the descriptor did, and carries four
 			// words of new descriptor plus a size word above its data.
 			const u32 tempadr = r.s - 15;
-			const s32 nwords = ((d.len + 3) / 4) + 1;
+			const s32 nwords = s32((s64(d.len) + 3) / 4) + 1;
 			const u32 news = tempadr + u32(nwords) * 4 + 19;
 			if (stack_would_overflow(news))
 				return stack_grow_trap();
@@ -412,16 +412,16 @@ private:
 			s32 tcurlen = g.curlen;
 			if (g.len >= 0)
 			{
-				const s32 reach = g.first + g.len - 1;
+				const s32 reach = wadd(wadd(g.first, g.len), -1);
 				if (reach < tcurlen) tcurlen = reach;
 			}
 
 			u32 msrc, mdst;
-			if (!string_offset(s.ptr, s.first + 3, false, msrc, t)) return t;
-			if (!string_offset(g.ptr, tcurlen + 4, true, mdst, t))  return t;
+			if (!string_offset(s.ptr, wadd(s.first, 3), false, msrc, t)) return t;
+			if (!string_offset(g.ptr, wadd(tcurlen, 4), true, mdst, t))  return t;
 
-			const s32 tmaxlen = tcurlen + s.len;
-			s32 nwords = ((tmaxlen + 3) / 4) + 1;
+			const s32 tmaxlen = wadd(tcurlen, s.len);
+			s32 nwords = s32((s64(tmaxlen) + 3) / 4) + 1;
 			const u32 news = g.stringadr + u32(nwords) * 4 + 19;
 			if (news < r.s)
 			{
@@ -506,13 +506,13 @@ private:
 			s32 mvlen, tcurlen;
 			if (g.len < 0)
 			{
-				tcurlen = g.first + s.len - 1;
+				tcurlen = wadd(wadd(g.first, s.len), -1);
 				if (tcurlen > g.maxlen) return string_trap(9, true);
 				mvlen = s.len;
 			}
 			else
 			{
-				const s32 reach = g.first + g.len - 1;
+				const s32 reach = wadd(wadd(g.first, g.len), -1);
 				tcurlen = (g.curlen > reach) ? g.curlen : reach;
 				mvlen = (s.len < g.len) ? s.len : g.len;
 			}
@@ -524,8 +524,8 @@ private:
 			r.put(sf::CC, backward ? CCL : CCG);
 
 			u32 msrc, mdst;
-			const s32 sadj = backward ? s.first + mvlen + 2 : s.first + 3;
-			const s32 tadj = backward ? g.first + mvlen + 2 : g.first + 3;
+			const s32 sadj = backward ? wadd(wadd(s.first, mvlen), 2) : wadd(s.first, 3);
+			const s32 tadj = backward ? wadd(wadd(g.first, mvlen), 2) : wadd(g.first, 3);
 			if (!string_offset(s.ptr, sadj, false, msrc, t)) return t;
 			if (!string_offset(g.ptr, tadj, true, mdst, t))  return t;
 
@@ -536,7 +536,7 @@ private:
 			s32 filllen = 0;
 			if (fill && g.len > mvlen)
 			{
-				if (!string_offset(g.ptr, g.first + mvlen + 3, true,
+				if (!string_offset(g.ptr, wadd(wadd(g.first, mvlen), 3), true,
 						filltarget, t))
 					return t;
 				filllen = g.len - mvlen;
@@ -1148,7 +1148,7 @@ private:
 				const u32 ptr = m_mem.read32(pa);
 				u32 target;
 				if (base == BASE_P_PLUS || base == BASE_P_MINUS)
-					target = u32(s32(pa) + s32(ptr));  // self-relative
+					target = pa + ptr;                 // self-relative
 				else if (ers32::get(ptr, 0, 1))
 				{
 					exec_trap t;

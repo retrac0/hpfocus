@@ -1225,7 +1225,7 @@ private:
 			if (ers32::get(ptr, 0, 1) == 0)
 			{
 				if (!b3) return exec_trap::none;
-				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(r.x);
+				const s64 noff = s64(ers32::get(ptr, 13, 19)) + s32(r.x);
 				if (noff < 0 || noff >= (1 << 19))
 					return exec_trap::pointer_conversion;
 				set_stk(0, ers32::set(ptr, 13, 19, u32(noff)));
@@ -1278,16 +1278,16 @@ private:
 				cc = CCL;
 			else if (ers32::get(ptr, 0, 2) == 2)
 			{
-				s32 off = s32(ers32::get(ptr, 2, 30));
+				s64 off = s64(ers32::get(ptr, 2, 30));
 				if (b3) off += s32(r.x);
-				if (off < 0 || u32(off) > r.dl - r.db)
+				if (off < 0 || off > s64(r.dl - r.db))
 					cc = CCL;
 			}
 			else if (ers32::get(ptr, 0, 2) == 3)
 			{
-				s32 off = s32(ers32::get(ptr, 2, 30));
+				s64 off = s64(ers32::get(ptr, 2, 30));
 				if (b3) off += s32(r.x);
-				if (off < 0 || u32(off) > soff)
+				if (off < 0 || off > s64(soff))
 					cc = CCL;
 			}
 			else if (ers32::get(ptr, 0, 1) == 0)
@@ -1315,7 +1315,7 @@ private:
 			r.x = delta;
 			if (b3 && ers32::get(ptr, 0, 1) == 0)
 			{
-				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(delta);
+				const s64 noff = s64(ers32::get(ptr, 13, 19)) + s32(delta);
 				if (noff < 0 || noff >= (1 << 19))
 					return exec_trap::pointer_conversion;
 				r.s -= 4;

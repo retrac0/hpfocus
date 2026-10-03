@@ -4931,6 +4931,74 @@ static void test_string_segment_bounds()
 	}
 }
 
+
+// Operands at the ends of the 32-bit range, in the instructions that add
+// to them in the host's signed `int`: descriptors, pointer offsets and
+// absolute addresses are whatever a program stacked, and a signed overflow
+// is undefined in C++. Each of these is a report under
+// -fsanitize=undefined before the arithmetic was widened or made unsigned;
+// the checks pin the answers the 32-bit machine gives.
+static void test_host_arithmetic_extremes()
+{
+	std::printf("operands at the ends of the 32-bit range\n");
+	// SVAL: FIRST + LEN - 1 beyond anything a signed word holds is still
+	// "the substring would extend beyond the maximum length", error 4.
+	{
+		harness h;
+		u32 param = 0;
+		h.cpu.on_trap = [&](trap_cause c, u32 p) {
+			if (c == trap_cause::string_trap) param = p; };
+		h.mem.write32(h.cpu.r.pb + 0x800, 10);
+		h.cpu.push(20); h.cpu.push(0x800);
+		h.cpu.push(0x7ffffffeu); h.cpu.push(0x40080010u);
+		h.one(f2(026, 0x10));
+		CHECK_EQ(ers32::get(param, 12, 4), 4);
+		// FIRST one past a current length of 2^31-1 is "adjacent", not
+		// error 7: MAXLEN, FIRST and the length all at the top.
+		param = 0;
+		h.cpu.r.s = 0x4003;
+		h.mem.write32(h.cpu.r.pb + 0x800, 0x7fffffffu);
+		h.cpu.push(0x7fffffffu); h.cpu.push(0x800);
+		h.cpu.push(0x7fffffffu); h.cpu.push(0);
+		CHECK(h.one(f2(026, 0x10)) == exec_trap::none);
+		CHECK_EQ(param, 0);
+	}
+	// PMVA walking an absolute address across 0x7fffffff.
+	{
+		harness h;
+		h.cpu.r.put(sf::M, 1);
+		h.mem.write32(0x8000, 0x11223344u);
+		h.cpu.push(0x8000); h.cpu.push(0x7ffffffeu); h.cpu.push(4);
+		CHECK(h.one(u16((050 << 6) | 3)) == exec_trap::none);
+		CHECK_EQ(h.mem.read8(0x7ffffffeu), 0x11);
+		CHECK_EQ(h.mem.read8(0x80000001u), 0x44);
+	}
+	// VPTR,B: an index that takes a 30-bit offset past 2^31 is out of
+	// bounds (CCL), on a global and on a stack pointer.
+	{
+		harness h;
+		h.cpu.r.x = 0x7fffffffu;
+		h.cpu.push(0); h.cpu.push(0); h.cpu.push(0xbfffffffu);
+		CHECK(h.one(f4(071, true)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.condition_code(), CCL);
+		h.cpu.push(0xffffffffu);
+		CHECK(h.one(f4(071, true)) == exec_trap::none);
+		CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	}
+	// CPTR,B and CPEP,B: a delta that takes the 19-bit offset of an
+	// external pointer past 2^31 is a Pointer Conversion fault.
+	{
+		harness h;
+		h.cpu.push(ers32::set(ers32::set(0, 2, 11, 5), 13, 19, 0x7ffff));
+		h.cpu.push(0x7fffffffu);
+		CHECK(h.one(f4(070, true)) == exec_trap::pointer_conversion);
+		h.cpu.r.s = 0x4003;
+		h.cpu.r.x = 0x7fffffffu;
+		h.cpu.push(ers32::set(ers32::set(0, 2, 11, 5), 13, 19, 0x7ffff));
+		CHECK(h.one(f4(067, true)) == exec_trap::pointer_conversion);
+	}
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -4995,6 +5063,7 @@ int main()
 	test_overflow_loaded_from_marker();
 	test_unprivileged_exit_limits();
 	test_string_segment_bounds();
+	test_host_arithmetic_extremes();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

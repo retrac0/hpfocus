@@ -67,6 +67,11 @@ private:
 		return ers32::set(u32(3) << 30, 2, 30, addr - r.sb);
 	}
 
+	// Descriptor arithmetic wraps as the machine's 32-bit adder does; a
+	// signed overflow in the host's `int` is undefined, and descriptors
+	// are whatever the program stacked.
+	static s32 wadd(s32 a, s32 b) { return s32(u32(a) + u32(b)); }
+
 	// Adding a byte offset to a string pointer must not disturb the two
 	// bits that say which kind of pointer it is (section 5.2.2, error 8).
 	// The stricter rule the ERS gives for external data segment pointers
@@ -76,7 +81,7 @@ private:
 	bool string_offset(u32 ptr, s32 delta, bool target, u32 &out,
 			exec_trap &t)
 	{
-		out = u32(s32(ptr) + delta);
+		out = ptr + u32(delta);
 		if (ers32::get(out, 0, 2) != ers32::get(ptr, 0, 2))
 		{
 			t = string_trap(8, target);
@@ -113,10 +118,10 @@ private:
 		if (d.maxlen < 0)                                          err = 1;
 		else if (d.len < 0 && !neg_len)                            err = 2;
 		else if (d.first <= 0)                                     err = 3;
-		else if (d.len >= 0 && d.first + d.len - 1 > d.maxlen)     err = 4;
+		else if (d.len >= 0 && s64(d.first) + d.len - 1 > d.maxlen) err = 4;
 		else if (d.curlen < 0)                                     err = 5;
 		else if (d.curlen > d.maxlen)                              err = 6;
-		else if (d.first > d.curlen + 1)                           err = 7;
+		else if (d.first > s64(d.curlen) + 1)                      err = 7;
 		if (err) { out = string_trap(err, target); return false; }
 
 		if (compute_len && (d.len < 0 || d.len > d.curlen - d.first + 1))
@@ -145,7 +150,7 @@ private:
 
 	exec_trap cursor_resolve(byte_cursor &c)
 	{
-		const ea_result e = m_au.resolve_data_pointer(u32(s32(c.ptr) + c.disp),
+		const ea_result e = m_au.resolve_data_pointer(c.ptr + u32(c.disp),
 				false, c.modify);
 		m_addr_trap = e.t;
 		if (!e.ok())
@@ -182,7 +187,7 @@ private:
 		if (c.left > 1)
 		{
 			c.left--;
-			c.phys = u32(s32(c.phys) + c.dir);
+			c.phys += u32(c.dir);
 			return exec_trap::none;
 		}
 		// The run is used up. For a code operand the next byte is past
