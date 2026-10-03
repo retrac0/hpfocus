@@ -84,8 +84,10 @@
 # clock from the host at every power-up (FOCUS_RTCTIME=now, kept as GMT:
 # FOCUS_RTCUTC=1, because HP-UX keeps GMT in the chip and converts with
 # its TZ, PST8PDT on this disc); set FOCUS_RTCTIME=none for the unset
-# clock, or an ISO date to pin one. A build without the clock lane's RTC
-# fix ignores the seed and HP-UX dates everything February 2036.
+# clock, or an ISO date to pin one. TODO(clock lane): a build without the
+# clock lane's RTC fix ignores the seed and HP-UX dates everything
+# February 2036; once the driver defaults FOCUS_RTCTIME to now (its
+# cross-lane request B), the two exports below become redundant.
 #
 # Typed input and listening: FOCUS_TAP names the terminals a run listens
 # to ('console', '<sc>:<port>'), FOCUS_TYPE='@<term>=...' types at them,
@@ -373,7 +375,9 @@ export FOCUS_RTCTIME="${FOCUS_RTCTIME-now}"
 user_set() { local a; for a in ${ARGS[@]+"${ARGS[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
 
 # Feature check: the console card's rs232 port came with the terminals
-# lane's change. Ask the binary rather than guess.
+# lane's change. Ask the binary rather than guess. TODO(terminals lane):
+# --ports pty and --console pty also rely on that build printing each
+# pty's name ("<slot>: pseudo terminal /dev/pts/N") on stdout.
 console_has_rs232() {
 	"$FOCUS_BIN" hp9040 -listslots 2>/dev/null | grep -q 'asi:rs232'
 }
