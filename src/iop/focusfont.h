@@ -1,5 +1,5 @@
 // license:BSD-3-Clause
-// copyright-holders:
+// copyright-holders:Miodrag Milanovic
 /***************************************************************************
 
     An 8x16 character generator for the Series 500 display.
