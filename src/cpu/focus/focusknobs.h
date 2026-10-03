@@ -580,6 +580,12 @@ inline constexpr spec CATALOGUE[] = {
   "multiplexer. What they print goes to stdout and FOCUS_TRIP watches it. "
   "A machine whose console is a serial terminal listens to that one "
   "anyway; a 520 talks to its screen, which FOCUS_DIMDUMP reads." },
+{ "FOCUS_TAPRAW", "<0|1>", group::watch, false,
+  "How the tap writes to stdout. On a terminal it writes lines -- CR "
+  "dropped, LF a newline, and each line labelled with its terminal when "
+  "more than one is listened to; into a file or a pipe it writes the raw "
+  "byte stream, anything unprintable as '.', which is what the scripts "
+  "parse. 1 asks for the raw stream anyway, 0 for lines anyway." },
 { "FOCUS_TYPE", "[@<term>=]<text>[;...]", group::input, true,
   "Keystrokes to feed at the FOCUS_TYPEAT moments, with \\n for EXECUTE, "
   "\\r for STORE and \\xNN to press KEYCODE NN -- the only way to reach a "

@@ -44,6 +44,11 @@
 #include "iop/focushpib.h"
 #include "iop/focusmux.h"
 #include "bus/rs232/rs232.h"
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include "imagedev/snapquik.h"
 #include "machine/keyboard.h"
 #include "machine/terminal.h"
@@ -954,6 +959,9 @@ struct host_terminal
 	// their output would corrupt the match, and a port nobody asked to
 	// hear is not what a trip text is being waited for on.
 	bool watch = false;
+	// What it has printed since its last line went to stdout, when the
+	// tap is writing lines (see select_taps).
+	std::string line;
 };
 
 class hp9000_5xx_state : public driver_device, public focus::iop_core::host
@@ -1137,6 +1145,17 @@ private:
 	int find_terminal(const std::string &name) const;
 	void terminal_output(unsigned id, u8 c);
 	void select_taps();
+	// The stdout tap as lines: one byte in, a line out when it is whole,
+	// and the partial lines a terminal leaves standing -- a prompt --
+	// written out once it has gone quiet.
+	void tap_char(unsigned id, u8 c);
+	void tap_emit(unsigned id, bool newline);
+	void tap_break();
+	TIMER_CALLBACK_MEMBER(tap_flush);
+	bool m_tap_lines = false;     // lines, rather than the raw byte stream
+	bool m_tap_prefix = false;    // more than one terminal is listened to
+	int m_tap_open = -1;          // whose partial line stdout is part-way through
+	emu_timer *m_tap_timer = nullptr;
 	// Type a byte at a terminal, or say once that the name went nowhere.
 	void type_at(int id, u8 c, bool raw);
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
@@ -2525,11 +2544,101 @@ void hp9000_5xx_state::terminal_output(unsigned id, u8 c)
 	// console prints; there is only ever one of them.
 	if (m_terminal && int(id) == m_console_term)
 		m_terminal->write(c);
-	if (t.echo)
+	if (!t.echo)
+		return;
+	if (m_tap_lines)
 	{
-		std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
-		std::fflush(stdout);
+		tap_char(id, c);
+		return;
 	}
+	std::printf("%c", (c >= 32 && c < 127) ? char(c) : '.');
+	std::fflush(stdout);
+}
+
+
+// The tap as a reader wants it: CR dropped and LF a real newline, and --
+// when more than one terminal is being listened to -- every line whole and
+// labelled with the terminal it came from:
+//
+//   console| HP-UX 5.30 (unknown)
+//   2:0    | login: root
+//
+// rather than the raw stream, in which six ports logging in at once come
+// out as 'lHoPg-iUnX:' and a whole console session is one line of '.'s.
+// A line is written when its LF arrives; one that stops short of it -- a
+// prompt, or what is being typed after one -- is written once its terminal
+// has been quiet for a tenth of an emulated second, and continued on the
+// same output line if nothing else has been written in between.
+void hp9000_5xx_state::tap_char(unsigned id, u8 c)
+{
+	host_terminal &t = m_terms[id];
+	switch (c)
+	{
+	case '\n':
+		tap_emit(id, true);
+		return;
+	case '\r':
+	case 0x07:          // BEL
+	case 0x00:          // NUL, the padding some terminals are sent
+		return;
+	case 0x08:          // BS takes back what has not been written yet
+		if (!t.line.empty())
+		{
+			t.line.pop_back();
+			return;
+		}
+		t.line.push_back('\b');
+		break;
+	case '\t':
+		t.line.push_back('\t');
+		break;
+	default:
+		t.line.push_back((c >= 32 && c < 127) ? char(c) : '.');
+		break;
+	}
+	if (!m_tap_prefix || t.line.size() >= 160)
+		tap_emit(id, false);
+	else if (m_tap_timer)
+		m_tap_timer->adjust(attotime::from_msec(100));
+}
+
+
+void hp9000_5xx_state::tap_emit(unsigned id, bool newline)
+{
+	host_terminal &t = m_terms[id];
+	if (m_tap_open >= 0 && m_tap_open != int(id))
+	{
+		std::fputc('\n', stdout);
+		m_tap_open = -1;
+	}
+	if (m_tap_open != int(id) && m_tap_prefix)
+		std::printf("%-7s| ", t.name.c_str());
+	std::fputs(t.line.c_str(), stdout);
+	t.line.clear();
+	if (newline)
+		std::fputc('\n', stdout);
+	m_tap_open = newline ? -1 : int(id);
+	std::fflush(stdout);
+}
+
+
+// Something else is about to write to stdout: end the partial line it
+// would otherwise land in the middle of.
+void hp9000_5xx_state::tap_break()
+{
+	if (m_tap_open < 0)
+		return;
+	std::fputc('\n', stdout);
+	std::fflush(stdout);
+	m_tap_open = -1;
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::tap_flush)
+{
+	for (unsigned id = 0; id < m_terms.size(); id++)
+		if (!m_terms[id].line.empty())
+			tap_emit(id, false);
 }
 
 
@@ -2597,6 +2706,32 @@ void hp9000_5xx_state::select_taps()
 	// out of it.
 	for (host_terminal &t : m_terms)
 		t.watch = t.echo || t.name.find(':') == std::string::npos;
+
+	// How the tap writes: lines (tap_char) when a person is reading it --
+	// stdout is a terminal -- and the raw byte stream, every byte that is
+	// not printable ASCII as '.', when it is going to a file or a pipe,
+	// because that is the stream every script and test of this tree
+	// parses. FOCUS_TAPRAW=1 asks for the raw stream on a terminal and
+	// FOCUS_TAPRAW=0 for lines in a file.
+	if (const char *v = knob::text("FOCUS_TAPRAW").get())
+		m_tap_lines = std::strcmp(v, "0") == 0;
+	else
+#if defined(_WIN32)
+		m_tap_lines = _isatty(_fileno(stdout)) != 0;
+#else
+		m_tap_lines = isatty(fileno(stdout)) != 0;
+#endif
+	unsigned listened = 0;
+	for (const host_terminal &t : m_terms)
+		listened += t.echo ? 1 : 0;
+	m_tap_prefix = listened > 1;
+	if (m_tap_lines && m_tap_prefix)
+		m_tap_timer = timer_alloc(FUNC(hp9000_5xx_state::tap_flush), this);
+	// A prompt left standing at the end of the run is still a line; the
+	// exit's own messages start on one of their own.
+	if (m_tap_lines)
+		machine().add_notifier(MACHINE_NOTIFY_EXIT, machine_notify_delegate(
+				&hp9000_5xx_state::tap_break, this), true);
 }
 
 
