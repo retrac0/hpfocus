@@ -570,3 +570,51 @@ tools/ers.py --insn BCC        # any one instruction
 
 `--cites` exits non-zero when a citation names a sheet that does not
 describe it, so it can be run as a check. It reports zero today.
+
+---
+
+## 7. The harnesses themselves, for the first alpha
+
+The record above quotes "the same 15 recorded failures" more than once.
+They were never the emulator's: every one was a test that had fallen
+behind a correction, and `make test` stopped at the first of them, so for
+six weeks ioptest, muxtest and the disassembler difftest did not run at
+all. As of the alpha:
+
+| harness | before | after | what was wrong |
+|---|---|---|---|
+| `exectest` | 2138 checks, 16 failed | 2150, 0 | 8: `test_up_down` gave a tagged pointer to `DOWN,B`, which takes an absolute address (the plain form takes the pointer; HP-UX 5.01's 876 plain sites are fed by LRA/LRAS/CPTR, none of its 288 `,B` sites are). 8: the ERS factorial's code segment had no STT length word at `PL`, which PCL/PCLS check since b8f48e9 (`If Offset>(PL)(13:19) then STT Violation Trap`). |
+| `ioptest` | 342, 3 failed | 350, 0 | RDCS was read count-low; the I/O ERS puts the count in ERS bits 0-15, the high half, two less than the transfers remaining (sheet 5.2), which is what the IOP has done since 23d6c00. |
+| `muxtest` | 97, 0 | 97, 0 | -- |
+
+`make test` now runs check_knobs and every harness whatever an earlier one
+reports, and ends with one line: `make test: every harness passed (...)`,
+or `make test: FAILED: <names>` and exit 1.
+
+`golden.sh` decodes all five boot floppies from their TD0s (it used to
+read `software/basic/img/`, which is gitignored and made by nothing, and
+on a fresh clone recorded bootimage.py's traceback as two baselines). A
+`check` with no baseline to compare -- the default `/tmp/focus-golden` does
+not survive a reboot -- says `NOTHING COMPARED` and exits 2 instead of
+`PASS`. Exit codes: 0 identical, 1 differs, 2 could not be run.
+
+`basictest.sh` scores its two known-wrong cases, `concat` (halts, TRAP 1)
+and `real-add` (5.49999999907), as XFAIL, outside the exit status: 0 all
+as expected, 1 a case that should pass failed, 2 nothing scored.
+
+**Disc tools, checked against the media.** Read as fs(5) describes it --
+FA records 3 onward a free-block bitmap, MSB first, a set bit free, sized
+from `s_maxblk`, the largest block number -- every one of the 20 shipped
+floppies balances exactly: the blocks the boot area, the FA file and every
+i-node's extents occupy, plus the set bits, come to `s_maxblk + 1`, and no
+occupied block is marked free. So does the 7914 HP-UX volume once
+`s_maxblk` is its real 129,023 (records 3..128 are the map, record 129 the
+FA file's own extent map). `tools/mkhpuxdisc.py` now writes that value and
+runs the same check on every volume it assembles; `tools/sdfwrite.py`
+builds its fixed discs the same way.
+
+**Python.** The tools need Python 3.8 or later (`ers.py` uses an assignment
+expression); type hints that newer Pythons evaluate are kept as strings
+(`from __future__ import annotations`). That floor is a static check --
+every `tools/*.py` parses with `feature_version=(3, 8)` and none evaluates
+a 3.9+ annotation -- not a run on a 3.8 interpreter.
