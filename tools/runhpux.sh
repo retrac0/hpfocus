@@ -522,6 +522,15 @@ fi
 	echo
 } >&2
 
+# A window needs a display. Without one MAME says only "Could not
+# initialize SDL No available video device" and exits.
+if [ "$CONSOLE" = window ] && [ "$(uname -s)" = Linux ] \
+		&& [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+	echo "note: no DISPLAY or WAYLAND_DISPLAY is set, so MAME has nowhere to open its" >&2
+	echo "      window (an ssh session?). Without one, use --headless (the console on" >&2
+	echo "      this terminal's output) or --console tcp (tools/hpuxterm.py console)." >&2
+fi
+
 on_signal() {
 	SIGNALS=$((SIGNALS + 1))
 	case "$SIGNALS" in

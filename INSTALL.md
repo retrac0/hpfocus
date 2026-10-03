@@ -325,6 +325,10 @@ whether the boot was `--fresh`.
   MAME revision, or someone edited the two patched files. Run
   `git -C mame checkout -- scripts/src/cpu.lua src/mame/mame.lst` and
   `tools/setup.sh` again.
+- **`Could not initialize SDL No available video device`:** there is no
+  display for MAME's window, as in an ssh session. Run without one:
+  `tools/runhpux.sh --multiuser --console tcp` and, in another terminal,
+  `tools/hpuxterm.py console` (section 7).
 - **The window stays on a red MAME warning:** that is the 520 (BASIC, HP-UX
   5.01 in a window). Press any key (section 8). The 540 has none.
 - **`tools/hpuxterm.py: Permission denied`:** the file lost its executable
