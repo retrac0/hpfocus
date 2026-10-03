@@ -272,6 +272,85 @@ static void test_write_past_the_end()
 }
 
 
+// "An illegal unit number ... produces a Module Addressing status error"
+// (CS/80 2-12), and so does an illegal volume (2-13); a reject error stops
+// the message there. HP-UX's boot probe asks every unit for a Describe and
+// takes QSTAT 1 for "no such unit". The drive used to flag the error and
+// then run the rest of the message against unit 0's medium anyway.
+static void test_no_such_unit()
+{
+	std::printf("Set Unit / Set Volume to one that is not there\n");
+	hpib_card card;
+	card.disc.image.assign(16 * 1024, 0xee);
+	collect_poweron(card);
+
+	card.write_fr(8, WC);
+	leg_out(card, control_block(0x8c, 37, { 0x21, 0x40, 0x35 }));
+	card.write_fr(8, RD);
+	const std::vector<u8> d = leg_in(card, 37);
+	const std::vector<u8> st = status(card);
+	CHECK_EQ(d.size(), 0);              // no Describe of a unit not there
+	CHECK_EQ(qstat(st), 1);
+	CHECK(status_bit(st, 6));           // module addressing
+
+	// A write addressed to unit 1 does not reach unit 0's medium.
+	const std::vector<u8> w = write(card, 4, 1024,
+			{ std::vector<u8>(1024, 0x11) }, { 0x21, 0x40 });
+	CHECK_EQ(qstat(w), 1);
+	CHECK_EQ(card.disc.image[1024], 0xee);
+
+	// Nor one addressed to volume 1 of unit 0.
+	const std::vector<u8> v = write(card, 4, 1024,
+			{ std::vector<u8>(1024, 0x22) }, { 0x20, 0x41 });
+	CHECK_EQ(qstat(v), 1);
+	CHECK(status_bit(v, 6));
+	CHECK_EQ(card.disc.image[1024], 0xee);
+
+	// Unit 0, volume 0 and the controller are still there.
+	const std::vector<u8> ok = write(card, 4, 1024,
+			{ std::vector<u8>(1024, 0x33) });
+	CHECK_EQ(qstat(ok), 0);
+	CHECK_EQ(card.disc.image[1024], 0x33);
+	card.write_fr(8, WC);
+	leg_out(card, control_block(0x8c, 5, { 0x2f, 0x35 }));
+	card.write_fr(8, RD);
+	CHECK_EQ(leg_in(card, 37).size(), 5);
+	CHECK_EQ(qstat(status(card)), 0);
+}
+
+
+// Describe's volume field: 7 heads of 64 sectors, as many cylinders as
+// the image holds WHOLE, and a maximum block address inside the image.
+static void test_describe_size()
+{
+	std::printf("Describe stays inside the image\n");
+	for (u32 blocks : { 523264u, 448u * 10 + 100, 300u })
+	{
+		hpib_card card;
+		card.disc.image.assign(size_t(blocks) * 256, 0);
+		collect_poweron(card);
+		card.write_fr(8, WC);
+		leg_out(card, control_block(0x8c, 37, { 0x20, 0x40, 0x35 }));
+		card.write_fr(8, RD);
+		const std::vector<u8> d = leg_in(card, 37);
+		status(card);
+		CHECK_EQ(d.size(), 37);
+		if (d.size() != 37)
+			continue;
+		const u32 maxcyl = (u32(d[24]) << 16) | (u32(d[25]) << 8) | d[26];
+		const u32 maxblk = (u32(d[33]) << 16) | (u32(d[34]) << 8) | d[35];
+		CHECK_EQ(d[27], 6);                         // max head
+		CHECK_EQ((d[28] << 8) | d[29], 63);         // max sector
+		CHECK(maxblk < blocks);
+		if (blocks >= 448)
+		{
+			CHECK_EQ(maxcyl, blocks / 448 - 1);
+			CHECK_EQ(maxblk + 1, (maxcyl + 1) * 448);
+		}
+	}
+}
+
+
 int main()
 {
 	test_write_in_several_legs();
@@ -279,6 +358,8 @@ int main()
 	test_write_ends_with_its_transaction();
 	test_partial_block();
 	test_write_past_the_end();
+	test_no_such_unit();
+	test_describe_size();
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
 	return g_fail ? 1 : 0;
 }

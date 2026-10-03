@@ -115,14 +115,34 @@ struct cs80_device
 		{
 			const u8 op = cmd[i++];
 			// Set Unit 0x20+u, unit 15 the controller (CS/80 2-12).
+			// "An illegal unit number (one that does not reside on the
+			// addressed device) produces a Module Addressing status
+			// error", and so does a volume the unit does not have (2-13).
+			// Either is a reject error -- an error in the command message
+			// (2-39) -- so nothing after it runs. It used to be flagged and
+			// then carried out against unit 0's medium: a Describe of unit
+			// 1 described the system disc, and a write to unit 1 would
+			// have landed on it, reported only afterwards.
 			if (op >= 0x20 && op <= 0x2f)
 			{
 				m_unit = op & 15;
 				if (m_unit != 0 && m_unit != 15)
+				{
 					set_flag(6);        // module addressing
+					return;
+				}
 				continue;
 			}
-			if (op >= 0x40 && op <= 0x47) { m_volume = op & 7; continue; }
+			if (op >= 0x40 && op <= 0x47)
+			{
+				m_volume = op & 7;
+				if (m_volume != 0)
+				{
+					set_flag(6);        // module addressing: volume 0 only
+					return;
+				}
+				continue;
+			}
 			if (op >= 0x48 && op <= 0x4f) { continue; }  // return addressing mode
 			switch (op)
 			{
@@ -353,13 +373,22 @@ private:
 		// 91. So the geometry is real: a 7914's 7 heads of 64 sectors,
 		// and as many cylinders as the image needs (a 7914 has 1152;
 		// tools/mkhpuxdisc.py pads its volume to whole cylinders).
+		//
+		// Whole cylinders only, rounded DOWN: an image that ends part way
+		// through a cylinder describes the cylinders it has, and the
+		// partial one at the end goes unused. Rounding up described
+		// blocks the image does not hold -- HP-UX would allocate there,
+		// and every write to them was dropped. The pristine volume is
+		// exactly 1168 cylinders and describes as it always did. An
+		// image smaller than one cylinder describes its own block count.
 		const u32 sectors = u32(image.size() / BLOCK);
-		const u32 cyls = (sectors + HEADS * SECTORS - 1) / (HEADS * SECTORS);
+		const u32 cyls = sectors / (HEADS * SECTORS);
 		const u32 maxcyl = cyls ? cyls - 1 : 0;
 		b(u8(maxcyl >> 16)); b(u8(maxcyl >> 8)); b(u8(maxcyl));
 		b(HEADS - 1);
 		b(0); b(SECTORS - 1);
-		const u32 maxblk = sectors ? cyls * HEADS * SECTORS - 1 : 0;
+		const u32 maxblk = cyls ? cyls * HEADS * SECTORS - 1
+				: (sectors ? sectors - 1 : 0);
 		b(0); b(0); b(0);
 		b(u8(maxblk >> 16)); b(u8(maxblk >> 8)); b(u8(maxblk));
 		b(1);                               // current interleave
