@@ -115,7 +115,6 @@ private:
 		r.s = s;
 		r.q = s;
 		m_ics_flag = false;
-		m_in_dispatcher = false;
 		m_exit_from_ixit = true;
 		const exec_trap t = do_exit(0);
 		m_exit_from_ixit = false;
@@ -124,10 +123,23 @@ private:
 
 	// Unwind the dispatcher-entry frame at Q on the ICS: (Q-1) status,
 	// (Q-2) PB-relative P, (Q-3) X, with the global data segment pointer
-	// at (Q+1). Shared by DISP and IXIT cases 7 and 8.
+	// at (Q+1). Shared by DISP, IXIT cases 7 and 8 and PSEB's restart.
+	//
+	// Every one of them ends "DISP FLAG := 1" (DISP's pseudocode, sheet
+	// 98; IXIT and PSEB enter the dispatcher the same way): from here on
+	// the dispatcher is what runs. The flag used to be set only by IXIT's
+	// case 5, so a dispatcher entered by DISP -- every blocking DOWN
+	// enters it that way -- ran with it clear, and two things went wrong.
+	// An interrupt taken over it pushed an unflagged marker, so the
+	// service routine's IXIT returned to the dispatcher as to any
+	// interrupted routine even when the routine had asked for a dispatch
+	// (case 8 never happened); and the dispatcher's own IXIT to its
+	// chosen task was taken for the last interrupt frame on the ICS,
+	// which "restored" MASK from the stale word at QI+2 -- whatever the
+	// last interrupted task had -- instead of leaving the dispatcher's.
 	exec_trap launch_ics_frame()
 	{
-		m_in_dispatcher = true;
+		m_disp_flag = true;
 		set_qword(0, 0);
 		const exec_trap t = set_dbdl_from_pointer(qword(1));
 		if (t != exec_trap::none)
@@ -442,7 +454,7 @@ private:
 		r.sl = m_mem.read32(ded + 12);
 		r.sb = (qi & ~3u) - 256;            // QI - 64 words
 		m_ics_flag = true;
-		return launch_ics_frame();
+		return launch_ics_frame();          // DISP FLAG := 1
 	}
 
 	// IXIT (sheets 96-98, flowchart sheet 141): exit from trap handlers,
@@ -497,9 +509,20 @@ private:
 				}
 				// Pseudo-disabled: fall through as cases 3 and 6.
 			}
-			else if (m_mem.read32(qi - 3) == 0
+			else if (!m_ics_flag && m_mem.read32(qi - 3) == 0
 					&& m_mem.read32(qi - 3 - 16) == 0)
 			{
+				// Only OFF the ICS. On it, a flagged marker with (QI)
+				// clear and dispatching enabled is the commonest case 5
+				// of all: a service routine returning to a dispatcher it
+				// interrupted at its idle STOP. Once DISP set the
+				// dispatcher flag as it should, that return would come
+				// through here and dispatch through whatever TCB was
+				// current -- the idle one -- instead of resuming the
+				// dispatcher (exectest's interrupted-dispatcher case; a
+				// reviewer's first build without this test halted at
+				// 1.3 s). The handoff's marker is on the powerup
+				// module's own stack, never the ICS.
 				// The frame at QI is empty AND dispatching is not
 				// pseudo-disabled: there is no interrupted dispatcher to
 				// return to, only a dispatcher to enter.

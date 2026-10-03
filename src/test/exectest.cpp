@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <map>
 #include <vector>
 
@@ -2777,6 +2778,253 @@ static void test_xgds_absent()
 	h.cpu.on_trap = nullptr;
 }
 
+//**************************************************************************
+//  THE DISPATCHER, STOP, AND THE MACHINE INSTRUCTION TRAP
+//**************************************************************************
+//
+// A machine with a Code Segment Table, a handler segment, an Interrupt
+// Control Stack with a dispatcher frame at QI, one task with a TCB and a
+// stack segment, and one device on the DRT. Every case is a sequence HP-UX
+// 5.30 executes, reduced to the few instructions that matter, checked
+// against the Instruction Set ERS text it depends on.
+
+static const u16 D_NOP   = f3(0);
+static const u16 D_PSDB  = f4(015);
+static const u16 D_DISP  = f4(016);
+static const u16 D_PSEB  = f4(017);
+static const u16 D_IXIT  = f4(074);
+static const u16 D_CTCB  = f4(024);      // unimplemented: raises cause 020
+static const u16 D_STOPB = f4(077, true);
+static const u16 D_EXIT0 = f5(023, 0);
+
+static constexpr u32 ST_M  = 0x00020000u;    // bit 14
+static constexpr u32 ST_I  = 0x00040000u;    // bit 13
+static constexpr u32 ST_MI = 0x00200000u;    // bit 10
+static constexpr u32 ST_EM = 0x00400000u;    // bit 9
+
+struct dmachine
+{
+	static constexpr u32 CST = 0x200;
+	static constexpr u32 HB = 0x2000, HLEN = 0x400, HPL = HB + HLEN - 1 - 3;
+	static constexpr u32 QI = 0x6103, SLI = 0x6fff;
+	static constexpr u32 TCB = 0x7000;
+	static constexpr u32 DED = 16;                  // channel 1
+	static constexpr u32 DEV = 0x90;                // channel 1, PA 1
+	static constexpr u32 ISR = 0x3000;              // absolute, segment 0
+	static constexpr u32 STK = 0x3ff0;              // the task's stack segment
+	static constexpr u32 PROC = 0x1000;             // the task's code, segment 5
+
+	sparse_memory mem;
+	cpu_core cpu{mem};
+
+	// disp_csn: the segment the dispatcher frame names (HP-UX uses 0).
+	explicit dmachine(u32 disp_csn = 1)
+	{
+		cpu.r.mask = ers32::set(0, 3, 3, 1);
+		mem.write32(0, CST);
+		mem.write32(CST, 16 * 64);
+		seg(1, HB, HLEN - 1);
+		seg(5, PROC, 0xfff);
+
+		mem.write32(DED + 4, TCB);
+		mem.write32(DED + 8, QI);
+		mem.write32(DED + 12, SLI);
+
+		// The dispatcher's frame (ERS sheet 41).
+		mem.write32(QI - 3 - 12, 0);
+		mem.write32(QI - 3 - 8, disp_csn ? 0x40 : HB + 0x40);
+		mem.write32(QI - 3 - 4, ST_M | ST_I | disp_csn);
+		mem.write32(QI - 3, 0);
+		mem.write32(QI - 3 + 4, (2u << 30) | 0x8000);
+
+		// The task: stack segment 5, global segment 6.
+		mem.write32(TCB, 0);
+		mem.write32(TCB + 4, 0);
+		mem.write32(TCB + 8, (5u << 16) | 6);
+		const u32 dst = dst_walker::SYSTEM_DST_BASE;
+		mem.write32(dst + 16 * 5 + 4, 0x1fff);
+		mem.write32(dst + 16 * 5 + 8, STK);
+		mem.write32(dst + 16 * 6 + 4, 0xfff);
+		mem.write32(dst + 16 * 6 + 8, 0x8000);
+		mem.write32(STK, 0x10);                     // SB = STK + 0x10
+		mem.write32(STK + 4, 0xfff);                // SL = SB + 0xfff
+
+		// The device: a global pointer for its data, a local program
+		// pointer -- absolute, segment 0 -- for its service routine.
+		mem.write32(DEV, 0);
+		mem.write32(DEV + 4, (2u << 30) | 0x8000);
+		mem.write32(DEV + 8, ISR);
+
+		// Trap vectors: each cause lands on its own EXIT.
+		for (unsigned c = 1; c < 060; c++)
+			mem.write32(HPL - 4 * c, 0x100 + 8 * c);
+
+		task();
+		cpu.enable_traps(true);
+	}
+
+	void seg(u32 n, u32 base, u32 len_m1)
+	{
+		mem.write32(CST + 16 * n, 0x2);             // M: privileged
+		mem.write32(CST + 16 * n + 4, len_m1);
+		mem.write32(CST + 16 * n + 8, base);
+	}
+
+	void task()
+	{
+		cpu.r.pb = PROC; cpu.r.pl = PROC + 0xfff - 3; cpu.r.p = PROC;
+		cpu.r.sb = 0x4000; cpu.r.s = 0x4003; cpu.r.q = 0x4003;
+		cpu.r.sl = 0x4fff;
+		cpu.r.db = 0x8000; cpu.r.dl = 0x8fff;
+		cpu.r.status = ST_M | ST_I | ST_EM | 5;
+	}
+
+	void put(u32 addr, u16 insn)
+	{
+		const u32 cell = addr & ~3u;
+		u32 v = mem.read32(cell);
+		if (addr & 2) v = (v & 0xffff0000u) | insn;
+		else          v = (v & 0x0000ffffu) | (u32(insn) << 16);
+		mem.write32(cell, v);
+	}
+
+	void code(u32 addr, std::initializer_list<u16> insns)
+	{
+		for (u16 i : insns) { put(addr, i); addr += 2; }
+	}
+
+	u32 use_count(u32 n) { return ers32::get(mem.read32(CST + 16 * n), 1, 12); }
+
+	// Queue the device at level 2 and let the microcode handler take it.
+	bool interrupt()
+	{
+		mem.write32(DEV, mem.read32(DEV) & 0xffffu);
+		mem.write32(1024 + 8 * 2, DEV);
+		mem.write32(1024 + 8 * 2 + 4, DEV);
+		cpu.raise_message(18);
+		return cpu.service_interrupts();
+	}
+
+	u32 vector(unsigned cause) const { return HB + 0x100 + 8 * cause; }
+};
+
+// "If (QI-4) = 0 then: if (QI)(0:1) = 1 then: if DISP FLAG = 1 then (QI)
+// := 0, abort dispatcher & restart, else execute DISP instruction" (ERS
+// sheets 98-99). From a task, the deferred DISP is carried out.
+static void test_pseb_dispatches()
+{
+	std::printf("PSEB honours a deferred DISP\n");
+	dmachine m;
+	m.code(m.PROC, { D_PSDB, D_DISP, D_PSEB, D_NOP });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // PSDB
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: deferred
+	CHECK_EQ(m.cpu.r.p, m.PROC + 4);
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+
+	CHECK(m.cpu.step() == exec_trap::none);         // PSEB: now it happens
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 0);
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);               // in the dispatcher
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);            // (QI) := 0
+	// The task's marker returns past the PSEB, and S is saved at (SB-1).
+	CHECK_EQ(m.mem.read32(0x4013 - 3 - 8), 6);
+	CHECK_EQ(m.mem.read32(0x4000 - 4), 0x13);
+
+	// "If (QI-4) = 0 then System Error Trap": cause 014, parameter 0.
+	u32 param = 0xffffffffu;
+	m.cpu.on_trap = [&](trap_cause, u32 p) { param = p; };
+	m.code(m.HB + 0x40, { D_PSEB });
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.last_trap() == trap_cause::system_error);
+	CHECK_EQ(param, 0);
+	CHECK_EQ(m.cpu.r.p, m.vector(014));
+}
+
+// The same pair inside the dispatcher (DISP FLAG = 1) aborts it and starts
+// it over from its frame at QI: HP-UX's `DISP; PSEB` at TRAP HANDLERS
+// +0x1d6, when the task it picked has a segment swapped out.
+static void test_pseb_restarts_dispatcher()
+{
+	std::printf("PSEB in the dispatcher restarts it\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_PSDB, D_NOP, D_DISP, D_PSEB, D_NOP });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP from the task
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK(m.cpu.step() == exec_trap::none);         // PSDB
+	CHECK(m.cpu.step() == exec_trap::none);         // NOP
+	m.cpu.r.q += 8;                                 // wherever its Q went
+	m.cpu.r.s += 8;
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: on the ICS, deferred
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x46);
+	CHECK(m.cpu.step() == exec_trap::none);         // PSEB: abort and restart
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.cpu.r.s, m.QI + 12);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);
+	CHECK_EQ(m.mem.read32(m.QI - 3 - 16), 0);
+}
+
+// "DISP FLAG := 1" (sheet 98); the interrupt handler moves the flag into
+// the marker it pushes, and IXIT restarts the dispatcher when (QI)(0:1)
+// is set under such a marker (case 8).
+static void test_disp_sets_flag()
+{
+	std::printf("an interrupted dispatcher is restarted by IXIT (case 8)\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_DISP, D_IXIT });
+
+	CHECK(m.cpu.step() == exec_trap::none);         // DISP: enters
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);
+	CHECK(m.cpu.step() == exec_trap::none);         // the dispatcher runs
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+
+	CHECK(m.interrupt());
+	CHECK_EQ(m.cpu.r.p, m.ISR);
+	CHECK_EQ(m.mem.read32(m.cpu.r.q - 3) >> 31, 1); // marker flagged
+
+	CHECK(m.cpu.step() == exec_trap::none);         // the routine's DISP
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 1);
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x40);               // restarted, not resumed
+	CHECK_EQ(m.cpu.r.q, m.QI);
+	CHECK_EQ(m.mem.read32(m.QI - 3), 0);
+}
+
+// The same interruption with nothing requested is case 5: back to the
+// dispatcher where it was. (QI) is zero and the disable count is zero,
+// which is also how the boot handoff's IXIT finds them -- the two must
+// not be confused. And the dispatcher's own IXIT is case 1: the task's
+// registers come from its TCB, and MASK is left alone.
+static void test_interrupted_dispatcher_resumes()
+{
+	std::printf("an interrupted dispatcher with no request is resumed (case 5)\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	m.code(m.HB + 0x40, { D_NOP, D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK(m.interrupt());
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK_EQ(m.cpu.r.p, m.HB + 0x42);
+	CHECK(m.cpu.last_trap() != trap_cause::inconsistent_registers);
+
+	m.mem.write32(m.QI - 3 + 8, 0x12345678u);       // a stale (QI+2)
+	const u32 mask = m.cpu.r.mask;
+	m.code(m.HB + 0x42, { D_IXIT });
+	CHECK(m.cpu.step() == exec_trap::none);
+	CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+	CHECK_EQ(m.cpu.r.s, 0x4003);
+	CHECK_EQ(m.cpu.r.mask, mask);
+}
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -2813,6 +3061,10 @@ int main()
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
+	test_pseb_dispatches();
+	test_pseb_restarts_dispatcher();
+	test_disp_sets_flag();
+	test_interrupted_dispatcher_resumes();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

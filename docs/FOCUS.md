@@ -1547,27 +1547,55 @@ Privileged. *CC unaffected.*
 
 **`PSDB` / `PSEB`** — Pseudo Interrupt Disable / Enable — `F4:15` / `F4:17`
 Increment / decrement the dispatcher-disable count at `(QI−4)`. `PSEB` on
-a zero count raises Inconsistent Registers. While the count is nonzero,
-`DISP` defers (below) instead of dispatching. When `PSEB` takes the count
-to zero with a deferred `DISP` flagged at `(QI)(0:1)`, it carries it out
-(ERS sheet 99): the dispatcher itself is aborted and restarted, anything
-else executes `DISP`. HP-UX's dispatcher depends on the restart (`DISP;
-PSEB` when the task it picked has a segment swapped out). Privileged.
+a zero count raises System Error (cause 014, parameter 0, "too many PSEB
+instructions"). While the count is nonzero, `DISP` defers (below) instead
+of dispatching. When `PSEB` takes the count to zero with a deferred `DISP`
+flagged at `(QI)(0:1)`, it carries it out (ERS sheet 99) according to the
+**DISP FLAG**: set, the dispatcher itself is running, and it is aborted
+and restarted from its frame at QI (`(QI) := 0`; Q, SB, SL back to the
+ICS's); clear, `DISP` is executed — from a task that enters the
+dispatcher, on the ICS it merely leaves the request for `IXIT`. HP-UX
+depends on both: its dispatcher restarts itself with `DISP; PSEB` when the
+task it picked has a segment swapped out, and its wake-all routine (CORE
+SYSTEM file 0x1446c) is `PSDB … DISP … SMSG,B; PSEB; EXIT`, written to
+lose the processor at the `PSEB`. Privileged. *CCL*, or as set by `DISP`.
+
+**The DISP FLAG** is microcode state, not a register: "the dispatcher is
+what runs". Every entry to the dispatcher sets it (`DISP`, `IXIT` cases 7
+and 8, `PSEB`'s restart, and `IXIT` case 5's return to it); its `IXIT` to
+a task (case 1) clears it; an interrupt or message trap taken over the
+running dispatcher moves it into the top bit of the marker it pushes, and
+that marker's `IXIT` gives it back — restarting the dispatcher instead of
+resuming it (case 8) when the service routine asked for a dispatch.
 
 **`DISP`** — Dispatch — `F4:16`
 The only way into the dispatcher. If already on the ICS or
-pseudo-disabled, just set the deferred flag `(QI)(0:1)` and *CCG*/*CCL*;
-otherwise save the current process (marker; `S−SB` at `(SB−1)`), mount the
-ICS (`Q := QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the
-stack-base word from the global-segment pointer at `(Q+1)`, reload PB/PL
-from the CSN in `(Q−1)`, and enter the dispatcher with *CCE*. Privileged.
+pseudo-disabled, just set the deferred flag `(QI)(0:1)`; otherwise save
+the current process (marker; `S−SB` at `(SB−1)`), mount the ICS (`Q :=
+QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the stack-base
+word from the global-segment pointer at `(Q+1)`, reload PB/PL and STATUS
+from `(Q−1)`, and set the DISP FLAG. Privileged. The ERS gives the
+indicators as *CCE* (set before the marker is pushed) when the dispatcher
+is entered and *CCG* when the request is deferred; the emulator leaves CC
+alone on entry and sets *CCL* on deferral. Neither OS tests CC after a
+`DISP` (no conditional branch follows any of the 48 in HP-UX 5.30 or the
+57 in BASIC), so this is recorded rather than changed.
 
 **`IXIT`** — Interrupt Exit — `F4:74`
 Exit from trap handlers, interrupt service, and the dispatcher (all run on
 the ICS). Depending on `(Q)`, `(QI)` and the deferred-dispatch flag it:
 returns to the interrupted process (restoring DST and state from the TCB),
 returns to an interrupted handler or interrupted dispatcher, or (re)starts
-the dispatcher. Assumes the marker at Q with the global-segment pointer,
+the dispatcher. With the DISP FLAG set it is the dispatcher's exit to the
+task named by CTCBP (case 1), and MASK is left as the dispatcher has it;
+the other exits restore MASK from `(Q+2)`. A task's saved S may lie in the
+overflow area above its SL (an interrupt's marker on a nearly full stack):
+it is resumed, and Stack Overflow is reported before its next
+instruction; only S beyond the stack segment itself is Inconsistent
+Registers. Returning a task to a code segment that was swapped out while
+it waited raises Absent Code Segment in the task's own context, at its
+resume point (inferred from what HP-UX's handler accepts; the Appendix C
+flowchart is not available). Assumes the marker at Q with the global-segment pointer,
 previous mask, and device number at `(Q+1..Q+3)` (§7.3). Privileged. *CC
 unaffected.* Appendix C bug: on CPU ≤ 4.0, interrupts must be disabled
 around `IXIT`.

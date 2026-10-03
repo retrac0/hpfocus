@@ -1368,29 +1368,34 @@ private:
 			const u32 qi = m_mem.read32(ded_base() + 8);
 			const u32 a = qi - 3 - 16;
 			const u32 n = m_mem.read32(a);
+			// "If (QI-4) = 0 then System Error Trap" -- cause 014 with
+			// parameter 0, "Too many PSEB instructions executed" (ERS
+			// 5.2.2), not Inconsistent Registers, which is IXIT's and
+			// SETR's.
 			if (n == 0)
-				return take_trap(trap_cause::inconsistent_registers, 0);
+				return take_trap(trap_cause::system_error, 0);
 			m_mem.write32(a, n - 1);
 			// CCL says "no dispatch happened"; a deferred DISP that is
 			// carried out below reports through the dispatcher instead.
 			r.put(sf::CC, CCL);
 			if (n - 1 == 0 && ers32::get(m_mem.read32(qi - 3), 0, 1))
 			{
-				if (m_ics_flag)
+				// DISP FLAG is the test, exactly as the pseudocode has it:
+				// set, the dispatcher itself is running, and it is
+				// abandoned and started again from its frame at QI --
+				// wherever its own Q has got to, which is why Q, SB and
+				// SL are all put back to the ICS's. Clear, this is a
+				// task or a service routine, and DISP does what DISP
+				// does: enter the dispatcher from a task, or (on the ICS)
+				// leave the request in (QI) for the IXIT to honour.
+				if (m_disp_flag)
 				{
-					// The dispatcher's own frame is the bottom one on
-					// the ICS. A service routine nested above it, or one
-					// that interrupted a task, would only defer a DISP
-					// again, so its PSEB leaves the flag for IXIT.
-					if (m_in_dispatcher && r.q == qi)
-					{
-						r.sb = (qi & ~3u) - 256;
-						r.sl = m_mem.read32(ded_base() + 12);
-						return launch_ics_frame();   // clears (QI)
-					}
+					r.q = qi;
+					r.sb = (qi & ~3u) - 256;
+					r.sl = m_mem.read32(ded_base() + 12);
+					return launch_ics_frame();       // clears (QI)
 				}
-				else
-					return do_disp();
+				return do_disp();
 			}
 			return exec_trap::none;
 		}

@@ -71,6 +71,7 @@ enum class trap_cause : u8
 	reset                     = 010,
 	page_table_violation      = 011,
 	inconsistent_registers    = 012,
+	system_error              = 014,   // 0 = too many PSEBs, 1 = use count
 	pointer_conversion        = 016,
 	external_program_pointer  = 017,
 	unimplemented_instruction = 020,
@@ -772,13 +773,15 @@ private:
 	bool m_traps_enabled = false;
 	bool m_address_lockout = true;    // the default mode (ERS sheet 126)
 	u32 m_control_store_date = 0x19820319;   // CPU 4.0
-	bool m_disp_flag = false;         // the microcode dispatcher flag
+	// The microcode's DISP FLAG: the dispatcher is what is running. Set
+	// by every entry to it (DISP, IXIT cases 7 and 8, PSEB's restart --
+	// all through launch_ics_frame -- and IXIT case 5's return to it);
+	// cleared by its exit to a task (IXIT case 1) and handed to the
+	// marker of an interrupt that lands on top of it (enter_ics), whose
+	// IXIT gives it back. PSEB tests it to tell "abort the dispatcher and
+	// restart" from "execute DISP" (sheet 99).
+	bool m_disp_flag = false;
 	bool m_ics_flag = false;          // executing on the interrupt stack
-	// The dispatcher is on the ICS: launched from its frame at QI and not
-	// yet out through a task's TCB. With Q == QI it tells the dispatcher's
-	// own frame from a service routine nested above it, which is the
-	// "DISP FLAG" test PSEB makes (ERS sheet 99).
-	bool m_in_dispatcher = false;
 	// tcb_dispatch's EXIT into the task it has chosen is under way (see
 	// do_exit's absent-segment test).
 	bool m_exit_from_ixit = false;
