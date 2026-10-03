@@ -437,6 +437,47 @@ static void test_asi_read_status()
 }
 
 
+// One asynchronous "data available" event per record (27128A 4-6): the
+// card used to sense the same record again on every tick until the read
+// arrived, and the host heard about it twice.
+static void test_asi_one_event_per_record()
+{
+	std::printf("ASI: one data-available event per record\n");
+	asi_card asi;
+	auto rts = [&asi]() {
+		asi.write_fr(8, 0x88);
+		const u8 op = asi.dma_read();
+		while (!asi.data_end())
+			asi.dma_read();
+		asi.dma_complete(false);
+		return op;
+	};
+	// Enable the data-available event: write card configuration,
+	// subfunction 21, host mask 0x02.
+	asi.write_fr(8, 0xb8);
+	for (u8 b : { 0x00, 0x00, 0x05, 0x15, 0x00, 0x00, 0x02 })
+		asi.dma_write(b);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x78);
+	asi.dma_write(0x02);
+	asi.dma_write(0x00);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x49);                   // status: the request ends
+	while (!asi.data_end())
+		asi.dma_read();
+	asi.dma_complete(false);
+	CHECK_EQ(rts(), 0);                      // IDL
+
+	for (u8 c : { 'l', 's', '\r' })
+		asi.type(c);
+	asi.tick();
+	CHECK_EQ(rts(), 4);                      // AES, data available
+	for (int i = 0; i < 5; i++)
+		asi.tick();
+	CHECK_EQ(rts(), 0);                      // told once
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -1214,6 +1255,7 @@ int main()
 	test_asi_pause();
 	test_asi_order_exit();
 	test_asi_read_status();
+	test_asi_one_event_per_record();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();

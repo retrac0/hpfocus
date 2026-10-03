@@ -686,7 +686,8 @@ struct asi_card : public iop_interface
 			// clock running so nothing is stranded.
 			start_event_timer();
 		}
-		if (!m_rx.empty() && m_arq_enabled && !m_request && record_ready())
+		if (!m_rx.empty() && m_arq_enabled && !m_request && !m_rx_told
+				&& record_ready())
 		{
 			// "If no read request is pending, and the card has a record
 			// available for the host, and the host interrupt mask allows
@@ -707,7 +708,16 @@ struct asi_card : public iop_interface
 			// the line. The firmware notices the record whatever the
 			// host is in the middle of; the status post still waits its
 			// turn, and the next Read Transparent Status tells it.
-			raise_async(AEV_DATA, MASK_DATA, "record ready");
+			//
+			// Once per record: "an asynchronous event is sent to the
+			// host to start the read" (4-6), and only one event per port
+			// may stand on the firmware's RTS queue (27130A IMS ch.10).
+			// Sensing it again on every tick until the read's CLC arrived
+			// told the host about the same record twice; the second AES
+			// sent the driver round CLC, RTS, RD a second time for a
+			// record it had already taken.
+			if (raise_async(AEV_DATA, MASK_DATA, "record ready"))
+				m_rx_told = true;
 			post(STAT_AES);
 		}
 		// A paused card asks for its next order as soon as it has
@@ -1048,16 +1058,18 @@ private:
 	// announced at all; a code already waiting is not repeated, which is
 	// the same collapsing arm_event() does and for the same reason -- the
 	// firmware has one event of each kind to tell, not a backlog.
-	void raise_async(u8 code, u8 mask, const char *why)
+	// True when the event is (now) waiting to be told.
+	bool raise_async(u8 code, u8 mask, const char *why)
 	{
 		if (no_async || !(m_host_mask & mask))
-			return;
+			return false;
 		if (std::find(m_async.begin(), m_async.end(), code) != m_async.end())
-			return;
+			return true;
 		if (dbg())
 			dbg()("[%8.3fs asi%u async event %u sensed (%s)]\n",
 					stamp(), pa, code, why);
 		m_async.push_back(code);
+		return true;
 	}
 
 	// A Connect Logical Channel request block arrived (27128A 4-3).
@@ -1286,6 +1298,7 @@ private:
 	{
 		m_out.clear();
 		m_remaining = 0;
+		m_rx_told = false;          // the next record gets its own event
 		while (!m_rx.empty())
 		{
 			const u8 c = m_rx.front();
@@ -1339,6 +1352,7 @@ private:
 		m_out.clear();
 		m_report.clear();
 		m_async.clear();
+		m_rx_told = false;
 		m_status_posted = false;
 		m_order = 0xff;
 	}
@@ -1365,6 +1379,7 @@ private:
 	std::deque<u8> m_pending;   // posted when the command's transfer ends
 	unsigned m_event_timer = 0;
 	std::deque<u8> m_rx;        // characters typed at the terminal
+	bool m_rx_told = false;     // the record at its head has been announced
 	std::deque<u8> m_out;       // what the host reads next
 	// Read Transparent Status answers out of its OWN buffer, and has to.
 	// RTS is the card's out-of-band channel -- "what do you want next?"
