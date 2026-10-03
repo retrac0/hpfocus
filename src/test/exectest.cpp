@@ -3144,6 +3144,26 @@ static void test_mi_survives_interrupt()
 	CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
 }
 
+// A task interrupted within four words of SL has its marker in the stack
+// overflow area (sheet 41). Resuming it is not an error; the overflow, if
+// there still is one, is reported as Stack Overflow before its next
+// instruction.
+static void test_resume_above_sl()
+{
+	std::printf("a task whose saved S is above SL is resumed, not refused\n");
+	dmachine m;
+	m.code(m.PROC, { D_NOP, D_NOP });
+	m.code(m.ISR, { D_IXIT });
+	m.cpu.r.s = m.cpu.r.q = m.cpu.r.sl - 8;
+
+	CHECK(m.interrupt());
+	CHECK(m.mem.read32(0x4000 - 4) + 0x4000 > 0x4fff);  // saved S > SL
+	CHECK(m.cpu.step() == exec_trap::none);         // IXIT
+	CHECK(m.cpu.last_trap() != trap_cause::inconsistent_registers);
+	CHECK_EQ(m.cpu.r.p, m.PROC);
+	CHECK_EQ(m.cpu.r.s, 0x4fff - 8);
+}
+
 // "The interrupt handler decrements the use count for the current code
 // segment, and increments the use count for the new segment. For the
 // special case of code segment 0 the use count is neither incremented
@@ -3307,6 +3327,7 @@ int main()
 	test_mi_through_marker();
 	test_mi_single_step();
 	test_mi_survives_interrupt();
+	test_resume_above_sl();
 	test_use_counts_through_segment_zero();
 	test_reset_clears_flags();
 	test_stop_and_int_are_privileged();

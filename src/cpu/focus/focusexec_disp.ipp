@@ -102,7 +102,18 @@ private:
 		const u32 sb = loc + m_mem.read32(loc);
 		const u32 sl = sb + m_mem.read32(loc + 4);
 		const u32 s = sb + m_mem.read32(sb - 4);
-		if (sb < loc || sl > loc + len || s < sb || s > sl)
+		// S may stand above SL. "Each stack segment must also have a
+		// stack overflow area of at least 64 words" beyond SL "so that
+		// ... all pending traps and interrupts can be processed" (sheet
+		// 41), and Stack Overflow ranks below the I/O interrupts at the
+		// end of an instruction (sheet 45): a task whose last push crossed
+		// SL, or that was within four words of it, has its interrupt or
+		// DISP marker saved above SL. Resumed, it takes Stack Overflow
+		// before its next instruction (step()), whose handler grows the
+		// stack -- the recoverable report. Refusing it here made that
+		// Inconsistent Registers on the ICS, which HP-UX treats as a
+		// system error. The segment's own end is still a hard bound.
+		if (sb < loc || sl > loc + len || s < sb || s > loc + len)
 		{
 			static knob::channel dispdbg("FOCUS_DISPDBG");
 			if (dispdbg)
