@@ -252,11 +252,16 @@ public:
 		// does that) but is never delivered as a trap.
 		//
 		// That reading came from BASIC, whose task mask (0x08A00000)
-		// covers bit 10 anyway. HP-UX leaves it UNMASKED (0x08000000)
-		// and parks a task on the doorbell semaphore at absolute 920, so
-		// on that system the bit is set once and stands forever with
-		// nothing to consume it. FOCUS_MSG10TRAP lets the mask alone
-		// decide, which is what the machine documents.
+		// covers bit 10 anyway. HP-UX leaves it UNMASKED and parks a
+		// task on the doorbell semaphore at absolute 920; its dispatcher
+		// consumes the bit itself (SMPB 2 at TRAP HANDLERS +0x148) and
+		// every UP that readies a waiter rings it again, so an idle
+		// HP-UX shows MSG = 0. (It was once seen standing set for a
+		// whole boot; that was STOP,B sleeping through a bit already
+		// set, fixed since.) FOCUS_MSG10TRAP lets the mask alone decide,
+		// which is what the machine documents -- and HP-UX then halts
+		// before its banner with system error 054, the un-routable
+		// doorbell above.
 		static const knob::flag msg10_trap("FOCUS_MSG10TRAP");
 		const u32 sysmsg = r.msg & ~r.mask & 0xffff0000u
 				& (msg10_trap ? ~0u : ~ers32::mask(10, 1));

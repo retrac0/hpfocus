@@ -7,13 +7,15 @@
 -- the disc and the battery are written as a clean exit writes them.
 --
 -- Why this exists: a headless run (-video none) pumps no SDL events, and
--- MAME's SDL front end turns SIGINT and SIGTERM into a quit EVENT, so on
--- the alpha's base build ^C and kill did nothing to a headless run, and
--- kill -9 lost every write the run had made (the image was written back
--- only at exit). runhpux.sh traps the signal itself and creates this file
--- instead. A build that stops cleanly on signals by itself (the storage
--- lane's driver change) makes this redundant, but never wrong: two
--- requests to exit are one exit.
+-- MAME's SDL front end turns SIGINT and SIGTERM into a quit EVENT, so
+-- before the alpha ^C and kill did nothing to a headless run, and kill -9
+-- lost every write the run had made (the image was written back only at
+-- exit). runhpux.sh traps the signal itself and creates this file instead.
+-- The driver now stops cleanly on a signal by itself, which makes this
+-- redundant for a ^C that reaches MAME, but never wrong: two requests to
+-- exit are one exit. It is still what stops MAME when only the script is
+-- signalled. Like the driver's own handler it waits for the machine to
+-- run: nothing is polled while the emulation is paused.
 
 local path = os.getenv("HPFOCUS_STOPFILE")
 if path == nil or path == "" then

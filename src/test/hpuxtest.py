@@ -17,6 +17,8 @@ tools/runhpux.sh --state (var/test/<command>.<pid>/<case>); nothing of yours
 is touched, and the machines are deleted afterwards unless --keep. Needs
 what tools/setup.sh makes: mame/focus, the pristine HP-UX machine, and for
 the 520 cases software/hd/basic.img and the 5.01 kernel (built on demand).
+HPFOCUS_BIN and HPFOCUS_VAR name another build and another var/, as they do
+for the run scripts.
 
 Matrix cases:
   boot-keep, boot-fresh     200 s boots, primed / no battery: seven login
@@ -318,7 +320,8 @@ def parallel(jobs, tasks):
 
 
 def workdir(kind, given):
-    out = os.path.abspath(given or os.path.join(ROOT, 'var', 'test', '%s.%d' % (kind, os.getpid())))
+    var = os.environ.get('HPFOCUS_VAR') or os.path.join(ROOT, 'var')
+    out = os.path.abspath(given or os.path.join(var, 'test', '%s.%d' % (kind, os.getpid())))
     os.makedirs(out, exist_ok=True)
     return out
 
@@ -491,8 +494,10 @@ def main():
     s = sub.choices['soak']
     s.add_argument('--ram', type=int, default=2); s.add_argument('--poll', type=int)
     a = ap.parse_args()
-    if not os.access(os.path.join(ROOT, 'mame', 'focus'), os.X_OK):
-        sys.exit('mame/focus is not built: run tools/setup.sh')
+    # The run scripts take another build from HPFOCUS_BIN (tools/lib/focus.sh).
+    binary = os.environ.get('HPFOCUS_BIN') or os.path.join(ROOT, 'mame', 'focus')
+    if not os.access(binary, os.X_OK):
+        sys.exit('%s is not built: run tools/setup.sh' % os.path.relpath(binary, ROOT))
     return {'matrix': cmd_matrix, 'stress': cmd_stress, 'soak': cmd_soak}[a.cmd](a)
 
 

@@ -753,23 +753,27 @@ Winchester's own controller — and falls back to the flexible drive when the
 fixed disc has no boot area.
 
 ```
-mkdir -p software/basic/img software/hd
-for d in 500BT1 500BT2; do
-    python3 tools/td0.py --raw software/basic/img/$d.img software/basic/$d.TD0
-done
+mkdir -p software/hd
+python3 tools/td0.py --raw /tmp/500OPT1.img software/basic/500OPT1.TD0
+python3 tools/sdfread.py --extract /tmp/opt1 /tmp/500OPT1.img
 tools/mkharddisc.py software/hd/basic.img
 tools/installbasic.py software/hd/basic.img \
-    --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
-    --option /path/ERRORS_ENG /path/IO /path/MS
+    --basic software/basic/500BT1.TD0 software/basic/500BT2.TD0 \
+    --option /tmp/opt1/ERRORS_ENG /tmp/opt1/IO /tmp/opt1/MS \
+    --copy software/basic/500OPT1.TD0:CAT_BOOT,BUILD_BOOT
 tools/runbasic-hd.sh
 ```
 
-*(Updated for the alpha: `software/basic/img` and `software/hd` are
-gitignored, so the floppies are decoded first; tools/setup.sh does all of
-this without the options. And what the next paragraph says about the file
-area is history: tools/sdfwrite.py now builds a real volume, and a disc
-built by the alpha's tools takes BASIC's CREATE and STORE. A disc built
-before that reports ERROR 455; build it again.)*
+*(Updated for the alpha: this is the disc tools/setup.sh builds, options
+and all; the option binaries come off the first option disc, and
+installbasic.py takes the boot floppies as shipped. And what the next
+paragraph says about the file area is history: tools/sdfwrite.py now
+builds a real volume, and on a disc built by the alpha's tools BASIC CATs
+the two utilities, CREATEs a data file, STOREs a typed program, LOADs it
+back and runs it. A disc built before that still reports ERROR 455 on
+CREATE and STORE, and tools/setup.sh does not replace an image that
+exists (it and tools/runbasic-hd.sh warn when they meet such a one):
+delete it and build it again.)*
 
 BASIC comes up from the fixed disc with the options installed. What is **not**
 finished is the file area: the disc has a working boot area but no filesystem,

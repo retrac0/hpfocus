@@ -67,8 +67,8 @@ T=90
 export FOCUS_TAP=all FOCUS_TYPERATE=60
 export FOCUS_TYPE='@console=root\n;@console=\n;@console=\n;@console=who\n;@console=date\n'
 export FOCUS_TYPEAT="$T,$((T + 12)),$((T + 22)),$((T + 32)),$((T + 42))"
-# The tap writes its raw stream into a file (the terminals lane's line
-# mode is for a terminal), which is what the scorer below parses.
+# The tap writes its raw stream into a file (its line mode is for a
+# terminal), which is what the scorer below parses.
 export FOCUS_TAPRAW=1
 
 status=0

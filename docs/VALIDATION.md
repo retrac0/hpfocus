@@ -587,6 +587,12 @@ all. As of the alpha:
 | `ioptest` | 342, 3 failed | 350, 0 | RDCS was read count-low; the I/O ERS puts the count in ERS bits 0-15, the high half, two less than the transfers remaining (sheet 5.2), which is what the IOP has done since 23d6c00. |
 | `muxtest` | 97, 0 | 97, 0 | -- |
 
+*(Those counts are the harness repairs alone. The fixes that followed
+added their own checks: on the release candidate `make test` runs statetest
+81, addrtest 35, dsttest 87, exectest 2907, ioptest 509, muxtest 101,
+hpibtest 70 and asitest 62 checks, none failing, and the disassembler
+difftest is identical over 550,030 instructions.)*
+
 `make test` now runs check_knobs and every harness whatever an earlier one
 reports, and ends with one line: `make test: every harness passed (...)`,
 or `make test: FAILED: <names>` and exit 1.
@@ -598,9 +604,13 @@ on a fresh clone recorded bootimage.py's traceback as two baselines). A
 not survive a reboot -- says `NOTHING COMPARED` and exits 2 instead of
 `PASS`. Exit codes: 0 identical, 1 differs, 2 could not be run.
 
-`basictest.sh` scores its two known-wrong cases, `concat` (halts, TRAP 1)
-and `real-add` (5.49999999907), as XFAIL, outside the exit status: 0 all
-as expected, 1 a case that should pass failed, 2 nothing scored.
+`basictest.sh` scores a case on its known-wrong list as XFAIL, outside the
+exit status: 0 all as expected, 1 a case that should pass failed, 2 nothing
+scored. The list is empty now. Its two entries, `concat` (halted, TRAP 1)
+and `real-add` (5.49999999907), were emulator defects the alpha fixed
+(`SCON`'s bound and `LADD,B`'s carry), and both are regression guards
+among the 25 cases, with `prog-loop`, a typed program stored line by line
+with ENTER and run.
 
 **Disc tools, checked against the media.** Read as fs(5) describes it --
 FA records 3 onward a free-block bitmap, MSB first, a set bit free, sized
@@ -618,3 +628,56 @@ expression); type hints that newer Pythons evaluate are kept as strings
 (`from __future__ import annotations`). That floor is a static check --
 every `tools/*.py` parses with `feature_version=(3, 8)` and none evaluates
 a 3.9+ annotation -- not a run on a 3.8 interpreter.
+
+---
+
+## 8. The HP-UX release tests
+
+Sections 1 to 7 ask whether the core does what the ERS says. This one asks
+whether HP-UX runs, which is what the alpha claims. Three commands do the
+asking. Each boots its own machines, copies of the pristine one under
+`var/test/`, through `tools/runhpux.sh --state`, headless and unthrottled,
+types at them with `FOCUS_TYPE`, and scores what the terminals printed:
+
+    tools/smoketest.sh                # one multiuser boot and a console login; about a minute
+    src/test/hpuxtest.py matrix       # 28 cases; about 15 minutes at --jobs 3
+    src/test/hpuxtest.py stress       # seven logins at once, 30 timings
+    src/test/hpuxtest.py soak         # a workload on three terminals, then a reboot
+
+| command | what it runs | passes when |
+|---|---|---|
+| `smoketest.sh` | one `--multiuser` boot of a fresh machine, root logs in on the console, `who`, `date`; `--twice` boots again on what the first left | MAME exits 0, `/etc/rc` finishes, all seven `login:` banners appear, `who` answers, and nothing halts, panics, memory-faults, dumps core or fails to open a terminal |
+| `matrix` | boots with and without a battery; a root session on the console and on multiplexer ports 0, 3 and 5; seven logins at once at six schedules and four more I/O poll periods; a 600-second run; 3 and 4 MB; a console session at five poll periods from 300 to 700 us; a second boot of a disc a full run wrote; and on the 520, two BASIC cases and the HP-UX 5.01 banner | every session's commands answer and the same nothing-bad list holds |
+| `stress` | seven users logging in at once in 2 MB, the login schedule shifted in half-second steps over 30 runs and five poll periods | all seven sessions answer in every run |
+| `soak` | on the console and two multiplexer ports at once: compile and run a C program, copy and `cmp` binaries, checksum a large file, `find`, `ls -lR`, `sort`; then reboot the disc it wrote and check everything again | every check agrees, before and after the reboot |
+
+**Results for the release candidate** (the emulator built from `alpha-0.1`,
+95971d9): the smoke test
+passes, twice over; the matrix is 28 of 28; the stress grid is 30 of 30;
+the soak passes every check on both boots. BASIC's suite
+(`src/test/basictest.sh`) is 25 of 25 on the fixed disc `tools/setup.sh`
+builds, and `make -C src/test test` passes every harness. That is one run
+of each on one Linux machine.
+
+(The BASIC suite depends on which disc it boots. Its two `LIST` cases
+check `AVAILABLE MEMORY = 487696`, the figure with the ERRORS_ENG, IO and
+MS options installed; a fixed disc installed without options reads 573668
+and scores 23 of 25. `tools/setup.sh` installs the three options for that
+reason, from the shipped option disc.)
+
+**What these tests found.** The stress grid is the one that mattered. On
+the first round of the alpha's fixes it scored 14 of 30, and the soak
+failed: with seven users in 2 MB HP-UX swaps, and a CS/80 write that
+arrived in more than one leg was cut to its first, so every multi-kilobyte
+disc write, swap included, was silently short. Shells died with `Memory
+fault` or the kernel halted with `TRAP:00000012`, depending on timing. On
+the maintainer's tree before the alpha, HP-UX did not reach `login:` in
+these runs at all: the multiuser stall (`UP`/`DOWN`, FOCUS.md 10.19).
+
+**What they do not show.** They run for minutes, not days: the longest
+case is 600 emulated seconds. They type at fixed moments, so they say
+nothing about a person's timing beyond the 30 schedules tried. They use
+2, 3 and 4 MB and no other memory size, one disc image, and Linux on
+x86-64 only. And they score what terminals print: a wrong answer that
+looks right is not caught unless a check compares it (the soak's `cmp`
+and checksums are the checks that do).

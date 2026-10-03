@@ -36,7 +36,7 @@ PATCH="$ROOT/tools/mame/focus-mame.patch"
 CHECK=0
 case "${1:-}" in
 	--check) CHECK=1 ;;
-	-h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+	-h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 	"") ;;
 	*) echo "unknown option '$1' (try --help)" >&2; exit 2 ;;
 esac

@@ -12,7 +12,8 @@ CONNECT puts this terminal in raw mode and joins it to the port: what you
 type goes to HP-UX a key at a time (Return is CR, as on a real terminal),
 and HP-UX does the echoing. Ctrl-] leaves; the session on the port carries
 on, logged in, and you can come back to it. Terminal numbers N = 1..6 are
-TCP ports 4000+N on 127.0.0.1 (--base changes that); 'console' is 4000.
+TCP ports 4000+N on 127.0.0.1 (--base, or HPFOCUS_PORT_BASE, changes
+that); 'console' is 4000.
 
 THE HUB exists because MAME's bitbanger takes one TCP connection per run.
 Given -bitb socket.HOST:PORT it listens, accepts once and closes the
@@ -29,11 +30,12 @@ accepts users on the public port as often as they like:
 
 binds 127.0.0.1:<ephemeral> for MAME and 127.0.0.1:4000+N for users, writes
 "name internal-port public-port" lines to FILE once every socket is bound,
-and runs until it is sent SIGTERM. A user connecting to a port
-that already has one takes it over (the old connection is told and
-closed): a dead client never locks anyone out. While nobody is attached,
-the last few kilobytes the machine printed are kept and replayed to the
-next user, so a login: prompt printed before you connected is shown.
+and runs until it is sent SIGTERM or the run that started it is gone.
+A user connecting to a port that already has one takes it over (the old
+connection is told and closed): a dead client never locks anyone out.
+While nobody is attached, the last few kilobytes the machine printed are
+kept and replayed to the next user, so a login: prompt printed before you
+connected is shown.
 
 Standard library only; Python 3.8+; Linux and macOS.
 """
@@ -189,8 +191,8 @@ def hub(names, base, ready):
     # Only SIGTERM ends the hub. A ^C at the terminal reaches the whole
     # process group -- runhpux.sh, MAME and this -- and the hub must outlive
     # MAME's clean exit: a peer that vanished first would turn MAME's next
-    # write into SIGPIPE, which on a build without the storage lane's fix
-    # ends the emulator before it saves the disc.
+    # write into SIGPIPE (the driver ignores it now; an older build died of
+    # it before saving the disc).
     signal.signal(signal.SIGTERM, lambda *a: stop.append(1))
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)

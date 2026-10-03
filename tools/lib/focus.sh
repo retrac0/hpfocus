@@ -10,6 +10,8 @@
 #   focus_args MACHINE ARGS  set FOCUS_CMD to the full command line: the
 #                          throttle and video arguments the rest implies
 #   focus_run MACHINE ARGS exec that command (in mame/, as MAME expects)
+#   focus_basic_disc_warn IMG  say so if IMG is a BASIC fixed disc built by
+#                          an sdfwrite.py older than the free-map fix
 #
 # HPFOCUS_BIN=<file> runs another build of the emulator than mame/focus --
 # a private build, or one made outside the tree. MAME still runs in mame/,
@@ -73,6 +75,36 @@ focus_args() {
 	esac
 	FOCUS_CMD=("$FOCUS_BIN" "$machine" ${throttle[@]+"${throttle[@]}"} \
 		-video soft -sound none -skip_gameinfo "$@")
+}
+
+# A fixed disc built by tools/sdfwrite.py before 0ec4035 carries a free list
+# where BASIC reads a free-block bitmap: BASIC reports the wrong AVAILABLE
+# SPACE and CREATE/STORE answer ERROR 455. Such a volume also gives itself
+# away in its superblock: s_maxblk, the LARGEST block number, was written
+# as the block count. True (status 0) for a volume built that way.
+focus_basic_disc_stale() {
+	python3 - "$1" <<'EOF' 2>/dev/null
+import os, struct, sys
+p = sys.argv[1]
+with open(p, 'rb') as f:
+    sb = f.read(52)
+fmt = struct.unpack('>H', sb[0:2])[0]
+blksz, maxblk = struct.unpack('>I', sb[28:32])[0], struct.unpack('>I', sb[48:52])[0]
+sys.exit(0 if fmt == 0x0700 and blksz and maxblk >= os.path.getsize(p) // blksz else 1)
+EOF
+}
+
+focus_basic_disc_warn() {
+	focus_basic_disc_stale "$1" || return 0
+	cat >&2 <<EOF
+warning: $1
+  was built by an older tools/sdfwrite.py: BASIC reports the wrong
+  AVAILABLE SPACE on it, and CREATE and STORE fail with ERROR 455. To
+  rebuild it, copy off what you stored there
+    tools/sdfread.py --extract DIR $1
+  then delete it and run tools/setup.sh again (tools/mkdiagdisc.sh
+  rebuilds the diagnostics disc).
+EOF
 }
 
 focus_run() {

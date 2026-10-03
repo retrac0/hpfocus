@@ -15,7 +15,7 @@
 #        one 3-second throwaway boot so HP-UX has initialised its
 #        configuration memory (a blank one fails HP-UX's checksum, is
 #        rewritten on the first boot, and throws away any clock seed --
-#        measured by the clock lane; FOCUS_RTCTIME=now then gives the
+#        docs/HARDWARE.md 2.4.3; FOCUS_RTCTIME=now then gives the
 #        right date from the very first real boot). Made once; never
 #        booted writable. hpux530.bin.sha256 records what it was.
 #
@@ -187,8 +187,8 @@ hpux_reset() {
 }
 
 # One run per machine. The emulator itself refuses a second run on a disc
-# another run has open once the storage lane's change is in (it flocks the
-# image); this catches it before anything is touched, on any build. The
+# another run has open (it flocks the image); this catches it before
+# anything is touched. The
 # pid file names the run holding it, and a stale one (no such process) is
 # ignored.
 HPUX_LOCKED=
