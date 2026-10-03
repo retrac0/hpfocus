@@ -1226,6 +1226,23 @@ static void test_mvb_resume()
 	CHECK(h.one(insn) == exec_trap::none);
 	CHECK_EQ(h.cpu.r.x, 8);
 	CHECK_EQ(h.cpu.r.s, s0);
+
+	// Nor is an MVB that merely follows an instruction which was handed a
+	// pending STATUS: that instruction completing ends the pending state,
+	// so a stale X is not taken for progress.
+	// (An X below the count, which the plausibility test cannot catch: a
+	// resumed move would skip the first three bytes.)
+	h.cpu.r.x = 3;
+	h.cpu.r.put(sf::P, 1);
+	CHECK(h.one(f3(0)) == exec_trap::none);       // NOP
+	CHECK(!h.cpu.r.test(sf::P));
+	CHECK_EQ(h.cpu.r.x, 3);                       // X itself untouched
+	h.cpu.push(sptr); h.cpu.push(pg_ptr(0x200)); h.cpu.push(8);
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, 8);
+	for (u32 i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(pg_phys(0x200 + i)), u8(i * 7 + 3));
+	CHECK_EQ(h.cpu.r.s, s0);
 }
 
 // The same, through the real trap sequence and with SDEC 0, so every word

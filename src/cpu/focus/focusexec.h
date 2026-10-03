@@ -472,7 +472,18 @@ public:
 		m_cir = is32 ? m_mem.read32(r.p) : u32(w);
 		m_next = r.p + (is32 ? 4 : 2);
 
+		// STATUS.P, the Instruction Pending bit, is "cleared when the
+		// instruction is finally completed" (ERS sheet 11). An instruction
+		// that began with it set and has now completed is done with it --
+		// the string instructions that resume through it clear it
+		// themselves, and any other instruction that finds it set was
+		// handed a STATUS meant for an instruction elsewhere (an EXIT
+		// through a marker the OS built from an interrupted one, say).
+		// Left standing, the next MVB would take a stale X for progress.
+		const bool pending = r.test(sf::P);
 		exec_trap t = is32 ? exec_fmt6() : exec_16(op1, w);
+		if (pending && t == exec_trap::none)
+			r.put(sf::P, 0);
 
 		// Faults the core detects become architectural traps once a handler
 		// segment exists.
