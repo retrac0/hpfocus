@@ -174,22 +174,33 @@ private:
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
+		// ADD and SUB (ERS sheets 74-75, items 56-57). The b bit makes each
+		// the TOP limb of a multiple precision chain whose lower limbs are
+		// LADD/LSUB: "(S-1)+(S)+Carry" and "(S-1)-(S)-(1-Carry)". The
+		// borrow is carried inverted -- Carry set means no borrow, as LSUB
+		// and DLSB have it -- so SUB,B takes away 1-Carry, not Carry, and
+		// SUB leaves its own carry out the same way up. And the indicators
+		// with b set are "CCA only if result#0": a zero top limb must not
+		// erase the nonzero a lower limb reported, which is what lets a
+		// doubleword compare branch on the chain's condition code.
 		case 020: {                                            // ADD
 			const u32 a = pop(), b = pop();
 			const u64 sum = u64(b) + u64(a) + (b3 && r.test(sf::C) ? 1 : 0);
 			set_overflow_add(b, a, u32(sum));
 			r.put(sf::C, (sum >> 32) & 1);
 			push(u32(sum));
-			cca(u32(sum));
+			if (!b3 || u32(sum) != 0)
+				cca(u32(sum));
 			return exec_trap::none;
 		}
 		case 021: {                                            // SUB
 			const u32 a = pop(), b = pop();
-			const u64 diff = u64(b) - u64(a) - (b3 && r.test(sf::C) ? 1 : 0);
+			const u64 diff = u64(b) - u64(a) - (b3 && !r.test(sf::C) ? 1 : 0);
 			set_overflow_sub(b, a, u32(diff));
-			r.put(sf::C, (diff >> 32) & 1);
+			r.put(sf::C, ((diff >> 32) & 1) ^ 1);              // set = no borrow
 			push(u32(diff));
-			cca(u32(diff));
+			if (!b3 || u32(diff) != 0)
+				cca(u32(diff));
 			return exec_trap::none;
 		}
 		case 022: { cycles = CYCLES_MPY;                       // MPY

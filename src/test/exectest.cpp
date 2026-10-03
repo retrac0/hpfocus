@@ -490,6 +490,56 @@ static void test_logical_carry_chain()
 	CHECK_EQ(s[0], 0xffffffffu); CHECK_EQ(s[1], 0xffffffffu); CHECK_EQ(s[2], 1);
 	CHECK(h.cpu.r.test(sf::C));
 
+	// ADD,B and SUB,B are the signed top limb over LADD/LSUB (sheets
+	// 74-75): SUB,B takes away 1-Carry, and with b the code is CCA only on
+	// a nonzero result. 0x00000001_00000000 - 1 = 0x00000000_ffffffff:
+	h.cpu.r.s = base;
+	h.cpu.push(0); h.cpu.push(1);
+	h.one(f3(061));                                                   // low
+	const u32 lo = h.cpu.pop();
+	h.cpu.push(1); h.cpu.push(0);
+	CHECK(h.one(f3(021, true)) == exec_trap::none);                   // SUB,B
+	CHECK_EQ(h.cpu.stk(0), 0);                                        // high
+	CHECK_EQ(lo, 0xffffffffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // from LSUB
+	CHECK(!h.cpu.r.test(sf::O));
+	// -1 - 1 as a doubleword: 0xffffffff_ffffffff - 1, no borrow out of the
+	// low limb, so the high limb stays -1 and reports CCL.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(1);
+	h.one(f3(061));
+	CHECK_EQ(h.cpu.pop(), 0xfffffffeu);
+	h.cpu.push(0xffffffffu); h.cpu.push(0);
+	h.one(f3(021, true));
+	CHECK_EQ(h.cpu.stk(0), 0xffffffffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	// SUB alone: Carry out set when there was no borrow.
+	two(f3(021), 7, 5, 0, CCE);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK(h.cpu.r.test(sf::C));
+	two(f3(021), 5, 7, 1, CCE);
+	CHECK_EQ(h.cpu.stk(0), -2);
+	CHECK(!h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	// ADD,B over LADD: 0x00000000_ffffffff + 1 = 0x00000001_00000000.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(1);
+	h.one(f3(060));
+	CHECK_EQ(h.cpu.pop(), 0);
+	h.cpu.push(0); h.cpu.push(0);
+	CHECK(h.one(f3(020, true)) == exec_trap::none);                   // ADD,B
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	// A zero top limb leaves the low limb's report standing.
+	two(f3(020, true), 0, 0, 0, CCG);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(021, true), 3, 3, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	two(f3(020), 0, 0, 0, CCG);                                       // plain: CCA
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
 	// LMPY: the doubleword product, CCG unless it is zero.
 	h.cpu.r.s = base; h.cpu.r.put(sf::CC, CCL);
 	h.cpu.push(0xffffffffu); h.cpu.push(0xffffffffu);
