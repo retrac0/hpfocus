@@ -1181,16 +1181,20 @@ private:
 	emu_timer *m_iop_timer = nullptr;
 	emu_timer *m_iop_poll_timer = nullptr;
 	emu_timer *m_rtc_timer = nullptr;
-	emu_timer *m_type_timer = nullptr;
-	std::string m_type_text;
-	size_t m_type_pos = 0;
 	// FOCUS_TYPE may hold several scripts, each with its own start time
 	// and its own terminal: a run that logs in on three multiplexer
 	// ports is three scripts at three destinations, which is not
 	// something one global destination could say.
 	std::vector<std::string> m_type_scripts;
 	std::vector<std::string> m_type_dest;   // "" = wherever FOCUS_TYPEPORT says
-	int m_type_term = -1;                   // the running script's terminal
+	// ...and so one timer, one cursor and one terminal PER SCRIPT. There
+	// used to be one of each for the whole run, so a script that started
+	// while the one before it was still typing took over its timer and
+	// its cursor: '@2:0=root\n;@2:1=root\n' half a second apart typed
+	// "roo" at port 0 and logged in on port 1 only.
+	std::vector<emu_timer *> m_type_timers;
+	std::vector<size_t> m_type_pos;
+	std::vector<int> m_type_terms;          // -1 until the script starts
 	attotime m_type_rate;
 	u32 m_prev_rq = 0;
 	// The discs in the drive, in the order the loader asks for them: a
@@ -2433,7 +2437,11 @@ void hp9000_5xx_state::schedule_scripts()
 			}
 			m_type_dest.push_back(dest);
 		}
-		m_type_timer = timer_alloc(FUNC(hp9000_5xx_state::type_tick), this);
+		for (size_t i = 0; i < m_type_scripts.size(); i++)
+			m_type_timers.push_back(
+					timer_alloc(FUNC(hp9000_5xx_state::type_tick), this));
+		m_type_pos.assign(m_type_scripts.size(), 0);
+		m_type_terms.assign(m_type_scripts.size(), -1);
 		// FOCUS_TYPERATE=<ms> paces the injected keystrokes. The default
 		// mimics fast human typing; the display driver drops or reorders
 		// characters pushed faster than it redraws the input line.
@@ -2749,13 +2757,15 @@ void hp9000_5xx_state::type_at(int id, u8 c, bool raw)
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 {
-	m_type_text = m_type_scripts[size_t(param)];
-	m_type_pos = 0;
+	const size_t i = size_t(param);
+	m_type_pos[i] = 0;
 	// Where this script types: its own @name, else FOCUS_TYPEPORT's
-	// port, else the machine's console.
-	const std::string &want = m_type_dest[size_t(param)];
-	m_type_term = want.empty() ? m_console_term : find_terminal(want);
-	if (m_type_term < 0)
+	// port, else the machine's console. A script with nowhere to go
+	// never starts its timer, so nothing ever indexes a terminal it
+	// does not have.
+	const std::string &want = m_type_dest[i];
+	const int term = want.empty() ? m_console_term : find_terminal(want);
+	if (term < 0)
 	{
 		osd_printf_error("type: script %d has nowhere to go (%s); "
 				"this machine has", int(param) + 1,
@@ -2765,29 +2775,37 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_start)
 		osd_printf_error("\n");
 		return;
 	}
-	m_type_timer->adjust(attotime::zero, 0, m_type_rate);
+	m_type_terms[i] = term;
+	m_type_timers[i]->adjust(attotime::zero, param, m_type_rate);
 }
 
 
 TIMER_CALLBACK_MEMBER(hp9000_5xx_state::type_tick)
 {
-	if (m_type_pos == 0)
-		std::printf("[typing at %s starts, disc blocks %u, sc6 writes %u]\n",
-				m_terms[size_t(m_type_term)].name.c_str(),
-				m_disc.m_seq, m_console6.writes);
-	if (m_type_pos < m_type_text.size())
+	const size_t i = size_t(param);
+	const std::string &text = m_type_scripts[i];
+	size_t &pos = m_type_pos[i];
+	const int term = m_type_terms[i];
+	if (pos == 0)
 	{
-		const u8 c = u8(m_type_text[m_type_pos++]);
+		tap_break();
+		std::printf("[typing at %s starts, disc blocks %u, sc6 writes %u]\n",
+				m_terms[size_t(term)].name.c_str(),
+				m_disc.m_seq, m_console6.writes);
+	}
+	if (pos < text.size())
+	{
+		const u8 c = u8(text[pos++]);
 		// A \xNN escape: the byte after the marker goes in as it
 		// stands -- a keycode at the 520's keyboard, the byte itself
 		// on a serial line.
-		if (c == RAW_KEY && m_type_pos < m_type_text.size())
-			type_at(m_type_term, u8(m_type_text[m_type_pos++]), true);
+		if (c == RAW_KEY && pos < text.size())
+			type_at(term, u8(text[pos++]), true);
 		else
-			type_at(m_type_term, c, false);
+			type_at(term, c, false);
 	}
 	else
-		m_type_timer->adjust(attotime::never);
+		m_type_timers[i]->adjust(attotime::never);
 }
 
 
