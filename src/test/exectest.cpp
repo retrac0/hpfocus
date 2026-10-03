@@ -371,6 +371,10 @@ static void restart_handler(harness &h)
 	const u32 CST = 0x200;
 	h.mem.write32(0, CST);
 	h.mem.write32(CST, 16 * 8);
+	// The handler segment executes privileged (M, word 0 bit 30), as CS1
+	// does on both systems: its EXIT is the one that hands a pending
+	// instruction its P back, which an unprivileged EXIT may not do.
+	h.mem.write32(CST + 16, ers32::set(0, 30, 1, 1));
 	h.mem.write32(CST + 16 + 4, RT_HLEN - 1);
 	h.mem.write32(CST + 16 + 8, RT_HB);
 	h.mem.write32(CST + 80 + 4, 0xfff);
@@ -1641,6 +1645,7 @@ static void test_mvb_resume()
 	for (u32 i = 0; i < 8; i++)
 		CHECK_EQ(h.mem.read8(pg_phys(0x200 + i)), u8(i * 7 + 3));
 	CHECK_EQ(h.cpu.r.s, s0);
+
 }
 
 // The same, through the real trap sequence and with SDEC 0, so every word
@@ -4700,6 +4705,79 @@ static void test_overflow_loaded_from_marker()
 	}
 }
 
+
+// "A routine executing in unprivileged mode may not EXIT to privileged
+// mode, may not change the interrupt bit, and may not set the instruction
+// pending bit in the Status register" (ERS sheet 96): cause 26, parameter
+// 2 for the first and 3 for the other two (sheet 47). A marker is plain
+// stack memory; without these an unprivileged program made itself
+// privileged with one it wrote by hand.
+static void test_unprivileged_exit_limits()
+{
+	std::printf("an unprivileged EXIT may not gain privilege, change I or set P\n");
+	auto attempt = [](u32 live, u32 marker_status, u32 &param, u32 &p_after,
+			u32 &status_after, bool &marker_kept) {
+		dmachine m;
+		m.code(m.PROC, { D_NOP, D_NOP, D_NOP, D_NOP, D_EXIT0 });
+		m.code(m.vector(026), { D_NOP });
+		// A marker written by hand: X, return to PROC+2, STATUS, delta Q.
+		m.cpu.r.status = live;
+		m.cpu.push(0x11);
+		m.cpu.push(2);
+		m.cpu.push(marker_status);
+		m.cpu.push(16);
+		m.cpu.r.q = m.cpu.r.s;
+		const u32 q = m.cpu.r.q;
+		m.cpu.r.p = m.PROC + 8;
+		param = 0xffffffffu;
+		m.cpu.on_trap = [&](trap_cause c, u32 v) {
+			if (c == trap_cause::privileged_mode) param = v; };
+		CHECK(m.cpu.step() == exec_trap::none);
+		p_after = m.cpu.r.p;
+		status_after = m.cpu.r.status;
+		// Note 2: the trap's own marker sits above an untouched one and
+		// returns to the EXIT.
+		marker_kept = m.cpu.r.q == q + 16
+				&& m.mem.read32(m.cpu.r.q - 3 - 8) == 8
+				&& m.mem.read32(q - 3 - 4) == marker_status;
+	};
+	const u32 user = ST_I | ST_EM | 5;
+	u32 param, p, st;
+	bool kept;
+	dmachine ref;
+
+	attempt(user, ST_M | ST_I | ST_EM | 5, param, p, st, kept);    // to privileged
+	CHECK_EQ(param, 2);
+	CHECK_EQ(p, ref.vector(026));
+	CHECK(kept);
+	attempt(user, ST_M | ST_I | ST_EM, param, p, st, kept);        // ... in segment 0
+	CHECK_EQ(param, 2);
+	CHECK(kept);
+	attempt(user, ST_EM | 5, param, p, st, kept);                  // I: 1 -> 0
+	CHECK_EQ(param, 3);
+	CHECK(kept);
+	attempt(ST_EM | 5, user, param, p, st, kept);                  // I: 0 -> 1
+	CHECK_EQ(param, 3);
+	CHECK(kept);
+	attempt(user, user | ST_P, param, p, st, kept);                // P set
+	CHECK_EQ(param, 3);
+	CHECK(kept);
+
+	// What an unprivileged EXIT may do: return, with the indicators,
+	// trace bits and MI of the marker.
+	attempt(user, user | ST_T | ST_MI | (1u << 14), param, p, st, kept);
+	CHECK_EQ(param, 0xffffffffu);
+	CHECK_EQ(p, ref.PROC + 2);
+	CHECK_EQ(st & (ST_M | ST_I | ST_T | ST_MI), ST_I | ST_T | ST_MI);
+
+	// A privileged EXIT loads STATUS whole: this is how a handler returns
+	// to a pending instruction, and how HP-UX hands a task MI.
+	attempt(ST_M | ST_EM | 5, user | ST_P | ST_MI, param, p, st, kept);
+	CHECK_EQ(param, 0xffffffffu);
+	CHECK_EQ(p, ref.PROC + 2);
+	CHECK_EQ(st & (ST_M | ST_I | ST_P | ST_MI), ST_I | ST_P | ST_MI);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -4762,6 +4840,7 @@ int main()
 	test_stop_and_int_are_privileged();
 	test_pending_through_interrupt_and_tcb();
 	test_overflow_loaded_from_marker();
+	test_unprivileged_exit_limits();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

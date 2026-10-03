@@ -394,6 +394,40 @@ private:
 			if (r.q - 16 - 4u * n < qnew)
 				return take_trap(trap_cause::stack_underflow, r.q);
 		}
+		// "A routine executing in unprivileged mode may not EXIT to
+		// privileged mode, may not change the interrupt bit, and may not
+		// set the instruction pending bit in the Status register" (sheet
+		// 96) -- Privileged Mode Violation, cause 26, whose parameter
+		// tells the three conditions apart: "2) An attempt is made to
+		// EXIT or Branch from an unprivileged procedure to a privileged
+		// procedure. 3) An attempt is made in an unprivileged EXIT
+		// instruction to change the interrupt bit or to set the
+		// instruction pending bit" (sheet 47). Note 2: nothing has been
+		// popped and the marker points at this EXIT.
+		//
+		// A marker is ordinary stack memory, and "STATUS := (S-1)" loaded
+		// whatever a user program had written there: sixteen bytes on
+		// its own stack and an EXIT made it privileged, in any segment
+		// including segment 0's absolute addressing (the test below reads
+		// the mode bit the marker has just supplied) -- the same door
+		// SETR's field limits and the privilege checks on STOP and INT
+		// were closed against. And since the string instructions now
+		// resume through STATUS.P, a P set this way is no longer inert:
+		// SLD, SAS and SCON skip their descriptors and move whatever
+		// three words are on the stack, from whatever X says.
+		//
+		// Both tests are on the EXECUTING mode, so a handler's EXIT, the
+		// dispatcher's and IXIT's (all privileged) load STATUS whole, as
+		// HP-UX's signal and single-step paths need them to.
+		if (!r.privileged())
+		{
+			const u32 st = m_mem.read32(r.q - 7);
+			if (ers32::get(st, 14, 1))
+				return take_trap(trap_cause::privileged_mode, 2);
+			if (ers32::get(st, 13, 1) != ers32::get(r.status, 13, 1)
+					|| (ers32::get(st, 19, 1) && !r.test(sf::P)))
+				return take_trap(trap_cause::privileged_mode, 3);
+		}
 		// Returning into a code segment that is absent is cause 37, as a
 		// call into one is (see enter_segment): the CST entry number is
 		// the parameter, the trap returns to this EXIT, and the marker
