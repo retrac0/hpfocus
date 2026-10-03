@@ -394,9 +394,22 @@ pointers the DST entry's length (per segment in a chain). Traps that the
 evaluation can raise: EDS Pointer Violation, DST Violation, EDS Bounds
 Violation, Data Segment Write Violation, Privileged Mode Data Violation,
 Absent Segment / Page Table / Page, Page Table Violation, Unexpected EDS
-Type. Side effects: every evaluation sets the entry's `R` (referenced) bit;
-modify-class references set `D` (dirty); table updates happen under a
-memory semaphore.
+Type. Side effects (sheet 55): a successful evaluation sets `R`
+(referenced) — in the DST entry of an unpaged segment, in the page table
+entry of a paged one — and a modify-class reference sets `D` (dirty) the
+same way; a failed one writes nothing; table updates happen under a memory
+semaphore. HP-UX consumes the DST `R` bit: its memory manager's aging
+sweep (TRAP HANDLERS `+0x6390`) semaphore-reads each entry and, when
+`(w0 & 0x7ff9a005) == 0x2004` — unpaged, present, use count 0, OS bit 18,
+referenced — stamps the segment's last-use time and writes it back with
+`R` cleared. The emulator left `R` alone for a while on a misreading of
+the CST layout (§6.1).
+
+A doubleword operand is aligned to a word (§2.2.6), so it can straddle a
+page boundary of a paged segment: its second word is then a reference of
+its own — the next page's frame, which may be absent — and is evaluated
+before the instruction pops or writes anything. (Appendix C: CPU 3.3 and
+earlier ran on into the physically next word instead; 4.0 fixed it.)
 
 ### 5.3 Program pointers
 
@@ -430,9 +443,29 @@ Up to 4096 code segments per **Code Segment Table**; three CSTs exist
 (system, sharable, per-user — pointers at the dedicated locations, §7.4).
 A CST entry is four words; word 1 holds `LENGTH−1` (low two bits `11`) and
 word 2 the segment's absolute `LOCATION`, exactly as in a DST entry. Entry
-*N* is at `CST + 16N`. Segment attributes (mode, uncallable) live in the
-entry; their word-0 bit positions have not yet been re-derived from the
-scans.
+*N* is at `CST + 16N`. Word 0 shares the DST entry's layout where the two
+overlap (sheets 27-28):
+
+```
+word 0  |0| USE COUNT |        OS / reserved        |R|M|A|
+         0  1......12  13 ....................... 28 29 30 31
+```
+
+| Field | Meaning |
+|---|---|
+| `A` | Absent — the segment is not in memory; a call or return into it is cause 037 |
+| `M` | Mode — the segment executes privileged |
+| `R` | Referenced — set when the segment is entered (its use count gained); the OS clears it |
+| `USE COUNT` | CPUs executing in the segment; segment 0 has none |
+
+These positions are the ones HP-UX's own tables demonstrate: a loaded user
+program segment's word 0 is `0x00022908`, and the kernel's aging sweep
+tests code segments with the same `(w0 & 0x7ff9a005) == 0x2004` it uses
+for data segments (§5.2). Two misreadings each cost a defect: absence read
+at bit 29 took the loader's `R` for absent and every free entry for
+present (corrected 2026-08-28), and `R` then went unwritten in both tables
+on the belief that it was the CST's absence bit. The uncallable attribute
+is read from the STT entry's bit 1, not from the CST entry.
 
 Each code segment ends with its **Segment Transfer Table**: the word at
 `PL` carries the STT length in `(13:19)`, and entry *n* is the word at
@@ -567,6 +600,17 @@ The cause number *is* the STT entry in segment 1. In octal:
 | | | | 055 | Instruction Sequencing |
 | | | | 056 | Start of Line Check |
 | | | | 057 | Data Segment Write |
+
+Five more complete the list (sheets 45-49), and each has its own vector:
+`003` Breakpoint; `013` **EDS Bounds Violation** — "outside of the limits
+of an external data segment or a set of linked external data segments",
+where `001` covers only the code, stack and global segments; `014` System
+Error (parameter 0 too many `PSEB`s, 1 a use count decremented below 0 or
+incremented past 4095, 2-7 MPB errors); `015` **EDS Pointer Violation** —
+an external pointer naming data segment 0 or 2048 — which is what a
+pointer word of zero evaluates as (not `030`, Unexpected Pointer Type); and `037`
+Absent Code Segment. `055` is also what running off the end of a code
+segment raises ("P>PL is detected during normal instruction sequencing").
 
 ### 7.3 External interrupts
 
@@ -1324,24 +1368,33 @@ pointer** (1) or a **local program pointer** (0) — a PB-relative byte
 offset bounds-checked against the code segment, the form a compiled-in
 constant table takes. `(30:2)` (`SDEC`) is how many of the three operand
 words to pop at completion. `b` is the direction: 0 forward, 1 backward
-(count treated as negative). All are interruptible: X holds the running
-element count, and the count word on the stack is continuously updated to
-the remainder, so the instruction resumes cleanly. On completion X holds
-the elements processed and `(S)` the count not processed.
+(count treated as negative). On completion X holds the elements processed
+and `(S)` the count not processed.
 
-Resuming cleanly means more than the count. The loop in every one of these
-sheets begins `X := 0`, and HP's compiled code never clears X before an
-`MVB` or `SCU`, so the hardware cannot tell a re-executed instruction from
-a fresh one: the **pointer words on the stack must be advanced too**, past
-the bytes already moved, when the instruction is interrupted by a trap.
-The emulator learned this from HP-UX's exec loader (HPUX.md 10.3): a 1 KB
-block copy into a paged data segment trapped 040 at the page boundary, the
-count came back reduced but the pointers did not, and the re-executed copy
-put the remainder at the original target, leaving the first 0x138 bytes of
-every page the pager mapped on a fault as zeros -- init's C library lost
-its character-class table and `getpwnam("root")` failed. `MVB` and `TRAN`
-(which translates in place) now write the advanced pointers back; the scan
-and compare instructions restart from the beginning harmlessly.
+All are interruptible, and the mechanism is the **Instruction Pending
+bit**, `STATUS.P` (sheet 11: "set to 1 by an instruction if it gets
+interrupted ... cleared when the instruction is finally completed"). A move
+that faults part way — the source or target running into an absent page —
+leaves X = the bytes done and sets P; the trap's marker saves both with the
+rest of STATUS, the handler's `EXIT` restores them, and the re-executed
+instruction, seeing P, goes on from X. The stack is never rewritten, so an
+interrupted move ends exactly as an uninterrupted one: X the whole count,
+`(S)` reduced by it, and any pointer an `SDEC` below 3 leaves on the stack
+the one the program pushed. The loop on every sheet begins `X := 0` and
+HP's compiled code never clears X before an `MVB`, so without P a restart
+could not be told from a first execution. `MVB` and `TRAN` (which
+translates in place, so must not put a byte through the table twice) are
+pending this way; the scan and compare instructions change nothing and
+simply restart from the beginning.
+
+The emulator came to this in two steps, both from HP-UX's exec loader
+(HPUX.md 10.3): a 1 KB block copy into a paged data segment trapped 040 at
+the page boundary, and with only the count word updated the re-executed
+copy put the remainder at the original target, leaving the first 0x138
+bytes of every page the pager mapped on a fault as zeros — init's C library
+lost its character-class table. Rewriting the count AND both pointer words
+moved the right bytes, but left X short and the kept pointers changed; P is
+what the machine does instead.
 
 A data segment pointer is only physically contiguous within one page of a
 paged segment, or within one segment of a chain: the walk is a logical
@@ -1380,7 +1433,9 @@ target byte, with X and the count telling where.
 
 **`TRAN`** — Translate — `F2:56`
 The "source" is a 256-byte table; each byte of the target string indexes
-it and is replaced by the entry, in place. *CC unaffected.*
+it and is replaced by the entry, in place. The table is data like any
+other: in a paged segment it can straddle a page boundary, and an entry
+past the first page's run is read from its own page. *CC unaffected.*
 
 ### 10.14 String descriptors
 
@@ -1402,6 +1457,14 @@ checked against SL), copy via the `MVB` machinery, and leave `NWORDS` plus
 a descriptor (`FIRST=1`, `LEN=−1`) for it. X is destroyed. *CC
 unaffected.*
 
+`SLD`, `SAS` and `SCON` all end by executing an `MVB` on three parameters
+they stack in place of their descriptors, so a fault in that move cannot
+send them back to their beginning. From the move on they are pending
+(`STATUS.P`, §10.13; "the original content of X is destroyed early in the
+instruction" on all three sheets): re-executed with P set, `SLD` and
+`SCON` finish the forward move, and `SAS` finishes it in the direction its
+condition code records.
+
 **`SAS`** — String Assign — `F2:30`
 Assign the source substring into a target string variable, updating the
 target's current length; target parameters come from a second descriptor
@@ -1411,7 +1474,10 @@ directly below the source's address on the stack). *CC unaffected.*
 **`SCON`** — String Concatenate — `F2:27`
 Extend the string temp below the source descriptor by the source
 substring, growing the temp in place (Stack Overflow checked); the temp's
-descriptor and MAXLEN are updated. With `SLD` this evaluates arbitrary
+descriptor and MAXLEN are updated. The target must lie between `Q` and
+`S-4` words — below the source descriptor (sheet 111; one OCR of the page
+reads `S-14`, which refused every short temp and halted BASIC's
+`"A"&"B"`). With `SLD` this evaluates arbitrary
 string expressions on the stack. *CC unaffected.*
 
 ### 10.15 Pointers, semaphores, lists
@@ -1478,8 +1544,8 @@ post-indexed by X when `b` is set. All privileged.
 
 **`PLBA` / `PLHA` / `PLDA`** — Load Byte / Halfword / Word from Absolute
 Address — `F4:47 / 51 / 64`
-Replace the TOS address with the byte (zero-extended) / halfword / word it
-addresses. *CCA.*
+Replace the TOS address with the byte (zero-extended) / halfword
+(sign-extended, sheet 62) / word it addresses. *CCA.*
 
 **`PSBA` / `PSHA` / `PSTA`** — Store Byte / Halfword / Word into Absolute
 Address — `F4:50 / 52 / 65`

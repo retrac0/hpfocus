@@ -15,6 +15,49 @@
 ***************************************************************************/
 
 private:
+	// The effective addresses of both words of a doubleword operand (LDD,
+	// LDDS, STD), as ea() reports one. Almost always the second is the
+	// first plus four. But an external data segment is physically
+	// contiguous only within a page (or one segment of a chain), and
+	// section 2.2.6 aligns a doubleword to a WORD, not to eight bytes:
+	// one that starts on the last word of a page has its second word in
+	// the next page -- another page table entry, a frame anywhere in
+	// memory, possibly absent. Reading on past the first word's frame
+	// returned a word of whatever frame followed it physically, and a
+	// store overwrote it (another page, perhaps another process's). The
+	// second word is then a reference of its own, resolved -- and, if
+	// absent, trapped on -- before the instruction pops or writes
+	// anything, so the trap returns to an instruction that can simply run
+	// again. A doubleword that runs off the end of an unchained segment
+	// is a bounds violation of its own the same way.
+	//
+	// The ERS says as much in Appendix G, among the bugs CPU 4.0 fixed:
+	// on 3.3 and earlier "LDD(S), LDSI, STD, SDSI ... can access
+	// non-existent memory ... if the first word accessed is the last word
+	// in a segment or page and there is no memory mapped immediately after
+	// this first word" -- the old silicon ran on into the physically next
+	// word, which is what this emulated. This core poses as CPU 4.0.
+	bool ea_double(base_reg base, u32 offset, bool ind, bool idx, bool modify,
+			u32 &out, u32 &out2)
+	{
+		const ea_result e = m_au.effective_address(base, offset, ind, idx,
+				modify);
+		m_addr_trap = e.t;
+		out = e.addr;
+		if (!e.ok())
+			return false;
+		if (on_ea)
+			on_ea(r.p, e.addr);
+		out2 = out + 4;
+		if (e.run_fwd >= 8)
+			return true;
+		const ea_result e2 = m_au.effective_address(base, offset, ind, idx,
+				modify, 4);
+		m_addr_trap = e2.t;
+		out2 = e2.addr;
+		return e2.ok();
+	}
+
 	// Format 2: 6-bit operand -- shifts and short branches.
 	exec_trap exec_fmt2(u8 op2, u8 operand, bool b3)
 	{
@@ -177,38 +220,57 @@ private:
 			const bool tbl_is_ds = ((operand >> 2) & 1) != 0;
 
 			const s32 count = s32(stk(0));
-			u32 tblba;
-			const exec_trap st = string_source(stk(2), tbl_is_ds, tblba);
+			const u32 tblptr = stk(2);
+			u32 tblba, tblrun;
+			const exec_trap st = string_source(tblptr, tbl_is_ds, tblba,
+					&tblrun);
 			if (st != exec_trap::none) return st;
 
+			// Translation is in place, so a restart from the first byte
+			// would put the bytes already done through the table a second
+			// time: an interrupted TRAN is pending and goes on from X, as
+			// MVB does (see string_resume).
+			s32 x = string_resume(d, count);
 			byte_cursor dst;
 			{
-				const exec_trap t2 = cursor_open(dst, stk(1), true, true, d);
+				const exec_trap t2 = cursor_open(dst, u32(s32(stk(1)) + x),
+						true, true, d);
 				if (t2 != exec_trap::none) return t2;
 			}
 
-			s32 x = 0;
 			while (count > d * x)
 			{
-				m_mem.write8(dst.phys, m_mem.read8(tblba + m_mem.read8(dst.phys)));
-				x += d;
-				if (count > d * x)
+				// The table is 256 bytes of a data segment like any other
+				// and can straddle a page boundary: an entry beyond the
+				// first page's run is a reference of its own, not a byte
+				// of whatever frame follows physically.
+				const u32 idx = m_mem.read8(dst.phys);
+				u32 entry = tblba + idx;
+				exec_trap t = exec_trap::none;
+				if (idx >= tblrun)
 				{
-					const exec_trap t = cursor_step(dst);
-					if (t != exec_trap::none)
-					{
-						// Translation is in place, so a restart from the
-						// original pointer would put bytes already done
-						// through the table a second time. Leave the
-						// resumable state MVB leaves: the remainder, the
-						// target advanced past the work, X the progress.
-						r.x = u32(x);
-						set_stk(0, u32(count - d * x));
-						set_stk(1, u32(s32(stk(1)) + x));
-						return t;
-					}
+					const ea_result e = m_au.resolve_data_pointer(tblptr,
+							false, false, idx);
+					m_addr_trap = e.t;
+					entry = e.addr;
+					if (!e.ok())
+						t = exec_trap::address_error;
+				}
+				if (t == exec_trap::none)
+				{
+					m_mem.write8(dst.phys, m_mem.read8(entry));
+					x += d;
+					if (count > d * x)
+						t = cursor_step(dst);
+				}
+				if (t != exec_trap::none)
+				{
+					r.x = u32(x);
+					r.put(sf::P, 1);
+					return t;
 				}
 			}
+			r.put(sf::P, 0);
 			r.x = u32(x);
 			set_stk(0, u32(count - d * x));
 			r.s -= 4 * sdec;
@@ -221,6 +283,12 @@ private:
 			// names -- the bytes, a size word above them and a fresh
 			// descriptor above that. The source string is not modified.
 			const bool src_is_ds = ((operand >> 2) & 1) != 0;
+
+			// Interrupted in its move: the descriptor is long gone, the
+			// temp is built and the move's three parameters are on top.
+			// See string_move.
+			if (r.test(sf::P))
+				return do_mvb(1, 3, src_is_ds);
 
 			str_desc d;
 			d.maxlen = s32(stk(3));
@@ -260,7 +328,7 @@ private:
 			set_stk(2, sptr);
 			set_stk(1, stack_pointer_to(tempadr + 4));
 			set_stk(0, u32(d.len));
-			return do_mvb(1, 3, src_is_ds);
+			return string_move(1, src_is_ds);
 		}
 
 		case 026: {                                               // SVAL
@@ -289,6 +357,9 @@ private:
 			const bool src_is_ds = ((operand >> 2) & 1) != 0;
 			const bool from_temp = (operand & 1) != 0;
 			const bool tneg_ok   = ((operand >> 1) & 1) != 0;
+
+			if (r.test(sf::P))                  // interrupted in its move
+				return do_mvb(1, 3, src_is_ds);
 
 			str_desc s;
 			s.maxlen = s32(stk(3));
@@ -321,11 +392,19 @@ private:
 			if (!string_validate(g, true, tneg_ok, true, t, false))
 				return t;
 
-			// The target has to be a temp on this stack. The ERS writes
-			// the upper bound as "S-14"; read as words, the way "(S-n)"
-			// is read everywhere else and the way SAS's own "S-7" is,
-			// that means fourteen words clear of the top.
-			if (g.stringadr < r.q || g.stringadr > r.s - 3 - 4 * 14)
+			// The target has to be a temp on this stack, below the source
+			// descriptor: "If (TSTRINGADR < Q) or (TSTRINGADR > S-4) then
+			// Bounds Violation Trap" (ERS sheet 111), in words, the way
+			// "(S-n)" is read everywhere else and the way SAS's own "S-7"
+			// is. One OCR of that line reads "S- 14" and this used to
+			// follow it; the page image (PDF page 112) says S-4 -- the
+			// same glyph as the 4 of "NWORDS*4" two lines below -- and so
+			// does the tesseract pass in docs/notes. Fourteen refused
+			// every temp with fewer than five words of data under its
+			// descriptor: two one-character temps put the target's length
+			// word thirteen words under S, which is BASIC's `DISP "A"&"B"`
+			// halting with TRAP:00000001.
+			if (g.stringadr < r.q || g.stringadr > r.s - 3 - 4 * 4)
 				return take_trap(trap_cause::bounds_violation, r.p);
 
 			s32 tcurlen = g.curlen;
@@ -366,7 +445,7 @@ private:
 			set_stk(2, msrc);
 			set_stk(1, mdst);
 			set_stk(0, u32(s.len));
-			return do_mvb(1, 3, src_is_ds);
+			return string_move(1, src_is_ds);
 		}
 
 		case 030: {                                               // SAS
@@ -378,6 +457,14 @@ private:
 			const bool from_temp  = (operand & 1) != 0;         // CIR(31:1)
 			const bool fill       = ((operand >> 3) & 1) != 0;  // CIR(28:1)
 			const bool tneg_ok    = ((operand >> 1) & 1) != 0;  // CIR(30:1)
+
+			// Interrupted in its move. Which way the move was going is in
+			// the condition code, where SAS put it -- "CC is set according
+			// to move direction used" -- and the trap's marker brought it
+			// back with the rest of STATUS.
+			if (r.test(sf::P))
+				return do_mvb(r.condition_code() == CCG ? 1 : -1, 3,
+						src_is_ds);
 
 			str_desc s;
 			s.maxlen = s32(stk(3));
@@ -468,7 +555,7 @@ private:
 			set_stk(2, msrc);
 			set_stk(1, mdst);
 			set_stk(0, u32(mvlen));
-			return do_mvb(backward ? -1 : 1, 3, src_is_ds);
+			return string_move(backward ? -1 : 1, src_is_ds);
 		}
 
 		case 031: {                                               // PMPB
@@ -947,10 +1034,10 @@ private:
 			return exec_trap::none;
 		}
 		case 020: {                                               // LDD
-			u32 a;
-			if (!ea(base, off, ind, idx, false, a))
+			u32 a, a2;
+			if (!ea_double(base, off, ind, idx, false, a, a2))
 				return exec_trap::address_error;
-			push(m_mem.read32(a)); push(m_mem.read32(a + 4));
+			push(m_mem.read32(a)); push(m_mem.read32(a2));
 			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
@@ -1085,11 +1172,11 @@ private:
 			return exec_trap::none;
 		}
 		case 035: {                                               // STD
-			u32 a;
-			if (!ea(base, off, ind, idx, true, a))
+			u32 a, a2;
+			if (!ea_double(base, off, ind, idx, true, a, a2))
 				return exec_trap::address_error;
 			const u32 low = pop(), high = pop();
-			m_mem.write32(a, high); m_mem.write32(a + 4, low);
+			m_mem.write32(a, high); m_mem.write32(a2, low);
 			return exec_trap::none;
 		}
 		case 036:                                                 // LRA

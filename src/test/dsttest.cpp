@@ -161,18 +161,38 @@ static void test_unpaged()
 	CHECK(!f.walker.resolve(false, 5, 0x400, false, addr, t));
 	CHECK(t == trap::eds_bounds_violation);
 
-	// The referenced and dirty bits are left alone: SUNOS runs one table
-	// as both CST and DST, and the DST R bit is the CST layout's absence
-	// bit, so the walker must not write it (see focusdst.h).
+	// "R := 1; If mod mem inst then D := 1" (ERS sheet 55): every
+	// successful evaluation marks the entry referenced, a modifying one
+	// marks it dirty as well, and nothing else in word 0 moves. HP-UX's
+	// segment aging sweep depends on R (see focusdst.h). The CST layout's
+	// absence bit is 31, not this one.
 	dst_entry e;
 	e.w0 = f.entry_w0(5);
-	CHECK(!e.referenced());
+	CHECK(e.referenced());
 	CHECK(!e.dirty());
+	CHECK_EQ(e.w0, make_w0(1, 0, false, true, false, true, false, false));
 
 	t = trap::none;
 	CHECK(f.walker.resolve(false, 5, 0x10, true, addr, t));
 	e.w0 = f.entry_w0(5);
-	CHECK(!e.dirty());
+	CHECK(e.referenced());
+	CHECK(e.dirty());
+	CHECK_EQ(e.w0, make_w0(1, 0, false, true, true, true, false, false));
+
+	// A failed evaluation marks nothing: segment 6 is absent, and one
+	// that is out of bounds is not touched either.
+	f.put_entry(6, make_w0(0, 0, false, true, false, false, false, true),
+			0x400, 0x50000);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 6, 0x10, true, addr, t));
+	CHECK(t == trap::absent_segment);
+	CHECK_EQ(f.entry_w0(6), make_w0(0, 0, false, true, false, false, false, true));
+	f.put_entry(7, make_w0(0, 0, false, true, false, false, false, false),
+			0x400, 0x60000);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 7, 0x400, true, addr, t));
+	CHECK(t == trap::eds_bounds_violation);
+	CHECK_EQ(f.entry_w0(7), make_w0(0, 0, false, true, false, false, false, false));
 }
 
 

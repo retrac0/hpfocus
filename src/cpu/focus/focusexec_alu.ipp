@@ -37,11 +37,11 @@ private:
 			return do_lra(base, raw, ind, idx);
 		case 4:     // LDDS -- load double, word offset
 		{
-			u32 a;
-			if (!ea(base, raw * 4, ind, idx, false, a))
+			u32 a, a2;          // a2: see ea_double, on the page boundary
+			if (!ea_double(base, raw * 4, ind, idx, false, a, a2))
 				return exec_trap::address_error;
 			push(m_mem.read32(a));
-			push(m_mem.read32(a + 4));
+			push(m_mem.read32(a2));
 			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
@@ -613,14 +613,24 @@ private:
 			// The top of stack is a bit offset: bits 0-28 give the byte
 			// index, which goes to X, and bits 29-31 the bit within that
 			// byte, counted from the most significant (ERS sheet 61).
+			//
+			// The operands stay on the stack until the pointer has been
+			// evaluated. Every trap the evaluation can raise -- absent
+			// page, absent segment, absent page table -- is a note-2 trap
+			// that returns to THIS instruction, and its marker is pushed
+			// at S: popped first, the two operand words lay under the
+			// marker, and the re-executed LBIT read its bit offset and
+			// pointer out of whatever was beneath them and left its
+			// caller's stack two words short. The class of defect HPUX.md
+			// 10.3 records for MVB.
 			const u32 spec = stk(0);
 			const u32 bitno = spec & 7;
 			r.x = u32(s32(spec) >> 3);
 			const u32 ptr = stk(1);
-			r.s -= 8;
 			const ea_result e = m_au.resolve_data_pointer(ptr, true, false);
 			m_addr_trap = e.t;
 			if (!e.ok()) return exec_trap::address_error;
+			r.s -= 8;
 			const u32 v = (m_mem.read8(e.addr) >> (7 - bitno)) & 1;
 			push(v); cca(v);
 			return exec_trap::none;
@@ -637,10 +647,11 @@ private:
 			const u32 bitno = spec & 7;
 			r.x = u32(s32(spec) >> 3);
 			const u32 ptr = stk(2);
-			r.s -= 12;
+			// Popped only once the pointer is good; see LBIT.
 			const ea_result e = m_au.resolve_data_pointer(ptr, true, true);
 			m_addr_trap = e.t;
 			if (!e.ok()) return exec_trap::address_error;
+			r.s -= 12;
 			const u8 mask = u8(1u << (7 - bitno));
 			const u8 old = m_mem.read8(e.addr);
 			m_mem.write8(e.addr, bit ? (old | mask) : (old & u8(~mask)));
@@ -910,7 +921,9 @@ private:
 		}
 		case 051: {                                             // PLHA
 			if (!r.privileged()) return exec_trap::unimplemented;
-			const u32 v = m_mem.read16(stk(0) + xx);
+			// "(S)(0:16) := (S)(16:1) ... right justified and sign
+			// extended" (ERS 12.2), unlike PLBA's zero fill.
+			const u32 v = u32(s32(s16(m_mem.read16(stk(0) + xx))));
 			set_stk(0, v); cca(v);
 			return exec_trap::none;
 		}
@@ -1567,16 +1580,36 @@ private:
 		if (!e.ok())
 			return exec_trap::address_error;
 
+		// LDSI/SDSI: a doubleword whose first word is the last of its
+		// page has its second in another page, resolved for itself before
+		// anything is popped or written (see ea_double).
+		u32 second = e.addr + 4;
+		if (width == 8 && e.run_fwd < 8)
+		{
+			const ea_result e2 = m_au.resolve_data_pointer(ptr, indexed,
+					store, 4);
+			m_addr_trap = e2.t;
+			if (!e2.ok())
+				return exec_trap::address_error;
+			second = e2.addr;
+		}
+
 		if (!store)
 		{
 			pop();
 			switch (width)
 			{
 			case 1: push(m_mem.read8(e.addr)); break;
-			case 2: push(m_mem.read16(e.addr)); break;
+			// LHSI: "(S+1)(0:16) := (S+1)(16:1)" -- right justified AND
+			// sign extended (ERS 4.5, sheet 59), as LDH is; it used to
+			// zero extend and set CCG for a negative halfword. HP's C
+			// compiler knows the difference: it loads an unsigned short
+			// as `LHSI; EXF 16,16` (HP-UX user segments 86, 89, 91) and
+			// a signed one as a bare LHSI.
+			case 2: push(u32(s32(s16(m_mem.read16(e.addr))))); break;
 			case 4: push(m_mem.read32(e.addr)); break;
 			case 8: push(m_mem.read32(e.addr));
-				push(m_mem.read32(e.addr + 4)); break;
+				push(m_mem.read32(second)); break;
 			}
 			cca(stk(0));
 			return exec_trap::none;
@@ -1588,7 +1621,7 @@ private:
 		case 2: m_mem.write16(e.addr, u16(pop())); break;
 		case 4: m_mem.write32(e.addr, pop()); break;
 		case 8: { const u32 low = pop(), high = pop();
-			m_mem.write32(e.addr, high); m_mem.write32(e.addr + 4, low); } break;
+			m_mem.write32(e.addr, high); m_mem.write32(second, low); } break;
 		}
 		pop();                              // the pointer
 		return exec_trap::none;

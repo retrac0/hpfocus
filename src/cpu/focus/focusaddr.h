@@ -98,9 +98,9 @@ public:
 // Resolution of an external data segment reference to an absolute address.
 //
 // The full walk -- Data Segment Table entry, segment chaining, and the paged
-// path with its page table -- is specified on ERS sheets 30-36 and 55-56 and
-// needs the DST entry bit layout, which is not yet transcribed. This is the
-// seam where that goes; until then a test double stands in.
+// path with its page table -- is specified on ERS sheets 30-36 and 55-56;
+// dst_walker (focusdst.h) implements it, and unit tests can plug a double
+// in here instead.
 class eds_resolver
 {
 public:
@@ -222,15 +222,21 @@ public:
 	// indexed set, the pointer is resolved first and X is applied to the
 	// result. Figure 2.1 confirms this -- LOAD P+20,I,X follows the pointer
 	// to P-40 and only then adds X to reach P-20.
+	//
+	// `extra` is a byte displacement applied to the operand the way an
+	// index is -- to the offset within an external data segment, not to
+	// the address it resolved to. It is how the second word of a
+	// doubleword is reached when the first is the last word of a page:
+	// the next page is a reference of its own (see ea_double).
 	ea_result effective_address(base_reg base, u32 offset,
-			bool indirect, bool indexed, bool modify = false)
+			bool indirect, bool indexed, bool modify = false, u32 extra = 0)
 	{
 		ea_result out;
 		const u32 direct = base_address(base, offset);
 
 		if (!indirect)
 		{
-			out.addr = indexed ? (direct + m_r.x) : direct;
+			out.addr = (indexed ? (direct + m_r.x) : direct) + extra;
 			check(segment_of(base), out.addr, out.t);
 			return out;
 		}
@@ -247,25 +253,27 @@ public:
 		{
 			// 32-bit two's complement byte offset from the pointer's own
 			// location.
-			out.addr = u32(s32(direct) + s32(ptr));
+			out.addr = u32(s32(direct) + s32(ptr)) + extra;
 			if (indexed)
 				out.addr += m_r.x;
 			check(segment::code, out.addr, out.t);
 			return out;
 		}
 
-		return resolve_data_pointer(ptr, indexed, modify);
+		return resolve_data_pointer(ptr, indexed, modify, extra);
 	}
 
 	// Evaluate a data segment pointer, as ERS sheets 55-56 specify.
-	ea_result resolve_data_pointer(u32 ptr, bool indexed, bool modify)
+	// `extra`: see effective_address.
+	ea_result resolve_data_pointer(u32 ptr, bool indexed, bool modify,
+			u32 extra = 0)
 	{
 		ea_result out;
 		const u32 tag = ers32::get(ptr, 0, 2);
 
 		if (tag == 3)                       // 11: stack segment pointer
 		{
-			out.addr = m_r.sb + ers32::get(ptr, 2, 30);
+			out.addr = m_r.sb + ers32::get(ptr, 2, 30) + extra;
 			if (indexed)
 				out.addr += m_r.x;
 			check(segment::stack, out.addr, out.t);
@@ -274,7 +282,7 @@ public:
 
 		if (tag == 2)                       // 10: global data segment pointer
 		{
-			out.addr = m_r.db + ers32::get(ptr, 2, 30);
+			out.addr = m_r.db + ers32::get(ptr, 2, 30) + extra;
 			if (indexed)
 				out.addr += m_r.x;
 			check(segment::global, out.addr, out.t);
@@ -296,7 +304,7 @@ public:
 				if (m_cst(ers32::get(ptr, 20, 12), base, len))
 				{
 					out.t = trap::none;
-					out.addr = base + len - ers32::get(ptr, 1, 19) - 3;
+					out.addr = base + len - ers32::get(ptr, 1, 19) - 3 + extra;
 					if (indexed)
 						out.addr += m_r.x;
 				}
@@ -310,7 +318,7 @@ public:
 		// offset, not to the final address.
 		const bool system_dst = ers32::get(ptr, 1, 1) == 0;
 		const u32 segnum = ers32::get(ptr, 2, 11);
-		u32 offset = ers32::get(ptr, 13, 19);
+		u32 offset = ers32::get(ptr, 13, 19) + extra;
 		if (indexed)
 			offset += m_r.x;
 

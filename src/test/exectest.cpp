@@ -319,6 +319,69 @@ struct harness
 	}
 };
 
+// The paged user data segment the restart tests share: user DST entry 1,
+// writable, 1 KB pages, page 0 at 0x30000 and page 1 at 0x31000 -- NOT
+// physically adjacent to page 0's frame, which is the point of several of
+// them. Page 1 starts absent when asked.
+static const u32 PG_DST = 0x20000, PG_PTAB = 0x21000;
+static const u32 PG_FRAME0 = 0x30000, PG_FRAME1 = 0x31000;
+static void paged_segment(harness &h, bool page1_present)
+{
+	h.cpu.r.dst = PG_DST;
+	h.mem.write32(PG_DST, 16 * 4);
+	u32 w0 = 0;
+	w0 = ers32::set(w0, 22, 4, 10);
+	w0 = ers32::set(w0, 26, 1, 1);
+	w0 = ers32::set(w0, 27, 1, 1);
+	h.mem.write32(PG_DST + 16, w0);
+	h.mem.write32(PG_DST + 20, 0xfff);
+	h.mem.write32(PG_DST + 24, PG_PTAB);
+	h.mem.write32(PG_DST + 28, 0);
+	const u32 present = ers32::set(0, 27, 1, 1);
+	h.mem.write32(PG_PTAB + 0, present);
+	h.mem.write32(PG_PTAB + 4, PG_FRAME0);
+	h.mem.write32(PG_PTAB + 8, page1_present ? present
+			: ers32::set(present, 31, 1, 1));
+	h.mem.write32(PG_PTAB + 12, PG_FRAME1);
+}
+static void page1_present(harness &h, bool in)
+{
+	const u32 present = ers32::set(0, 27, 1, 1);
+	h.mem.write32(PG_PTAB + 8, in ? present : ers32::set(present, 31, 1, 1));
+}
+// An EDS pointer into that segment, and the physical address of an offset.
+static u32 pg_ptr(u32 off)
+{
+	u32 p = ers32::set(0, 1, 1, 1);
+	p = ers32::set(p, 2, 11, 1);
+	return ers32::set(p, 13, 19, off);
+}
+static u32 pg_phys(u32 off)
+{
+	return (off < 0x400 ? PG_FRAME0 : PG_FRAME1 - 0x400) + off;
+}
+// A handler segment (CST entry 1) whose absent-page vector is a bare EXIT
+// 0, and the program running in segment 5 at 0x1000: a fault, the "pager"
+// making the page present, and the handler's return, all through the real
+// trap sequence -- marker, STATUS and X travel the way they do in HP-UX.
+static const u32 RT_HB = 0x2000, RT_HLEN = 0x400;
+static void restart_handler(harness &h)
+{
+	const u32 CST = 0x200;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST, 16 * 8);
+	h.mem.write32(CST + 16 + 4, RT_HLEN - 1);
+	h.mem.write32(CST + 16 + 8, RT_HB);
+	h.mem.write32(CST + 80 + 4, 0xfff);
+	h.mem.write32(CST + 80 + 8, 0x1000);
+	const u32 HPL = RT_HB + (RT_HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 040, 0x100);       // absent page -> HB+0x100
+	h.put(RT_HB + 0x100, f5(023, 0));          // EXIT 0
+	h.cpu.enable_traps(true);
+	h.cpu.r.status = 0;
+	h.cpu.r.put(sf::CSN, 5);
+}
+
 static void test_arithmetic()
 {
 	std::printf("arithmetic and logic\n");
@@ -1117,49 +1180,29 @@ static void test_mvb()
 		CHECK_EQ(h.mem.read8(h.cpu.r.db + 0xc0 + i), 0x10 + i);
 }
 
-// An MVB into a paged data segment that runs into an absent page must
-// leave the stack resumable: the remainder as the count, BOTH pointers
-// advanced past the bytes already moved, and X reporting the progress.
-// HP-UX's exec loader copies each 1 KB file block into a process's paged
-// data segment with one MVB; the kernel maps the page the copy trips over
-// and re-executes the instruction. With only the count updated, the
-// remainder was copied to the original target again and the bytes past
-// the page boundary were never written -- init lost the C library's
-// character-class table that way and went single-user.
+// An MVB into a paged data segment that runs into an absent page must be
+// resumable, and end exactly as an uninterrupted one does. HP-UX's exec
+// loader copies each 1 KB file block into a process's paged data segment
+// with one MVB; the kernel maps the page the copy trips over and returns to
+// the instruction. The machine's mechanism is the Instruction Pending bit
+// (ERS sheet 11): the interrupted instruction leaves X = the bytes done and
+// STATUS.P set, the trap's marker carries both, the EXIT restores them, and
+// the re-executed MVB goes on from X with the stack as the program wrote
+// it. (With the count alone updated, the remainder was copied to the
+// original target again and init lost the C library's character-class
+// table; with the stack words rewritten instead, X came back short and the
+// pointers an SDEC < 3 keeps came back changed.)
 static void test_mvb_resume()
 {
 	std::printf("MVB resume across an absent page\n");
 	harness h;
-
-	// A user DST with one paged, writable segment of 1 KB pages: entry 0
-	// carries 16 * the entry count; entry 1's word 0 has P at bit 26, W
-	// at bit 27 and the page size (as a shift) in (22:4); word 2 is the
-	// page table. Two pages: the first present at 0x30000, the second
-	// absent for now.
-	const u32 dst_base = 0x20000, ptab = 0x21000;
-	h.cpu.r.dst = dst_base;
-	h.mem.write32(dst_base, 16 * 4);
-	u32 w0 = 0;
-	w0 = ers32::set(w0, 22, 4, 10);
-	w0 = ers32::set(w0, 26, 1, 1);
-	w0 = ers32::set(w0, 27, 1, 1);
-	h.mem.write32(dst_base + 16, w0);
-	h.mem.write32(dst_base + 20, 0xfff);
-	h.mem.write32(dst_base + 24, ptab);
-	h.mem.write32(dst_base + 28, 0);
-	const u32 present = ers32::set(0, 27, 1, 1);
-	h.mem.write32(ptab + 0, present);
-	h.mem.write32(ptab + 4, 0x30000);
-	h.mem.write32(ptab + 8, ers32::set(present, 31, 1, 1));   // absent
-	h.mem.write32(ptab + 12, 0x31000);
+	paged_segment(h, false);
 
 	// 1 KB of source in the global segment; the target starts 256 bytes
 	// before the page boundary.
 	for (u32 i = 0; i < 1024; i++)
 		h.mem.write8(h.cpu.r.db + 0x100 + i, u8(i * 7 + 3));
-	u32 tptr = ers32::set(0, 1, 1, 1);
-	tptr = ers32::set(tptr, 2, 11, 1);
-	tptr = ers32::set(tptr, 13, 19, 0x300);
+	const u32 tptr = pg_ptr(0x300);
 	const u32 sptr = 0x80000000u | 0x100;
 
 	const u32 s0 = h.cpu.r.s;
@@ -1167,29 +1210,284 @@ static void test_mvb_resume()
 	h.cpu.push(tptr);
 	h.cpu.push(1024);
 	const u16 insn = u16((051 << 6) | (1 << 2) | 3);
-	const auto saved = h.cpu.r;      // S with the three operands on it
+	const u32 top = h.cpu.r.s;       // S with the three operands on it
+	h.cpu.r.x = 0x5555;              // HP's code does not clear X first
 	CHECK(h.one(insn) == exec_trap::address_error);
 	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
-	// The state the instruction left for its restart, read off the
-	// operand words themselves (word k below the top is at S-3-4k).
+	// The state the instruction left for its continuation: X the bytes
+	// done, the pending bit, the stack untouched (word k below the top is
+	// at S-3-4k).
 	CHECK_EQ(h.cpu.r.x, 256);
-	CHECK_EQ(h.mem.read32(saved.s - 3), 1024 - 256);
-	CHECK_EQ(h.mem.read32(saved.s - 7), tptr + 256);
-	CHECK_EQ(h.mem.read32(saved.s - 11), sptr + 256);
+	CHECK(h.cpu.r.test(sf::P));
+	CHECK_EQ(h.cpu.r.s, top);
+	CHECK_EQ(h.mem.read32(top - 3), 1024);
+	CHECK_EQ(h.mem.read32(top - 7), tptr);
+	CHECK_EQ(h.mem.read32(top - 11), sptr);
 	for (u32 i = 0; i < 256; i++)
 		CHECK_EQ(h.mem.read8(0x30300 + i), u8(i * 7 + 3));
 
-	// The kernel maps the page and re-executes the instruction.
-	h.mem.write32(ptab + 8, present);
-	h.cpu.r = saved;
+	// The kernel maps the page and returns to the instruction; the
+	// registers here are what its EXIT restores from the marker.
+	page1_present(h, true);
 	CHECK(h.one(insn) == exec_trap::none);
-	CHECK_EQ(h.cpu.r.x, 1024 - 256);
+	CHECK_EQ(h.cpu.r.x, 1024);       // the whole count, as if never interrupted
+	CHECK(!h.cpu.r.test(sf::P));     // nothing pending any more
 	for (u32 i = 0; i < 256; i++)
 		CHECK_EQ(h.mem.read8(0x30300 + i), u8(i * 7 + 3));
 	for (u32 i = 256; i < 1024; i++)
 		CHECK_EQ(h.mem.read8(0x31000 + i - 256), u8(i * 7 + 3));
 	CHECK_EQ(h.cpu.r.s, s0);         // SDEC 3 popped the operands
-	(void)s0;
+
+	// A first execution is not a continuation: without the pending bit
+	// the move starts at zero, whatever X held.
+	h.cpu.r.x = 700;
+	h.cpu.push(sptr); h.cpu.push(tptr); h.cpu.push(8);
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, 8);
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	// Nor is an MVB that merely follows an instruction which was handed a
+	// pending STATUS: that instruction completing ends the pending state,
+	// so a stale X is not taken for progress.
+	// (An X below the count, which the plausibility test cannot catch: a
+	// resumed move would skip the first three bytes.)
+	h.cpu.r.x = 3;
+	h.cpu.r.put(sf::P, 1);
+	CHECK(h.one(f3(0)) == exec_trap::none);       // NOP
+	CHECK(!h.cpu.r.test(sf::P));
+	CHECK_EQ(h.cpu.r.x, 3);                       // X itself untouched
+	h.cpu.push(sptr); h.cpu.push(pg_ptr(0x200)); h.cpu.push(8);
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, 8);
+	for (u32 i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(pg_phys(0x200 + i)), u8(i * 7 + 3));
+	CHECK_EQ(h.cpu.r.s, s0);
+}
+
+// The same, through the real trap sequence and with SDEC 0, so every word
+// the program left on the stack is visible afterwards: the marker carries
+// STATUS.P and X to the handler's EXIT, and the finished move leaves the
+// count word reduced by X, both pointers as pushed, and X the whole count --
+// identical to a run in which the page was present all along.
+static void test_mvb_restart_round_trip()
+{
+	std::printf("MVB restart through trap and EXIT (SDEC 0)\n");
+	auto run = [](bool fault, u32 &x, u32 w[3], unsigned &traps) {
+		harness h;
+		paged_segment(h, !fault);
+		restart_handler(h);
+		traps = 0;
+		h.cpu.on_trap = [&](trap_cause, u32) { traps++; };
+		for (u32 i = 0; i < 1024; i++)
+			h.mem.write8(h.cpu.r.db + 0x100 + i, u8(i * 7 + 3));
+		h.cpu.r.x = 0x1234;
+		h.cpu.push(0x80000000u | 0x100);
+		h.cpu.push(pg_ptr(0x300));
+		h.cpu.push(1024);
+		const u32 top = h.cpu.r.s;
+		h.put(0x1000, u16((051 << 6) | (1 << 2) | 0));
+		h.put(0x1002, f3(0));                  // NOP: where a finished MVB goes
+		h.cpu.r.p = 0x1000;
+		for (int n = 0; n < 4 && h.cpu.r.p != 0x1002; n++)
+		{
+			if (h.cpu.r.p == RT_HB + 0x100)
+				page1_present(h, true);         // the "pager"
+			CHECK(h.cpu.step() == exec_trap::none);
+		}
+		CHECK_EQ(h.cpu.r.p, 0x1002);
+		CHECK_EQ(h.cpu.r.s, top);               // SDEC 0: nothing popped
+		CHECK(!h.cpu.r.test(sf::P));
+		x = h.cpu.r.x;
+		w[0] = h.cpu.stk(0); w[1] = h.cpu.stk(1); w[2] = h.cpu.stk(2);
+		for (u32 i = 0; i < 1024; i += 37)
+			CHECK_EQ(h.mem.read8(pg_phys(0x300 + i)), u8(i * 7 + 3));
+	};
+	u32 xa, xb, wa[3], wb[3];
+	unsigned ta, tb;
+	run(false, xa, wa, ta);
+	run(true, xb, wb, tb);
+	CHECK_EQ(ta, 0);
+	CHECK_EQ(tb, 1);                 // it did fault, once
+	CHECK_EQ(xa, 1024);
+	CHECK_EQ(xb, xa);                // X = elements processed (ERS sheet 101)
+	CHECK_EQ(wb[0], wa[0]);          // count word: (S) := (S) - D*X
+	CHECK_EQ(wa[0], 0);
+	CHECK_EQ(wb[1], wa[1]);          // target pointer as pushed
+	CHECK_EQ(wa[1], pg_ptr(0x300));
+	CHECK_EQ(wb[2], wa[2]);          // source pointer as pushed
+}
+
+// Runs the 16-bit instruction at 0x1000 through as many absent-page traps
+// as it takes, `pager` making pages present each time the handler is
+// entered, until it completes (P reaches 0x1002). Returns the traps taken.
+static unsigned run_through_faults(harness &h, u16 insn,
+		const std::function<void()> &pager)
+{
+	unsigned traps = 0;
+	h.cpu.on_trap = [&](trap_cause, u32) { traps++; };
+	h.put(0x1000, insn);
+	h.put(0x1002, f3(0));
+	h.cpu.r.p = 0x1000;
+	for (int n = 0; n < 16 && h.cpu.r.p != 0x1002; n++)
+	{
+		if (h.cpu.r.p == RT_HB + 0x100)
+			pager();
+		CHECK(h.cpu.step() == exec_trap::none);
+	}
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK(!h.cpu.r.test(sf::P));
+	h.cpu.on_trap = nullptr;
+	return traps;
+}
+
+// SLD, SAS and SCON end by executing an MVB on parameters they stacked in
+// place of their descriptors. A fault in that move used to send them back
+// to their own beginning, where they took the MVB parameters for a
+// descriptor (a String Trap, or a garbage temp). Now the instruction is
+// pending from the move on and finishes it (see string_move). TRAN
+// translates in place and must not put any byte through the table twice.
+static void test_string_restart()
+{
+	std::printf("SLD, SCON, SAS and TRAN restart after an absent page\n");
+	auto pager = [](harness &h) { return [&h]() { page1_present(h, true); }; };
+
+	{   // SLD: a 300-byte string whose data runs into the absent page 1.
+		harness h;
+		paged_segment(h, false);
+		restart_handler(h);
+		h.mem.write32(pg_phys(0x300), 300);
+		for (u32 i = 0; i < 300; i++)
+			h.mem.write8(pg_phys(0x304 + i), u8(i + 1));
+		h.cpu.push(0x11111111);
+		h.cpu.push(400); h.cpu.push(pg_ptr(0x300)); h.cpu.push(1); h.cpu.push(300);
+		const u32 tempadr = h.cpu.r.s - 15;
+		CHECK_EQ(run_through_faults(h, f2(025, 4), pager(h)), 1);
+		CHECK_EQ(h.mem.read32(tempadr), 300);
+		CHECK_EQ(h.mem.read8(tempadr + 4), 1);
+		CHECK_EQ(h.mem.read8(tempadr + 4 + 299), u8(300));
+		CHECK_EQ(h.cpu.stk(0), -1);
+		CHECK_EQ(h.cpu.stk(1), 1);
+		CHECK_EQ(h.cpu.stk(3), 300);
+		CHECK_EQ(h.cpu.stk(4), 76);                 // NWORDS = (300+3)/4 + 1
+		CHECK_EQ(h.cpu.r.s, tempadr + 76 * 4 + 19);
+		CHECK_EQ(h.mem.read32(tempadr - 4), 0x11111111);
+		CHECK_EQ(h.cpu.r.x, 300);
+	}
+	{   // SCON: "AB" in a temp, the appended 300 bytes cross the boundary.
+		harness h;
+		paged_segment(h, true);
+		restart_handler(h);
+		h.mem.write32(pg_phys(0x300), 300);
+		for (u32 i = 0; i < 300; i++)
+			h.mem.write8(pg_phys(0x304 + i), u8(i + 1));
+		const u32 gadr = h.cpu.r.db + 0x100;
+		h.mem.write32(gadr, 2); h.mem.write8(gadr + 4, 'A'); h.mem.write8(gadr + 5, 'B');
+		h.cpu.push(0x11111111);
+		h.cpu.push(10); h.cpu.push((2u << 30) | 0x100); h.cpu.push(1); h.cpu.push(2);
+		const u32 tempadr = h.cpu.r.s - 15;
+		CHECK(h.one(f2(025, 4)) == exec_trap::none);        // SLD -> temp
+		h.cpu.push(400); h.cpu.push(pg_ptr(0x300)); h.cpu.push(1); h.cpu.push(300);
+		page1_present(h, false);
+		CHECK_EQ(run_through_faults(h, f2(027, 4 | 2), pager(h)), 1);
+		CHECK_EQ(h.mem.read32(tempadr), 302);
+		CHECK_EQ(h.mem.read8(tempadr + 4), 'A');
+		CHECK_EQ(h.mem.read8(tempadr + 5), 'B');
+		CHECK_EQ(h.mem.read8(tempadr + 6), 1);
+		CHECK_EQ(h.mem.read8(tempadr + 6 + 299), u8(300));
+		CHECK_EQ(h.cpu.stk(0), -1);
+		CHECK_EQ(h.cpu.stk(3), 302);
+		CHECK_EQ(h.mem.read32(tempadr - 4), 0x11111111);
+	}
+	{   // SAS forwards: the target variable runs into the absent page.
+		harness h;
+		paged_segment(h, false);
+		restart_handler(h);
+		const u32 sadr = h.cpu.r.db + 0x100;
+		h.mem.write32(sadr, 200);
+		for (u32 i = 0; i < 200; i++)
+			h.mem.write8(sadr + 4 + i, u8(i + 1));
+		h.mem.write32(pg_phys(0x380), 0);
+		h.cpu.push(0x11111111);
+		h.cpu.push(400); h.cpu.push(pg_ptr(0x380)); h.cpu.push(1); h.cpu.push(u32(-1));
+		h.cpu.push(200); h.cpu.push((2u << 30) | 0x100); h.cpu.push(1); h.cpu.push(200);
+		CHECK_EQ(run_through_faults(h, f2(030, 4 | 2), pager(h)), 1);
+		CHECK_EQ(h.mem.read32(pg_phys(0x380)), 200);
+		CHECK_EQ(h.mem.read8(pg_phys(0x384)), 1);
+		CHECK_EQ(h.mem.read8(pg_phys(0x384 + 199)), u8(200));
+		CHECK_EQ(h.cpu.stk(0), 0x11111111);
+		CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	}
+	{   // SAS backwards -- a string assigned to a later part of itself --
+		// faulting mid-move: the continuation must keep running DOWN,
+		// which it learns from the condition code SAS set. Three pages:
+		// the string's length word in page 0, its data across pages 1
+		// and 2; page 1 absent, so the descending move faults part way.
+		harness h;
+		paged_segment(h, false);
+		restart_handler(h);
+		const u32 FRAME2 = 0x33000;
+		h.mem.write32(PG_PTAB + 16, ers32::set(0, 27, 1, 1));
+		h.mem.write32(PG_PTAB + 20, FRAME2);
+		auto phys3 = [&](u32 off) {
+			return off < 0x400 ? PG_FRAME0 + off
+					: off < 0x800 ? PG_FRAME1 + off - 0x400 : FRAME2 + off - 0x800;
+		};
+		const u32 S0 = 0x3f0, LEN = 0x900;
+		h.mem.write32(phys3(S0), LEN);
+		for (u32 i = 0; i < LEN; i++)
+			h.mem.write8(phys3(S0 + 4 + i), u8(i * 3 + 1));
+		// target: bytes 0x101.. (0x600 of them); source: bytes 1..0x600.
+		h.cpu.push(0xa00); h.cpu.push(pg_ptr(S0)); h.cpu.push(0x101); h.cpu.push(0x600);
+		h.cpu.push(0xa00); h.cpu.push(pg_ptr(S0)); h.cpu.push(1); h.cpu.push(0x600);
+		const u32 s_desc = h.cpu.r.s;
+		CHECK_EQ(run_through_faults(h, f2(030, 4), pager(h)), 1);
+		for (u32 i = 0; i < 0x600; i += 17)
+			CHECK_EQ(h.mem.read8(phys3(S0 + 4 + 0x100 + i)), u8(i * 3 + 1));
+		CHECK_EQ(h.mem.read8(phys3(S0 + 4 + 0x6ff)), u8(0x5ff * 3 + 1));
+		CHECK_EQ(h.mem.read8(phys3(S0 + 4 + 0xff)), u8(0xff * 3 + 1));  // untouched
+		CHECK_EQ(h.cpu.r.condition_code(), CCL);
+		CHECK_EQ(h.cpu.r.s, s_desc - 32);           // both descriptors gone
+	}
+	{   // TRAN in place across the absent page: each byte translated once.
+		harness h;
+		paged_segment(h, false);
+		restart_handler(h);
+		for (u32 i = 0; i < 256; i++)
+			h.mem.write8(h.cpu.r.db + 0x100 + i, u8(i + 1));    // table[i] = i+1
+		for (u32 i = 0; i < 64; i++)
+			h.mem.write8(pg_phys(0x3e0 + i), u8(i));
+		h.cpu.r.x = 0x7777;
+		h.cpu.push((2u << 30) | 0x100);
+		h.cpu.push(pg_ptr(0x3e0));
+		h.cpu.push(64);
+		const u32 top = h.cpu.r.s;
+		CHECK_EQ(run_through_faults(h, f2(056, 4), pager(h)), 1);   // SDEC 0
+		for (u32 i = 0; i < 64; i++)
+			CHECK_EQ(h.mem.read8(pg_phys(0x3e0 + i)), u8(i + 1));
+		CHECK_EQ(h.cpu.r.x, 64);
+		CHECK_EQ(h.cpu.r.s, top);
+		CHECK_EQ(h.cpu.stk(0), 0);
+		CHECK_EQ(h.cpu.stk(1), pg_ptr(0x3e0));      // as pushed
+	}
+	{   // TRAN with its table straddling a page boundary, page 1 absent at
+		// first: entries past the boundary come from page 1's own frame.
+		harness h;
+		paged_segment(h, false);
+		restart_handler(h);
+		for (u32 i = 0; i < 256; i++)
+			h.mem.write8(pg_phys(0x380 + i), u8(255 - i));       // table[i] = 255-i
+		h.mem.write32(PG_FRAME0 + 0x400, 0xbadbad00);           // the frame after page 0
+		const u32 tgt = h.cpu.r.db + 0x40;
+		h.mem.write8(tgt, 0x10); h.mem.write8(tgt + 1, 0xf0); h.mem.write8(tgt + 2, 0x7f);
+		h.cpu.push(pg_ptr(0x380));
+		h.cpu.push((2u << 30) | 0x40);
+		h.cpu.push(3);
+		CHECK_EQ(run_through_faults(h, f2(056, 4 | 3), pager(h)), 1);
+		CHECK_EQ(h.mem.read8(tgt), 255 - 0x10);
+		CHECK_EQ(h.mem.read8(tgt + 1), 255 - 0xf0);              // past the boundary
+		CHECK_EQ(h.mem.read8(tgt + 2), 255 - 0x7f);
+		CHECK_EQ(h.cpu.r.x, 3);
+	}
 }
 
 // Records what the CPU sends over the MPB.
@@ -1990,6 +2288,33 @@ static void test_string_concatenate()
 	// The source string is not modified.
 	CHECK_EQ(h.mem.read32(sadr), 20);
 	CHECK_EQ(h.mem.read8(sadr + 4), 'A');
+
+	// Two SHORT temps, the shape BASIC's `"A"&"B"` puts on the stack: each
+	// is a length word, one word of data, NWORDS and a descriptor, so the
+	// target's length word sits thirteen words under S. The bound is
+	// "TSTRINGADR > S-4" (ERS sheet 111) -- under the source descriptor --
+	// and a reading of it as S-14 refused exactly this with trap 1.
+	harness g;
+	const u32 gadr = g.cpu.r.db + SRC;
+	g.mem.write32(gadr, 2);
+	g.mem.write8(gadr + 4, 'A');
+	g.mem.write8(gadr + 5, 'B');
+	g.cpu.push(2); g.cpu.push(dsptr(SRC)); g.cpu.push(1); g.cpu.push(1);
+	const u32 ta = g.cpu.r.s - 15;
+	CHECK(g.one(f2(025, 4)) == exec_trap::none);        // SLD "A"
+	g.cpu.push(2); g.cpu.push(dsptr(SRC)); g.cpu.push(2); g.cpu.push(1);
+	CHECK(g.one(f2(025, 4)) == exec_trap::none);        // SLD "B"
+	const u32 s2 = g.cpu.r.s;
+	CHECK_EQ(s2 - 3 - ta, 13 * 4);
+	// Source is the temp on top (CIR(31:1)=1), both counts are -1.
+	CHECK(g.one(f2(027, 7, true)) == exec_trap::none);  // SCON
+	CHECK_EQ(g.mem.read32(ta), 2);
+	CHECK_EQ(g.mem.read8(ta + 4), 'A');
+	CHECK_EQ(g.mem.read8(ta + 5), 'B');
+	CHECK_EQ(g.cpu.r.s, s32(s2));
+	CHECK_EQ(g.cpu.stk(3), 2);
+	CHECK_EQ(g.cpu.stk(2), s32((3u << 30) | (ta - g.cpu.r.sb)));
+	CHECK_EQ(g.cpu.stk(0), -1);
 }
 
 // CPEP (ERS sheet 120): stack and global pointers become external data
@@ -2573,6 +2898,311 @@ static void test_sbit()
 	CHECK_EQ(h.mem.read8(addr - 1), 0x80);
 }
 
+
+// The CST reference bit, word 0 bit 29: "set to 1 when the segment is
+// accessed" (ERS sheet 27). Entering a segment -- a PCL into it, an EXIT
+// back to it -- marks it; leaving does not clear it (the OS does that), and
+// nothing else in the word moves except the use count.
+static void test_cst_reference()
+{
+	std::printf("CST reference bit on segment entry\n");
+	harness h;
+	const u32 CST = 0x200;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST, 16 * 8);
+	// Segment 5: the caller, where the harness runs (PB 0x1000, PL 0x1ffc).
+	h.mem.write32(CST + 80 + 0, ers32::set(0, 1, 12, 1));   // count 1, R clear
+	h.mem.write32(CST + 80 + 4, 0xfff);
+	h.mem.write32(CST + 80 + 8, 0x1000);
+	h.mem.write32(0x1ffc, 4);                               // STT: one entry
+	u32 xptr = ers32::set(0, 0, 1, 1);
+	xptr = ers32::set(xptr, 1, 19, 4);
+	xptr = ers32::set(xptr, 20, 12, 6);
+	h.mem.write32(0x1ff8, xptr);                            // -> seg 6, entry 1
+	// Segment 6: the callee, 256 bytes at 0xa000, entry 1 at +0x10.
+	h.mem.write32(CST + 96 + 0, 0x00000100u);               // an OS bit, R clear
+	h.mem.write32(CST + 96 + 4, 0xff);
+	h.mem.write32(CST + 96 + 8, 0xa000);
+	h.mem.write32(0xa0fc, 4);
+	h.mem.write32(0xa0f8, 0x10);
+	h.put(0xa010, f5(023, 0));                              // EXIT 0
+
+	h.cpu.r.status = 0;
+	h.cpu.r.put(sf::M, 1);
+	h.cpu.r.put(sf::CSN, 5);
+	CHECK(h.one(f5(022, 1)) == exec_trap::none);           // PCLS 1
+	CHECK_EQ(h.cpu.r.p, 0xa010);
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 6);
+	const u32 w6 = h.mem.read32(CST + 96);
+	CHECK_EQ(ers32::get(w6, 29, 1), 1);                    // referenced
+	CHECK_EQ(ers32::get(w6, 1, 12), 1);
+	CHECK_EQ(w6 & ~(ers32::mask(29, 1) | ers32::mask(1, 12)), 0x100u);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 1, 12), 0);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 29, 1), 0);
+
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT to seg 5
+	CHECK_EQ(h.cpu.r.get(sf::CSN), 5);
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 29, 1), 1);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 80), 1, 12), 1);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 29, 1), 1);   // still set
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 1, 12), 0);
+	CHECK_EQ(ers32::get(h.mem.read32(CST + 96), 31, 1), 0);   // never "absent"
+}
+
+// The segment-bound causes each have their own STT entry in segment 1: an
+// address outside an external data segment is cause 013 and a pointer to
+// data segment 0 cause 015, not 001 and 030 (ERS sheets 45-46); running off
+// the end of the code segment is cause 055, Instruction Sequencing Bounds
+// Violation (sheet 50), not a latched machine.
+static void test_segment_causes()
+{
+	std::printf("EDS bounds 013, EDS pointer 015, sequencing 055\n");
+	auto setup = [](harness &h) {
+		const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+		h.mem.write32(0, CST);
+		h.mem.write32(CST, 16 * 8);
+		h.mem.write32(CST + 16 + 4, HLEN - 1);
+		h.mem.write32(CST + 16 + 8, HB);
+		h.mem.write32(CST + 80 + 4, 0xfff);
+		h.mem.write32(CST + 80 + 8, 0x1000);
+		const u32 HPL = HB + (HLEN - 1) - 3;
+		for (u32 c : {001u, 013u, 015u, 030u, 055u})
+			h.mem.write32(HPL - 4 * c, 0x100 + 4 * c);  // a vector per cause
+		h.cpu.enable_traps(true);
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::CSN, 5);
+	};
+	const u32 HB = 0x2000;
+
+	// User segment 1: 64 bytes, unpaged, writable, no link.
+	harness h;
+	setup(h);
+	const u32 dst_base = 0x20000;
+	h.cpu.r.dst = dst_base;
+	h.mem.write32(dst_base, 16 * 4);
+	h.mem.write32(dst_base + 16, ers32::set(0, 27, 1, 1));
+	h.mem.write32(dst_base + 20, 63);
+	h.mem.write32(dst_base + 24, 0x30000);
+	u32 ptr = ers32::set(0, 1, 1, 1);
+	ptr = ers32::set(ptr, 2, 11, 1);
+	ptr = ers32::set(ptr, 13, 19, 64);         // one past the end
+	h.cpu.push(ptr);
+	CHECK(h.one(f4(005)) == exec_trap::none);  // LSI
+	CHECK(unsigned(h.cpu.last_trap()) == 013u);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100 + 4 * 013);
+	CHECK_EQ(h.cpu.word_below_pub(h.cpu.r.q, 2), 0);   // returns to the LSI
+
+	// A pointer to data segment 0.
+	harness z;
+	setup(z);
+	z.cpu.push(ers32::set(0, 13, 19, 8));
+	CHECK(z.one(f4(005)) == exec_trap::none);
+	CHECK(unsigned(z.cpu.last_trap()) == 015u);
+	CHECK_EQ(z.cpu.r.p, HB + 0x100 + 4 * 015);
+
+	// A global pointer out of DB..DL is still cause 1.
+	harness g;
+	setup(g);
+	g.cpu.push((2u << 30) | 0x100000);
+	CHECK(g.one(f4(005)) == exec_trap::none);
+	CHECK(g.cpu.last_trap() == trap_cause::bounds_violation);
+	CHECK_EQ(g.cpu.r.p, HB + 0x100 + 4 * 001);
+
+	// P past PL: the trap, with the marker pointing at the offending P.
+	harness s;
+	setup(s);
+	s.cpu.r.p = s.cpu.r.pl + 4;
+	const u32 q0 = s.cpu.r.q;
+	CHECK(s.cpu.step() == exec_trap::none);
+	CHECK(s.cpu.last_trap() == trap_cause::instruction_sequencing);
+	CHECK_EQ(s.cpu.r.p, HB + 0x100 + 4 * 055);
+	CHECK_EQ(s.cpu.r.q, q0 + 16);
+	CHECK_EQ(s.cpu.word_below_pub(s.cpu.r.q, 2), 0x1000 + 0xfff - 3 + 4 - 0x1000);
+	CHECK(!s.cpu.halted());
+
+	// Without a handler segment it is still reported to the caller.
+	harness n;
+	n.cpu.r.p = n.cpu.r.pl + 4;
+	CHECK(n.cpu.step() == exec_trap::code_bounds);
+}
+
+// LHSI and PLHA sign extend (ERS 4.5 and 12.2: "(S)(0:16) := (S)(16:1)"),
+// exactly as LDH does, and set CCA on the extended value. Both used to
+// zero extend.
+static void test_halfword_sign()
+{
+	std::printf("LHSI and PLHA sign extension\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);
+
+	const u32 addr = h.cpu.r.db + 16;
+	h.mem.write32(addr, 0xfffe7fffu);          // halfwords -2 and 32767
+
+	h.cpu.push((2u << 30) | 16);               // global pointer, DB+16
+	CHECK(h.one(f4(010)) == exec_trap::none);  // LHSI
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop();
+
+	h.cpu.push((2u << 30) | 18);
+	CHECK(h.one(f4(010)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x7fffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.pop();
+
+	h.cpu.push(addr);                          // absolute
+	CHECK(h.one(f4(051)) == exec_trap::none);  // PLHA
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop();
+
+	h.cpu.push(addr + 2);
+	CHECK(h.one(f4(051)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x7fffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.pop();
+}
+
+// A doubleword is aligned to a WORD (ERS 2.2.6), so one can start on the
+// last word of a page: its second word is in the next page, whose frame is
+// anywhere. LDSI/SDSI/LDD/STD/LDDS must reach it there -- not in whatever
+// frame follows the first one physically -- and if that page is absent,
+// trap before anything is popped or written.
+static void test_double_cross_page()
+{
+	std::printf("doublewords straddling a page boundary\n");
+	harness h;
+	paged_segment(h, true);
+	const u32 next_frame = PG_FRAME0 + 0x400;  // physically after page 0
+	h.mem.write32(pg_phys(0x3fc), 0x11112222);
+	h.mem.write32(pg_phys(0x400), 0x33334444); // first word of page 1
+	h.mem.write32(next_frame, 0xbadbad00);
+
+	h.cpu.push(pg_ptr(0x3fc));
+	CHECK(h.one(f4(007)) == exec_trap::none);  // LDSI
+	CHECK_EQ(h.cpu.stk(1), 0x11112222);
+	CHECK_EQ(h.cpu.stk(0), 0x33334444);
+
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(pg_ptr(0x3fc));
+	h.cpu.push(0x55556666); h.cpu.push(0x77778888);
+	CHECK(h.one(f4(027)) == exec_trap::none);  // SDSI
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x55556666);
+	CHECK_EQ(h.mem.read32(pg_phys(0x400)), 0x77778888);
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	CHECK_EQ(h.cpu.r.s, 0x4003);
+
+	// LDD / STD / LDDS through a pointer in the global segment.
+	h.mem.write32(h.cpu.r.db + 0x10, pg_ptr(0x3fc));
+	h.cpu.r.s = 0x4003;
+	const u32 ldd = (7u << 29) | (020u << 24) | (1u << 23) | (2u << 19) | 0x10;
+	CHECK(h.one(ldd) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0x55556666);
+	CHECK_EQ(h.cpu.stk(0), 0x77778888);
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(0x0a0a0a0a); h.cpu.push(0x0b0b0b0b);
+	const u32 std_ = (7u << 29) | (035u << 24) | (1u << 23) | (2u << 19) | 0x10;
+	CHECK(h.one(std_) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);
+	CHECK_EQ(h.mem.read32(pg_phys(0x400)), 0x0b0b0b0b);
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	h.cpu.r.s = 0x4003;
+	CHECK(h.one(f1(4, true, false, 2, 4)) == exec_trap::none);   // LDDS DB+4,I
+	CHECK_EQ(h.cpu.stk(1), 0x0a0a0a0a);
+	CHECK_EQ(h.cpu.stk(0), 0x0b0b0b0b);
+
+	// The second page absent: every one of them traps with nothing done.
+	page1_present(h, false);
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(pg_ptr(0x3fc));
+	u32 s0 = h.cpu.r.s;
+	CHECK(h.one(f4(007)) == exec_trap::address_error);          // LDSI
+	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.cpu.stk(0), pg_ptr(0x3fc));
+	h.cpu.push(0x55556666); h.cpu.push(0x77778888);
+	s0 = h.cpu.r.s;
+	CHECK(h.one(f4(027)) == exec_trap::address_error);          // SDSI
+	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);         // not written
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	s0 = h.cpu.r.s;
+	CHECK(h.one(ldd) == exec_trap::address_error);              // LDD
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK(h.one(std_) == exec_trap::address_error);             // STD
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);
+	CHECK(h.one(f1(4, true, false, 2, 4)) == exec_trap::address_error);
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	// One wholly inside a page is the plain case, and unaffected.
+	page1_present(h, true);
+	h.cpu.r.s = 0x4003;
+	h.mem.write32(pg_phys(0x3f4), 0x01020304);
+	h.mem.write32(pg_phys(0x3f8), 0x05060708);
+	h.cpu.push(pg_ptr(0x3f4));
+	CHECK(h.one(f4(007)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0x01020304);
+	CHECK_EQ(h.cpu.stk(0), 0x05060708);
+}
+
+// LBIT and SBIT must leave their operands on the stack until the pointer
+// has evaluated: an absent page traps back to the instruction (note 2),
+// the marker is pushed on top of S, and the retry has to find the same
+// two (three) words it started with. This runs the whole round trip --
+// trap 040 into code segment 1, the page made present, EXIT, retry.
+static void test_bit_restart()
+{
+	std::printf("LBIT/SBIT restart after an absent page\n");
+	harness h;
+	paged_segment(h, false);
+	restart_handler(h);
+	h.mem.write8(pg_phys(0x408), 0x04);        // byte 0x408, bit 5 set
+
+	const u32 ptr = pg_ptr(0x3f8);             // in page 0
+	const u32 spec = 8 * 16 + 5;               // 16 bytes on: page 1, bit 5
+
+	h.cpu.push(0x11111111u);
+	h.cpu.push(ptr);
+	h.cpu.push(spec);
+	const u32 s_before = h.cpu.r.s;
+
+	CHECK(h.one(f4(002, true)) == exec_trap::none);        // LBIT: traps
+	CHECK(h.cpu.last_trap() == trap_cause::absent_page);
+	CHECK_EQ(h.cpu.r.p, RT_HB + 0x100);
+
+	page1_present(h, true);                                // "page it in"
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT
+	CHECK_EQ(h.cpu.r.p, 0x1000);
+	CHECK_EQ(h.cpu.r.s, s_before);                         // operands intact
+	CHECK_EQ(h.cpu.stk(0), spec);
+	CHECK_EQ(h.cpu.stk(1), ptr);
+
+	CHECK(h.cpu.step() == exec_trap::none);                // LBIT again
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.stk(1), 0x11111111u);
+	CHECK_EQ(h.cpu.r.s, s_before - 4);
+
+	// SBIT the same way: bit 6 of the same byte, page 1 absent again.
+	page1_present(h, false);
+	h.cpu.pop();
+	h.cpu.push(ptr);
+	h.cpu.push(8 * 16 + 6);
+	h.cpu.push(1);
+	const u32 s2 = h.cpu.r.s;
+	CHECK(h.one(f4(003, true)) == exec_trap::none);        // SBIT: traps
+	CHECK(h.cpu.last_trap() == trap_cause::absent_page);
+	page1_present(h, true);
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT
+	CHECK_EQ(h.cpu.r.s, s2);
+	CHECK(h.cpu.step() == exec_trap::none);                // SBIT again
+	CHECK_EQ(h.mem.read8(pg_phys(0x408)), 0x06);
+	CHECK_EQ(h.cpu.r.s, s2 - 12);
+	CHECK_EQ(h.cpu.stk(0), 0x11111111u);
+}
+
 // UP and DOWN (format 4, 020/021): the semaphore pair named only by the
 // shipped assembler and executed only by the HP-UX kernels. Layout fixed
 // by both kernels' data and the BASIC kernel's software twin: word 0 the
@@ -2841,6 +3471,8 @@ int main()
 	test_try_escp();
 	test_mvb();
 	test_mvb_resume();
+	test_mvb_restart_round_trip();
+	test_string_restart();
 	test_io();
 	test_tcc();
 	test_traps();
@@ -2858,6 +3490,11 @@ int main()
 	test_shift_index();
 	test_lra_index();
 	test_sbit();
+	test_bit_restart();
+	test_double_cross_page();
+	test_halfword_sign();
+	test_cst_reference();
+	test_segment_causes();
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
