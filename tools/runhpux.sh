@@ -260,7 +260,9 @@ case "$RELEASE" in
 	export FOCUS_KBDNV="${FOCUS_KBDNV:-$VAR/hpux501/kbd.nv}"
 	# The 520's console is its own screen, which a headless run does not
 	# have: FOCUS_DIMDUMP prints the frame buffer at the end of the run, and
-	# tools/screen.py turns that into the screen a person would have seen.
+	# tools/screen.py turns that into the screen a person would have seen --
+	# here, when the output is a terminal; into a pipe or a file the dump
+	# goes as it is, so the old recipe's `| tools/screen.py` still works.
 	if [ "$HEADLESS" = 1 ]; then
 		[ -n "$SECONDS_RUN" ] || SECONDS_RUN=100
 		export FOCUS_DIMDUMP="${FOCUS_DIMDUMP-1}"
@@ -268,8 +270,11 @@ case "$RELEASE" in
 			-quik "$KERNEL" -video none -str "$SECONDS_RUN" "$@"
 		if [ "$DRYRUN" = 1 ]; then echo "${FOCUS_CMD[*]}"; exit 0; fi
 		cd "$FOCUS_REPO/mame"
-		"${FOCUS_CMD[@]}" | python3 "$FOCUS_REPO/tools/screen.py"
-		exit "${PIPESTATUS[0]}"
+		if [ -t 1 ]; then
+			"${FOCUS_CMD[@]}" | python3 "$FOCUS_REPO/tools/screen.py"
+			exit "${PIPESTATUS[0]}"
+		fi
+		exec "${FOCUS_CMD[@]}"
 	fi
 	if [ "$DRYRUN" = 1 ]; then
 		focus_args hp9020 -mpb3 1m -mpb4 1m -cio5 hpib -hard2 "$DISC" -quik "$KERNEL" "$@"
