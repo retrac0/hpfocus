@@ -111,7 +111,7 @@ check('console' in who, "root's who on the console: %s" % (', '.join(who) or 'no
 dates = re.findall(r'\w{3} \w{3} +\d+ \d\d:\d\d:\d\d \w{3} \d{4}', t)
 print('       date: %s' % (dates[-1] if dates else 'none printed'))
 for pat, what in ((r'System halted|panic|TRAP:', 'halts or panics'),
-                  (r'memory fault', 'memory faults'),
+                  (r'(?i)memory fault', 'memory faults'),
                   (r'cannot open', "gettys that cannot open a port"),
                   (r'core dumped', 'core dumps')):
     k = len(re.findall(pat, t))

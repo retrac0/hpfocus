@@ -308,6 +308,7 @@ cleanup() {
 		kill "$HUB_PID" 2>/dev/null && wait "$HUB_PID" 2>/dev/null
 		rm -f "$RUNDIR/hub.ready"
 	fi
+	[ -n "${STOPFILE:-}" ] && rm -f "$STOPFILE"
 	hpux_unlock
 	local d
 	for d in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do
@@ -520,7 +521,7 @@ fi
 	fi
 	if [ "$MULTIUSER" = 1 ]; then
 		echo "  login     root, no password; Return at the two TERM = prompts"
-		echo "            (the logins appear about 90 s after power-on)"
+		echo "            (the logins appear within a minute of power-on)"
 	else
 		echo "  shell     root's shell on the console; Return at its TERM = prompt"
 	fi
@@ -531,6 +532,15 @@ fi
 	fi
 	echo
 } >&2
+
+# A window needs a display. Without one MAME says only "Could not
+# initialize SDL No available video device" and exits.
+if [ "$CONSOLE" = window ] && [ "$(uname -s)" = Linux ] \
+		&& [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+	echo "note: no DISPLAY or WAYLAND_DISPLAY is set, so MAME has nowhere to open its" >&2
+	echo "      window (an ssh session?). Without one, use --headless (the console on" >&2
+	echo "      this terminal's output) or --console tcp (tools/hpuxterm.py console)." >&2
+fi
 
 on_signal() {
 	SIGNALS=$((SIGNALS + 1))
@@ -564,5 +574,8 @@ while :; do
 	wait "$MAME_PID" && status=0 || status=$?
 	kill -0 "$MAME_PID" 2>/dev/null || break
 done
-trap - INT TERM HUP
+# MAME has gone. A further ^C must not kill this script before its EXIT
+# trap has stopped the hub and removed the lock: a terminal's ^C reaches
+# MAME as well as this script, so MAME is often gone by the second one.
+trap '' INT TERM HUP
 exit "$status"

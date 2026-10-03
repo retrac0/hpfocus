@@ -13,8 +13,8 @@
 # Ready for use." arrives after ~55 emulated seconds. Type at the window.
 # Return is the 520's ENTER key, which stores a numbered program line;
 # EXECUTE, which runs a command (RUN, LIST, DISP 7), is Insert or Ctrl-J.
-# A command ended with Return answers IMPROPER LINE NUMBER, and a typed
-# program needs its END. INSTALL.md section 8 and KNOWN-ISSUES.md have the
+# A command ended with Return answers IMPROPER LINE NUMBER, Esc clears the
+# input line, and a typed program needs its END. INSTALL.md section 8 and KNOWN-ISSUES.md have the
 # rest.
 #
 #   tools/runbasic.sh              boot the BASIC system volumes
