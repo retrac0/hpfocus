@@ -47,12 +47,12 @@
 # and keep what HP-UX writes there. --reset (or deleting var/hpux530) is
 # the way back. What a boot does depends on that state, so say whether it
 # was --fresh when you report a problem; `tools/runhpux.sh --status` says
-# what the machine is. Before stopping a run, `sync` at a root shell:
-# HP-UX does not check its file system at boot (its /etc/bcheckrc is
-# empty). TODO(storage lane): until the emulator writes HP-UX's writes
-# through as they land, the disc reaches its file only when MAME exits
-# cleanly -- the window closed, ^C to a run this script started, the end
-# of --seconds -- and a kill -9 loses the whole run.
+# what the machine is. The emulator writes each block HP-UX writes through
+# to disc.bin as it lands, so a crash or a kill -9 keeps everything HP-UX
+# had written -- but stopping is still a power cut to HP-UX, whose buffer
+# cache holds what it has not yet written, and HP-UX does not check its
+# file system at boot (its /etc/bcheckrc is empty). So `sync` at a root
+# shell before stopping a run.
 #
 # TWO RELEASES, TWO MACHINES, AND TWO QUITE DIFFERENT KINDS OF MEDIA. It
 # is worth being clear about which is which, because they arrive here by
@@ -84,10 +84,12 @@
 # clock from the host at every power-up (FOCUS_RTCTIME=now, kept as GMT:
 # FOCUS_RTCUTC=1, because HP-UX keeps GMT in the chip and converts with
 # its TZ, PST8PDT on this disc); set FOCUS_RTCTIME=none for the unset
-# clock, or an ISO date to pin one. TODO(clock lane): a build without the
-# clock lane's RTC fix ignores the seed and HP-UX dates everything
-# February 2036; once the driver defaults FOCUS_RTCTIME to now (its
-# cross-lane request B), the two exports below become redundant.
+# clock, or an ISO date to pin one. The seed is the script's choice, not
+# the emulator's: its default stays 'none' so that tests are repeatable,
+# and GMT-or-local is the OS's convention (BASIC keeps local time). HP-UX
+# rewrites a battery it has never initialised, so the pristine battery is
+# primed once (tools/lib/hpux.sh) and every machine copies it: the first
+# boot already has the date.
 #
 # Typed input and listening: FOCUS_TAP names the terminals a run listens
 # to ('console', '<sc>:<port>'), FOCUS_TYPE='@<term>=...' types at them,
@@ -374,10 +376,10 @@ export FOCUS_RTCTIME="${FOCUS_RTCTIME-now}"
 
 user_set() { local a; for a in ${ARGS[@]+"${ARGS[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
 
-# Feature check: the console card's rs232 port came with the terminals
-# lane's change. Ask the binary rather than guess. TODO(terminals lane):
-# --ports pty and --console pty also rely on that build printing each
-# pty's name ("<slot>: pseudo terminal /dev/pts/N") on stdout.
+# Feature check: the console card's rs232 port. Ask the binary rather than
+# guess, so an older build says so instead of failing obscurely. With
+# --ports pty and --console pty the emulator prints each pseudo terminal's
+# name ("<slot>: pseudo terminal /dev/pts/N") on stdout as it opens it.
 console_has_rs232() {
 	"$FOCUS_BIN" hp9040 -listslots 2>/dev/null | grep -q 'asi:rs232'
 }
