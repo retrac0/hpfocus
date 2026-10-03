@@ -45,9 +45,11 @@ STOP=${FOCUS_BASICTEST_STOP:-30}
 # it becomes a pass.
 #
 # Cases marked WORKS are regression guards -- they pass today and must go on
-# passing. 22 of the 24 do; `concat` and `real-add` are the work list, named
-# in KNOWN_FAIL below: they score XFAIL (or XPASS, once fixed -- then take
-# them off the list) and do not count against the exit status.
+# passing. All 24 do. A case that is known to be wrong goes in KNOWN_FAIL
+# below: it scores XFAIL (or XPASS, once fixed -- then take it off the
+# list) and does not count against the exit status. The list is empty:
+# `concat` (SCON's bound, S-4 not S-14) and `real-add` (LADD,B dropping
+# the carry between limbs) were its last two entries.
 #
 # Exit status: 0 every scored case as expected, 1 a case failed that should
 # pass, 2 nothing could be scored (no binary, no disc, BASIC never booted).
@@ -72,8 +74,8 @@ CASES=(
 	"two-stmt      | DISP 1\nDISP 2\nDISP 3\n | 3"
 	# --- these three separated the failure modes ---------------------
 	# They were the sharpest discriminators while every operator printed 9.
-	# Two now pass; string concatenation still faults outright and is the
-	# one remaining statement-level defect.
+	# All three pass; string concatenation faulted outright until SCON's
+	# target bound was read as S-4, as the ERS page image has it.
 	"two-item      | DISP 4,5\n           | 4                   5"
 	"compare       | DISP 1=1\n           | 1"
 	"concat        | DISP \"A\"&\"B\"\n      | AB"
@@ -94,16 +96,14 @@ CASES=(
 	"recip         | DISP 1/3\n           | .333333333333"
 	"big-div       | DISP 100/8\n         | 12.5"
 	"sqrt2         | DISP SQR(2)\n        | 1.41421356237"
-	# --- real addition: a wrong answer, not a halt -------------------
-	# This now compiles and runs and comes back a few ulp low
-	# (5.49999999907). The remaining question is FADD or the BTD digit
-	# loop, and it is a much sharper one than the halt it replaced.
+	# --- real addition -------------------------------------------------
+	# Came back a few ulp low (5.49999999907) while LADD,B dropped the
+	# carry between the limbs of BASIC's decimal-to-binary conversion.
 	"real-add      | DISP 4.5+1\n         | 5.5"
 )
 
-# Still wrong on a26b01c, checked by hand: `DISP "A"&"B"` halts with
-# TRAP:00000001 and `DISP 4.5+1` shows 5.49999999907.
-KNOWN_FAIL=" concat real-add "
+# Cases known to be wrong today, space-separated with a space at each end.
+KNOWN_FAIL=" "
 
 # ------------------------------------------------------------------ options
 ONLY=""
