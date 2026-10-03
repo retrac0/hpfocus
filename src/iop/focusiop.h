@@ -139,11 +139,11 @@ public:
 	// ready to take data whenever the IOP offers it.
 	virtual bool poll_request() { return service_request(); }
 
-	// True when the card is raising the burst-request line: with the
-	// channel's DMA registers programmed, a burst request moves data
-	// without any start command. The internal disc driver relies on this
-	// -- it programs WDS/WDC/WDA, commands the card through FR1, and
-	// waits for the completion interrupt without ever issuing SD.
+	// True when the card is raising the burst-request line. "The DMA
+	// Burst Request line is used to request a DMA burst during a DMA
+	// transfer" (I/O ERS 3.1): it asks for many transfers per poll
+	// response on a channel that is enabled for DMA, and is not a way
+	// round the DMA Mask -- see run_dma.
 	virtual bool burst_request() { return false; }
 
 	// The transfer the channel was counting is complete (the count
@@ -892,11 +892,43 @@ public:
 		channel_state &c = m_chan[pa];
 		if (!c.iface)
 			return;
-		// A burst request moves data on a programmed channel without a
-		// start command; otherwise a transfer needs the start command's
-		// active state and the DMA mask bit.
+		// Nothing moves on a PA whose DMA Mask bit is clear. "The
+		// interface poll response, IOD 0-7, is AND'ed with the DMA Mask
+		// register to determine whether a request by an interface enabled
+		// to do DMA exists. If so ... a DMA data transfer is done to the
+		// interface and if burst DMA (multiple transfers per poll
+		// response) is requested, an entire burst is done" (I/O ERS 2.4;
+		// section 1 says the same: a poll response is a data request "if
+		// the poll winning interface has its DMA mask bit set"). The bit
+		// is set by the Start DMA commands and by EDMA and cleared by
+		// DDMA, "to disable DMA for the PA" (commands 23, 17, 20, 15, 16).
+		//
+		// A burst request used to be honoured whatever the mask said, on
+		// the reading that the internal disc's driver never starts its
+		// DMA. It does: every leg of its transaction is DDMA, WDS, WDC,
+		// WDA, SDC (SUN OS KERNEL +0x884..+0x944), the DDMA there so that
+		// nothing can move while the three registers are being loaded.
+		// Honouring the burst in spite of it let a poll round that fell
+		// between two of those commands run the whole leg early. After
+		// WDA that was only early (SDC then found the count at zero and
+		// cleared the completion it was about to wait for). Between WDC
+		// and WDA the count was the new leg's and the address was still
+		// where the last leg had stopped: the controller was handed
+		// eighteen bytes of whatever lay beyond the previous data buffer
+		// as its command block, rejected it, and the read that followed
+		// delivered a block of zeros. BASIC's LOAD stored them as the
+		// tail of a program segment and the first RUN halted the machine
+		// ("TRAP:00000055 00001578 00464001 00000099", or TRAP 020) --
+		// the 9020 diagnostics, at whichever typing times put a poll
+		// round in the window: one in three once the dispatcher's path
+		// had been shortened, and at FOCUS_IOPPOLL=300 before that.
+		if (!(m_dma_mask & (1u << pa)))
+			return;
+		// With the bit set, a burst request moves data on a programmed
+		// channel (EDMA is enough); anything else needs a start command's
+		// active state.
 		const bool burst = c.dma_count != 0 && c.iface->burst_request();
-		if (!burst && (!c.dma_active || !(m_dma_mask & (1u << pa))))
+		if (!burst && !c.dma_active)
 			return;
 		if (!uncounted && c.dma_count == 0)
 			return;

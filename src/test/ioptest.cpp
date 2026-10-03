@@ -80,6 +80,7 @@ class test_card : public iop_interface
 {
 public:
 	bool wants = false;
+	bool burst = false;         // the Burst Request line
 	u8 next_in = 0;
 	std::vector<u8> written;
 	u32 st = 0xabcd, fl = 0x1234;
@@ -91,6 +92,7 @@ public:
 	u32 status_reg() override { return st; }
 	u32 flag() override { return fl; }
 	bool service_request() override { return wants; }
+	bool burst_request() override { return burst; }
 	u8 dma_read() override { return next_in++; }
 	void dma_write(u8 v) override { written.push_back(v); }
 };
@@ -574,6 +576,105 @@ static void test_dma()
 	for (int i = 0; i < 4; i++)
 		iop.poll_and_service();
 	CHECK_EQ(card.written.size(), 0u);
+}
+
+
+// A poll round that falls among the commands loading a channel's DMA
+// registers moves nothing: the DMA Mask bit is clear.
+//
+// "The interface poll response, IOD 0-7, is AND'ed with the DMA Mask
+// register to determine whether a request by an interface enabled to do
+// DMA exists. If so ... a DMA data transfer is done to the interface and if
+// burst DMA (multiple transfers per poll response) is requested, an entire
+// burst is done" (I/O ERS 2.4), and DDMA clears the bit "to disable DMA for
+// the PA" (command 16). The 520's internal disc holds its Burst Request up
+// from the FR1 write that announces a leg, and BASIC's driver loads each
+// leg as DDMA, WDS, WDC, WDA, SDC. With the burst honoured in spite of the
+// mask, a poll between WDC and WDA ran the leg from the address the LAST
+// leg had stopped at -- the controller got eighteen bytes of somebody
+// else's memory for a command block and answered the read with zeros --
+// and the SDC that followed found the count at zero and cleared the
+// completion it was about to wait for.
+static void test_dma_mask_gates_burst()
+{
+	std::printf("IOP DMA: a burst request does not move data past a clear DMA Mask bit\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+
+	test_card card;
+	iop.attach(7, &card);
+	const u32 out_bytes = ers32::mask(27, 1) | ers32::mask(29, 1);
+
+	// One leg, as the driver issues it. It leaves the current address
+	// just past its buffer.
+	h.mem.write8(0x2000, 0xde);
+	h.mem.write8(0x2001, 0xad);
+	h.mem.write8(0x2002, 0x66);                 // not this leg's, nor the next
+	h.mem.write8(0x2003, 0x77);
+	card.wants = card.burst = true;
+	CHECK(iop.io_control(tgt(CMD_DDMA, 1, 7)));
+	CHECK(iop.io_write(tgt(CMD_WDS, 1, 7), out_bytes));
+	CHECK(iop.io_write(tgt(CMD_WDC, 1, 7), 2));
+	CHECK(iop.io_write(tgt(CMD_WDA, 1, 7), 0x2000));
+	CHECK(iop.io_control(tgt(CMD_SDC, 1, 7)));
+	CHECK_EQ(card.written.size(), 2u);
+
+	// The next leg, with a poll round after each register write.
+	h.mem.write8(0x3000, 0xbe);
+	h.mem.write8(0x3001, 0xef);
+	CHECK(iop.io_control(tgt(CMD_DDMA, 1, 7)));
+	iop.poll_and_service();
+	CHECK(iop.io_write(tgt(CMD_WDS, 1, 7), out_bytes));
+	iop.poll_and_service();
+	CHECK(iop.io_write(tgt(CMD_WDC, 1, 7), 2));
+	iop.poll_and_service();                     // count loaded, address stale
+	CHECK_EQ(card.written.size(), 2u);          // nothing has moved
+	CHECK(iop.io_write(tgt(CMD_WDA, 1, 7), 0x3000));
+	iop.poll_and_service();                     // loaded, not started
+	CHECK_EQ(card.written.size(), 2u);
+	{
+		u32 v = 0;
+		CHECK(iop.io_read(tgt(CMD_RDCS, 1, 7), v));
+		CHECK_EQ(rdcs_count(v), 2);             // the whole leg still to do
+	}
+
+	// The start command is what moves it, from the address just written,
+	// and its completion is still standing afterwards.
+	CHECK(iop.io_control(tgt(CMD_SDC, 1, 7)));
+	CHECK_EQ(card.written.size(), 4u);
+	if (card.written.size() == 4)
+	{
+		CHECK_EQ(card.written[2], 0xbe);
+		CHECK_EQ(card.written[3], 0xef);
+	}
+	{
+		u32 v = 0;
+		CHECK(iop.io_read(tgt(CMD_RDCS, 1, 7), v));
+		CHECK_EQ(rdcs_count(v), 0);
+		CHECK_EQ(v & 0xffff, 0x2000u);          // terminated on count
+		CHECK(iop.io_read(tgt(CMD_RIRQ, 1, 7), v));
+		CHECK(v & (1u << 7));                   // the completion request
+	}
+
+	// EDMA sets the same bit, and a burst request on a channel enabled
+	// that way is served by the poll with no start command.
+	h.mem.write8(0x4000, 0x12);
+	h.mem.write8(0x4001, 0x34);
+	CHECK(iop.io_control(tgt(CMD_DDMA, 1, 7)));
+	CHECK(iop.io_write(tgt(CMD_WDS, 1, 7), out_bytes));
+	CHECK(iop.io_write(tgt(CMD_WDC, 1, 7), 2));
+	CHECK(iop.io_write(tgt(CMD_WDA, 1, 7), 0x4000));
+	iop.poll_and_service();
+	CHECK_EQ(card.written.size(), 4u);
+	CHECK(iop.io_control(tgt(CMD_EDMA, 1, 7)));
+	iop.poll_and_service();
+	CHECK_EQ(card.written.size(), 6u);
+	if (card.written.size() == 6)
+	{
+		CHECK_EQ(card.written[4], 0x12);
+		CHECK_EQ(card.written[5], 0x34);
+	}
 }
 
 
@@ -1652,6 +1753,7 @@ int main()
 	test_asi_read_status();
 	test_asi_one_event_per_record();
 	test_dma();
+	test_dma_mask_gates_burst();
 	test_poll_and_timer();
 	test_cpu_to_iop();
 	test_scm();

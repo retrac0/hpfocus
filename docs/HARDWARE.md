@@ -198,6 +198,25 @@ other entry above is a single fixed opcode.
 > the same wrong count sat in the disc path's transfer reports too, where
 > nothing had happened to look at it.
 
+> **A burst request does not get past the DMA Mask.** ERS §2.4: "the
+> interface poll response, IOD 0-7, is AND'ed with the DMA Mask register
+> to determine whether a request by an interface enabled to do DMA exists.
+> If so ... a DMA data transfer is done to the interface and if burst DMA
+> (multiple transfers per poll response) is requested, an entire burst is
+> done"; §3.1: the Burst Request line asks for a burst "during a DMA
+> transfer". The Start DMA commands and `EDMA` set a PA's mask bit and
+> `DDMA` clears it, "to disable DMA for the PA". The 520's internal disc
+> controller holds Burst Request up from the FR1 write that announces a
+> leg, and the BASIC kernel's driver loads every leg as `DDMA`, `WDS`,
+> `WDC`, `WDA`, `SDC` (SUN OS KERNEL +0x884..+0x944) -- the `DDMA` is
+> what keeps the leg from moving while its registers are half loaded. The
+> emulator once let the burst run whatever the mask said: a poll round
+> between `WDC` and `WDA` then sent the controller a command block from
+> wherever the previous leg had stopped, the read that followed returned
+> zeros, and BASIC stored them as program. It showed as the 9020 test
+> driver halting on `RUN` (`TRAP:00000055` or `020`) at some typing times
+> and not others.
+
 **Five more are list-only.** The ERS's command table has a final group headed
 `IOP COMMAND EXECUTION` — opcodes legal only *inside* an ICEI command list,
 where they are its control flow (sheets 38–39, 41–42):
