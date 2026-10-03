@@ -390,6 +390,20 @@ TERMS=()
 if [ "$CONSOLE" = tcp ] || [ "$CONSOLE" = pty ]; then
 	TERMS+=("console cio0:asi:rs232")
 fi
+# A caller who fits any port or bitbanger on the command line takes the
+# ports over: MAME numbers its bitbangers bitb1, bitb2, ... across the
+# whole machine, so this script's -bitbN and the caller's -bitb could not
+# both be right (docs/HPUX.md 10.5's recipes fit their own).
+for a in ${ARGS[@]+"${ARGS[@]}"}; do
+	case "$a" in
+		-cio2:mux6:port*|-bitb*|-bitbanger*)
+			if [ "$PORTS" != none ]; then
+				echo "note: ports fitted on the command line; the script fits none of its own" >&2
+				PORTS=none
+			fi
+			[ "$CONSOLE" = tcp ] && { echo "--console tcp cannot be combined with a -bitb of your own" >&2; exit 2; } ;;
+	esac
+done
 if [ "$MULTIUSER" = 1 ]; then
 	if user_set -cio2; then
 		: # the caller has said what -cio2 holds; ports are theirs to fit
@@ -397,7 +411,7 @@ if [ "$MULTIUSER" = 1 ]; then
 		MARGS+=(-cio2 mux6)
 		if [ "$PORTS" != none ]; then
 			for k in 1 2 3 4 5 6; do
-				user_set "-cio2:mux6:port$((k - 1))" || TERMS+=("$k cio2:mux6:port$((k - 1))")
+				TERMS+=("$k cio2:mux6:port$((k - 1))")
 			done
 		fi
 	fi
