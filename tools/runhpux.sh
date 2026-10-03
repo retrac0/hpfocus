@@ -351,6 +351,8 @@ fi
 # idempotent and atomic, and on a disc already so it writes nothing.
 # s: initdefault s, init goes straight to root's shell on the console
 #    (the shipped disc has no initdefault and stops at ENTER RUN LEVEL).
+#    That shell is csh (prompt gator#) until a multiuser boot has made
+#    root's shell sh; --runlevel s does not put csh back.
 # 2: root's passwd entry usable, the six gettys on, the tty01..06 nodes
 #    pointed at the 27140A at select code 2 -- docs/HPUX.md 10.2.
 # A disc given with --disc is booted exactly as it is.
@@ -520,7 +522,7 @@ fi
 		echo "  login     root, no password; Return at the two TERM = prompts"
 		echo "            (the logins appear about 90 s after power-on)"
 	else
-		echo "  shell     root's csh on the console; Return at its TERM = prompt"
+		echo "  shell     root's shell on the console; Return at its TERM = prompt"
 	fi
 	if [ -n "$SECONDS_RUN" ]; then
 		echo "  stops     after $SECONDS_RUN emulated seconds"

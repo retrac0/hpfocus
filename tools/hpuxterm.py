@@ -180,8 +180,8 @@ def hub(names, base, ready):
     # Only SIGTERM ends the hub. A ^C at the terminal reaches the whole
     # process group -- runhpux.sh, MAME and this -- and the hub must outlive
     # MAME's clean exit: a peer that vanished first would turn MAME's next
-    # write into SIGPIPE, which on a build without the storage lane's fix
-    # ends the emulator before it saves the disc.
+    # write into SIGPIPE (the driver ignores it now; an older build died of
+    # it before saving the disc).
     signal.signal(signal.SIGTERM, lambda *a: stop.append(1))
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
