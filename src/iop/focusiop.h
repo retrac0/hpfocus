@@ -1129,8 +1129,26 @@ public:
 				// first memory location following the command". The
 				// register number is the IC field, bits 9:4 of the MPB
 				// command word (Figure 5.1).
+				//
+				// A Read Interface is opcode 8n+1, and with n = 0 the
+				// register comes from IC (register_of), so the read this
+				// entry issues is opcode 001. It was issued as opcode 0,
+				// which io_read refuses: nothing was read and nothing was
+				// stored. HP-UX's HP27110 driver ends its short status
+				// legs this way -- `WIF8 RS; ICEI; WRIF FR6 -> TSTAT;
+				// DCEI`, command word 0x06b0004c -- so the driver read a
+				// stale TSTAT cell and the card never saw its status byte
+				// taken, which is what ends the transaction and queues its
+				// completion (focushpib.h pop_out/finish). Measured: with
+				// the console's idle traffic changed, a boot at
+				// FOCUS_IOPPOLL 660 read the disc's geometry as zeros, and
+				// the first division by it (IOS and DDMs +0x3a20, DIVS on
+				// device-record fields +332/+348, which read 0x7fbff and
+				// 0x1c0 in a good boot) took the divide-by-zero trap --
+				// "System halted due to system error. TRAP:00000031". With
+				// the read performed the same boot runs to seven logins.
 				target r{};
-				r.opcode = 0;
+				r.opcode = 001;
 				r.channel = m_channel;
 				r.pa = u8(pa & 7);
 				r.ic = u8(ers32::get(word, 9, 4));

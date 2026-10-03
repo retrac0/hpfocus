@@ -6,6 +6,7 @@
 #include "../iop/focuscards.h"
 #include "../iop/focusscm.h"
 #include "../iop/focusgfx.h"
+#include "../iop/focusasi.h"
 #include "../cpu/focus/focusexec.h"
 
 #include <cstdio>
@@ -291,6 +292,210 @@ static void test_interrupt_list()
 	iop.raise(2);
 	CHECK_EQ(h.mem.read32(B), 0x00002222u);
 	CHECK_EQ(h.mem.read32(LIST), B);
+}
+
+
+// WRIF (list opcode 0114) reads the card register named by the command
+// word's IC field and stores it (I/O ERS sheet 38). HP-UX's HP27110
+// driver reads its status byte this way: command word 0x06b0004c is
+// WRIF, IC 6, PA 5.
+static void test_wrif()
+{
+	std::printf("IOP command list: Write RIF Result to Memory\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	test_card card;
+	iop.attach(5, &card);
+	card.fr[6] = 0x5a;
+	const u32 drt = 128 * 1 + 16 * 5, list = 0x4000, cell = 0x5000;
+	h.mem.write32(drt + 12, list);
+	h.mem.write32(list + 0, 0x06b0004c);     // WRIF FR6
+	h.mem.write32(list + 4, cell);
+	h.mem.write32(list + 8, 074);            // DCEI
+	h.mem.write32(cell, 0xdeadbeef);
+	CHECK(iop.io_control(tgt(CMD_ICEI, 1, 5)));
+	CHECK_EQ(h.mem.read32(cell), 0x5a);
+	CHECK_EQ(h.mem.read32(drt + 12), list + 16);   // walked past DCEI
+}
+
+
+// The 27128A's event codes and status bytes are ATTENTION requests (FR1
+// bit 0, the IOP's attention poll, message 14), not service requests: the
+// card must not put a device interrupt on the IOP for them. HP-UX's ASI
+// handler re-dispatches its last report on every interrupt it gets.
+static void test_asi_events_are_attention()
+{
+	std::printf("ASI: events and status bytes are attention, not interrupts\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	asi_card asi;
+	asi.iop = &iop;
+	asi.pa = 0;
+	iop.attach(0, &asi);
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 0)));      // armed, as HP-UX leaves it
+	asi.write_fr(0, 1);                               // the presence echo
+	asi.read_fr(1);
+	asi.write_fr(9, 0x40);                            // a command: answered 0x30
+	for (int i = 0; i < 4; i++)
+		asi.tick();
+	CHECK(asi.attention());
+	CHECK_EQ(asi.read_fr(1) & 1, 1);
+	CHECK_EQ(iop.take_raise_events(), 0u);
+	CHECK_EQ(iop.interrupt_request(), 0u);
+	CHECK(!h.irq);
+	CHECK_EQ(asi.read_fr(9), 0x30);
+	CHECK(!asi.attention());
+
+	// A typed record is sensed and told through Read Transparent Status;
+	// it does not interrupt either.
+	for (u8 c : { 'l', 's', '\r' })
+		asi.type(c);
+	for (int i = 0; i < 4; i++)
+		asi.tick();
+	CHECK_EQ(iop.take_raise_events(), 0u);
+	CHECK_EQ(iop.interrupt_request(), 0u);
+}
+
+
+// Pause waits for the host (27130A firmware IMS 13.2.8.9/10): the card
+// stops asking for orders until Resume Subchannel -- (4 << 4) | pa on FR9
+// -- or until it has something to report. It is not a timer.
+static void test_asi_pause()
+{
+	std::printf("ASI: Pause waits for Resume Subchannel\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	asi_card asi;
+	asi.iop = &iop;
+	asi.pa = 0;
+	iop.attach(0, &asi);
+	asi.write_fr(8, 0x20);                   // PAU
+	CHECK(!asi.poll_request());
+	for (int i = 0; i < 50; i++)
+		asi.tick();
+	CHECK(!asi.poll_request());             // still paused
+	asi.write_fr(9, 0x40);                   // RSC
+	CHECK(asi.poll_request());
+
+	// An order ends the pause; RSC to a card that is not paused does
+	// not invent a request (a CLC is waiting for its request block).
+	asi.write_fr(8, 0xb8);                   // CLC
+	CHECK(!asi.poll_request());
+	asi.write_fr(9, 0x40);
+	CHECK(!asi.poll_request());
+
+	// FOCUS_ASIPAUSE's limit is the old timed pause.
+	asi.pause_ms = 1;
+	asi.write_fr(8, 0x20);
+	CHECK(!asi.poll_request());
+	asi.tick();
+	CHECK(asi.poll_request());
+}
+
+
+// Every order ends with the card asking for its next one (27130A IMS
+// 13.2.3.3, ORD_EXIT) -- including the CLC of a read-card-information
+// request, which used to leave the list's next ICEI waiting.
+static void test_asi_order_exit()
+{
+	std::printf("ASI: every order ends with an SRQ for the next\n");
+	asi_card asi;
+	asi.write_fr(8, 0xb8);                   // CLC
+	CHECK(!asi.poll_request());
+	for (u8 b : { 0x00, 0x00, 0x04, 0xfd, 0x00, 0x00, 0x01 })
+		asi.dma_write(b);                    // read card information, sf 253
+	asi.dma_complete(true);
+	CHECK(asi.poll_request());
+	asi.write_fr(8, 0x88);                   // RTS: SWI for the channel
+	CHECK_EQ(asi.dma_read(), 1);
+	asi.dma_read(); asi.dma_read();
+	asi.dma_complete(false);
+	CHECK(asi.poll_request());
+	asi.write_fr(8, 0x68);                   // RD: the switch byte
+	CHECK_EQ(asi.dma_read(), asi.switches);
+	asi.dma_complete(false);
+	CHECK(asi.poll_request());
+}
+
+
+// The read status block (27128A 4-64): the length is the data the card
+// sent, not the pad byte a halfword leg pulls past an odd record, and the
+// remaining count is the rest of THIS record, not the typeahead.
+static void test_asi_read_status()
+{
+	std::printf("ASI: read status block lengths\n");
+	asi_card asi;
+	for (u8 c : { 'l', 's', '\r', 'x' })
+		asi.type(c);
+	asi.write_fr(8, 0xb8);                   // CLC: read device data, 80
+	for (u8 b : { 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x50 })
+		asi.dma_write(b);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x68);                   // RD, halfword legs
+	unsigned n = 0;
+	while (!asi.data_end() && n < 10)
+	{
+		asi.dma_read16();
+		n++;
+	}
+	CHECK_EQ(n, 2u);                         // 'ls', '\r' + pad
+	asi.dma_complete(false);
+	asi.write_fr(8, 0x49);                   // RS
+	std::vector<u8> st;
+	while (!asi.data_end() && st.size() < 16)
+		st.push_back(asi.dma_read());
+	CHECK_EQ(st.size(), 7u);
+	if (st.size() == 7)
+	{
+		CHECK_EQ(st[0], 0);
+		CHECK_EQ((st[1] << 8) | st[2], 3);   // three bytes of data
+		CHECK_EQ((st[3] << 8) | st[4], 0);   // the record was whole
+		CHECK_EQ(st[6], '\r');
+	}
+}
+
+
+// One asynchronous "data available" event per record (27128A 4-6): the
+// card used to sense the same record again on every tick until the read
+// arrived, and the host heard about it twice.
+static void test_asi_one_event_per_record()
+{
+	std::printf("ASI: one data-available event per record\n");
+	asi_card asi;
+	auto rts = [&asi]() {
+		asi.write_fr(8, 0x88);
+		const u8 op = asi.dma_read();
+		while (!asi.data_end())
+			asi.dma_read();
+		asi.dma_complete(false);
+		return op;
+	};
+	// Enable the data-available event: write card configuration,
+	// subfunction 21, host mask 0x02.
+	asi.write_fr(8, 0xb8);
+	for (u8 b : { 0x00, 0x00, 0x05, 0x15, 0x00, 0x00, 0x02 })
+		asi.dma_write(b);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x78);
+	asi.dma_write(0x02);
+	asi.dma_write(0x00);
+	asi.dma_complete(true);
+	asi.write_fr(8, 0x49);                   // status: the request ends
+	while (!asi.data_end())
+		asi.dma_read();
+	asi.dma_complete(false);
+	CHECK_EQ(rts(), 0);                      // IDL
+
+	for (u8 c : { 'l', 's', '\r' })
+		asi.type(c);
+	asi.tick();
+	CHECK_EQ(rts(), 4);                      // AES, data available
+	for (int i = 0; i < 5; i++)
+		asi.tick();
+	CHECK_EQ(rts(), 0);                      // told once
 }
 
 
@@ -1391,6 +1596,12 @@ int main()
 	test_registers();
 	test_interrupts();
 	test_interrupt_list();
+	test_wrif();
+	test_asi_events_are_attention();
+	test_asi_pause();
+	test_asi_order_exit();
+	test_asi_read_status();
+	test_asi_one_event_per_record();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();
