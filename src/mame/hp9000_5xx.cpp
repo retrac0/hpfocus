@@ -44,6 +44,7 @@
 #include "iop/focushpib.h"
 #include "iop/focusmux.h"
 #include "bus/rs232/rs232.h"
+#include "dipty.h"
 #if defined(_WIN32)
 #include <io.h>
 #else
@@ -460,20 +461,100 @@ public:
 	virtual void focus_configure(focus::iop_core &iop, unsigned sc) { }
 };
 
-class hp27128_asi_device : public device_t, public device_focus_cio_interface
+// The 27128A, and the line it drives. The card model works at the level of
+// its firmware's records; what reaches the far end of the cable is the same
+// characters at the line's own pace, so the card carries an rs232 slot, as
+// each channel of the 27140A does. That is what makes the 540's system
+// console reachable without a window:
+//
+//   -cio0:asi:rs232 pty                            a pseudo terminal
+//   -cio0:asi:rs232 null_modem -bitb socket.127.0.0.1:4000
+//
+// The slot starts empty, and with nothing fitted nothing below runs: the
+// console is then what it always was, the terminal window and stdout.
+// Whatever is fitted, every character the card sends still reaches the
+// machine's terminal registry (stdout, the window, FOCUS_TRIP), and a
+// character arriving on the line is typed at the card exactly as one from
+// the window or FOCUS_TYPE is.
+class hp27128_asi_device : public device_t, public device_focus_cio_interface,
+		public device_serial_interface
 {
 public:
 	hp27128_asi_device(const machine_config &mconfig, const char *tag,
 			device_t *owner, u32 clock)
 		: device_t(mconfig, HP27128_ASI, tag, owner, clock)
 		, device_focus_cio_interface(mconfig, *this)
+		, device_serial_interface(mconfig, *this)
+		, m_rs232(*this, "rs232")
 	{
 	}
 
 	focus::asi_card card;
 
+	// Every character the card puts on the line, for the machine's
+	// terminal registry.
+	std::function<void(u8)> on_output;
+
+	void rx_w(int state) { device_serial_interface::rx_w(state); }
+
 protected:
 	virtual void device_start() override {}
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD
+	{
+		RS232_PORT(config, m_rs232, default_rs232_devices, nullptr);
+		m_rs232->rxd_handler().set(FUNC(hp27128_asi_device::rx_w));
+	}
+	virtual void device_reset() override
+	{
+		// 9600 baud, 8 bits, no parity: the console as the CE handbook
+		// has the terminal set up (9030/40 CE Handbook 2-3), and what
+		// the card's switches report (focusasi.h, `switches`). DTR and
+		// RTS are held up for whatever is fitted, as a hard-wired port.
+		set_data_frame(1, 8, PARITY_NONE, STOP_BITS_1);
+		set_rate(9600);
+		receive_register_reset();
+		transmit_register_reset();
+		m_txq.clear();
+		m_rs232->write_txd(1);
+		m_rs232->write_dtr(0);
+		m_rs232->write_rts(0);
+	}
+	virtual void tra_callback() override
+	{
+		m_rs232->write_txd(transmit_register_get_data_bit());
+	}
+	virtual void tra_complete() override
+	{
+		if (!m_txq.empty())
+		{
+			const u8 c = m_txq.front();
+			m_txq.pop_front();
+			transmit_register_setup(c);
+		}
+	}
+	virtual void rcv_complete() override
+	{
+		receive_register_extract();
+		card.type(get_received_char());
+	}
+
+private:
+	required_device<rs232_port_device> m_rs232;
+	// The card's firmware hands characters over as fast as the host
+	// writes them; the line takes them at 9600 baud.
+	std::deque<u8> m_txq;
+
+	void char_out(u8 c)
+	{
+		if (on_output)
+			on_output(c);
+		if (!m_rs232->get_card_device())
+			return;
+		if (m_txq.empty() && is_transmit_register_empty())
+			transmit_register_setup(c);
+		else
+			m_txq.push_back(c);
+	}
 
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
@@ -482,6 +563,7 @@ public:
 	{
 		card.iop = &iop;
 		card.pa = sc;
+		card.on_char = [this](u8 c) { char_out(c); };
 		arm_log(card.log, "asi", sc, "FOCUS_ASILOG");
 		// FOCUS_ASILOGMAX raises the line cap: a driver polling
 		// status outruns 2000 lines long before the interesting
@@ -1159,6 +1241,9 @@ private:
 	// Type a byte at a terminal, or say once that the name went nowhere.
 	void type_at(int id, u8 c, bool raw);
 	void close_print_text() { if (m_print_text) std::fclose(m_print_text); }
+	// Name every pseudo terminal fitted to a port, once.
+	void report_ptys();
+	bool m_ptys_reported = false;
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
 	// machine_start, in the order it does them.
@@ -2082,7 +2167,7 @@ void hp9000_5xx_state::configure_backplane()
 						card->type(raw || c != '\n' ? c : u8('\r'));
 					},
 					console);
-			card->on_char = [this, id](u8 c) { terminal_output(id, c); };
+			asi->on_output = [this, id](u8 c) { terminal_output(id, c); };
 		}
 		m_iop.attach(sc, iface);
 		osd_printf_info("cio%u: %s fitted at select code %u\n", sc,
@@ -2650,6 +2735,30 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::tap_flush)
 }
 
 
+// A pseudo terminal fitted to a port (-cio0:asi:rs232 pty, or
+// -cio2:mux6:port0 pty) gets its name from the host when it opens, and
+// MAME shows that name only in a menu, which a headless run does not
+// have. Say it once, where the run's output begins, in a form a script
+// can pick up:
+//
+//   cio0:asi:rs232: pseudo terminal /dev/pts/7
+void hp9000_5xx_state::report_ptys()
+{
+	if (m_ptys_reported)
+		return;
+	m_ptys_reported = true;
+	for (device_pty_interface &pty :
+			pty_interface_enumerator(machine().root_device()))
+		if (pty.is_open())
+		{
+			const device_t &port = pty.device().owner()
+					? *pty.device().owner() : pty.device();
+			osd_printf_info("%s: pseudo terminal %s\n", port.tag() + 1,
+					pty.slave_name().c_str());
+		}
+}
+
+
 // Which terminals this run listens to, settled once every terminal is
 // bound. The default is the machine's own console when that console
 // speaks to stdout at all -- on a 520 it speaks to the screen, and
@@ -3180,6 +3289,7 @@ void hp9000_5xx_state::machine_reset()
 	if (has_internal_disc())
 		m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
+	report_ptys();
 
 	// A loader ROM image would be installed here. None is dumped, so the
 	// SCM answers the select-code scan but has nothing to hand over; see
