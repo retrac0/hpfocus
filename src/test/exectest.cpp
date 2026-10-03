@@ -3199,6 +3199,23 @@ static void test_use_counts_through_segment_zero()
 	CHECK_EQ(m.use_count(1), 0);
 }
 
+// The microcode's ICS and dispatcher flags are cleared by reset.
+static void test_reset_clears_flags()
+{
+	std::printf("reset leaves the machine off the ICS\n");
+	dmachine m;
+	m.code(m.PROC, { D_DISP, D_NOP });
+	CHECK(m.cpu.step() == exec_trap::none);         // on the ICS now
+	CHECK_EQ(m.cpu.r.q, m.QI);
+
+	m.cpu.reset();
+	m.cpu.r.mask = ers32::set(0, 3, 3, 1);
+	m.task();
+	CHECK(m.interrupt());
+	CHECK_EQ(m.cpu.r.q, m.QI);                      // switched stacks
+	CHECK_EQ(m.mem.read32(m.QI - 3) >> 31, 0);      // and flagged nothing
+}
+
 // STOP and INT are privileged (sheets 94 and 119): cause 026, parameter 1.
 // SETR may load only some of STATUS (sheet 71).
 static void test_stop_and_int_are_privileged()
@@ -3291,6 +3308,7 @@ int main()
 	test_mi_single_step();
 	test_mi_survives_interrupt();
 	test_use_counts_through_segment_zero();
+	test_reset_clears_flags();
 	test_stop_and_int_are_privileged();
 	test_factorial();
 

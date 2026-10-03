@@ -137,6 +137,16 @@ public:
 		r = registers();
 		m_cir = 0;
 		m_halted = false;
+		// The microcode's flags are processor state like any register. A
+		// reset taken while the machine idles in its dispatcher -- which
+		// is where it nearly always is -- otherwise kept "on the ICS" and
+		// "dispatcher running", and the next boot's first interrupt
+		// pushed its frame on the interrupted stack instead of moving to
+		// the ICS.
+		m_ics_flag = false;
+		m_disp_flag = false;
+		m_exit_from_ixit = false;
+		m_status_loaded = false;
 	}
 
 	bool halted() const { return m_halted; }
