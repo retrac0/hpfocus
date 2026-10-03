@@ -221,7 +221,10 @@ def main() -> int:
     print(f"\ninstalled onto {args.disc}: {len(image):,} bytes in a "
             f"{room:,}-byte boot area")
     print(f"  {vol.describe()}")
-    print("boot it with:  tools/runbasic-hd.sh")
+    # runbasic-hd.sh boots software/hd/basic.img unless it is given another.
+    default = Path("software/hd/basic.img")
+    named = "" if args.disc.resolve() == default.resolve() else f" {args.disc}"
+    print(f"boot it with:  tools/runbasic-hd.sh{named}")
     return 0
 
 
