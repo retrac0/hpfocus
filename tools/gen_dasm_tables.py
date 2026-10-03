@@ -7,6 +7,7 @@ C++ table is generated from the CSV instead.
 
 Writes src/cpu/focus/focusdasm_tables.ipp.
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import csv
 from pathlib import Path
 

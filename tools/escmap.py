@@ -29,6 +29,7 @@ Usage:
   escmap.py <image> --value 66      sites for one number
   escmap.py <image> --raises        include the non-constant (re-raise) sites
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import argparse
 import struct
 import sys

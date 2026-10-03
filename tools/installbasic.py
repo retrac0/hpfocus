@@ -38,6 +38,7 @@ structures.
     tools/installbasic.py disc.img --basic ... \\
         --copy software/basic/img/500OPT1.img:BUILD_BOOT,CAT_BOOT
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 
 import argparse
 import struct
