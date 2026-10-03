@@ -2,4 +2,4 @@
 	path = mame
 	url = https://github.com/mamedev/mame.git
 	shallow = true
-	ignore = untracked
+	ignore = dirty
