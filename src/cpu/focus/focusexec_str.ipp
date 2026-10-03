@@ -67,6 +67,11 @@ private:
 		return ers32::set(u32(3) << 30, 2, 30, addr - r.sb);
 	}
 
+	// Descriptor arithmetic wraps as the machine's 32-bit adder does; a
+	// signed overflow in the host's `int` is undefined, and descriptors
+	// are whatever the program stacked.
+	static s32 wadd(s32 a, s32 b) { return s32(u32(a) + u32(b)); }
+
 	// Adding a byte offset to a string pointer must not disturb the two
 	// bits that say which kind of pointer it is (section 5.2.2, error 8).
 	// The stricter rule the ERS gives for external data segment pointers
@@ -76,7 +81,7 @@ private:
 	bool string_offset(u32 ptr, s32 delta, bool target, u32 &out,
 			exec_trap &t)
 	{
-		out = u32(s32(ptr) + delta);
+		out = ptr + u32(delta);
 		if (ers32::get(out, 0, 2) != ers32::get(ptr, 0, 2))
 		{
 			t = string_trap(8, target);
@@ -113,10 +118,10 @@ private:
 		if (d.maxlen < 0)                                          err = 1;
 		else if (d.len < 0 && !neg_len)                            err = 2;
 		else if (d.first <= 0)                                     err = 3;
-		else if (d.len >= 0 && d.first + d.len - 1 > d.maxlen)     err = 4;
+		else if (d.len >= 0 && s64(d.first) + d.len - 1 > d.maxlen) err = 4;
 		else if (d.curlen < 0)                                     err = 5;
 		else if (d.curlen > d.maxlen)                              err = 6;
-		else if (d.first > d.curlen + 1)                           err = 7;
+		else if (d.first > s64(d.curlen) + 1)                      err = 7;
 		if (err) { out = string_trap(err, target); return false; }
 
 		if (compute_len && (d.len < 0 || d.len > d.curlen - d.first + 1))
@@ -145,7 +150,7 @@ private:
 
 	exec_trap cursor_resolve(byte_cursor &c)
 	{
-		const ea_result e = m_au.resolve_data_pointer(u32(s32(c.ptr) + c.disp),
+		const ea_result e = m_au.resolve_data_pointer(c.ptr + u32(c.disp),
 				false, c.modify);
 		m_addr_trap = e.t;
 		if (!e.ok())
@@ -165,8 +170,11 @@ private:
 		c.disp = 0;
 		if (!is_ds)
 		{
+			// A local program pointer: bounded by PB and by the last
+			// byte of the segment's last word (convention note 18).
 			c.phys = code_phys;
-			c.left = 0x7fffffffu;
+			c.left = (dir > 0) ? (r.pl + 3 - code_phys + 1)
+					: (code_phys - r.pb + 1);
 			return exec_trap::none;
 		}
 		return cursor_resolve(c);
@@ -179,13 +187,22 @@ private:
 		if (c.left > 1)
 		{
 			c.left--;
-			c.phys = u32(s32(c.phys) + c.dir);
+			c.phys += u32(c.dir);
 			return exec_trap::none;
 		}
+		// The run is used up. For a code operand the next byte is past
+		// PB or PL, and for a stack or global pointer (bit 0 set) past
+		// the segment's bound -- said here, because stepping the pointer
+		// itself below offset zero would change its tag and be reported
+		// as some other pointer's fault. For an external data segment
+		// pointer the next byte is a reference of its own: another page,
+		// or outside the segment, which the evaluation reports.
 		if (!c.ds)
+			return exec_trap::bounds_violation;
+		if (ers32::get(c.ptr, 0, 1))
 		{
-			c.phys = u32(s32(c.phys) + c.dir);
-			return exec_trap::none;
+			m_addr_trap = trap::bounds_violation;
+			return exec_trap::address_error;
 		}
 		return cursor_resolve(c);
 	}
@@ -205,8 +222,11 @@ private:
 	{
 		if (!r.test(sf::P))
 			return 0;
+		// (In 64 bits: X is whatever the marker held, and -1 times -2^31
+		// is not a 32-bit number.)
 		const s32 x = s32(r.x);
-		if (d * x < 0 || d * x > count)
+		const s64 done = s64(d) * s64(x);
+		if (done < 0 || done > s64(count))
 			return 0;
 		return x;
 	}
@@ -238,8 +258,8 @@ private:
 		// The pointers as the program stacked them, and how far along
 		// them a move that was interrupted had got.
 		s32 x = string_resume(d, count);
-		const u32 tptr = u32(s32(stk(1)) + x);
-		const u32 sptr = u32(s32(stk(2)) + x);
+		const u32 tptr = stk(1) + u32(x);
+		const u32 sptr = stk(2) + u32(x);
 		const s32 rem = count - d * x;      // bytes still to move
 
 		u32 sba;

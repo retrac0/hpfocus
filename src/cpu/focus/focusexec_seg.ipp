@@ -161,13 +161,18 @@ private:
 	// segment 12, took cause 016 instead of the pointer 0x40600000 + n.
 	exec_trap index_external_pointer(u32 ptr, u32 delta, u32 &out)
 	{
-		const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(delta);
+		// Summed in 64 bits: the delta is whatever the program had in X,
+		// and offset + 0x7fffffff is not a sum the host's int can hold. A
+		// sum beyond 32 bits is beyond every table too; clamped, it still
+		// is, and carry_paged refuses it as it would the true one.
+		s64 noff = s64(ers32::get(ptr, 13, 19)) + s64(s32(delta));
 		if (noff >= 0 && noff < (1 << 19))
 		{
 			out = ers32::set(ptr, 13, 19, u32(noff));
 			return exec_trap::none;
 		}
-		u32 seg = ers32::get(ptr, 2, 11), off = u32(noff);
+		noff = std::clamp<s64>(noff, INT32_MIN, INT32_MAX);
+		u32 seg = ers32::get(ptr, 2, 11), off = u32(s32(noff));
 		trap t = trap::none;
 		const int c = m_dst.carry_paged(ers32::get(ptr, 1, 1) == 0, seg, off, t);
 		if (c == 0)
@@ -432,6 +437,40 @@ private:
 				return take_trap(trap_cause::bounds_violation, r.q);
 			if (r.q - 16 - 4u * n < qnew)
 				return take_trap(trap_cause::stack_underflow, r.q);
+		}
+		// "A routine executing in unprivileged mode may not EXIT to
+		// privileged mode, may not change the interrupt bit, and may not
+		// set the instruction pending bit in the Status register" (sheet
+		// 96) -- Privileged Mode Violation, cause 26, whose parameter
+		// tells the three conditions apart: "2) An attempt is made to
+		// EXIT or Branch from an unprivileged procedure to a privileged
+		// procedure. 3) An attempt is made in an unprivileged EXIT
+		// instruction to change the interrupt bit or to set the
+		// instruction pending bit" (sheet 47). Note 2: nothing has been
+		// popped and the marker points at this EXIT.
+		//
+		// A marker is ordinary stack memory, and "STATUS := (S-1)" loaded
+		// whatever a user program had written there: sixteen bytes on
+		// its own stack and an EXIT made it privileged, in any segment
+		// including segment 0's absolute addressing (the test below reads
+		// the mode bit the marker has just supplied) -- the same door
+		// SETR's field limits and the privilege checks on STOP and INT
+		// were closed against. And since the string instructions now
+		// resume through STATUS.P, a P set this way is no longer inert:
+		// SLD, SAS and SCON skip their descriptors and move whatever
+		// three words are on the stack, from whatever X says.
+		//
+		// Both tests are on the EXECUTING mode, so a handler's EXIT, the
+		// dispatcher's and IXIT's (all privileged) load STATUS whole, as
+		// HP-UX's signal and single-step paths need them to.
+		if (!r.privileged())
+		{
+			const u32 st = m_mem.read32(r.q - 7);
+			if (ers32::get(st, 14, 1))
+				return take_trap(trap_cause::privileged_mode, 2);
+			if (ers32::get(st, 13, 1) != ers32::get(r.status, 13, 1)
+					|| (ers32::get(st, 19, 1) && !r.test(sf::P)))
+				return take_trap(trap_cause::privileged_mode, 3);
 		}
 		// Returning into a code segment that is absent is cause 37, as a
 		// call into one is (see enter_segment): the CST entry number is

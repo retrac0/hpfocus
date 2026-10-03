@@ -157,7 +157,9 @@ private:
 			return exec_trap::none;
 		}
 		case 006: push(0); cca(0); return exec_trap::none;      // ZERO
-		case 007: push(0); push(0); return exec_trap::none;    // DZRO
+		// "Indicators = CCA" (ERS sheet 60), as ZERO: always CCE.
+		case 007: push(0); push(0); r.put(sf::CC, CCE);
+			return exec_trap::none;                            // DZRO
 		case 016: {                                            // DXCH
 			const u32 a = stk(0), b = stk(1), c = stk(2), d = stk(3);
 			set_stk(0, c); set_stk(1, d); set_stk(2, a); set_stk(3, b);
@@ -1277,16 +1279,16 @@ private:
 				cc = CCL;
 			else if (ers32::get(ptr, 0, 2) == 2)
 			{
-				s32 off = s32(ers32::get(ptr, 2, 30));
+				s64 off = s64(ers32::get(ptr, 2, 30));
 				if (b3) off += s32(r.x);
-				if (off < 0 || u32(off) > r.dl - r.db)
+				if (off < 0 || off > s64(r.dl - r.db))
 					cc = CCL;
 			}
 			else if (ers32::get(ptr, 0, 2) == 3)
 			{
-				s32 off = s32(ers32::get(ptr, 2, 30));
+				s64 off = s64(ers32::get(ptr, 2, 30));
 				if (b3) off += s32(r.x);
-				if (off < 0 || u32(off) > soff)
+				if (off < 0 || off > s64(soff))
 					cc = CCL;
 			}
 			else if (ers32::get(ptr, 0, 1) == 0)

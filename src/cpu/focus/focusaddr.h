@@ -24,6 +24,8 @@
 #include "focusknobs.h"
 #include "focusstate.h"
 
+#include <algorithm>
+
 #include <cstdlib>
 #include <functional>
 
@@ -193,8 +195,10 @@ struct ea_result
 	u32 addr = 0;
 	trap t = trap::none;
 	// Bytes from `addr` (inclusive) that stay physically contiguous in
-	// each direction; see eds_resolver::last_run. Stack and global
-	// segments are one piece of memory, so they carry the default.
+	// each direction; see eds_resolver::last_run. A code, stack or
+	// global operand is one piece of memory, and its run is the distance
+	// to the segment's own bound (addressing_unit::check): the byte
+	// after it is not a byte of the segment.
 	u32 run_fwd = 0x7fffffffu;
 	u32 run_back = 0x7fffffffu;
 	bool ok() const { return t == trap::none; }
@@ -237,7 +241,7 @@ public:
 		if (!indirect)
 		{
 			out.addr = (indexed ? (direct + m_r.x) : direct) + extra;
-			check(segment_of(base), out.addr, out.t);
+			check(segment_of(base), out);
 			return out;
 		}
 
@@ -256,7 +260,7 @@ public:
 			out.addr = u32(s32(direct) + s32(ptr)) + extra;
 			if (indexed)
 				out.addr += m_r.x;
-			check(segment::code, out.addr, out.t);
+			check(segment::code, out);
 			return out;
 		}
 
@@ -276,7 +280,7 @@ public:
 			out.addr = m_r.sb + ers32::get(ptr, 2, 30) + extra;
 			if (indexed)
 				out.addr += m_r.x;
-			check(segment::stack, out.addr, out.t);
+			check(segment::stack, out);
 			return out;
 		}
 
@@ -285,7 +289,7 @@ public:
 			out.addr = m_r.db + ers32::get(ptr, 2, 30) + extra;
 			if (indexed)
 				out.addr += m_r.x;
-			check(segment::global, out.addr, out.t);
+			check(segment::global, out);
 			// HYPOTHESIS UNDER TEST (BASIC's console output path). The
 			// word can also be an external program label -- bit 0 set,
 			// STT byte offset in (1:19), code segment in (20:12) -- and
@@ -354,6 +358,36 @@ private:
 		case BASE_S_MINUS:  return m_r.s - offset;
 		}
 		return 0;
+	}
+
+	// The bounds test for an operand, and how far the operand can run
+	// before the next byte is outside the segment. "The microcode detects
+	// all attempts to access memory locations outside of the following
+	// ranges: Code Segments PB to PL, Stack Segments SB to S, Global Data
+	// Segments DB to DL" (ERS 2.2.5) -- ALL attempts, so a doubleword's
+	// second word and every byte a string instruction walks to are tested
+	// like the first. They were not: only the first address was, and the
+	// run was left at "one piece of memory, no end". A byte move or fill
+	// that began inside the global segment ran on past DL (or, on the
+	// stack, past S) into whatever was physically next -- another
+	// segment, another process's or the kernel's -- for as many bytes as
+	// its count said, where "a bounds violation will cause premature
+	// termination of the instruction and a Bounds Violation Trap" (MVB,
+	// sheet 101). The last byte of the code segment is PL+3: PL addresses
+	// its last word.
+	bool check(segment seg, ea_result &out) const
+	{
+		if (!check(seg, out.addr, out.t))
+			return false;
+		const u32 lo = (seg == segment::code) ? m_r.pb
+				: (seg == segment::stack) ? m_r.sb : m_r.db;
+		const u32 hi = (seg == segment::code) ? m_r.pl + 3
+				: (seg == segment::stack) ? m_r.s : m_r.dl;
+		const std::uint64_t fwd = (hi >= out.addr) ? std::uint64_t(hi) - out.addr + 1 : 1;
+		const std::uint64_t back = std::uint64_t(out.addr) - lo + 1;
+		out.run_fwd = u32(std::min<std::uint64_t>(fwd, 0x7fffffffu));
+		out.run_back = u32(std::min<std::uint64_t>(back, 0x7fffffffu));
+		return true;
 	}
 
 	bool check(segment seg, u32 addr, trap &t) const

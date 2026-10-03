@@ -161,9 +161,12 @@ private:
 		// STAT(9:1), EM, before pushing the marker. They return to the
 		// instruction that faulted, which has had its Machine Instruction
 		// Trap already and must not be given a second one when EXIT
-		// restores STATUS from the marker. (Cause 4 clears it in step();
-		// 13 is not raised by this core.)
-		if (cause == trap_cause::absent_code_segment
+		// restores STATUS from the marker. (Cause 4 clears it in step().)
+		// Cause 13, External Data Segment Bounds Violation, has "See
+		// notes 2 and 4" (sheet 46) like the absent causes, and this core
+		// raises it now that it no longer folds it into cause 1.
+		if (cause == trap_cause::eds_bounds_violation
+				|| cause == trap_cause::absent_code_segment
 				|| cause == trap_cause::absent_page
 				|| cause == trap_cause::absent_data_segment
 				|| cause == trap_cause::absent_page_table)
