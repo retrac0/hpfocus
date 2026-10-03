@@ -405,6 +405,64 @@ static void test_divide_extremes()
 	CHECK_EQ(h.cpu.stk(0), 0);
 }
 
+// Integer divide by zero is User Trap 31 (ERS sheets 47-48): with STATUS.T
+// clear it only sets Overflow and execution goes on; with T set the trap is
+// taken, Overflow cleared, and the parameter word says "invalid argument"
+// (bits 24-27 = 2) for a 32-bit (1) or 64-bit (4) result -- 0x21 or 0x24.
+// HP-UX turns 0x21 into SIGFPE; the bare 2 it used to get read as an
+// integer overflow, which it ignores.
+static void test_divide_by_zero_trap()
+{
+	std::printf("integer divide by zero\n");
+	harness h;
+	const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);
+	h.mem.write32(CST + 16 + 4, HLEN - 1);
+	h.mem.write32(CST + 16 + 8, HB);
+	const u32 HPL = HB + (HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 031, 0x100);             // User Trap handler
+	h.cpu.enable_traps(true);
+	const u32 s0 = h.cpu.r.s, q0 = h.cpu.r.q;
+	auto reset = [&](bool t) {
+		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+		h.cpu.r.s = s0; h.cpu.r.q = q0;
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::T, t ? 1 : 0);
+	};
+
+	// T clear: Overflow, no trap, on to the next instruction.
+	reset(false);
+	h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(033)) == exec_trap::none);        // DIVS
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.r.pb, 0x1000);
+	CHECK_EQ(h.cpu.r.s, s0 + 8);
+
+	// T set: the trap, with its two-field parameter at Q+12.
+	reset(true);
+	h.cpu.r.put(sf::O, 1);
+	h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(033)) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x21);
+	CHECK(!h.cpu.r.test(sf::O));
+
+	reset(true);
+	h.cpu.push(0); h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(023, true)) == exec_trap::none);  // DIV,B: 64-bit quotient
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x24);
+
+	reset(true);
+	h.cpu.push(7);
+	CHECK(h.one(f5(007, 0)) == exec_trap::none);     // DIVI 0
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x21);
+}
+
 // The logical group as multiple precision limbs (ERS sheet 76, 61.1-61.3):
 // the b bit chains Carry in, LSUB's borrow travels inverted (Carry set =
 // no borrow), and the code is CCG/CCE with a zero limb leaving it alone
@@ -3004,6 +3062,7 @@ int main()
 	test_arithmetic();
 	test_divide_extremes();
 	test_logical_carry_chain();
+	test_divide_by_zero_trap();
 	test_stack_ops();
 	test_condition_codes();
 	test_branches();
