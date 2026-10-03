@@ -529,7 +529,11 @@ struct asi_card : public iop_interface
 	bool data_phase() const { return m_order == ORD_RD || m_order == ORD_WD; }
 	u8 dma_read() override
 	{
-		if (data_phase())
+		// Only bytes the card has: the IOP's halfword legs pull a pad
+		// byte past an odd-length record (an empty pop), which the card
+		// did not send -- 'ls\r' was reported as a four-byte transfer.
+		// The write side already caps the same way.
+		if (data_phase() && !out_now().empty())
 			m_transferred++;
 		return pop_out();
 	}
