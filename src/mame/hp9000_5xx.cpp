@@ -3012,9 +3012,10 @@ TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
 			if (auto *c = dynamic_cast<device_focus_cio_interface *>(
 					m_cio[sc]->get_card_device()))
 				c->focus_tick();
-	// One timer count is 512 clock periods = 28.4 us; a 1 ms tick is
-	// about 35 of them.
-	m_iop.timer_tick(35);
+	// One timer count is 512 periods of the 18 MHz clock, so a 1 ms tick
+	// is 35.15625 of them; the IOP carries the fraction from tick to tick.
+	// Feeding a flat 35 ran HP-UX's clock 0.16% slow.
+	m_iop.timer_tick_ms();
 	if (m_iop.take_timer_event())
 		m_cpu->core().raise_message(13);
 	// FOCUS_FORCETICK=<period ms>[:<start s>] raises the interval-timer
