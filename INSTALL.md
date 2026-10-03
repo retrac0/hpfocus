@@ -167,9 +167,16 @@ multiplexer). Log in as above.
 HP-UX in this alpha has no automatic shutdown and never checks its file
 system at boot: `/etc/bcheckrc` on this disc is empty. To stop:
 
-1. At a root shell, type `sync`.
+1. At a root shell, type `cd /` and then `/etc/stopsys`. HP-UX writes
+   everything out, gives back its swap space and prints `The system is
+   stopped.  You may turn the power off now.`, followed by a halt report
+   with code `00000010`. That report is the stop, not a crash.
 2. Close the MAME window. For a run without a window, press ^C in the
    terminal that started it.
+
+`sync` instead of `/etc/stopsys` also keeps your files, but it is a power
+cut to HP-UX: each one leaves 0.3 to 0.9 MB of swap space marked in use
+on the disc. KNOWN-ISSUES.md says how to get it back.
 
 `tools/runhpux.sh` turns ^C, `kill` and a closed terminal into a clean exit
 (`tools/mame/stopfile.lua`): MAME stops and the disc and battery files are
@@ -181,7 +188,7 @@ this alpha write each disc block through as HP-UX writes it, but the
 battery file is still saved at exit.)
 
 HP-UX's own `/etc/shutdown` exists on the disc. It has not been tested on
-the emulator.
+the emulator; its `-h` option ends in `/etc/stopsys`.
 
 ## 6. The machine's state: what persists, and resetting it
 
