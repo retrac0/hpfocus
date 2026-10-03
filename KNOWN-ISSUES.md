@@ -114,8 +114,8 @@ These affect programs that depend on them. They do not affect booting.
   and NaN operands give the host's IEEE result, and the program carries
   on. A C program's `1.0/0.0` does not get SIGFPE.
 - **Overflow flag:** `STATUS.O` is assigned rather than sticky.
-  `ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`,
-  `DECM`, `INCF` and `DECF` never set Overflow.
+  `ADDI`, `SUBI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`, `DECM`,
+  `INCF` and `DECF` never set Overflow.
 - **Condition codes:** the character-class condition code (CCB) is never
   produced.
 - **Rarely used instructions:** `STOP,B` does not restore MASK/STATUS when
@@ -124,8 +124,6 @@ These affect programs that depend on them. They do not affect booting.
 
 ## BASIC 2.0 on the 520
 
-- `DISP "A"&"B"` halts with `TRAP:00000001`, and `DISP 4.5+1` shows
-  `5.49999999907`.
 - The 520 reports `CLOCK AND DATE NOT SET` unless it has a battery file
   (`FOCUS_KBDNV`) and a seeded clock (`FOCUS_RTCTIME=now`).
 
