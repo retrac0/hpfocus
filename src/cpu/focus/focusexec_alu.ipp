@@ -253,8 +253,17 @@ private:
 			}
 			s64 quot = dividend / divisor;
 			s32 rem = s32(dividend % divisor);
+			// "If CIR(19:1)=1 then the remainder is always positive. In
+			// both cases, dividend = quotient*divisor + remainder" (sheet
+			// 76): a remainder forced positive takes the quotient with
+			// it, one step away from zero. Negating the remainder alone
+			// broke the identity and gave the wrong modulus besides: -7
+			// by 3 came back as -2 remainder 1, not -3 remainder 2.
 			if (b3 && rem < 0)
-				rem = -rem;
+			{
+				if (divisor > 0) { rem += divisor; quot -= 1; }
+				else             { rem -= divisor; quot += 1; }
+			}
 			set_stk(2, u32(u64(quot) >> 32));
 			set_stk(1, u32(u64(quot)));
 			set_stk(0, u32(rem));
@@ -301,7 +310,13 @@ private:
 				return exec_trap::none;
 			}
 			s32 quot = dividend / divisor, rem = dividend % divisor;
-			if (b3 && rem < 0) { rem = -rem; }
+			// As in DIV: a remainder forced positive moves the quotient
+			// too, so that dividend = quotient*divisor + remainder.
+			if (b3 && rem < 0)
+			{
+				if (divisor > 0) { rem += divisor; quot -= 1; }
+				else             { rem -= divisor; quot += 1; }
+			}
 			set_stk(1, u32(quot));
 			set_stk(0, u32(rem));
 			cca(u32(quot));

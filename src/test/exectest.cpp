@@ -1068,7 +1068,39 @@ static void test_new_groups()
 	h.cpu.r.s = base;
 	h.cpu.push(u32(-17)); h.cpu.push(5);
 	CHECK(h.one(f3(033, true)) == exec_trap::none);            // positive rem
+	// "dividend = quotient*divisor + remainder" holds for the b form too
+	// (ERS sheet 76): -17 = -4*5 + 3, so the quotient moves with it. The
+	// old expectation, remainder 2 beside quotient -3, broke the identity.
+	CHECK_EQ(h.cpu.stk(1), -4);
+	CHECK_EQ(h.cpu.stk(0), 3);
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-7)); h.cpu.push(u32(-3));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 3);                                 // -7 = 3*-3 + 2
 	CHECK_EQ(h.cpu.stk(0), 2);
+	h.cpu.r.s = base;
+	h.cpu.push(7); h.cpu.push(u32(-3));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), -2);                                // already >= 0
+	CHECK_EQ(h.cpu.stk(0), 1);
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-7)); h.cpu.push(u32(0x80000000u));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 1);                                 // -7 = 1*-2^31 + (2^31-7)
+	CHECK_EQ(h.cpu.stk(0), 0x7ffffff9);
+	// DIV,B on a doubleword dividend: -7 by 3 is -3 remainder 2.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(u32(-7)); h.cpu.push(3);
+	CHECK(h.one(f3(023, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(2), -1);
+	CHECK_EQ(h.cpu.stk(1), -3);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(u32(-7)); h.cpu.push(3);
+	CHECK(h.one(f3(023)) == exec_trap::none);                  // plain DIV
+	CHECK_EQ(h.cpu.stk(1), -2);
+	CHECK_EQ(h.cpu.stk(0), -1);
 
 	// Privileged absolute load and store.
 	h.cpu.r.s = base;
