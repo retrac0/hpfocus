@@ -12,7 +12,7 @@ CORE      = $(SRCDIR)/focusexec.h $(wildcard $(SRCDIR)/focusexec_*.ipp) \
             $(SRCDIR)/focusdst.h $(SRCDIR)/focusaddr.h \
             $(SRCDIR)/focusstate.h $(KNOBS)
 
-all: dasmtest statetest addrtest dsttest exectest ioptest muxtest bootprobe bootrun
+all: dasmtest statetest addrtest dsttest exectest ioptest muxtest asitest bootprobe bootrun
 
 dasmtest: dasmtest.cpp $(SRCDIR)/focusdasm.cpp $(SRCDIR)/focusdasm.h \
           $(SRCDIR)/focusdasm_tables.ipp emu.h
@@ -37,6 +37,9 @@ ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h ../iop/focusgfx.h \
 
 muxtest: muxtest.cpp ../iop/focusiop.h ../iop/focusmux.h $(CORE)
 	$(CXX) $(CXXFLAGS) muxtest.cpp -o $@
+
+asitest: asitest.cpp ../iop/focusiop.h ../iop/focusasi.h $(CORE)
+	$(CXX) $(CXXFLAGS) asitest.cpp -o $@
 
 # Not a test: an experiment harness for locating a boot module's entry point.
 bootprobe: bootprobe.cpp ../iop/focusiop.h ../iop/focusscm.h $(CORE)
@@ -70,7 +73,9 @@ test: all
 	@echo
 	@./muxtest
 	@echo
+	@./asitest
+	@echo
 	@./run_difftest.sh
 
 clean:
-	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest bootprobe bootrun
+	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest asitest bootprobe bootrun

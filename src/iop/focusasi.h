@@ -69,9 +69,15 @@
       stripping, single and double text terminators, prompt sequences,
       end-on-count) and reach the host as terminated RECORDS carrying
       the code for whichever condition ended them (27128A 4-5, 4-66).
-      Only the terminator behaviour matters to a host driver, so that is
-      what is modelled: a record ends on the configured terminator, on
-      the read length, or on the card's buffer limit.
+      That pipeline is the console's line discipline: HP-UX hands the
+      card echo, erase, kill, the interrupt key and LF-to-CR-LF for a
+      tty in canonical mode, and asks to hear of every keystroke ("alert
+      1") in any other mode. So it is modelled from the configuration
+      block the host writes: signal characters, the handshake
+      characters, edit mode, stripping, single text terminators, end on
+      count, the card's buffer limit, alert 1, echo and the output
+      separators. Double text terminators, prompt sequences and the
+      handshakes' pacing are not.
 
 ***************************************************************************/
 
@@ -87,6 +93,7 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace focus {
@@ -202,16 +209,64 @@ struct asi_card : public iop_interface
 	// Transparent Status.
 	void type(u8 c)
 	{
-		m_rx.push_back(c);
+		receive(c);
 		if (dbg())
 			dbg()("[%8.3fs asi%u typed %02x, rx=%u]\n", stamp(), pa, c,
 					unsigned(m_rx.size()));
 	}
 
-	// The single text terminator the receive pipeline ends a record on.
-	// A terminal's Return key is the one that matters; the driver can
-	// reconfigure it through write-card-configuration subfunction 22.
-	u8 terminator = '\r';
+	// What the host has configured (write card configuration, 27128A
+	// 4-41..4-58). HP-UX 5.30 rewrites the whole block (subfunction 0) on
+	// every open and every change of mode, and uses two of them. For a
+	// tty in canonical mode -- `b2 00 00 00 00 02 08 15 01 76 ...`,
+	// measured -- THE CARD echoes, edits the line with BS and ^U, ends a
+	// record on NL, CR or EOT, turns ^C and ^\ into events and expands
+	// LF to CR-LF on output. For every other mode -- `00 00 00 01 ...`
+	// -- it does none of that and tells the host about each character
+	// with an "alert 1". A card that honoured none of it was a console
+	// with no echo at a canonical prompt, output that staircased on bare
+	// LFs, BS and ^U delivered as data, no interrupt key, and raw-mode
+	// programs (csh's line editor, vi, more) given nothing until Return.
+	// The defaults are the card's own (4-68..4-71), except that the text
+	// terminator stays in the record, which is what this model always
+	// delivered to a host that had not configured the card.
+	struct configuration
+	{
+		u8 control = CTL_TERM;          // SF 1 / byte 0
+		u16 end_count = 200;            // SF 2
+		bool alert1 = false;            // SF 3
+		u8 backspace = 0x08;            // SF 6
+		u8 line_delete = 0x7f;          // SF 7
+		u8 strip = 0;                   // SF 8
+		u8 handshake = HS_ECHO_CRLF;    // SF 9
+		u8 crlf_terminator = '\r';      // SF 27
+		u8 separators = 2;              // SF 28
+		u8 separator[2] = { '\r', '\n' };
+		u8 options = 0;                 // SF 31
+		u8 quote = '\\';
+		u8 record_separator = '\n';
+		u8 signal1 = 0xff, signal2 = 0xff;
+		u8 quotable = 0x04;
+		u8 terminators = 1;             // SF 32
+		u8 terminator[8] = { '\r', 0, 0, 0, 0, 0, 0, 0 };
+		u8 xon = 0x11, xoff = 0x13;     // SF 23, the device's
+		u8 ack = 0x06;                  // SF 24, the host handshake's
+	} cfg;
+
+	// SF 1, "configure ASI-to-device control" (4-45).
+	enum : u8 { CTL_COUNT = 0x01, CTL_TERM = 0x02, CTL_ECHO = 0x10,
+			CTL_EDIT = 0x20, CTL_STRIP = 0x40, CTL_HANDSHAKE = 0x80 };
+	// SF 8, stripping mask and backspace options (4-48).
+	enum : u8 { BS_MODE = 0x03, STRIP_NUL = 0x04, STRIP_DEL = 0x08,
+			STRIP_FF = 0x10, STRIP_TERM = 0x20 };
+	// SF 9, device handshake option (4-49).
+	enum : u8 { HS_HOST_ENQ = 0x02, HS_DEV_XON = 0x04, HS_ECHO_TERM = 0x10,
+			HS_ECHO_CRLF = 0x40 };
+	// SF 31, additional options (4-57).
+	enum : u8 { OPT_SEPARATORS = 0x01, OPT_QUOTE = 0x02, OPT_SIGNAL = 0x10 };
+	// Message types: what ended a record (4-62, 4-66).
+	enum : u8 { MSG_TERMINATOR = 1, MSG_COUNT = 4, MSG_ALERT = 8,
+			MSG_MORE = 9, MSG_NO_MORE = 12, MSG_HOST = 14 };
 
 	//----------------------------------------------------------------
 	//  CIO status bytes (27110A 4-3/4-4, shared across the card family)
@@ -288,7 +343,9 @@ struct asi_card : public iop_interface
 		AEV_DATA     = 1,   // a data message was received from the device
 		AEV_BREAK    = 2,   // break received from the device
 		AEV_TX_EMPTY = 3,   // the transmit buffer is empty
-		AEV_LINK     = 4    // an opened link was closed or disconnected
+		AEV_LINK     = 4,   // an opened link was closed or disconnected
+		AEV_SIGNAL1  = 5,   // signal character 1 received
+		AEV_SIGNAL2  = 6    // signal character 2 received
 	};
 
 	// Host interrupt mask, byte 0 of write-card-configuration subfunction
@@ -607,7 +664,13 @@ struct asi_card : public iop_interface
 		// and the boot stops in TTY SUBSYSTEM entry 2 the moment it has
 		// finished printing the boot report. See docs/HPUX.md 8.
 		if (output && m_order == ORD_WD && m_request == REQ_WRITE_DATA)
+		{
+			// "Automatic Output Separators Appendage ... the write device
+			// data subfunction code must be set to 1" (4-15).
+			if (m_subfunction & 1)
+				send_separators();
 			raise_async(AEV_TX_EMPTY, MASK_TX_EMPTY, "write device data done");
+		}
 		// The transfer the command asked for is done, so the card
 		// announces the completion the driver is waiting for.
 		start_event_timer();
@@ -808,6 +871,18 @@ private:
 				}
 				m_report.push_back(code);         // event code
 				m_report.push_back(0);            // port ID: the ASI has one
+				// "Message length and type are given in the information
+				// field" (4-61/4-62): the length, the message type, and
+				// the terminator for type 1 -- of the record a read would
+				// take now.
+				if (code == AEV_DATA && record_ready())
+				{
+					const record_end r = next_record();
+					m_report.push_back(u8(r.length >> 8));
+					m_report.push_back(u8(r.length));
+					m_report.push_back(r.type);
+					m_report.push_back(r.term);
+				}
 			}
 			else
 			{
@@ -923,37 +998,179 @@ private:
 		// block, as before.
 		if (m_order == ORD_WD && m_request == REQ_WRITE_DATA)
 		{
-			if (on_char)
-				on_char(b);
+			// "The firmware will examine every outgoing character for the
+			// user-specified record separator ... If the user-supplied
+			// record separator is found, the firmware sends the output
+			// separators in place of the record separator" (4-30). HP-UX
+			// turns this on for a canonical-mode tty and writes bare LFs:
+			// the CR-LF a terminal needs is the card's to add.
+			if ((cfg.options & OPT_SEPARATORS) && b == cfg.record_separator)
+				send_separators();
+			else
+				send(b);
 			return;
 		}
 		m_in.push_back(b);
 	}
 
 	// The configuration block a write-card-configuration request just
-	// delivered. Only the host and modem interrupt masks are kept: they
-	// are what gates every asynchronous event, and the rest of the block
-	// describes a real UART's framing, which this card does not model.
-	// Subfunction 0 writes the whole block, where the masks are bytes 22
-	// and 23; subfunction 21 writes just the two of them (27128A 4-42,
-	// 4-53).
+	// delivered (27128A 4-41..4-58). Subfunction 0 is every item at its
+	// fixed place in a 58-byte block; the others set one item each. What a
+	// UART does with the baud rate, the framing and the timers is not
+	// modelled; what decides which characters reach the host, when, and
+	// what the terminal sees in between, is. The host and modem interrupt
+	// masks are bytes 22 and 23 of the block, or subfunction 21, and gate
+	// every asynchronous event (4-42, 4-53).
 	void take_card_configuration()
 	{
-		unsigned at = ~0u;
-		if (m_subfunction == 0 && m_in.size() > 23)
-			at = 22;
-		else if (m_subfunction == 21 && m_in.size() >= 2)
-			at = 0;
-		if (at != ~0u)
+		const std::vector<u8> &d = m_in;
+		const size_t n = d.size();
+		auto terminators = [&](size_t at, size_t count) {
+			cfg.terminators = u8(std::min<size_t>(count, 8));
+			for (unsigned k = 0; k < cfg.terminators && at + k < n; k++)
+				cfg.terminator[k] = d[at + k];
+		};
+		switch (m_subfunction)
 		{
-			m_host_mask = m_in[at];
-			m_modem_mask = m_in[at + 1];
-			if (dbg())
-				dbg()("[%8.3fs asi%u interrupt mask host=%02x modem=%02x"
-						" (sf %u)]\n", stamp(), pa, m_host_mask,
-						m_modem_mask, m_subfunction);
+		case 0:
+			// "The request must specify a data transfer length of 58
+			// bytes" (4-44).
+			if (n < 58)
+			{
+				m_request_status = 3;
+				break;
+			}
+			cfg.control = d[0];
+			cfg.end_count = u16((d[1] << 8) | d[2]);
+			cfg.alert1 = (d[3] & 1) != 0;
+			// byte 5, the transmission mode, "will not be changed when
+			// subfunction 0 is used" (4-44)
+			cfg.backspace = d[6];
+			cfg.line_delete = d[7];
+			cfg.strip = d[8];
+			cfg.handshake = d[9];
+			m_host_mask = d[22];
+			m_modem_mask = d[23];
+			cfg.xon = d[26];
+			cfg.xoff = d[27];
+			cfg.ack = d[29];
+			cfg.crlf_terminator = d[33];
+			cfg.separators = u8(std::min<unsigned>(d[34], 2));
+			cfg.separator[0] = d[35];
+			cfg.separator[1] = d[36];
+			cfg.options = d[42];
+			cfg.quote = d[44];
+			cfg.record_separator = d[45];
+			cfg.signal1 = d[46];
+			cfg.signal2 = d[47];
+			cfg.quotable = d[48];
+			terminators(50, d[49]);
+			break;
+		case 1:  if (n >= 1) cfg.control = d[0]; break;
+		case 2:  if (n >= 2) cfg.end_count = u16((d[0] << 8) | d[1]); break;
+		case 3:  if (n >= 1) cfg.alert1 = (d[0] & 1) != 0; break;
+		case 6:  if (n >= 1) cfg.backspace = d[0]; break;
+		case 7:  if (n >= 1) cfg.line_delete = d[0]; break;
+		case 8:  if (n >= 1) cfg.strip = d[0]; break;
+		case 9:  if (n >= 1) cfg.handshake = d[0]; break;
+		case 21:
+			if (n >= 2)
+			{
+				m_host_mask = d[0];
+				m_modem_mask = d[1];
+			}
+			break;
+		case 23:
+			if (n >= 2)
+			{
+				cfg.xon = d[0];
+				cfg.xoff = d[1];
+			}
+			break;
+		case 24: if (n >= 2) cfg.ack = d[1]; break;
+		case 27: if (n >= 1) cfg.crlf_terminator = d[0]; break;
+		case 28:
+			cfg.separators = u8(std::min<size_t>(n, 2));
+			for (unsigned k = 0; k < cfg.separators; k++)
+				cfg.separator[k] = d[k];
+			break;
+		case 31:
+			if (n >= 7)
+			{
+				cfg.options = d[0];
+				cfg.quote = d[2];
+				cfg.record_separator = d[3];
+				cfg.signal1 = d[4];
+				cfg.signal2 = d[5];
+				cfg.quotable = d[6];
+			}
+			break;
+		case 32:
+			if (n >= 1)
+				terminators(0, n);
+			break;
+		default:
+			// The line's own parameters (4, 5, 10..19, 22, 25, 26, 29,
+			// 30, 33): accepted, and nothing here depends on them.
+			break;
 		}
+		if (dbg())
+			dbg()("[%8.3fs asi%u configuration sf %u: control=%02x alert=%d "
+					"options=%02x handshake=%02x mask=%02x/%02x, %u "
+					"terminator(s)]\n", stamp(), pa, m_subfunction,
+					cfg.control, cfg.alert1, cfg.options, cfg.handshake,
+					m_host_mask, m_modem_mask, cfg.terminators);
 		m_in.clear();
+	}
+
+	// Control Card (request code 6, 27128A 4-59/4-60): the requests that
+	// act on the receive buffer. HP-UX flushes what was typed when the
+	// interrupt key goes, as any tty does.
+	void control_card()
+	{
+		switch (m_subfunction)
+		{
+		case 1:
+			// "Flush the current receive buffer" -- the record the next
+			// host read would take (4-16).
+			if (!m_ends.empty())
+			{
+				m_rx.erase(m_rx.begin(), m_rx.begin() + m_ends.front().length);
+				m_ends.pop_front();
+			}
+			else
+				drop_open_record();
+			forget_announcement();
+			break;
+		case 2:
+			// "Flush all data in the receive buffer."
+			m_rx.clear();
+			m_ends.clear();
+			m_open = 0;
+			forget_announcement();
+			break;
+		case 4:
+			// "Host initiates termination of frontplane receive record."
+			// A record that holds something is closed and offered; an
+			// empty one is not manufactured, which is where this stops
+			// short of 4-15's "may or may not contain data".
+			if (m_open)
+				close_record(MSG_HOST, 0);
+			break;
+		default:
+			// 0 no operation; 3 flush the transmit buffer and 5 restart
+			// the transmitter, of which this card has neither: a
+			// character is at the terminal the moment it is written.
+			break;
+		}
+	}
+
+	// An announcement the host has not acted on describes a record that
+	// is no longer there.
+	void forget_announcement()
+	{
+		m_async.erase(std::remove(m_async.begin(), m_async.end(),
+				u8(AEV_DATA)), m_async.end());
 	}
 
 	// Sense an asynchronous event. The mask decides whether it is
@@ -1050,6 +1267,9 @@ private:
 		case REQ_READ_CARD_INFO:
 			read_card_information();
 			break;
+		case REQ_CONTROL_CARD:
+			control_card();
+			[[fallthrough]];
 		default:
 			// Write device data, control device, write card
 			// configuration and control card all take their data on a
@@ -1102,7 +1322,7 @@ private:
 					// text terminator" (4-65/4-66); byte 6 is the
 					// terminator that ended the record.
 					m_out.push_back(m_message_type);
-					m_out.push_back(terminator);
+					m_out.push_back(m_message_term);
 				}
 			}
 		}
@@ -1172,31 +1392,225 @@ private:
 	}
 
 
-	// Is a complete receive record waiting? The pipeline ends one on the
-	// single text terminator, on the read length, or on the card's own
-	// buffer limit (27128A 4-5/4-6).
+	//----------------------------------------------------------------
+	//  the receive pipeline (27128A 4-5/4-6, in the manual's order)
+	//----------------------------------------------------------------
+
+	// The receive buffer is m_rx, every record's characters in arrival
+	// order; m_ends says where each TERMINATED record ends and what ended
+	// it, and the last m_open characters are the record still being typed
+	// -- the frontplane's "current receive record".
+	struct record_end
+	{
+		u16 length;
+		u8 type;
+		u8 term;
+	};
+
+	void send(u8 c)
+	{
+		if (on_char)
+			on_char(c);
+	}
+
+	void send_separators()
+	{
+		for (unsigned k = 0; k < cfg.separators; k++)
+			send(cfg.separator[k]);
+	}
+
+	void echo(u8 c)
+	{
+		if (cfg.control & CTL_ECHO)
+			send(c);
+	}
+
+	bool is_terminator(u8 c) const
+	{
+		if (!(cfg.control & CTL_TERM))
+			return false;
+		for (unsigned k = 0; k < cfg.terminators; k++)
+			if (cfg.terminator[k] == c)
+				return true;
+		return false;
+	}
+
+	void close_record(u8 type, u8 term)
+	{
+		m_ends.push_back(record_end{ m_open, type, term });
+		m_open = 0;
+	}
+
+	void drop_open_record()
+	{
+		m_rx.erase(m_rx.end() - m_open, m_rx.end());
+		m_open = 0;
+	}
+
+	// One character off the line, through the pipeline.
+	void receive(u8 c)
+	{
+		// 1b. Signal characters: "If a match occurs, the firmware
+		// generates the appropriate status event" (4-30). The character
+		// is the event, not data.
+		if ((cfg.options & OPT_SIGNAL) && (c == cfg.signal1 || c == cfg.signal2))
+		{
+			if (c == cfg.signal1)
+				raise_async(AEV_SIGNAL1, MASK_SIG1, "signal character 1");
+			else
+				raise_async(AEV_SIGNAL2, MASK_SIG2, "signal character 2");
+			return;
+		}
+		// 2. The software handshakes take their own characters out of
+		// the stream. Nothing here paces the line, so that is all they
+		// do: the device's X-ON/X-OFF and the ACK to a host ENQ the card
+		// never sends.
+		if (cfg.control & CTL_HANDSHAKE)
+		{
+			if ((cfg.handshake & HS_DEV_XON) && (c == cfg.xon || c == cfg.xoff))
+				return;
+			if ((cfg.handshake & HS_HOST_ENQ) && c == cfg.ack)
+				return;
+		}
+		// The quoting character makes the next edit character or the
+		// quotable terminator literal: it "replaces the quote character"
+		// (4-5 step 3, 4-30).
+		const bool quoted = (cfg.options & OPT_QUOTE) && m_open
+				&& m_rx.back() == cfg.quote;
+		// 3. Edit mode.
+		if (cfg.control & CTL_EDIT)
+		{
+			if ((c == cfg.backspace || c == cfg.line_delete) && quoted)
+			{
+				m_rx.back() = c;
+				echo(c);
+				return;
+			}
+			if (c == cfg.backspace)
+			{
+				// "If you have used backspace to delete the current line,
+				// any further backspace will cause no action."
+				if (!m_open)
+					return;
+				const u8 gone = m_rx.back();
+				m_rx.pop_back();
+				m_open--;
+				switch (cfg.strip & BS_MODE)
+				{
+				case 0: echo('\\'); echo(gone); break;            // backspace echo
+				case 1: echo(0x08); echo(' '); echo(0x08); break;  // overwrite
+				default: echo(0x08); break;                       // backspace only
+				}
+				return;
+			}
+			if (c == cfg.line_delete)
+			{
+				// "...it will write one backslash, then do a carriage-
+				// return/linefeed" (4-9).
+				drop_open_record();
+				echo('\\');
+				echo('\r');
+				echo('\n');
+				return;
+			}
+		}
+		// 4. Character stripping.
+		if (cfg.control & CTL_STRIP)
+		{
+			if ((c == 0x00 && (cfg.strip & STRIP_NUL))
+					|| (c == 0x7f && (cfg.strip & STRIP_DEL))
+					|| (c == 0xff && (cfg.strip & STRIP_FF)))
+				return;
+		}
+		// 5. Single text termination.
+		if (is_terminator(c))
+		{
+			if (quoted && c == cfg.quotable)
+			{
+				m_rx.back() = c;
+				echo(c);
+				return;
+			}
+			if (!(cfg.strip & STRIP_TERM))
+			{
+				m_rx.push_back(c);
+				m_open++;
+			}
+			if ((cfg.handshake & HS_ECHO_CRLF) && c == cfg.crlf_terminator)
+			{
+				echo('\r');
+				echo('\n');
+			}
+			else if (cfg.handshake & HS_ECHO_TERM)
+				echo(c);
+			close_record(MSG_TERMINATOR, c);
+			return;
+		}
+		// (6 and 7, double text terminators and prompt sequences, are not
+		// modelled.) "The character is now added to the current record."
+		m_rx.push_back(c);
+		m_open++;
+		echo(c);
+		// 8. End on count, then the card's own buffer limit: "text
+		// terminated by the card, more data coming" (4-11).
+		if ((cfg.control & CTL_COUNT) && cfg.end_count && m_open >= cfg.end_count)
+			close_record(MSG_COUNT, 0);
+		else if (m_open >= blocking)
+			close_record(MSG_MORE, 0);
+	}
+
+	// Has the card something to offer a read? A terminated record always;
+	// under "alert 1" the record being typed too, as soon as it holds a
+	// character: "the firmware will notify the host by a 'data available'
+	// event that at least one character was received" (4-12).
 	bool record_ready() const
 	{
-		for (u8 c : m_rx)
-			if (c == terminator)
-				return true;
-		return m_rx.size() >= blocking
-				|| (m_length && m_rx.size() >= m_length);
+		return !m_ends.empty() || (cfg.alert1 && m_open);
+	}
+
+	// What a read would take now: the oldest terminated record, or under
+	// alert 1 everything typed so far.
+	record_end next_record() const
+	{
+		if (!m_ends.empty())
+			return m_ends.front();
+		return record_end{ m_open, MSG_ALERT, 0 };
 	}
 
 	// Hand the host the record it asked for.
 	void deliver_record()
 	{
 		m_out.clear();
-		while (!m_rx.empty())
+		m_message_term = 0;
+		m_message_type = cfg.alert1 ? MSG_ALERT : MSG_NO_MORE;
+		if (m_ends.empty())
 		{
-			const u8 c = m_rx.front();
-			m_rx.pop_front();
-			m_out.push_back(c);
-			if (c == terminator)
-				break;
-			if (m_length && m_out.size() >= m_length)
-				break;
+			if (!m_open)
+				return;
+			// Under alert 1 "the backplane will cause the frontplane to
+			// terminate the record to satisfy the read" (4-12). Without
+			// it the real card holds the read until the record is
+			// complete or the read's length is reached (4-14), and this
+			// one hands over what there is, as "terminated by the card,
+			// no more data" -- which is what it always did; a host that
+			// reads only when it is told to never gets here.
+			close_record(cfg.alert1 ? MSG_ALERT : MSG_NO_MORE, 0);
+		}
+		record_end &r = m_ends.front();
+		const u16 n = m_length ? std::min<u16>(m_length, r.length) : r.length;
+		m_out.assign(m_rx.begin(), m_rx.begin() + n);
+		m_rx.erase(m_rx.begin(), m_rx.begin() + n);
+		m_message_type = r.type;
+		m_message_term = r.term;
+		// "If the S bit is set, any remaining data in the current read
+		// record will be available for the next read request. If the S
+		// bit is clear, any data remaining ... will be discarded" (4-3).
+		if (n < r.length && m_keep_record)
+			r.length = u16(r.length - n);
+		else
+		{
+			m_rx.erase(m_rx.begin(), m_rx.begin() + (r.length - n));
+			m_ends.pop_front();
 		}
 		if (!m_out.empty())
 			post(STAT_DONE);
@@ -1250,7 +1664,10 @@ private:
 	// FR1 for ever. See docs/HPUX.md 6.
 	std::deque<u8> m_pending;   // posted when the command's transfer ends
 	unsigned m_event_timer = 0;
-	std::deque<u8> m_rx;        // characters typed at the terminal
+	std::deque<u8> m_rx;        // characters typed at the terminal...
+	std::deque<record_end> m_ends;  // ...the records they make up...
+	u16 m_open = 0;             // ...and the tail still being typed
+	u8 m_message_term = 0;      // the terminator that ended the last record
 	std::deque<u8> m_out;       // what the host reads next
 	// Read Transparent Status answers out of its OWN buffer, and has to.
 	// RTS is the card's out-of-band channel -- "what do you want next?"
