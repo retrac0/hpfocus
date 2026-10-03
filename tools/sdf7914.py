@@ -344,7 +344,14 @@ def build_disc(paths):
     """
     datas = [p.read_bytes() for p in paths]
     if len(datas) == 1:
-        return Disc([(datas[0], 1)])
+        # A lone tape 1 begins at disc block 1 -- its first sector is the
+        # boot descriptor, 0xe9c28206. The volume tools/mkhpuxdisc.py
+        # assembles, the file HP-UX actually boots and writes, begins at
+        # block 0 with an SDF header (s_format 0x0700); mapping it from
+        # block 1 put every block one off, "found" the FA file a block late
+        # with 4 of its 17 extents, and listed 0 names without complaint.
+        first = 0 if datas[0][:2] == b"\x07\x00" else 1
+        return Disc([(datas[0], first)])
 
     n1 = len(datas[0]) // BLK
     best, best_score = None, -1
