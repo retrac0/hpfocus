@@ -4423,6 +4423,283 @@ static void test_stop_and_int_are_privileged()
 	CHECK_EQ(m.cpu.r.get(sf::CSN), 5);
 }
 
+
+// What the review's lanes do TOGETHER. Each of these crosses two changes
+// that were written and tested apart: STATUS.P resumption with the MI/EM
+// bits now restored from markers, with the interrupt frame and the TCB
+// path of IXIT, and with IXIT's absent-code-segment trap; and the
+// integer-overflow User Trap with every instruction that loads STATUS
+// from a marker rather than computing Overflow itself.
+static void dm_paged_segment(dmachine &m, bool page1_in)
+{
+	m.cpu.r.dst = PG_DST;
+	m.mem.write32(m.TCB + 4, PG_DST);               // the task's DST register
+	m.mem.write32(PG_DST, 16 * 4);
+	u32 w0 = 0;
+	w0 = ers32::set(w0, 22, 4, 10);
+	w0 = ers32::set(w0, 26, 1, 1);
+	w0 = ers32::set(w0, 27, 1, 1);
+	m.mem.write32(PG_DST + 16, w0);
+	m.mem.write32(PG_DST + 20, 0xfff);
+	m.mem.write32(PG_DST + 24, PG_PTAB);
+	m.mem.write32(PG_DST + 28, 0);
+	const u32 present = ers32::set(0, 27, 1, 1);
+	m.mem.write32(PG_PTAB + 0, present);
+	m.mem.write32(PG_PTAB + 4, PG_FRAME0);
+	m.mem.write32(PG_PTAB + 8, page1_in ? present
+			: ers32::set(present, 31, 1, 1));
+	m.mem.write32(PG_PTAB + 12, PG_FRAME1);
+}
+static void dm_page1_in(dmachine &m)
+{
+	m.mem.write32(PG_PTAB + 8, ers32::set(0, 27, 1, 1));
+}
+// The running task holds the use count of the segment it is in.
+static void dm_in_segment_5(dmachine &m)
+{
+	const u32 e = m.CST + 16 * 5;
+	m.mem.write32(e, ers32::set(m.mem.read32(e), 1, 12, 1));
+}
+static constexpr u32 ST_P = 0x00001000u;        // bit 19
+static constexpr u32 ST_T = 0x00800000u;        // bit 8
+static constexpr u32 ST_O = 0x01000000u;        // bit 7
+static const u16 D_MVB3 = u16((051 << 6) | (1 << 2) | 3);   // source a data pointer, SDEC 3
+
+// The move every case below makes: 512 bytes from DB+0x100 to offset 0x300
+// of the paged segment, whose second page (from byte 256 of the move) is
+// absent the first time.
+static void dm_stack_move(dmachine &m)
+{
+	for (u32 i = 0; i < 512; i++)
+		m.mem.write8(m.cpu.r.db + 0x100 + i, u8(i * 5 + 1));
+	m.cpu.r.x = 0x7777;
+	m.cpu.push(0x80000000u | 0x100);
+	m.cpu.push(pg_ptr(0x300));
+	m.cpu.push(512);
+}
+static void dm_check_move(dmachine &m, u32 s_before_push)
+{
+	for (u32 i = 0; i < 512; i += 13)
+		CHECK_EQ(m.mem.read8(pg_phys(0x300 + i)), u8(i * 5 + 1));
+	CHECK_EQ(m.cpu.r.x, 512);
+	CHECK_EQ(m.cpu.r.s, s_before_push);
+	CHECK_EQ(m.cpu.r.status & ST_P, 0);
+}
+
+static void test_pending_through_interrupt_and_tcb()
+{
+	std::printf("a pending MVB survives an interrupt, a dispatch and MI\n");
+	// 1. Fault, pager, EXIT -- then an interrupt lands before the resumed
+	//    MVB runs, and its IXIT goes back through the TCB.
+	{
+		dmachine m;
+		dm_paged_segment(m, false);
+		m.code(m.PROC, { D_MVB3, D_NOP });
+		m.code(m.ISR, { D_IXIT });
+		m.code(m.vector(040), { D_EXIT0 });
+		const u32 s0 = m.cpu.r.s;
+		dm_stack_move(m);
+
+		CHECK(m.cpu.step() == exec_trap::none);     // MVB faults at byte 256
+		CHECK(m.cpu.last_trap() == trap_cause::absent_page);
+		CHECK_EQ(m.cpu.r.p, m.vector(040));
+		const u32 tst = m.cpu.r.q - 3 - 4;
+		CHECK_EQ(m.mem.read32(tst) & ST_P, ST_P);   // pending, in the marker
+		CHECK_EQ(m.mem.read32(tst) & ST_EM, 0);     // note 4
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 12), 256);    // X: bytes done
+		CHECK_EQ(m.cpu.r.status & ST_P, 0);         // the handler runs without it
+		dm_page1_in(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK_EQ(m.cpu.r.status & ST_P, ST_P);
+
+		CHECK(m.interrupt());                       // before the MVB resumes
+		CHECK_EQ(m.cpu.r.status & ST_P, 0);         // the routine runs without it
+		m.cpu.r.x = 0x5555;                         // and uses X for itself
+		CHECK(m.cpu.step() == exec_trap::none);     // IXIT, through the TCB
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK_EQ(m.cpu.r.status & ST_P, ST_P);
+		CHECK_EQ(m.cpu.r.x, 256);
+		CHECK(m.cpu.step() == exec_trap::none);     // the MVB finishes
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		dm_check_move(m, s0);
+	}
+	// 2. A signal posted while the task waited on the page: the dispatcher
+	//    ORs MI into the absent-page marker (EM clear there, note 4). The
+	//    MVB must finish first, untrapped, and the trap come before the
+	//    instruction after it, with a marker that is no longer pending.
+	{
+		dmachine m;
+		dm_paged_segment(m, false);
+		m.code(m.PROC, { D_MVB3, D_NOP });
+		m.code(m.vector(040), { D_EXIT0 });
+		m.code(m.vector(004), { D_EXIT0 });
+		const u32 s0 = m.cpu.r.s;
+		dm_stack_move(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // fault
+		const u32 tst = m.cpu.r.q - 3 - 4;
+		m.mem.write32(tst, m.mem.read32(tst) | ST_MI);
+		dm_page1_in(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK(m.cpu.step() == exec_trap::none);     // MVB, not the trap
+		CHECK(m.cpu.last_trap() == trap_cause::absent_page);
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		dm_check_move(m, s0);
+		CHECK(m.cpu.step() == exec_trap::none);     // now the trap
+		CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & ST_P, 0);
+	}
+	// 3. MI armed when the MVB is resumed (the request arrived through an
+	//    interrupt marker, EM set): the trap is taken before the MVB, its
+	//    marker carries P and X, and the hook's EXIT hands both back.
+	{
+		dmachine m;
+		dm_paged_segment(m, false);
+		m.code(m.PROC, { D_MVB3, D_NOP });
+		m.code(m.vector(040), { D_EXIT0 });
+		m.code(m.vector(004), { D_NOP, D_EXIT0 });
+		const u32 s0 = m.cpu.r.s;
+		dm_stack_move(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // fault
+		const u32 tst = m.cpu.r.q - 3 - 4;
+		m.mem.write32(tst, m.mem.read32(tst) | ST_MI | ST_EM);
+		dm_page1_in(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT: MI and EM stand
+		CHECK(m.cpu.step() == exec_trap::none);     // the trap, before the MVB
+		CHECK(m.cpu.last_trap() == trap_cause::machine_instruction);
+		const u32 mst = m.cpu.r.q - 3 - 4;
+		CHECK_EQ(m.mem.read32(mst) & ST_P, ST_P);
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 12), 256);
+		m.cpu.r.x = 3;                              // the hook uses X
+		CHECK(m.cpu.step() == exec_trap::none);     // its NOP: P is not its
+		CHECK_EQ(m.cpu.r.status & ST_P, 0);
+		m.mem.write32(mst, m.mem.read32(mst) & ~ST_MI);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK(m.cpu.step() == exec_trap::none);     // the MVB finishes
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		dm_check_move(m, s0);
+	}
+	// 4. The task is dispatched back into a code segment that was swapped
+	//    out while its MVB was pending: IXIT's absent-code-segment trap is
+	//    taken on the task's stack with the task's STATUS and X in the
+	//    marker, and the handler's EXIT resumes the move.
+	{
+		dmachine m;
+		dm_paged_segment(m, false);
+		m.code(m.PROC, { D_MVB3, D_NOP });
+		m.code(m.ISR, { D_IXIT });
+		m.code(m.vector(040), { D_EXIT0 });
+		m.code(m.vector(037), { D_EXIT0 });
+		dm_in_segment_5(m);
+		const u32 s0 = m.cpu.r.s;
+		dm_stack_move(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // fault
+		dm_page1_in(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT, MVB pending
+		CHECK(m.interrupt());
+		const u32 cst5 = m.CST + 16 * 5;
+		m.mem.write32(cst5, m.mem.read32(cst5) | 1);        // A: absent
+		CHECK(m.cpu.step() == exec_trap::none);     // IXIT
+		CHECK(m.cpu.last_trap() == trap_cause::absent_code_segment);
+		CHECK_EQ(m.cpu.r.p, m.vector(037));
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & ST_P, ST_P);
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 12), 256);
+		m.mem.write32(cst5, m.mem.read32(cst5) & ~1u);      // swapped in
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK(m.cpu.step() == exec_trap::none);     // the MVB finishes
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		dm_check_move(m, s0);
+		CHECK_EQ(m.use_count(5), 1);
+		CHECK_EQ(m.use_count(1), 0);
+	}
+}
+
+// "This trap occurs whenever both the overflow and trap bits are set [e.g.
+// SETR]" (ERS sheet 48): an instruction that LOADS the pair takes the
+// User Trap as one that computes it does. The marker has to name the
+// place the loading instruction went to, in the segment it went to.
+static void test_overflow_loaded_from_marker()
+{
+	std::printf("T and O loaded by EXIT, IXIT and SETR take the User Trap\n");
+	// EXIT: a handler returns through a marker that has both.
+	{
+		dmachine m;
+		m.code(m.PROC, { D_CTCB, D_NOP, D_NOP });
+		m.code(m.vector(020), { D_EXIT0 });
+		m.code(m.vector(031), { D_EXIT0 });
+		dm_in_segment_5(m);
+		CHECK(m.cpu.step() == exec_trap::none);     // cause 020, note 1
+		CHECK_EQ(m.cpu.r.p, m.vector(020));
+		const u32 tst = m.cpu.r.q - 3 - 4;
+		m.mem.write32(tst, m.mem.read32(tst) | ST_T | ST_O);
+		u32 param = 0xffffffffu;
+		m.cpu.on_trap = [&](trap_cause, u32 p) { param = p; };
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT -> the User Trap
+		CHECK(m.cpu.last_trap() == trap_cause::user_trap);
+		CHECK_EQ(param, 1);
+		CHECK_EQ(m.cpu.r.p, m.vector(031));
+		CHECK_EQ(m.cpu.r.get(sf::CSN), 1);
+		const u32 ust = m.cpu.r.q - 3 - 4;
+		CHECK_EQ(m.mem.read32(ust) & (ST_T | ST_O), ST_T);  // O cleared
+		CHECK_EQ(m.mem.read32(ust) & 0xfff, 5);     // the segment EXIT went to
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 8), 2);       // and where in it
+		CHECK_EQ(m.use_count(5), 0);
+		CHECK_EQ(m.use_count(1), 1);
+		m.cpu.on_trap = nullptr;
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		CHECK_EQ(m.cpu.r.status & (ST_T | ST_O), ST_T);
+		CHECK(m.cpu.step() == exec_trap::none);     // the NOP: no second trap
+		CHECK_EQ(m.cpu.r.p, m.PROC + 4);
+		CHECK_EQ(m.use_count(5), 1);
+		CHECK_EQ(m.use_count(1), 0);
+	}
+	// IXIT through the TCB: the trap is the task's, on the task's stack,
+	// off the ICS.
+	{
+		dmachine m;
+		m.code(m.PROC, { D_NOP, D_NOP });
+		m.code(m.ISR, { D_IXIT });
+		m.code(m.vector(031), { D_EXIT0 });
+		CHECK(m.interrupt());
+		const u32 st = 0x4013 - 3 - 4;
+		m.mem.write32(st, m.mem.read32(st) | ST_T | ST_O);
+		CHECK(m.cpu.step() == exec_trap::none);     // IXIT -> the User Trap
+		CHECK(m.cpu.last_trap() == trap_cause::user_trap);
+		CHECK_EQ(m.cpu.r.p, m.vector(031));
+		CHECK_EQ(m.cpu.r.sb, 0x4000);               // the task's stack
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 8), 0);       // returns to PROC
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & (ST_T | ST_O), ST_T);
+		CHECK(m.cpu.step() == exec_trap::none);     // EXIT
+		CHECK_EQ(m.cpu.r.p, m.PROC);
+		CHECK(m.cpu.step() == exec_trap::none);
+		CHECK_EQ(m.cpu.r.p, m.PROC + 2);
+		// A second interrupt finds the machine off the ICS, as it should
+		// be after an IXIT that left it.
+		CHECK(m.interrupt());
+		CHECK_EQ(m.cpu.r.p, m.ISR);
+		CHECK_EQ(m.cpu.r.q, m.QI);
+	}
+	// SETR, the ERS's own example, from user mode (T and O are within the
+	// fields an unprivileged SETR may load): the trap, returning past it.
+	{
+		dmachine m;
+		const u16 SETR4 = f2(035, 4);
+		m.code(m.PROC, { SETR4, D_NOP });
+		m.code(m.vector(031), { D_EXIT0 });
+		m.cpu.r.status = ST_EM | 5;
+		m.cpu.push(ST_T | ST_O);
+		CHECK(m.cpu.step() == exec_trap::none);
+		CHECK(m.cpu.last_trap() == trap_cause::user_trap);
+		CHECK_EQ(m.cpu.r.p, m.vector(031));
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 8), 2);
+		CHECK_EQ(m.mem.read32(m.cpu.r.q - 3 - 4) & (ST_T | ST_O | ST_M), ST_T);
+	}
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -4483,6 +4760,8 @@ int main()
 	test_use_counts_through_segment_zero();
 	test_reset_clears_flags();
 	test_stop_and_int_are_privileged();
+	test_pending_through_interrupt_and_tcb();
+	test_overflow_loaded_from_marker();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
