@@ -1639,8 +1639,8 @@ Instruction on execution.
 **`UP` / `DOWN`** — Semaphore Up / Down — `F4:20` / `F4:21`
 The semaphore signal/wait pair — the blocking counterpart to the
 `SEML`/`PSLA` atomic exchange (§10.15). Privileged. The assembler gives
-them the operand class of `PSHN` and `SRM`, so `b` is meaningful: set, the
-pointer is popped.
+them the operand class of `PSHN` and `SRM`, so `b` is meaningful: it
+selects how the operand names the semaphore. Both forms pop it.
 
 The semantics below are not read from any HP document. They are recovered
 from the BASIC kernel's *software* implementation of the same structure
@@ -1648,14 +1648,19 @@ from the BASIC kernel's *software* implementation of the same structure
 dispatcher that consumes its lists), which fixes every convention the
 microcode has to share with the OS around it.
 
-The operand is a pointer to a two-word semaphore: word 0 the wait-list
-head, doubling as the multiprocessor lock (−1 while held), word 1 the
-count. As with the other privileged instructions the pointer may be a
-tagged data segment pointer or a raw absolute address — an absolute reads
-as an external pointer with segment number zero, which is invalid as an
-EDS reference and so is free to carry that meaning. Both HP-UX kernels
-feed both forms; both their call sites use the same `{0, 1}` layout, an
-unlocked one-unit mutex.
+The operand names a two-word semaphore: word 0 the wait-list head,
+doubling as the multiprocessor lock (−1 while held), word 1 the count.
+The plain form takes a **data segment pointer** — HP-UX's unit semaphores
+arrive as `0x00780008` and `0x00780028`, external pointers to segment 15,
+whose blocks have counts initialised to 1. The `,B` form takes an
+**absolute address** — the kernel's first `DOWN,B` of the boot names
+`0x00ffe6f8`, up among the TCBs, which read as a pointer would be segment
+31 at offset half a megabyte. Reading every operand one way or the other
+was wrong in both directions: as pointers the boot panicked on its first
+`DOWN,B`, as addresses two tasks parked on untouched words. Both forms pop
+the operand (no site deletes anything after them; leaving it was a
+one-word stack leak per operation that overflowed the mount task's
+stack).
 
 `DOWN` decrements the count. If it stays non-negative the instruction is
 done. Otherwise the task blocks, and the list it joins is the one HP-UX's
@@ -1667,8 +1672,17 @@ the word at `CTCBP−12`**, smallest first and first-come-first-served among
 equals (`LLSH 3` from the head, limited to the waiters already queued,
 then `LINS` in front of where it stopped); the head moves to the new node
 only when the search did not advance. The state word at `CTCBP−16` takes
-2 in the low halfword, `CTCBP+104` records the operand, and the task
-leaves through the dispatcher exactly as `DISP` enters it.
+2 in the low halfword, `CTCBP+104` (node+112) records the **operand as
+given** — the pointer, for the plain form — and the task leaves through
+the dispatcher exactly as `DISP` enters it. The node+112 word is what the
+kernel's own blocking paths store just before their `DISP` (file 0xe796,
+0x13d5c, 0x13e6e, 0x14164 and others): their semaphore parameter,
+unconverted — the `CPAA` variant at
+0x13c18 converts the pointer for its own use and still stores the
+original. No reader of the word was found in the 5.30 kernel. A `DOWN`
+that does not block leaves the head alone: the kernel's routine writes
+zero there, but only because its `PSLA` lock overwrote the word, and with
+a positive count the head is nil anyway.
 
 `UP` increments the count. If it is still non-positive there is a waiter:
 when the count has reached zero it was the only one and the head simply

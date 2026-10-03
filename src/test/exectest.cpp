@@ -2573,20 +2573,23 @@ static void test_up_down()
 	h.mem.write32(sem, 0);                       // no waiters
 	h.mem.write32(sem + 4, 1);                   // one unit free
 
-	// DOWN acquires without blocking while the count is positive.
+	// DOWN acquires without blocking while the count is positive. The
+	// plain form takes a data segment pointer (HP-UX's unit semaphores
+	// arrive as external pointers to segment 15); ",B" takes an absolute
+	// address (its first DOWN,B of the boot names 0x00ffe6f8). This test
+	// once handed the tagged pointer to the ",B" form, from before the
+	// kernels' operands settled what the bit means.
 	h.cpu.push(ptr);
-	CHECK(h.one(f4(021, true)) == exec_trap::none);
+	CHECK(h.one(f4(021)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 	CHECK_EQ(h.cpu.r.s, s32(h.cpu.r.sb + 3));    // popped
 
 	// UP releases it.
 	h.cpu.push(ptr);
-	CHECK(h.one(f4(020, true)) == exec_trap::none);
+	CHECK(h.one(f4(020)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 1);
 
-	// A raw absolute address works too: as an external pointer it would
-	// name segment zero, which is invalid, so the encoding means
-	// absolute.
+	// The ",B" form with a raw absolute address.
 	h.cpu.push(sem);
 	CHECK(h.one(f4(021, true)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
@@ -2602,20 +2605,21 @@ static void test_up_down()
 	CHECK_EQ(h.mem.read32(sem + 4), 1);
 
 	// A waiter: park a fake TCB on the list the way a blocking DOWN
-	// does -- link node at CTCBP-8, state word at CTCBP-16 -- and check
-	// that UP unlinks it, marks it ready, and rings the doorbell bit.
+	// does -- link node at CTCBP-8, a ring of one (test_up_down_wait_list
+	// has the whole format), state word at CTCBP-16 -- and check that UP
+	// unlinks it, marks it ready, and rings the doorbell bit.
 	const u32 TCB = 0x3000;
 	h.mem.write32(16 * ers32::get(h.cpu.r.mask, 3, 3) + 4, TCB + 0x18);
 	const u32 link = TCB + 0x10;
-	h.mem.write32(link, 0);
-	h.mem.write32(link + 4, sem + 4);
+	h.mem.write32(link, link);
+	h.mem.write32(link + 4, link + 4);
 	h.mem.write32(sem, link);
 	h.mem.write32(sem + 4, u32(-1));             // one waiter
 	h.mem.write32(TCB + 8, 0x00050002);          // blocked
 
 	h.cpu.r.msg = 0;
 	h.cpu.push(ptr);
-	CHECK(h.one(f4(020, true)) == exec_trap::none);
+	CHECK(h.one(f4(020)) == exec_trap::none);
 	CHECK_EQ(h.mem.read32(sem + 4), 0);
 	CHECK_EQ(h.mem.read32(sem), 0);              // unlinked
 	CHECK_EQ(h.mem.read32(TCB + 8), 0x00050001); // ready
