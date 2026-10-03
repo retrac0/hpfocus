@@ -405,6 +405,104 @@ static void test_divide_extremes()
 	CHECK_EQ(h.cpu.stk(0), 0);
 }
 
+// The logical group as multiple precision limbs (ERS sheet 76, 61.1-61.3):
+// the b bit chains Carry in, LSUB's borrow travels inverted (Carry set =
+// no borrow), and the code is CCG/CCE with a zero limb leaving it alone
+// when chained. HP-UX's atof and the C compiler's floating constants are
+// built from exactly these, and every lost carry put them 2^22 ulp low.
+static void test_logical_carry_chain()
+{
+	std::printf("logical add/subtract carry chain\n");
+	harness h;
+	const u32 base = h.cpu.r.s;
+	auto two = [&](u16 insn, u32 b, u32 a, int carry_in, u32 cc_in) {
+		h.cpu.r.s = base;
+		h.cpu.r.put(sf::C, carry_in);
+		h.cpu.r.put(sf::CC, cc_in);
+		h.cpu.push(b); h.cpu.push(a);
+		return h.one(insn);
+	};
+
+	CHECK(two(f3(060), 0xffffffffu, 1, 0, CCL) == exec_trap::none);    // LADD
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+	CHECK_EQ(h.cpu.r.s, base + 4);
+
+	two(f3(060), 5, 6, 1, CCL);                                       // carry ignored
+	CHECK_EQ(h.cpu.stk(0), 11);
+	CHECK(!h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(060, true), 5, 6, 1, CCL);                                 // LADD,B
+	CHECK_EQ(h.cpu.stk(0), 12);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(060, true), 0x40000000u, 0x40000000u, 0, CCE);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // unsigned: no CCL
+	two(f3(060, true), 0xffffffffu, 0, 1, CCG);                       // zero limb
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // left alone
+
+	two(f3(061), 7, 5, 0, CCL);                                       // LSUB
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK(h.cpu.r.test(sf::C));                                       // no borrow
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(061), 5, 7, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK(!h.cpu.r.test(sf::C));                                      // borrow
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(061), 5, 5, 0, CCL);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+	two(f3(061, true), 7, 5, 0, CCL);                                 // LSUB,B: 1-C
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK(h.cpu.r.test(sf::C));
+	two(f3(061, true), 7, 5, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	two(f3(061, true), 5, 5, 0, CCE);
+	CHECK_EQ(h.cpu.stk(0), 0xffffffffu);
+	CHECK(!h.cpu.r.test(sf::C));
+	two(f3(061, true), 5, 5, 1, CCG);                                 // zero limb
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	// A 96-bit sum and difference, limb by limb from the bottom:
+	// 0x00000001_ffffffff_ffffffff + 1 = 0x00000002_00000000_00000000.
+	const u32 x[3] = { 0xffffffffu, 0xffffffffu, 1 }, y[3] = { 1, 0, 0 };
+	u32 s[3];
+	h.cpu.r.s = base;
+	for (int i = 0; i < 3; i++)
+	{
+		h.cpu.push(x[i]); h.cpu.push(y[i]);
+		h.one(f3(060, i != 0));
+		s[i] = h.cpu.pop();
+	}
+	CHECK_EQ(s[0], 0); CHECK_EQ(s[1], 0); CHECK_EQ(s[2], 2);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	// ...and back: 0x00000002_00000000_00000000 - 1.
+	for (int i = 0; i < 3; i++)
+	{
+		h.cpu.push(s[i]); h.cpu.push(y[i]);
+		h.one(f3(061, i != 0));
+		s[i] = h.cpu.pop();
+	}
+	CHECK_EQ(s[0], 0xffffffffu); CHECK_EQ(s[1], 0xffffffffu); CHECK_EQ(s[2], 1);
+	CHECK(h.cpu.r.test(sf::C));
+
+	// LMPY: the doubleword product, CCG unless it is zero.
+	h.cpu.r.s = base; h.cpu.r.put(sf::CC, CCL);
+	h.cpu.push(0xffffffffu); h.cpu.push(0xffffffffu);
+	CHECK(h.one(f3(062)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0xfffffffeu);
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.r.s = base;
+	h.cpu.push(0); h.cpu.push(0x12345678u);
+	h.one(f3(062));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+}
+
 // Every instruction whose ERS entry names an indicator has to set one. The
 // condition code is the easiest effect in this architecture to leave out:
 // nothing in an instruction's own test looks at it, and an omission only
@@ -2823,6 +2921,7 @@ int main()
 	std::printf("FOCUS execution core tests\n\n");
 	test_arithmetic();
 	test_divide_extremes();
+	test_logical_carry_chain();
 	test_stack_ops();
 	test_condition_codes();
 	test_branches();

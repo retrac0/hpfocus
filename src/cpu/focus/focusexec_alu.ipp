@@ -415,23 +415,46 @@ private:
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
+		// The logical group (ERS sheet 76, items 61.1-61.3) works on 32-bit
+		// POSITIVE integers: the limbs of multiple precision arithmetic.
+		// "(S-1):=(S-1)+(S)+If CIR(19:1)=1 then Carry else 0" and
+		// "(S-1):=(S-1)-(S)-If CIR(19:1)=1 then 1-Carry else 0" -- the b
+		// bit chains the carry in, and the borrow travels inverted, Carry
+		// set meaning no borrow, exactly as DLSB above has it. Neither
+		// form took a carry in at all. HP-UX's decimal-to-binary
+		// conversion -- the C compiler's for a floating constant, and
+		// atof's -- builds its mantissa with LMPY / LADD / LADD,B, so
+		// every carry between limbs was lost: `double x = 1.0;` printed
+		// as 9.999993116074e-01, atof("0.1") came back exactly 2^22 units
+		// low, and 20! as 2.432900333385e+18.
+		//
+		// The indicators are not CCA either -- an unsigned result has no
+		// sign: "If result#0 then CCG; if result=0 and CIR(19:1)=0 then
+		// CCE; if result=0 and CIR(19:1)=1 then [unchanged]", the same
+		// chaining rule as the decimal pair. LMPY, which set none, reports
+		// "If result#0 then CCG else CCE" on its doubleword product.
 		case 060: {                                            // LADD
 			const u32 a = pop(), b = pop();
-			const u64 sum = u64(b) + u64(a);
+			const u64 sum = u64(b) + u64(a) + (b3 && r.test(sf::C) ? 1 : 0);
 			r.put(sf::C, (sum >> 32) & 1);
-			push(u32(sum)); cca(u32(sum));
+			push(u32(sum));
+			if (u32(sum) != 0) r.put(sf::CC, CCG);
+			else if (!b3)      r.put(sf::CC, CCE);
 			return exec_trap::none;
 		}
 		case 061: {                                            // LSUB
 			const u32 a = pop(), b = pop();
-			const u64 diff = u64(b) - u64(a);
-			r.put(sf::C, (diff >> 32) & 1);
-			push(u32(diff)); cca(u32(diff));
+			const u64 diff = u64(b) - u64(a) - (b3 && !r.test(sf::C) ? 1 : 0);
+			r.put(sf::C, ((diff >> 32) & 1) ^ 1);              // set = no borrow
+			push(u32(diff));
+			if (u32(diff) != 0) r.put(sf::CC, CCG);
+			else if (!b3)       r.put(sf::CC, CCE);
 			return exec_trap::none;
 		}
 		case 062: { cycles = CYCLES_MPY;                       // LMPY
 			const u64 prod = u64(pop()) * u64(pop());
 			push(u32(prod >> 32)); push(u32(prod));
+			r.put(sf::CC, prod != 0 ? CCG : CCE);
 			return exec_trap::none;
 		}
 		case 064: { const u32 v = ~pop(); push(v); cca(v);
