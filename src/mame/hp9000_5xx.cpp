@@ -3671,7 +3671,16 @@ u32 hp9000_5xx_state::screen_update(screen_device &screen,
 			std::string line;
 			for (unsigned c = 0; c < focus::dim_card::COLUMNS; c++)
 			{
-				const u8 ch = u8(m_dim.vram[r * focus::dim_card::COLUMNS + c]);
+				// 4096 cells is fifty-one rows and sixteen cells over, so
+				// the last row runs off the end of the frame buffer. It
+				// used to be read anyway: sixty-four cells of whatever
+				// the card object holds next, printed into a stream the
+				// tests compare, and different from one run of the same
+				// binary to the next. Past the end there is nothing.
+				const unsigned cell = r * focus::dim_card::COLUMNS + c;
+				if (cell >= focus::dim_card::CELLS)
+					break;
+				const u8 ch = u8(m_dim.vram[cell]);
 				line.push_back((ch >= 32 && ch < 127) ? char(ch) : '.');
 			}
 			if (line.find_first_not_of(' ') != std::string::npos)
