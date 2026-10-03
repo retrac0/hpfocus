@@ -1,7 +1,11 @@
 # Software images
 
-**Provenance: everything in this directory came from the HP Computer Museum,
-<https://www.hpmuseum.net/>.** Their 500 Series software collection is at
+**Provenance: two sources.** `cct/` -- the HP-UX 5.30 disc unit save and
+four other Series 500 images -- comes from bitsavers' *Crisis Computer
+Tapes* collection (see [`cct/`](#cct--hp-7914-disc-unit-save-hp-ux-530)
+below and `cct/readme`). **Everything else in this directory came from the
+HP Computer Museum, <https://www.hpmuseum.net/>.** Their 500 Series
+software collection is at
 <https://www.hpmuseum.net/exhibit.php?swc=21>; downloads are CAPTCHA-gated and
 were fetched by hand. Most of the collection was donated to the museum by
 **Charlie Brett of Fort Collins, Colorado** (November 2010) — without that
@@ -10,10 +14,11 @@ donation none of this would exist.
 The museum asks to be contacted by anyone holding 500 Series hardware or
 software. If any gap below gets filled, send the result back to them.
 
-A survey of other sources found nothing: bitsavers hosts Series 500
-*documentation* but its `bits/` software tree has no Series 500 material
-(`HP_9000/HPUX_5/` is Series 200/300 media). **The museum appears to be the
-only public source of Series 500 software.**
+A first survey of other sources found nothing: bitsavers hosts Series 500
+*documentation*, and its `HP_9000/HPUX_5/` is Series 200/300 media. It
+missed `bits/HP/Crisis_Computer_Tapes/`, which is where `cct/` came from.
+The museum and that collection are the only public sources of Series 500
+software known to this project.
 
 ```
 software/
@@ -21,7 +26,24 @@ software/
   basic/            BASIC Language System 2.0, 7 discs
   demos/            BASIC demo suite, 7 discs
   test/             9020 System Functional Tests 3.00, 6 discs
+  cct/              HP-UX 5.30 7914 unit save (2 tapes) + 4 more images,
+                    from bitsavers' Crisis Computer Tapes
 ```
+
+**On what terms.** These images are Hewlett-Packard's copyrighted
+software; HP-UX also carries AT&T and University of California code, and
+its boot banner prints HP's restricted-rights legend. They are here so the
+emulator has something to run. This project has no licence for them from
+HP and states no terms of its own for them. **The HP-UX 5.30 unit save is a
+real site's working system from 1991**, and it holds that site's user
+accounts, home directories and mailboxes as they were. Please treat them
+accordingly: run the system, but do not republish what you find there.
+
+**Derived files.** Nothing here is ever written by the tools. What they
+derive is gitignored: the HP-UX machines in `var/` (tools/lib/hpux.sh),
+the 5.01 kernel `cct/hpux501.bin`, raw decodes in `basic/img/`, and the
+fixed discs in `hd/` (tools/setup.sh builds `hd/basic.img`,
+tools/mkdiagdisc.sh `hd/diag.img`).
 
 All disc images are Teledisk 2.1, 5.25″ DS/DD, **35 cyl × 2 heads × 16 sectors
 × 256 bytes = 286,720 bytes** each, signature `TD` (no LZH stage). Every one
@@ -448,7 +470,11 @@ are *pure boot volumes*, not failures to read: their superblocks give
 and the root directory is legitimately empty.
 
 Validating this reader against all 20 discs turned up one real defect, since
-fixed. `BASDEM7` carries a **stale i-node (63) that duplicates `/DEMO`'s
+fixed. *(Corrected during the alpha: what follows was itself a reader bug.
+I-node 63 is `/DEMO/DIR/9845c_data/land`, an ordinary 9,980-byte data file;
+the reader had not followed the FA file's own extents on multi-extent
+volumes, and read the wrong record for it -- tools/sdfread.py now does.)*
+`BASDEM7` carries a **stale i-node (63) that duplicates `/DEMO`'s
 name, parent and extents** and is reachable as
 `/DEMO/DIR/9845c_data/land`. A walk guarded by a global visited set descends
 that alias first and claims `MAIN_MENU` and eight other demo programs under
@@ -727,12 +753,23 @@ Winchester's own controller — and falls back to the flexible drive when the
 fixed disc has no boot area.
 
 ```
+mkdir -p software/basic/img software/hd
+for d in 500BT1 500BT2; do
+    python3 tools/td0.py --raw software/basic/img/$d.img software/basic/$d.TD0
+done
 tools/mkharddisc.py software/hd/basic.img
 tools/installbasic.py software/hd/basic.img \
     --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
     --option /path/ERRORS_ENG /path/IO /path/MS
 tools/runbasic-hd.sh
 ```
+
+*(Updated for the alpha: `software/basic/img` and `software/hd` are
+gitignored, so the floppies are decoded first; tools/setup.sh does all of
+this without the options. And what the next paragraph says about the file
+area is history: tools/sdfwrite.py now builds a real volume, and a disc
+built by the alpha's tools takes BASIC's CREATE and STORE. A disc built
+before that reports ERROR 455; build it again.)*
 
 BASIC comes up from the fixed disc with the options installed. What is **not**
 finished is the file area: the disc has a working boot area but no filesystem,
