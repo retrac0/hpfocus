@@ -693,14 +693,34 @@ run with exit status 0 and the driver's `signal N: stopping the run`.
 
 **Results for this release.**
 
-RESULTS: to be filled from the final run
+Taken on 2026-10-03 on the emulator sources of commit b9ec9c0 (the tree
+is unchanged in `src/` after it), on an 8-core x86-64 Linux host with GCC
+16.2.1, while other builds were running on the same machine.
 
-<!-- For whoever fills this in: one run of each command above on the tagged
-commit. Record the commit, the host and its load, and per command: smoke
-test PASS or FAIL (and --twice); matrix n of 30; stress n of 30; soak PASS
-or FAIL at 2 MB (and --ram 3 if run); basictest n of 25; make test's last
-line and each harness's check count; hubtest n of 10; sigtest's last line.
-Say which of them were not run. -->
+| command | result |
+|---|---|
+| `tools/smoketest.sh --twice` | PASS, both boots |
+| `src/test/hpuxtest.py matrix` | 30 of 30 |
+| `src/test/hpuxtest.py stress` | 30 of 30 |
+| `src/test/hpuxtest.py soak` (2 MB) | PASS |
+| `src/test/basictest.sh` | 25 of 25 |
+| `make -C src/test test` | every harness passed: statetest 81, addrtest 35, dsttest 112, exectest 3308, ioptest 554, muxtest 101, hpibtest 70, asitest 62 checks, none failed; check_knobs and the disassembler difftest clean |
+| `src/test/hubtest.py` | every check passed |
+| `src/test/sigtest.sh` | every case passed |
+
+Beyond the matrix's four `diag` boots, `LOAD "TEST"` / `RUN` reached the
+Test Supervisor at 19 of 19 typing times (LOAD at 18 to 32 s); before the
+I/O processor's DMA mask was honoured for burst requests, 9 of 24 halted.
+`soak --ram 3` was not run on this commit (it passed on the build before
+the last two merges).
+
+The same commit was also installed from a fresh clone, as INSTALL.md
+describes it: `tools/setup.sh -j 5` fetched MAME from GitHub, built it and
+prepared the media in 49 min 49 s on the same busy host; on that build the
+smoke test passed twice, `make test` passed, and ten matrix cases (boot,
+console and port sessions, `seven`, `busy`, `second-boot`, the two BASIC
+cases, `ux501` and `diag`) passed 10 of 10, and the BASIC suite 25 of 25
+on the fixed disc that install built.
 
 (The BASIC suite depends on which disc it boots. Its two `LIST` cases
 check `AVAILABLE MEMORY = 487696`, the figure with the ERRORS_ENG, IO and
