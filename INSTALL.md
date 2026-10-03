@@ -20,12 +20,13 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 - **Linux** on x86-64. Developed and tested on Arch Linux with GCC 16.
   Any distribution with GCC 11+ (or clang 13+) and SDL 2.0.14+ should do.
   macOS is untested: see [section 10](#10-macos).
-- **Disc space:** about 3.5 GB free. A shallow MAME checkout needs about
-  1.2 GB, its build tree about 700 MB, and the HP-UX machines in `var/`
-  about 400 MB.
-- **Time:** a first build compiles MAME's core, about 1,190 files. Expect
-  20–40 minutes on an idle 8-core machine. On a busy 8-core machine at
-  `-j4` it took 2 hours. Later builds take seconds.
+- **Disc space:** about 3.5 GB free. A finished install measured 2.7 GB:
+  a shallow MAME checkout of about 1.2 GB, its build tree, and the HP-UX
+  machines in `var/` (about 400 MB).
+- **Time:** a first build compiles MAME's core, about 1,190 files. From a
+  fresh clone it took 1 hour 9 minutes at `-j4` on a busy 8-core machine
+  (and 2 hours on another occasion). Expect 20–40 minutes on an idle one.
+  Later builds take seconds.
 - **Packages:** a C++20 compiler, make, git, Python 3.8 or later, gzip,
   pkg-config, and the development files of the libraries MAME's SDL build
   links against. On each distribution:
@@ -51,7 +52,9 @@ emulated HP 9000 Model 540. It is an **alpha**: read
   with `NO_USE_PULSEAUDIO=1` and `USE_QTDEBUG=0`. The emulator runs without
   sound anyway, and Qt only provides MAME's debugger window.
   `tools/setup.sh --check` checks everything and prints the install
-  command for your distribution.
+  command for your distribution. Only the Arch list has been run; the
+  Debian/Ubuntu and Fedora lists were written from those distributions'
+  package names.
 
 ## 2. Get it and build it
 
@@ -73,11 +76,18 @@ emulated HP 9000 Model 540. It is an **alpha**: read
      `software/cct`;
    - a fixed disc for BASIC, `software/hd/basic.img`: BASIC 2.0 with its
      English error texts, I/O and mass-storage options installed, and two
-     of HP's utilities on it.
+     of HP's utilities on it;
+   - a fixed disc with HP's 9020 diagnostics environment,
+     `software/hd/diag.img` (`tools/mkdiagdisc.sh`).
+
+It prints a line as each step starts, and during the build a count of
+files compiled once a minute. It ends with `Ready. Next:` and the
+commands of section 3, and leaves `git status` clean.
 
 Every step is idempotent. If anything stops it (the network, a missing
 package, ^C), fix the cause and run `tools/setup.sh` again. It carries on
-from where it stopped.
+from where it stopped; run again on a finished install it takes a few
+seconds and rebuilds nothing.
 
 Useful options:
 
@@ -89,10 +99,11 @@ Useful options:
 | `-- NOWERROR=1` | pass options to MAME's make. NOWERROR=1 helps when a newer compiler warns about MAME's code |
 | `--mame-source DIR` | fetch MAME from a mirror or a local clone that has the pinned commit |
 
-`git submodule update --init --depth 1 mame` also works now that the pin is
-an upstream commit, but it downloads MAME's current master first. If you
-fetch MAME that way, or put any checkout of `a3ee360d` in `mame/`, run
-`tools/setup.sh` afterwards: it uses the tree that is already there.
+`git submodule update --init --depth 1 mame` should also work now that the
+pin is an upstream commit, but it downloads MAME's current master first,
+and that route has not been run for this release. If you fetch MAME that
+way, or put any checkout of `a3ee360d` in `mame/`, run `tools/setup.sh`
+afterwards: it uses the tree that is already there.
 
 ## 3. First boot
 
@@ -107,9 +118,12 @@ It should end with `PASS`. Then boot HP-UX with a window:
 
 What happens:
 
-- **The window is the system console.** The kernel prints its copyright
-  banner and `/etc/rc` runs. About 90 seconds after power-on, `login:`
-  appears on the console and on the six terminal ports.
+- **The window is the system console.** It opens black, with a cursor,
+  and stays that way for the first ten seconds or so while the kernel
+  loads. There is no MAME warning screen to dismiss on this machine. Then
+  the kernel prints its copyright banner and `/etc/rc` runs. Within a
+  minute of power-on (at about 40 emulated seconds) `login:` appears on
+  the console and on the six terminal ports.
 - **Log in as `root`.** There is no password. Press Return at the two
   `TERM =` prompts: `/etc/profile` asks once and root's `.profile` asks
   again.
@@ -123,10 +137,16 @@ shell is csh and its prompt `gator#`. A multiuser boot changes root's
 login shell to sh, and from then on the single-user prompt is `unrcad#`
 too.
 
-**Keys:** the window passes every key to the emulated terminal, and
-MAME's own keys start switched off. Scroll Lock switches them on (Tab
-opens MAME's menu, P pauses, Esc quits) and off again; MAME shows which
-in a pop-up.
+**Keys:** the window passes every key to the emulated terminal, Tab and
+Esc included, and MAME's own keys start switched off. Scroll Lock switches
+them on and off again; MAME shows which in a pop-up. While they are on,
+Tab opens MAME's menu, F5 pauses and resumes, F3 resets the machine and
+Esc quits MAME, cleanly; letters and digits still go to the terminal. On a
+computer too busy to run the emulator at full speed the window can drop
+keys typed quickly; a terminal port (section 4) never does.
+
+When you have finished, stop HP-UX before you close the window:
+[section 5](#5-stopping-cleanly).
 
 ## 4. More terminals
 
@@ -152,6 +172,9 @@ multiplexer). Log in as above.
 - **Other clients work too.** Run `stty raw -echo; nc 127.0.0.1 4001; stty
   sane`, or `socat -,rawer,escape=0x1d TCP:127.0.0.1:4001`. HP-UX does the
   echoing, so your local terminal must not.
+- **`nc` has no way out.** In raw mode ^C goes to HP-UX like any other
+  key, so stop `nc` from another terminal (`pkill -x nc`). `hpuxterm.py`
+  and the `socat` line above both leave on Ctrl-].
 - **The ports already in use?** `--port-base 5000` moves them to
   5001–5006. Then connect with `tools/hpuxterm.py --base 5000 1`, as the
   run prints it, or set `HPFOCUS_PORT_BASE=5000` for both.
@@ -167,29 +190,42 @@ multiplexer). Log in as above.
 
 ## 5. Stopping cleanly
 
-HP-UX in this alpha has no automatic shutdown and never checks its file
-system at boot: `/etc/bcheckrc` on this disc is empty. To stop:
+Stop HP-UX first, then the emulator:
 
-1. At a root shell, type `sync`.
+1. At a root shell, type `cd /` and then `/etc/stopsys`. HP-UX writes
+   everything out, gives back its swap space and prints `The system is
+   stopped.  You may turn the power off now.`, followed by a screen of
+   halt report that begins `System halted due to system error.` with the
+   code `00000010`. That report is the stop, not a crash.
 2. Close the MAME window. For a run without a window, press ^C in the
    terminal that started it.
 
-^C, `kill` and a closed terminal end a run cleanly: MAME stops at the
-next emulated millisecond and saves the battery file. Every disc block
-HP-UX writes has already reached the disc file as it was written, so even
-a crash or `kill -9` keeps it; what any stop loses is what HP-UX has not
-yet written, which is why `sync` comes first.
+`/etc/stopsys` works the same in single-user mode. The run prints this
+advice when it starts.
 
-- **While the machine is paused** (MAME's P key, or its menu open), no
-  emulated time passes, so the first ^C does nothing until you resume.
+**Stopping the emulator without step 1 is a power cut to HP-UX.** Nothing
+HP-UX has written is lost: every disc block reaches the disc file as
+HP-UX writes it, so even a crash or `kill -9` keeps it. What a power cut
+loses is what HP-UX still held in memory, so type `sync` first if you
+cannot do step 1. And it costs disc space: HP-UX leaves 0.3 to 0.9 MB of
+swap space marked in use each time, and this disc never checks its file
+system at boot (`/etc/bcheckrc` on it is empty).
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) says how to get the space back.
+
+^C, `kill` and a closed terminal all end a run cleanly, whether the
+machine is running or paused: MAME stops and saves the battery file. It
+takes a second or two and ends with a line like `disc: system disc
+written through to ...`.
+
 - **A second ^C kills MAME at once.** The disc is safe as above; battery
   changes from the last 30 seconds are lost.
 
 MAME's soft reset (F3, with MAME's keys switched on) reboots the machine.
-To HP-UX that is the reset button, so `sync` first there too.
+To HP-UX that is the reset button: run `/etc/stopsys` first there too.
+MAME's pause is F5; a paused machine stops as cleanly as a running one.
 
 HP-UX's own `/etc/shutdown` exists on the disc. It has not been tested on
-the emulator.
+the emulator; its `-h` option ends in `/etc/stopsys`.
 
 ## 6. The machine's state: what persists, and resetting it
 
@@ -242,7 +278,17 @@ builds can hold damaged files (see KNOWN-ISSUES.md). Start from
 
 This runs with the console on this terminal's output. Type into it with a
 `FOCUS_TYPE` script, or put it on TCP or a pty with `--console`. The
-multiplexer ports work as in section 4. ^C stops the run cleanly.
+multiplexer ports work as in section 4. ^C stops the run cleanly. MAME
+prints `Warning: -video none doesn't make much sense without
+-seconds_to_run` when it starts; ignore it.
+
+For a console you can type at, with no window at all:
+
+    tools/runhpux.sh --multiuser --console tcp      # in one terminal
+    tools/hpuxterm.py console                       # in another
+
+Long output on that console lags behind HP-UX (KNOWN-ISSUES.md); the six
+terminal ports do not.
 
     tools/runhpux.sh --seconds 60 ...
 
@@ -252,8 +298,12 @@ A typed session in single-user mode, as a batch job:
     FOCUS_TYPE='\n;ls /\n' FOCUS_TYPEAT=30,40 tools/runhpux.sh --seconds 60
 
 The first `\n` answers the shell's `TERM =` prompt (at about 24 s), and
-then `ls /` runs at 40 s. In multiuser mode, `@<terminal>=` addresses one
-terminal (`console`, or `2:0` … `2:5` for tty01 … tty06):
+then `ls /` runs at 40 s. A `;` in `FOCUS_TYPE` ends one script and
+starts the next, each typed at its own `FOCUS_TYPEAT` time: write `\x3b`
+for a semicolon HP-UX should see (`'\n;date\x3b who\n'`). Give each
+script time to be typed before the next one starts on the same terminal,
+or their characters interleave. In multiuser mode, `@<terminal>=`
+addresses one terminal (`console`, or `2:0` … `2:5` for tty01 … tty06):
 
     FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' FOCUS_TYPEAT=100,110,118,126 \
     FOCUS_TAP=2:0 tools/runhpux.sh --multiuser --seconds 140
@@ -268,23 +318,36 @@ options, and `--dry-run` prints the MAME command line it would run.
     tools/runbasic-hd.sh     BASIC from the 520's fixed disc (setup.sh built software/hd/basic.img)
 
 - **MAME's red warning comes first.** The 520 is still flagged "not
-  working" in MAME, so each windowed run opens on MAME's warning screen.
-  Press any key and the machine starts. (The 540 has no such screen.)
+  working" in MAME, so each windowed run opens on MAME's warning screen,
+  which says `Press any key to continue`. (The 540 has no such screen.)
+  **Tap the key, do not hold it**, or press Shift, which types nothing:
+  the machine powers on the moment the warning goes, and a character key
+  that is still down then (held 150 ms or more, in our runs) reaches the
+  520 during its power-up and stops the boot. If the screen is still black
+  five seconds after the warning has gone, that is what happened: press
+  Scroll Lock and then F3, which resets the machine.
 - **`BASIC Ready for use.`** appears after about 55 emulated seconds from
-  the floppies, and within 20 from the fixed disc.
-- **Return is ENTER, Insert is EXECUTE.** The 520's keyboard has both
-  keys. Return (ENTER) stores a numbered program line. **Insert**, or
-  Ctrl-J, is EXECUTE: it runs a command such as `DISP 7`, `LIST` or `RUN`.
-  A command ended with Return answers `IMPROPER LINE NUMBER`. So, to type
-  and run a program:
+  the floppies, and within a few seconds from the fixed disc.
+- **Type in capitals.** BASIC does not take its keywords in lower case:
+  `disp 7` answers `IMPROPER EXPRESSION`. Press Caps Lock once (MAME
+  remembers it from run to run), or hold Shift for the letters. With Caps
+  Lock on, Shift gives lower case, as on the 520's own keyboard.
+- **Return is ENTER, Ctrl-J is EXECUTE.** The 520's keyboard has both
+  keys. Return (ENTER) stores a numbered program line. **Ctrl-J**, or the
+  Insert key, is EXECUTE: it runs a command such as `DISP 7`, `LIST` or
+  `RUN`. A command ended with Return answers `IMPROPER LINE NUMBER` and
+  stays on the input line: **Esc** clears it. So, to type and run a
+  program:
 
       10 FOR I=1 TO 3      Return
       20 PRINT I*I         Return
       30 NEXT I            Return
       40 END               Return
-      RUN                  Insert
+      RUN                  Ctrl-J
 
-  A program needs its `END`; without it RUN stops with `ERROR 5`.
+  A program needs its `END`; without it RUN stops with `ERROR 5`. Scroll
+  Lock switches MAME's own keys on and off, as in section 3; typing,
+  Ctrl-J and Insert work the same with them on.
 - **The fixed disc is the better BASIC.** It has the error texts and the
   I/O and mass-storage options installed, so `CAT`, `CREATE`, `STORE` and
   `LOAD` work on it, and HP's `CAT_BOOT` and `BUILD_BOOT` utilities are on
@@ -297,9 +360,32 @@ options, and `--dry-run` prints the MAME command line it would run.
   CREATE or STORE on it (`ERROR 455`). `tools/setup.sh` keeps an existing
   image, and both it and `tools/runbasic-hd.sh` warn when it is such a
   one: delete it and run `tools/setup.sh` again.
-- **The diagnostics:** `tools/mkdiagdisc.sh` builds `software/hd/diag.img`,
-  which holds HP's 9020 diagnostics environment; its header says how to
-  boot it with the test disc.
+- **Flexible discs are not saved.** What BASIC writes to a disc in a
+  flexible drive stays in memory and is gone at exit. Keep work on the
+  fixed disc.
+
+A session without a window: `\r` is ENTER and `\n` is EXECUTE in
+`FOCUS_TYPE`, `FOCUS_DIMDUMP=1` prints the screen memory as the run goes,
+and `tools/screen.py` turns the last of it into the screen. Leave about
+five seconds between lines.
+
+    FOCUS_DIMDUMP=1 FOCUS_TYPE='10 A=3\r;20 B=4\r;30 DISP A*B+2\r;40 END\r;RUN\n' \
+    FOCUS_TYPEAT=60,66,72,78,84 tools/runbasic-hd.sh -- -video none -str 95 \
+      | tools/screen.py
+
+This ends with ` 14` on the screen.
+
+**The 9020 diagnostics.** `tools/setup.sh` also builds
+`software/hd/diag.img` (`tools/mkdiagdisc.sh` rebuilds it), a fixed disc
+holding HP's diagnostics environment. Boot it with the test disc in the
+flexible drive:
+
+    tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
+        -flop1 "$PWD/software/test/500MFTST.TD0"
+
+At the BASIC prompt, `LOAD "TEST"` and `RUN`, each ended with Ctrl-J,
+bring up `Welcome to the HP 9000 Test Supervisor`
+(`docs/DIAGNOSTICS.md`).
 
 HP-UX 5.01 runs on the same machine:
 
@@ -326,17 +412,46 @@ whether the boot was `--fresh`.
   MAME revision, or someone edited the two patched files. Run
   `git -C mame checkout -- scripts/src/cpu.lua src/mame/mame.lst` and
   `tools/setup.sh` again.
-- **The 520's window stays on a red MAME warning:** press any key
+- **`Could not initialize SDL No available video device`:** there is no
+  display for MAME's window, as in an ssh session. Run without one:
+  `tools/runhpux.sh --multiuser --console tcp` and, in another terminal,
+  `tools/hpuxterm.py console` (section 7).
+- **The 520's window stays on a red MAME warning:** tap any key
   (section 8). The 540 shows no warning.
+- **The 520's window stays black after the warning:** the key you
+  dismissed the warning with was still down when the machine powered on.
+  Press Scroll Lock, then F3 (section 8).
+- **BASIC answers `IMPROPER EXPRESSION` or `IMPROPER COMMAND` to
+  everything:** you are typing in lower case. Press Caps Lock (section 8).
 - **BASIC answers `IMPROPER LINE NUMBER` to a command:** you ended it with
-  Return. Press Insert (EXECUTE) instead (section 8).
-- **^C does not stop a run:** the machine is paused. Resume it, or press
-  ^C again to kill it (section 5).
+  Return. Press Esc, type it again and press Ctrl-J (EXECUTE) instead
+  (section 8).
+- **`tools/hpuxterm.py: Permission denied`:** the file lost its executable
+  bit (some ways of copying a tree drop it). `chmod +x tools/*.py
+  tools/*.sh`, or run it as `python3 tools/hpuxterm.py 1`.
+- **`hpuxterm: cannot connect to 127.0.0.1:4001: Connection refused`:**
+  no multiuser run is listening there. The ports open a few seconds after
+  `tools/runhpux.sh --multiuser` starts. If the run was given
+  `--port-base N`, give `hpuxterm.py` `--base N`.
+- **Keys typed in the window go missing:** the computer is too busy to run
+  the emulator at full speed, and the window samples the keyboard once a
+  frame. Type more slowly, or use a terminal port (section 4), which
+  loses nothing.
+- **^C does not stop a run:** if you are in MAME's debugger (`-debug`), it
+  holds the machine where no stop request is seen; let it run first. A
+  port you attached yourself as a raw MAME socket can also block the
+  emulator (KNOWN-ISSUES.md). Otherwise ^C stops a run whether it is
+  running or paused; a second ^C kills it.
+- **`cannot fork: no swap space`:** the disc is full, and HP-UX swaps into
+  its free space. Stop the emulator, start it again and delete files
+  before doing anything else (KNOWN-ISSUES.md).
 - **No `login:` after two minutes:** run `tools/smoketest.sh`. If it
   passes, your working machine's state is the difference: try
   `tools/runhpux.sh --scratch --multiuser`, and `--reset` if that boots.
   On a heavily loaded computer the window can simply be slow: the logins
-  come at about 90 *emulated* seconds.
+  come at about 40 *emulated* seconds, and several people logging in at
+  once can each wait half a minute between `You have mail.` and the
+  `TERM =` prompt.
 - **`another run (pid N) is using var/hpux530`:** a run is still going.
   Stop it, or use `--scratch` or `--state DIR`. If no such process
   exists, the lock is stale and is ignored automatically.

@@ -20,7 +20,7 @@
 # the test could not be made -- and not as the emulator ignoring a signal.
 #
 #   running   SIGTERM to a machine that is running
-#   paused    SIGINT to a machine paused the way P or MAME's menu pauses it
+#   paused    SIGINT to a machine paused the way F5 or MAME's menu pauses it
 #             (emu.pause from a Lua script): emulated time stands still, so
 #             a check made only on an emulated tick never sees the signal
 #

@@ -22,8 +22,9 @@
 #   tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
 #       -flop1 "$PWD/software/test/500MFTST.TD0"
 #
-# and, at the BASIC prompt, LOAD "TEST" and RUN -- each ended with Insert,
-# which is the 520's EXECUTE key in the window (Return is its ENTER key).
+# and, at the BASIC prompt, LOAD "TEST" and RUN -- each ended with Ctrl-J
+# (or Insert), which is the 520's EXECUTE key in the window; Return is its
+# ENTER key.
 # tools/setup.sh builds software/hd/diag.img with this script, and
 # `src/test/hpuxtest.py matrix --only diag` runs the test driver on it.
 

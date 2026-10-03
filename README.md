@@ -16,14 +16,19 @@ is in [KNOWN-ISSUES.md](KNOWN-ISSUES.md), and what it was tested with is in
 ## Quick start (Linux)
 
     git clone <this repository> hpfocus && cd hpfocus
-    tools/setup.sh                    # check, fetch MAME, build (20-40 min), prepare the discs
+    tools/setup.sh                    # check, fetch MAME, build (long), prepare the discs
     tools/smoketest.sh                # one-minute check: PASS or FAIL
     tools/runhpux.sh --multiuser      # HP-UX 5.30; log in as root, no password
 
+To stop, type `cd /` and `/etc/stopsys` at a root shell, wait for `The
+system is stopped.`, and close the window.
+
 [INSTALL.md](INSTALL.md) covers the rest: prerequisites for Debian/Ubuntu,
 Fedora, Arch and macOS, logging in, more terminals (`tools/hpuxterm.py 1`
-.. `6`), stopping cleanly (type `sync` first), and what persists between
-runs and how to reset it.
+.. `6`), stopping cleanly, and what persists between runs and how to
+reset it. The first build compiles MAME's core: it took 1 hour 9 minutes
+at `-j4` on a busy 8-core machine (expect 20 to 40 minutes on an idle
+one), and the finished install is 2.7 GB.
 
 ## What works
 
@@ -32,26 +37,38 @@ runs and how to reset it.
   takes logins on the console (a window, a TCP port or a pty) and on six
   terminal ports you can leave and come back to. It compiles and runs C
   programs, and what it writes is kept on a working copy of the disc.
-  The release tests are a 28-case matrix of boots and sessions, seven
-  users logging in at once at 30 different timings, and a
-  compile-copy-checksum workload on three terminals that is checked again
-  after a reboot. All of them pass on this release
-  ([docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests)).
+  The release tests are a 30-case matrix of boots and sessions (one of
+  them four logins with twelve background jobs in 2 MB), seven users
+  logging in at once at 30 different timings, and a
+  compile-copy-sort-checksum workload on three terminals that is checked
+  again after a reboot. What they are, and how this release scored, is in
+  [docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests).
 - **BASIC 2.0 on the 9000/520**, on its own rendered display with a live
   keyboard. It boots from the shipped floppies or from an installed fixed
   disc, and runs typed and stored programs (`tools/runbasic.sh`,
   `tools/runbasic-hd.sh`; `src/test/basictest.sh` checks 25 cases).
-- **HP's 9020 factory diagnostics** boot and run. The display self test
+- **HP's 9020 factory diagnostics** boot and run: `LOAD "TEST"` and `RUN`
+  on the diagnostics disc bring up HP's Test Supervisor, which the release
+  tests check at four typing times. The power-up self test of the display
   passes, the graphics controller draws and the thermal printer prints
-  (`tools/mkdiagdisc.sh`, docs/DIAGNOSTICS.md).
+  (`software/hd/diag.img`, which `tools/setup.sh` builds;
+  docs/DIAGNOSTICS.md).
 - **HP-UX 5.01** boots on the 520 from the damaged release tape, as far as
   its copyright banner (`tools/runhpux.sh --release 5.01 --headless`).
 
 ## What does not work, yet
 
-- **Stopping HP-UX is a power cut.** There is no shutdown and no `fsck`:
-  type `sync` before you stop, and `tools/runhpux.sh --reset` if a disc
-  goes bad.
+- **Closing the window is a power cut to HP-UX.** Stop HP-UX first, with
+  `/etc/stopsys`. Without it your synced files are still kept, but each
+  power cut leaves up to 0.9 MB of swap space marked in use on the disc,
+  and nothing checks the file system at boot. `tools/runhpux.sh --reset`
+  starts again from the pristine disc.
+- **The default 2 MB is small.** HP-UX swaps hard under load, and a
+  program that filled a 700 KB array never finished there: run with
+  `--ram 4` for anything large.
+- **Root has no password, and the terminal ports are open** to every user
+  of your computer (they listen on 127.0.0.1 only). The disc is a real
+  site's 1991 system, with its accounts and mail.
 - **No networking**, and the terminals are generic, not HP 262x: screen
   programs such as `vi` need a `TERM` your terminal matches. No Break key,
   and ^S/^Q do not pause output.
@@ -59,15 +76,23 @@ runs and how to reset it.
   banner.
 - **Floating-point traps and rounding modes** are not modelled, and a few
   overflow and condition-code details are wrong. Two instructions known
-  only from HP's assembler (`CTCB`, `GMPY`) are not implemented.
-- **The 520** is still flagged "not working" in MAME (its window opens on
-  a warning screen), and in its window Return is BASIC's ENTER key, not
-  EXECUTE, which is Insert. Most of HP's BASIC demo programs do not run
-  yet.
+  only from HP's assembler (`CTCB`, `GMPY`) are not implemented. Of the
+  200 instructions HP-UX uses, 81 have no unit test yet: expect more
+  instruction-level defects.
+- **The 520** is still flagged "not working" in MAME, so its window opens
+  on a warning screen: tap a key to dismiss it, because a key still held
+  when the machine powers on stops the boot. In its window BASIC wants
+  capitals (press Caps Lock), and Return is BASIC's ENTER key, not
+  EXECUTE, which is Ctrl-J. Most of HP's BASIC demo programs do not run
+  yet, and what BASIC writes to a flexible disc is not saved.
+- **No save states, and MAME's debugger is untried.**
 - **No loader ROM.** No dump of the SCM loader ROM exists, so the emulator
   performs the loader's job itself.
-- **Linux only so far.** The scripts are written for macOS too, but nothing
-  has been built or run there.
+- **Linux only so far, and only Arch has been tried.** The scripts are
+  written for macOS too, but nothing has been built or run there. The
+  window has been driven with synthetic keys under a virtual display, not
+  yet by a person on a
+  real desktop.
 
 The details, and what to do about each, are in
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
@@ -82,7 +107,7 @@ The details, and what to do about each, are in
 | [docs/HARDWARE.md](docs/HARDWARE.md) | the 520/540 hardware: memory, I/O, cards, boot media |
 | [docs/HPUX.md](docs/HPUX.md) | HP-UX on the emulator: kernel map, debugging tools, how each milestone was reached |
 | [docs/SOFTWARE.md](docs/SOFTWARE.md), [software/README.md](software/README.md) | the software images, where they came from, what is on them |
-| [docs/VALIDATION.md](docs/VALIDATION.md), [src/test/](src/test/) | the evidence: unit and differential tests (`make -C src/test test`), the BASIC suite (`src/test/basictest.sh`), the HP-UX matrix, stress and soak (`src/test/hpuxtest.py`) |
+| [docs/VALIDATION.md](docs/VALIDATION.md), [src/test/](src/test/) | the evidence: unit and differential tests (`make -C src/test test`), the BASIC suite (`src/test/basictest.sh`), the HP-UX and diagnostics matrix, stress and soak (`src/test/hpuxtest.py`) |
 | `src/cpu/focus/`, `src/iop/`, `src/mame/` | the CPU core, the I/O processor and cards, the hp9020/hp9040 driver |
 | `tools/` | run scripts, disc and media tools, disassembler (`tools/focusdis.py`) |
 
@@ -834,6 +859,17 @@ through a great many real regressions:
   answer?", which golden.sh cannot. Cases that pass are regression guards;
   cases that fail are the work list, and the score is the measure of
   progress. `--list` shows the table, `--only <name>` runs one.
+
+*(Updated for the alpha: `golden.sh` is a tool for whoever is changing the
+emulator, not a release test. It compares a tree with a baseline you
+captured yourself from the tree before your change, and there is no
+baseline in the repository. It has nineteen probes now. Ten need only a
+compiler and the shipped floppies (`--quick`); six more need the emulator
+and the two BASIC discs `tools/setup.sh` builds; the three HP-UX ones need
+`software/cct/7914_unitSave_hpux4.0.bin`, which a fresh clone does not
+have, and are skipped there. Its header says how to get them. The tests
+the release was checked with are in
+[docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests).)*
 
 `tools/screen.py` rebuilds the display from a `FOCUS_DIMDUMP` log. That is
 not a formality: the dump prints the frame buffer in vram order, while the
