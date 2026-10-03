@@ -3829,7 +3829,13 @@ void hp9000_5xx_state::machine_reset()
 	// the first reset follows machine_start, which has just configured
 	// every card.
 	if (m_reset_seen)
+	{
 		reset_cards();
+		// ...and so does the 520's built-in disc controller, which is not
+		// a backplane card but answers the same powerup scan.
+		if (has_internal_disc())
+			m_disc.power_on_reset();
+	}
 	m_reset_seen = true;
 	m_iop.reset();
 	m_scm.reset();
