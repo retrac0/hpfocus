@@ -321,13 +321,12 @@ NiCad battery for at least ten days with the machine off. Power-fail sets `R2`
 bit 1 and answers an I/O poll on SC7; as little as **1 ms** may elapse before
 shutdown, and the bit self-clears if power returns.
 
-> **Observed.** HP-UX 5.30 drives exactly this: it polls a ready bit in `R1`,
-> then sweeps `R12` from `ffff` downward through `fff800` writing `R13` —
-> complemented, that is NVM 0 through 0x7ff, the whole part in order —
-> restoring the configuration the manual says the OS should restore after a
-> battery failure. Answering the `R1` poll (bit 7) is what lets the sweep
-> start; before that the kernel spun on it 200,000 times in three emulated
-> seconds. `R11` answers NVM data alongside `R13` in the running system.
+> **Observed.** HP-UX 5.30 drives exactly this. It reads `R1` before every
+> exchange -- bit 7 tells its driver *which* clock part the board carries
+> (§2.4.1), not that the part is ready -- then sweeps `R12` from `ffff`
+> downward through `fff800` reading `R13`: complemented, that is NVM 0 through
+> 0x7ff, the whole part in order. `R11` answers NVM data alongside `R13`, for
+> the driver's other path.
 
 #### 2.4.1 What the clock and the NVM hold
 
@@ -352,28 +351,51 @@ sixteen locations; 16–63 are NVM bytes:
 | 14 | Timer Resolution | | |
 | 15 | Timeout Scan Resolution | | |
 
-> **Observed.** The map is **one field numbering answered by both parts**, not
-> a split down the middle. A battery file HP-UX 5.30 wrote holds the time of
-> day in the clock and, at the map's own offsets *in the NVM*, clock check 14,
-> stack size 6, century 19 and year 70. Both parts carry the low sixteen. That
-> is why [`src/iop/focusrtc.h`](../src/iop/focusrtc.h) states the map once and
-> both boards decode through it.
+**The clock is a digit chip, and has no year.** HP-UX 5.30's clock driver
+(CORE SYSTEM +0x8814..+0x8e98) reads `R1` first. With bit 7 set -- which both
+boards answer -- it latches the *complement* of a location on `R12`, takes
+`R9` back complemented and keeps **four bits**: one BCD digit per location, a
+two-digit field read as units then tens through the auto-increment, the
+tenths read before and after each field as a rollover guard. The locations:
 
-> **Open question — how wide is a location?** Both manuals say "16 four-bit
-> locations", and in the same breath "a 4-bit multiplexed address/data bus
-> provides I/O for the chip". A nibble cannot hold the 59 HP-UX stores in a
-> minute location or the 70 it stores in a year, and BASIC's driver undoes the
-> bus inversion with a byte-wide `NOT` (trap seg 0x48072). So the emulator
-> reads the four bits as the **bus** and a location as a byte, which is what
-> boots — but that is an inference, not a quotation. HP's own `(7)KEYBOARD`
-> diagnostic (`Rtc_update`, `Reset_time`) settles it, and has never been run.
+| Loc | Contents | Loc | Contents |
+|---|---|---|---|
+| 0 | test (written 0) | 8, 9 | day of month, units / tens |
+| 1 | tenths of seconds | 10 | day of week, 1 = Monday … 7 = Sunday |
+| 2, 3 | seconds — read-only, zeroed by a stop | 11, 12 | month |
+| 4, 5 | minutes | 13 | leap status: 8 in a leap year, then 1, 2, 4 |
+| 6, 7 | hours, 24-hour | 14 | stop/start: 0 stops, 1 runs |
+| | | 15 | interrupt control |
 
-> **Open question — the clock check byte.** Nothing known writes offset 1, and
-> nothing here does. `FOCUS_RTCTIME` seeds a moment into both parts and HP-UX
-> clears the century and the year again during bring-up and installs its own,
-> so the OS does not accept a clock it did not set itself. The check byte is
-> the likely gate: a real run's battery holds 1 there in the clock and 14 in
-> the NVM.
+That is National's MM58174A register for register (identified from the
+layout; no parts list names it). Everything else in the table above is an
+**NVM byte**, and three of them belong to the clock: the year at 9, the
+century at 5, and the **Clock Check Byte** at 1. HP-UX writes 240 (`0xF0`)
+there when it sets the clock, 15 when it initialises a blank NVM, 14 when a
+set clock fails its checks, and raises escape 941 -- "CLOCK AND DATE NOT
+SET", with the software clock started at 1 January 1900 -- for anything but
+240. It checks the chip's day of week against the date, which is also how it
+notices the year turn over (the chip has no year to turn). On a blank
+battery it first fails the NVM checksum (1 + byte 3 + bytes 14–2047 except
+46/47, mod 16384, high byte first at 46) and rewrites the part with its
+defaults, check byte 15 included, so **the first boot on a new battery
+always reports the clock unset**; the clock can be set from the next boot.
+
+The table reads like a byte-wide clock with RAM beside it (second at 0,
+minute at 2, hour at 4 ...), and the drivers do carry a path for such a
+part, taken when `R1` bit 7 is clear: plain addresses, the clock offsets
+through `R9` and the rest through `R11`. Neither manual's board answers
+that way, and neither does the emulator's.
+
+> **Resolved — how wide is a location, and what is the check byte.** These
+> were the two open questions here. The emulator used to keep a binary byte
+> per location (59 in one cell) at the map's offsets, complemented, so on
+> the SCM it ran seconds in cell 15, minutes in 13, hours in 11 -- the
+> interrupt, leap and month-units digits to HP-UX -- and HP-UX never read a
+> time at all: every boot printed CLOCK AND DATE NOT SET and dated files
+> February 2036. [`src/iop/focusrtc.h`](../src/iop/focusrtc.h) ("THE DIGIT
+> CLOCK") is now the chip above, and seeding it (`FOCUS_RTCTIME`) writes the
+> digits, the NVM year and century, and 240.
 
 #### 2.4.2 The same part on the 520 *(520 Service, sheets 2-32/2-34)*
 
@@ -399,6 +421,19 @@ To avoid bus conflicts the keyboard drives the bus only for `R1`, `R3`, `R9`,
 **for `R12` only the lower 8-bit buffer is enabled on the keyboard** — which
 cannot reach more than 256 of the 2048 NVM bytes, so either the manual or that
 reading is wrong; the emulator latches 16 bits, which is what boots.
+
+The clock is the same digit chip as on the SCM, decoded the same way. BASIC
+and HP-UX 5.01 both read `R1` bit 7 here and, with it set, latch `ffff`,
+`fffe`, `fffd`... and keep four bits -- the sequence of §2.4.1. The emulator
+used to decode this board's clock plainly over six address bits, a byte per
+location (after an early BASIC trace of the byte path), which put those
+reads on cells 63, 62, 61 that nothing wrote: both systems printed CLOCK AND
+DATE NOT SET whatever the battery held. With the digit decode, a battery
+BASIC has initialised and a seeded clock, BASIC boots without the warning and
+`DATE$(TIMEDATE)` reads the seeded date (rolling 28 Feb 2000 into 29 Feb, and
+28 Feb 2100 into 1 Mar), and HP-UX 5.01 drops the warning from its banner.
+BASIC keeps the same NVM conventions as HP-UX: on a blank battery it writes
+check byte 15 and the same checksum.
 
 The battery-fail bit is **not** raised here by a missing battery file, because
 HP's own power-up self test fails on it: *Self test error 1: IO address

@@ -752,49 +752,109 @@ static void test_gfx()
 }
 
 // The clock and the configuration memory, on both boards that carry them.
-// They differ in exactly two ways -- the SCM complements the RTC address and
-// masks it to four bits, the keyboard board takes it plain over six -- so
-// every decode case runs against both from one table, which is the point of
-// their sharing a model.
+// The two boards carry the same part -- a digit clock behind a complemented
+// four-bit address, and 2 KB of NVM -- and the byte-wide clock the drivers'
+// other path expects is kept as a third decode, so every decode case runs
+// against all three from one table, which is the point of their sharing a
+// model.
+//
+// The guests' own primitives, as HP-UX 5.30 (CORE SYSTEM +0x8838, +0x884c,
+// +0x8c08) and BASIC and HP-UX 5.01 on SC6 drive the digit clock: latch the
+// COMPLEMENT of a location, move data complemented, keep four bits, and let
+// the auto-increment carry a two-digit field from units to tens.
+static unsigned os_digit(rtc_nvm &nv, unsigned loc)
+{
+	nv.write_latch((~loc) & 0xffff);
+	return (~nv.read_rtc()) & 15u;
+}
+
+static unsigned os_pair(rtc_nvm &nv, unsigned loc)
+{
+	nv.write_latch((~loc) & 0xffff);
+	const unsigned units = (~nv.read_rtc()) & 15u;
+	const unsigned tens  = (~nv.read_rtc()) & 15u;
+	return units + 10 * tens;
+}
+
+static void os_put_digit(rtc_nvm &nv, unsigned loc, unsigned v)
+{
+	nv.write_latch((~loc) & 0xffff);
+	nv.write_rtc((~v) & 0xffff);
+}
+
+static void os_put_pair(rtc_nvm &nv, unsigned loc, unsigned v)
+{
+	nv.write_latch((~loc) & 0xffff);
+	nv.write_rtc((~(v % 10)) & 0xffff);
+	nv.write_rtc((~(v / 10)) & 0xffff);
+}
+
+static void os_put_nvm(rtc_nvm &nv, unsigned a, u8 v)
+{
+	nv.write_latch((~a) & 0xffff);
+	nv.write_nvm(v);
+}
+
 static void test_rtc_nvm()
 {
 	std::printf("Real-time clock and non-volatile memory\n");
 
 	struct board { unsigned sc; rtc_decode d; };
-	const board boards[2] = {
+	const board boards[3] = {
 		{ 7, rtc_decode::scm() },
 		{ 6, rtc_decode::keyboard() },
+		{ 0, rtc_decode::byte_clock() },
 	};
 
 	for (const board &b : boards)
 	{
 		rtc_nvm nv(b.d);
 
-		// Every location round-trips through R12 and R9, and the data is
-		// complemented on the bus in both directions.
-		for (unsigned off = 0; off < nvloc::RTC_LOCATIONS; off++)
+		if (b.d.digits)
 		{
-			nv.write_latch(off);
-			nv.write_rtc(0xa0 | off);
-			nv.write_latch(off);
-			CHECK_EQ(nv.read_rtc(), u8(0xa0 | off));
-			CHECK_EQ(nv.rtc[nv.index_for(off)], u8(~(0xa0 | off)));
+			// Every location the OS may write round-trips four bits through
+			// R12 and R9, complemented on the bus in both directions. The
+			// tenths and seconds are the chip's own: writes do not reach them.
+			for (unsigned loc = 4; loc < 16; loc++)
+			{
+				if (loc == rtcdigit::RUN)
+					continue;
+				os_put_digit(nv, loc, (loc * 7) & 15);
+				CHECK_EQ(os_digit(nv, loc), (loc * 7) & 15);
+				CHECK_EQ(nv.rtc[loc], u8((loc * 7) & 15));
+			}
+			os_put_digit(nv, rtcdigit::SECOND, 5);
+			CHECK_EQ(os_digit(nv, rtcdigit::SECOND), 0u);
+
+			// "Succeeding reads or writes cause automatic increments of the
+			// address (address is complemented)": a complemented latch counts
+			// DOWN, which is the next location up -- units, then tens.
+			os_put_pair(nv, rtcdigit::MINUTE, 47);
+			CHECK_EQ(nv.rtc[rtcdigit::MINUTE], 7);
+			CHECK_EQ(nv.rtc[rtcdigit::MINUTE + 1], 4);
+			CHECK_EQ(os_pair(nv, rtcdigit::MINUTE), 47u);
 		}
-
-		// The decode, stated rather than implied by a cell number.
-		CHECK_EQ(nv.index_for(nvloc::SECOND), b.d.rtc_addr_complement ? 15u : 0u);
-		CHECK_EQ(nv.index_for(nvloc::MINUTE), b.d.rtc_addr_complement ? 13u : 2u);
-		CHECK_EQ(nv.index_for(nvloc::YEAR),   b.d.rtc_addr_complement ? 6u : 9u);
-
-		// "Succeeding reads or writes cause automatic increments of the
-		// address": four bytes written from one latch come back in the same
-		// order from one latch. A step inverted on either board reverses them.
-		nv.write_latch(0);
-		for (unsigned i = 0; i < 4; i++)
-			nv.write_rtc(0x10 + i);
-		nv.write_latch(0);
-		for (unsigned i = 0; i < 4; i++)
-			CHECK_EQ(nv.read_rtc(), u8(0x10 + i));
+		else
+		{
+			// The byte clock: whole bytes, plain addresses over the map.
+			for (unsigned off = 0; off < nvloc::RTC_LOCATIONS; off++)
+			{
+				nv.write_latch(off);
+				nv.write_rtc(0xa0 | off);
+				nv.write_latch(off);
+				CHECK_EQ(nv.read_rtc(), u8(0xa0 | off));
+				CHECK_EQ(nv.rtc[nv.index_for(off)], u8(~(0xa0 | off)));
+			}
+			CHECK_EQ(nv.index_for(nvloc::SECOND), 0u);
+			CHECK_EQ(nv.index_for(nvloc::YEAR), 9u);
+			CHECK_EQ(nv.index_for(20), 20u);
+			nv.write_latch(0);
+			for (unsigned i = 0; i < 4; i++)
+				nv.write_rtc(0x10 + i);
+			nv.write_latch(0);
+			for (unsigned i = 0; i < 4; i++)
+				CHECK_EQ(nv.read_rtc(), u8(0x10 + i));
+		}
 
 		// The whole 2 KB, addressed complemented, data plain, and the latch
 		// does not step for NVM.
@@ -817,12 +877,16 @@ static void test_rtc_nvm()
 		CHECK_EQ(nv.latch, 0u);
 	}
 
-	// The two boards' location masks differ deliberately: six address bits
-	// on the keyboard board, four on the SCM.
+	// The two boards are one part: the 520's keyboard board used to decode
+	// plainly over six bits, so BASIC's and HP-UX 5.01's reads of locations
+	// 0, 1, 2 (latches ffff, fffe, fffd) landed on cells 63, 62, 61.
 	{
 		rtc_nvm scm(rtc_decode::scm()), kbd(rtc_decode::keyboard());
-		CHECK_EQ(kbd.index_for(20), 20u);
-		CHECK_EQ(scm.index_for(20), (~20u) & 15u);
+		CHECK_EQ(kbd.rtc_index(), scm.rtc_index());
+		kbd.write_latch(0xfffe);
+		CHECK_EQ(kbd.rtc_index(), unsigned(rtcdigit::TENTHS));
+		CHECK(kbd.d.digits && kbd.d.rtc_addr_complement);
+		CHECK_EQ(kbd.d.rtc_addr_mask, 15u);
 	}
 
 	// The calendar. Both boards used to wrap the day at 31 or 32 and the
@@ -858,28 +922,180 @@ static void test_rtc_nvm()
 		CHECK(ok);
 	}
 
-	// The clock through the map, on both boards, across a year boundary.
-	for (const board &b : boards)
+	// The byte clock through the map, across a year boundary. The map splits
+	// the year across two locations, century and year.
 	{
-		rtc_nvm nv(b.d);
+		rtc_nvm nv(rtc_decode::byte_clock());
 		CHECK(!nv.clock_set());                      // all-zero is "never set"
 		nv.set_time(calendar{ 1985, 12, 31, 23, 59, 59, 0 });
 		CHECK(nv.clock_set());
-		CHECK_EQ(nv.at(nvloc::CENTURY), 19);         // the map splits the year
+		CHECK_EQ(nv.at(nvloc::CENTURY), 19);
 		CHECK_EQ(nv.at(nvloc::YEAR), 85);
 		nv.tick_second();
 		const calendar r = nv.time();
 		CHECK(r.year == 1986 && r.month == 1 && r.day == 1);
 		CHECK(r.hour == 0 && r.minute == 0 && r.second == 0);
 
-		// An unset clock still has to count, or the boot's clock-sync --
-		// which polls the seconds location between 100 ms sleeps -- parks
-		// there forever.
-		rtc_nvm z(b.d);
+		// An unset byte clock still has to count, or a driver on that path
+		// -- which polls the seconds location between 100 ms sleeps to find
+		// a second boundary -- parks there forever.
+		rtc_nvm z(rtc_decode::byte_clock());
 		for (int i = 0; i < 5; i++)
 			z.tick_second();
 		CHECK_EQ(z.at(nvloc::SECOND), 5);
 		CHECK(!z.clock_set());
+	}
+
+	// The digit clock, on both boards, read and set the way the OS does it.
+	CHECK_EQ(rtcdigit::leap_status(2024), 8);        // the leap year itself
+	CHECK_EQ(rtcdigit::leap_status(2025), 1);
+	CHECK_EQ(rtcdigit::leap_status(2026), 2);
+	CHECK_EQ(rtcdigit::leap_status(1987), 4);
+	CHECK_EQ(rtcdigit::leap_status(2000), 8);        // divisible by 400
+	CHECK_EQ(rtcdigit::leap_status(2100), 1);        // by 100, not 400
+	for (const board &b : boards)
+	{
+		if (!b.d.digits)
+			continue;
+
+		// A blank battery: stopped, no date, no check byte. Never set, and
+		// a stopped chip stands still.
+		rtc_nvm z(b.d);
+		CHECK(!z.clock_set());
+		for (int i = 0; i < 5; i++)
+			z.tick_second();
+		CHECK_EQ(os_pair(z, rtcdigit::SECOND), 0u);
+
+		// The OS's own set sequence (CORE SYSTEM +0x8c08..+0x8d2a): stop
+		// the chip, which zeroes the tenths and seconds, write the fields,
+		// the day of week (1 = Monday), the leap status, start it, and put
+		// the year, the century and 240 into the NVM. Then 17 June 1987,
+		// a Wednesday, 09:41.
+		rtc_nvm nv(b.d);
+		for (int i = 0; i < 3; i++)
+			nv.tick_second();                        // stopped: no effect
+		os_put_digit(nv, rtcdigit::RUN, 1);
+		for (int i = 0; i < 7; i++)
+			nv.tick_second();
+		CHECK_EQ(os_pair(nv, rtcdigit::SECOND), 7u);
+		os_put_digit(nv, rtcdigit::TEST, 0);
+		os_put_digit(nv, rtcdigit::RUN, 0);
+		CHECK_EQ(os_pair(nv, rtcdigit::SECOND), 0u); // the stop zeroes them
+		os_put_pair(nv, rtcdigit::MINUTE, 41);
+		os_put_pair(nv, rtcdigit::HOUR, 9);
+		os_put_pair(nv, rtcdigit::DAY, 17);
+		os_put_pair(nv, rtcdigit::MONTH, 6);
+		os_put_digit(nv, rtcdigit::WEEKDAY, 3);
+		os_put_digit(nv, rtcdigit::LEAP, rtcdigit::leap_status(1987));
+		os_put_nvm(nv, nvloc::YEAR, 87);
+		os_put_nvm(nv, nvloc::CENTURY, 19);
+		CHECK(!nv.clock_set());                      // no check byte yet
+		os_put_nvm(nv, nvloc::CLOCK_CHECK, rtcdigit::CHECK_SET);
+		CHECK(!nv.clock_set());                      // and not started
+		os_put_digit(nv, rtcdigit::RUN, 1);
+		CHECK(nv.clock_set());
+		{
+			const calendar r = nv.time();
+			CHECK(r.year == 1987 && r.month == 6 && r.day == 17);
+			CHECK(r.hour == 9 && r.minute == 41 && r.second == 0);
+			CHECK_EQ(r.weekday, 3);
+		}
+		for (int i = 0; i < 75; i++)
+			nv.tick_second();
+		CHECK_EQ(os_pair(nv, rtcdigit::SECOND), 15u);
+		CHECK_EQ(os_pair(nv, rtcdigit::MINUTE), 42u);
+
+		// What the emulator's seed leaves is what the OS reads: the fields
+		// where its driver looks, the day of week it checks the date with,
+		// the year in the NVM and the check byte that makes it believe it.
+		rtc_nvm s(b.d);
+		s.set_time(calendar{ 2026, 10, 2, 22, 27, 59, 0 });
+		CHECK(s.clock_set());
+		CHECK_EQ(s.nvm[nvloc::CLOCK_CHECK], rtcdigit::CHECK_SET);
+		CHECK_EQ(s.nvm[nvloc::CENTURY], 20);
+		CHECK_EQ(s.nvm[nvloc::YEAR], 26);
+		CHECK_EQ(os_pair(s, rtcdigit::SECOND), 59u);
+		CHECK_EQ(os_pair(s, rtcdigit::MINUTE), 27u);
+		CHECK_EQ(os_pair(s, rtcdigit::HOUR), 22u);
+		CHECK_EQ(os_pair(s, rtcdigit::DAY), 2u);
+		CHECK_EQ(os_pair(s, rtcdigit::MONTH), 10u);
+		CHECK_EQ(os_digit(s, rtcdigit::WEEKDAY), 5u);    // a Friday
+		CHECK_EQ(os_digit(s, rtcdigit::LEAP), 2u);
+		CHECK_EQ(os_digit(s, rtcdigit::RUN), 1u);
+		// The byte-clock mirror has nothing to add on a digit clock.
+		s.set_time_mirror(calendar{ 1970, 1, 1, 0, 0, 0, 0 });
+		CHECK_EQ(s.nvm[nvloc::YEAR], 26);
+
+		// The chip rolls the date by real month lengths -- its leap status
+		// says when February has 29 days -- and has no year to roll: across
+		// a new year the day, month, weekday and leap status move, and the
+		// year in the NVM is the OS's to notice.
+		rtc_nvm y(b.d);
+		y.set_time(calendar{ 1999, 12, 31, 23, 59, 59, 0 });
+		y.tick_second();
+		{
+			const calendar r = y.time();
+			CHECK(r.month == 1 && r.day == 1 && r.hour == 0 && r.second == 0);
+			CHECK_EQ(r.year, 1999);
+			CHECK_EQ(os_digit(y, rtcdigit::WEEKDAY), 6u);    // Saturday
+			CHECK_EQ(os_digit(y, rtcdigit::LEAP), 8u);       // 2000 is leap
+		}
+		y.set_time(calendar{ 2024, 2, 28, 23, 59, 59, 0 });
+		y.tick_second();
+		CHECK(y.time().month == 2 && y.time().day == 29);
+		y.set_time(calendar{ 2023, 2, 28, 23, 59, 59, 0 });
+		y.tick_second();
+		CHECK(y.time().month == 3 && y.time().day == 1);
+		y.set_time(calendar{ 2026, 4, 30, 23, 59, 59, 0 });
+		y.tick_second();
+		CHECK(y.time().month == 5 && y.time().day == 1);
+		CHECK_EQ(os_digit(y, rtcdigit::WEEKDAY), 5u);        // 1 May 2026, Fri
+
+		// The battery runs a started clock over an off-time and leaves the
+		// check byte to the OS: it is not the operator setting the clock.
+		rtc_nvm off(b.d);
+		off.set_time(calendar{ 1985, 3, 1, 12, 0, 0, 0 });
+		off.nvm[nvloc::CLOCK_CHECK] = rtcdigit::CHECK_FAILED;
+		nv_load_result r;
+		r.ok = true;
+		r.saved_at = (long long)std::time(nullptr) - 3600;
+		off.run_battery(r, rtc_nvm::BATTERY_DAYS);
+		CHECK_EQ(off.time().hour, 13);
+		CHECK_EQ(off.nvm[nvloc::CLOCK_CHECK], rtcdigit::CHECK_FAILED);
+		CHECK(!off.clock_set());
+	}
+
+	// HP-UX 5.30's NVM checksum (CORE SYSTEM +0x8ee0), with the numbers of
+	// the battery a fresh HP-UX boot wrote here: stack size 6 at 3, the
+	// check byte (not summed) at 1, and 8 = 1 + 6 + 1 kept at 46/47.
+	{
+		rtc_nvm nv(rtc_decode::scm());
+		CHECK(!nv.hpux_checksum_ok());               // blank: 1, stored 0
+		nv.nvm[nvloc::STACK_SIZE] = 6;
+		nv.nvm[200] = 1;
+		nv.nvm[nvloc::CLOCK_CHECK] = rtcdigit::CHECK_INIT;
+		nv.nvm[nvloc::CHECKSUM + 1] = 8;
+		CHECK(nv.hpux_checksum_ok());
+		nv.nvm[nvloc::YEAR] = 87;                    // 1-13 are not summed
+		nv.nvm[nvloc::CLOCK_CHECK] = rtcdigit::CHECK_SET;
+		CHECK(nv.hpux_checksum_ok());
+		nv.nvm[2047] = 1;
+		CHECK(!nv.hpux_checksum_ok());
+	}
+
+	// The SCM as the kernel drives it: R1 says "digit clock", R12 takes the
+	// complemented location, R9 hands back four complemented bits.
+	{
+		scm_device scm;
+		CHECK_EQ(scm.read_fr(1) & 0x80u, 0x80u);
+		scm.nv().set_time(calendar{ 1987, 6, 17, 9, 41, 30, 0 });
+		scm.write_fr(12, (~unsigned(rtcdigit::HOUR)) & 0xffff);
+		CHECK_EQ((~scm.read_fr(9)) & 15u, 9u);
+		CHECK_EQ((~scm.read_fr(9)) & 15u, 0u);
+		scm.write_fr(12, (~unsigned(nvloc::YEAR)) & 0xffff);
+		CHECK_EQ(scm.read_fr(13), 87u);
+		scm.rtc_second_tick();
+		CHECK_EQ(os_pair(scm.nv(), rtcdigit::SECOND), 31u);
 	}
 
 	// ---- the battery file ------------------------------------------

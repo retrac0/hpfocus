@@ -70,14 +70,11 @@ public:
 		m_nv.power_on_reset();
 	}
 
-	// One second of wall time for the RTC. Which cells that touches is the
-	// shared part's business now: they are the map offsets second, minute,
-	// hour, day of month, month and year, decoded through rtc_decode::scm().
-	// What the OS puts there was read off a running HP-UX 5.30 -- its
-	// clock-set path latches what look like plain 0, 2, 4, 7, 8, 9 -- and
-	// its date validator (CORE SYSTEM +0x7b7c, the Julian arithmetic with
-	// the 1461 and 153 constants) rejects anything outside day 1-31 and
-	// month 1-12 with escape 254, which is why those two wrap to 1 here.
+	// One second of wall time for the RTC. On this board that is the digit
+	// clock of focusrtc.h -- seconds, minutes, hours, day, day of week and
+	// month as BCD digits in the locations HP-UX 5.30's driver reads them
+	// from, counting while the OS has it started -- and no year: the OS
+	// keeps that in the NVM.
 	void rtc_second_tick() { m_nv.tick_second(); }
 
 	// The RTC and NVM are battery-backed: their contents survive power
@@ -209,32 +206,40 @@ public:
 	// carries what:
 	//
 	//   W R12   RTC/NVM address latch. The address travels COMPLEMENTED
-	//           (Service Manual 2-30), and uniformly: the clock-set sweep
-	//           writes what look like plain 0, 2, 4... and the clock-check
-	//           path writes ffff, fff1... -- only one inversion applied to
-	//           both makes the reader find the writer's cells
+	//           (Service Manual 2-30) for the clock and the NVM alike: the
+	//           driver writes NOT location before every digit and NOT
+	//           address before every NVM byte
 	//   W R9    RTC data for the latched location, COMPLEMENTED on the bus
-	//   R R9    RTC data back, complemented likewise
-	//   R R1    polled before every exchange; bit 7 = ready, as on the
-	//           520's keyboard-board RTC (R1 has no documented read side)
-	//   R/W R11 the boot's 2 KB configuration readout -- NVM data for the
-	//           latched address (the manual assigns NVM to R13; the driver
-	//           reads its bulk configuration through R11, so both answer)
+	//   R R9    RTC data back, complemented likewise; four bits of it
+	//   R R1    read before every exchange. Bit 7 is not a ready bit: it
+	//           tells the driver WHICH clock part the board carries. Set, it
+	//           takes the digit path this board implements (complemented
+	//           addresses, one BCD digit a location, NVM through R13);
+	//           clear, a byte-wide path with plain addresses that reads
+	//           the map's clock offsets through R9 and the rest through R11
+	//           (CORE SYSTEM +0x8814, +0x88b0). Before this answered 0x80
+	//           the kernel spun 200,000 times in that other path, which is
+	//           how bit 7 came to be called "ready".
+	//   R/W R11 NVM data on the driver's OTHER path; with bit 7 set HP-UX
+	//           never touches it, and it answers like R13 so that either
+	//           path finds the same bytes
 	//   R/W R13 NVM data byte
 	//
-	// WHAT IT ACTUALLY STORES. An earlier note here said the unset-clock
-	// path writes midnight, 1 January 1970 into second, minute, hour, day,
-	// month and year. A battery file written by a real run does not bear
-	// that out: the month and year locations are still zero, while the NVM
-	// holds century 19 and year 70 at the map's own offsets 5 and 9. So the
-	// date comes out of the NVM copy and only the time of day out of the
-	// clock -- which is also why the map in focusrtc.h serves both parts.
-	// The 4 that ends up at map offset 5 of the RTC is unexplained.
+	// WHAT IT ACTUALLY STORES. The clock chip holds the time of day, the day,
+	// the day of week and the month -- as digits -- and has no year. The year
+	// and the century are NVM bytes 9 and 5, and NVM byte 1 is the check
+	// byte that says whether the clock was ever set: 240 set, 15 initialised
+	// but never set, 14 set once and since found wrong. Anything but 240 is
+	// escape 941, "CLOCK AND DATE NOT SET", and a software clock started
+	// from zero -- 1 January 1900. See focusrtc.h, "THE DIGIT CLOCK". (An
+	// earlier note here had the clock-set sweep latching "plain 0, 2, 4...":
+	// that was the same driver's map-offset routine, which sends offsets 1, 5
+	// and 9 to the NVM and the rest to the digit locations.)
 	u32 read_fr(unsigned n) override
 	{
 		switch (n)
 		{
-		case 1:  return 0x80;                  // ready
+		case 1:  return 0x80;                  // a digit clock
 		case 2:  return read_register(2);
 		case 3:  return read_register(3);
 		case 4:  return read_register(4);
