@@ -18,9 +18,13 @@ builds, the entry says so. Add to this file as you find more.
   changes the outcome, and the pre-alpha build did it too. One cause was a
   disc-write defect, now fixed. A rarer swap-related variant remains under
   investigation. Logging in one terminal at a time has not shown it.
-- **Some I/O timings stall the boot.** The emulator's default timing works.
-  The non-default `FOCUS_IOPPOLL` values 450, 475 and 600 have been seen to
-  stop `/etc/rc` or the console. If you set that knob, unset it.
+- **Non-default I/O timings.** The emulator's default timing is the one
+  everything was measured at. Earlier builds stalled `/etc/rc` or the
+  console at the non-default `FOCUS_IOPPOLL` values 450, 475 and 600; on
+  the release candidate 23 values from 220 to 1000 booted and ran a console
+  session, and a multi-user workload passed at 300, 450, 475 and 600.
+  BASIC on the 520 booted at 50, 100, 150 and 200. If you set that knob
+  and see a stall, unset it.
 - **No file-system check, and stopping is a power cut.** HP-UX never runs
   `fsck` at boot on this disc (`/etc/bcheckrc` is empty). Every way of
   stopping the emulator, including a clean one, looks to HP-UX like a
@@ -73,6 +77,19 @@ builds, the entry says so. Add to this file as you find more.
   again. `tools/runhpux.sh` avoids this by putting its relay,
   `tools/hpuxterm.py`, in between. If you attach ports by hand, use a pty
   instead.
+- **A raw MAME socket can hold up the emulator.** MAME's TCP socket is a
+  blocking one. A client attached with `-bitb socket.HOST:PORT` that stops
+  reading (a suspended `nc`) stops the whole emulator once the socket's
+  buffer is full, until it reads again or goes away. Through
+  `tools/runhpux.sh` and its relay this cannot happen: a user who falls
+  256 KB behind is disconnected, and the session carries on.
+- **Long output on a TCP or pty console lags.** With `--console tcp` or
+  `--console pty` the console line runs at 9600 baud, but the console card
+  takes everything HP-UX writes at once, so a long listing queues up ahead
+  of the line: `od -c /bin/csh` queued 188 KB in 30 s, and ^C then took
+  45 s to show. Nothing is lost. The window and `--headless` consoles are
+  not affected, and the six terminal ports are paced correctly: use one of
+  them for long output.
 - **Blank screen on connecting.** A terminal that connects after a port's
   `login:` was printed sees the last few kilobytes of output, through the
   relay, or a blank screen. Press Return for a fresh prompt.
@@ -96,6 +113,15 @@ builds, the entry says so. Add to this file as you find more.
   file, the session is saved beside it as `<image>.unsaved`, and the run
   says so. This happens with a read-only file, a Teledisk `.td0`, or a file
   another tool changed during the run.
+- **Flexible discs are never saved.** What BASIC writes to a flexible disc
+  on the 520 (`-flop1` ...) stays in memory: the image file is not changed,
+  and a soft reset puts the original disc back in the drive. Keep work on
+  the fixed disc (`tools/runbasic-hd.sh`).
+- **^C while the debugger has the machine stopped.** A ^C, `kill` or closed
+  terminal stops a run cleanly while it is running or paused. With `-debug`,
+  while the debugger is holding the machine at a breakpoint, the first ^C is
+  not seen until you let it run, and a second ^C ends the emulator at once,
+  without saving the battery or the 520's fixed disc.
 - **The 520's fixed disc is saved only at exit.** The 540's system disc
   is written through as HP-UX writes it. The 520's internal fixed disc
   (BASIC) is still saved only when MAME exits cleanly, so a crash loses

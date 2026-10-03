@@ -2696,10 +2696,13 @@ void hp9000_5xx_state::start_timers()
 	// announced, which the real card only signals as an attention, and
 	// timed its Pause instead of waiting for Resume Subchannel. With those
 	// right (focusasi.h) HP-UX boots and runs sessions from 220 to 1000 us.
-	// The 520's lower edge is still there: faster than about 200 us its
-	// boot stops reaching the banner -- 150 and 100 fail, 200 does not --
-	// and what it cannot take at that rate is NOT yet known. 400 us stays
-	// the default, clear of it.
+	// The 520 used to have a lower edge too -- faster than about 200 us its
+	// boot stopped short of the banner, 150 and 100 both failing -- and
+	// that is gone as well, by which of the alpha's fixes was not traced:
+	// BASIC now boots and answers DISP 3*4 at 50, 100, 150 and 200 us, from
+	// the fixed disc and (100, 150) from the flexible discs, and HP-UX 5.01
+	// reaches the same banner at 150 as at 400. 400 us stays the default:
+	// it is what everything was measured at.
 	m_iop_poll_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_poll_tick), this);
 	const unsigned poll_us = unsigned(knob::number("FOCUS_IOPPOLL", 400));
 	m_iop_poll_timer->adjust(attotime::from_usec(poll_us), 0,
