@@ -307,6 +307,7 @@ cleanup() {
 		kill "$HUB_PID" 2>/dev/null && wait "$HUB_PID" 2>/dev/null
 		rm -f "$RUNDIR/hub.ready"
 	fi
+	[ -n "${STOPFILE:-}" ] && rm -f "$STOPFILE"
 	hpux_unlock
 	local d
 	for d in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do
@@ -553,5 +554,8 @@ while :; do
 	wait "$MAME_PID" && status=0 || status=$?
 	kill -0 "$MAME_PID" 2>/dev/null || break
 done
-trap - INT TERM HUP
+# MAME has gone. A further ^C must not kill this script before its EXIT
+# trap has stopped the hub and removed the lock: a terminal's ^C reaches
+# MAME as well as this script, so MAME is often gone by the second one.
+trap '' INT TERM HUP
 exit "$status"
