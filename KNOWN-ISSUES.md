@@ -74,6 +74,11 @@ builds, the entry says so. Add to this file as you find more.
   again. `tools/runhpux.sh` avoids this by putting its relay,
   `tools/hpuxterm.py`, in between. If you attach ports by hand, use a pty
   instead.
+- **`ps` shows `?` for the terminal ports.** Sessions on tty01 to tty06
+  are listed with `?` in the TTY column. `ps` keeps its own table of
+  device numbers in `/etc/ps_data`, made in 1991, and the multiuser set-up
+  points the tty nodes at the emulated multiplexer. `rm /etc/ps_data` once
+  (as root, then `sync`): `ps` rebuilds it and names the ports.
 - **Blank screen on connecting.** A terminal that connects after a port's
   `login:` was printed sees the last few kilobytes of output, through the
   relay, or a blank screen. Press Return for a fresh prompt.
@@ -134,6 +139,17 @@ These affect programs that depend on them. They do not affect booting.
   NUMBER`; Esc clears the line. See INSTALL.md section 8.
 - The 520 reports `CLOCK AND DATE NOT SET` unless it has a battery file
   (`FOCUS_KBDNV`) and a seeded clock (`FOCUS_RTCTIME=now`).
+
+## The 9020 diagnostics on the 520
+
+- **`RUN` of the test driver can halt the machine.** On the disc
+  `tools/mkdiagdisc.sh` builds, `LOAD "TEST"` then `RUN` either reaches
+  `Welcome to the HP 9000 Test Supervisor` or stops with `System halted
+  due to system error. TRAP:00000055 ...`, depending on when the commands
+  are typed. The batch recipe in `docs/DIAGNOSTICS.md` (typed at 20 and 36
+  seconds) halts; typed at 22 and 40, or 25 and 45, it runs. The build
+  before the alpha's review ran it at every timing tried. If it halts,
+  start again and type `RUN` a few seconds earlier or later.
 
 ## HP-UX 5.01 on the 520
 
