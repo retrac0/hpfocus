@@ -762,13 +762,6 @@ private:
 			// instruction, which on one CPU can only mean the OS left
 			// the word locked itself.
 			if (!r.privileged()) return exec_trap::unimplemented;
-			// The operand is a data segment pointer, like SEML's: the
-			// kernels feed both LRA-built tagged pointers (DB- and
-			// SB-relative) and raw absolute addresses. A raw absolute
-			// reads as an external pointer with segment number zero,
-			// which is invalid as an EDS reference, so that encoding is
-			// free to mean absolute -- the privileged instructions' own
-			// convention.
 			// How the operand names the semaphore is what CIR(19:1) --
 			// the ",B" flag -- selects, and the kernels' own data settle
 			// it. The plain form takes a DATA SEGMENT POINTER: HP-UX's

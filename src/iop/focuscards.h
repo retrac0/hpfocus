@@ -48,14 +48,17 @@ namespace focus {
 // FR9 read pair (the visible powerup "character ramp" was that test,
 // not display output -- the display lives at select code 0).
 //
-// RTC locations (manual 3-16): 0 second, 1 clock check byte, 2 minute,
-// 3 stack size, 4 hour, 5 century, 6 day of week, 7 day of month,
-// 8 month, 9 year, 10-13 control registers, 14 timer resolution,
-// 15 timeout scan resolution. The BASIC console open reads exactly
-// 0,2,4,7,6,8,9,5,1 three times over (a rollover-consistent read),
-// then control register 10 -- and requires the recovered value's
-// bit 7 set there before it continues. Data returns complemented:
-// the driver undoes the inversion with NOT (trap seg 0x48072).
+// The clock is the same sixteen-location DIGIT chip the SCM carries
+// (focusrtc.h, "THE DIGIT CLOCK"): each location one BCD digit -- seconds
+// at 2-3, minutes 4-5, hours 6-7, day 8-9, day of week 10, month 11-12 --
+// and no year. The manual's table at 3-16 (0 second, 1 clock check byte,
+// 2 minute ... 9 year) is the 64-byte CONTENTS map, whose every offset is
+// an NVM byte on this board; the check byte, century and year the OS
+// reads beside the chip live there, at 1, 5 and 9. BASIC and HP-UX 5.01
+// latch the locations complemented (ffff, fffe, fffd... on R12) and undo
+// the data's inversion with NOT (trap seg 0x48072), exactly as HP-UX 5.30
+// drives the SCM. (An earlier reading took the table for byte-wide clock
+// registers; no guest drives the board that way.)
 struct console_card : public iop_interface
 {
 	std::string report;    // panic text, see write_fr
@@ -117,23 +120,19 @@ struct console_card : public iop_interface
 	u32 flag() override
 	{ return printer ? (printer->flag() ? 1u : 0u) : 1u; }   // NOLINT
 	// The clock and the 2 KB of configuration memory, shared with the
-	// 530/540's SCM (focusrtc.h). The board's own decode: R12 latches an
-	// RTC location plainly and an NVM address complemented, R9 carries RTC
-	// data complemented, R13 NVM data plain.
+	// 530/540's SCM (focusrtc.h), and decoded the same way: R12 latches a
+	// clock location or an NVM address, both complemented, R9 carries
+	// clock data complemented, one digit to a location, and R13 NVM data
+	// plain.
 	//
-	// All-zero powers up as "midnight, clock never set", which the driver
-	// accepts. Control register 10's bit 7 is a busy bit the driver polls
-	// until CLEAR before each rollover-consistent read burst (trap seg
-	// 0x484f8: it spins on FR12=0x0a / ~FR9 while bit 7 is set), so it must
-	// stay 0 here.
+	// All-zero powers up as a stopped clock that was never set, which the
+	// drivers accept and report as CLOCK AND DATE NOT SET.
 	//
-	// The clock must actually run: the boot synchronises its software clock
-	// to the next second boundary by polling the seconds location between
-	// 100 ms sleeps (trap seg 0x476ec..0x47798), and a frozen RTC parks the
-	// boot there forever. The host calls rtc_second_tick() once per emulated
-	// second, and the values count in binary -- the boot's clock-sync
-	// completed with a binary-counting seconds field, and a BCD experiment
-	// stalled it.
+	// The host calls rtc_second_tick() once per emulated second, and a
+	// running chip counts in BCD digits. (The byte-wide, binary-counting
+	// clock this board modelled until the alpha was a decode no guest
+	// drives: R1 bit 7 below sends BASIC and HP-UX 5.01 down the digit
+	// path, where their reads landed on cells that never held a date.)
 	//
 	// The NVM is read out in full at powerup -- four thousand accesses,
 	// descending through complemented addresses -- so this is where the
@@ -198,9 +197,11 @@ struct console_card : public iop_interface
 		switch (n)
 		{
 		case 0:  v = fr0; fr0 = 0; break;
-		// Status: bit 7 selects the direct RTC read flavor in the
-		// driver's exchange helper (trap seg 0x48066); bit 0 is the
-		// keyboard-interrupt-pending bit from the manual.
+		// Status: bit 7 says the clock is a digit chip -- the drivers'
+		// exchange helper (trap seg 0x48066) branches on it, as HP-UX
+		// 5.30's does on the SCM's R1, and takes one BCD digit from each
+		// location; bit 0 is the keyboard-interrupt-pending bit from the
+		// manual.
 		// R1 is shared, "with the printer driving only the upper 4
 		// bits of R1" (520 Service 2-43).
 		// Bit 3 is the battery failure the 520 manual assigns to this
