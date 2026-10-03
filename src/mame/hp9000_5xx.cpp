@@ -1025,6 +1025,9 @@ protected:
 		set_rate(9600);
 		receive_register_reset();
 		transmit_register_reset();
+		// A break the last run left on the line ends with the reset; the
+		// line goes back to marking with the other outputs.
+		m_break = false;
 		m_txd(1);
 		m_dtr(1);
 		m_rts(1);
