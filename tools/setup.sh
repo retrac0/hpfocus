@@ -50,7 +50,7 @@
 #      working copy runs use (var/, about 400 MB); and BASIC's fixed disc,
 #      software/hd/basic.img, for tools/runbasic-hd.sh: BASIC 2.0 with its
 #      ERRORS_ENG, IO and MS options and the CAT_BOOT and BUILD_BOOT
-#      utilities, all off the shipped floppies; and the 9020 diagnostics
+#      utilities, all off HP's floppies; and the 9020 diagnostics
 #      disc, software/hd/diag.img (tools/mkdiagdisc.sh). An image that is
 #      already there is kept, and named if an older sdfwrite.py built it
 #      (BASIC cannot CREATE or STORE on such a disc: delete it and rerun).
@@ -339,14 +339,30 @@ Run tools/setup.sh again when the network is there (finished files are kept),
 or tools/setup.sh --no-media to stop after the build."
 	say "preparing the HP-UX 5.30 machine"
 	tools/runhpux.sh --prepare | awk '/== volume header/ { skip = 1 } !skip { print "   " $0 }'
-	# BASIC's fixed disc for tools/runbasic-hd.sh: the two shipped boot
+	# BASIC's fixed disc for tools/runbasic-hd.sh: HP's two boot
 	# floppies, with the ERRORS_ENG, IO and MS option binaries and the
 	# CAT_BOOT and BUILD_BOOT utilities off the first option disc. That is
 	# the disc src/test/basictest.sh's figures were taken on (the options
 	# change AVAILABLE MEMORY, and bring the error texts and CREATE).
 	# software/basic/img holds the floppies' raw decodes (golden.sh and
 	# older recipes name them there); both directories are gitignored.
-	if [ ! -f software/hd/basic.img ]; then
+	# Both 520 discs are built from the HP Computer Museum's floppies, which
+	# are downloaded by hand (MEDIA.txt). Without them the 540 and HP-UX
+	# 5.30 are complete; the 520's discs are built when the floppies arrive
+	# and this script is run again.
+	have_floppies=1
+	for f in software/basic/500BT1.TD0 software/basic/500BT2.TD0 software/basic/500OPT1.TD0 \
+			software/test/500ENV1.TD0 software/test/500ENV2.TD0 software/test/500ENV3.TD0; do
+		[ -f "$f" ] || have_floppies=0
+	done
+	if [ "$have_floppies" = 0 ] && { [ ! -f software/hd/basic.img ] || [ ! -f software/hd/diag.img ]; }; then
+		say "the 520's discs (BASIC, the diagnostics) are not built: its floppies are not here"
+		echo "   They come from the HP Computer Museum by hand. tools/fetch-media.sh --list names"
+		echo "   the pages; then: tools/fetch-media.sh --from <folder or .zip> && tools/setup.sh --no-build"
+	fi
+	if [ ! -f software/hd/basic.img ] && [ "$have_floppies" = 0 ]; then
+		:
+	elif [ ! -f software/hd/basic.img ]; then
 		say "building BASIC's fixed disc, software/hd/basic.img"
 		mkdir -p software/basic/img software/hd
 		for d in 500BT1 500BT2; do
@@ -373,7 +389,9 @@ or tools/setup.sh --no-media to stop after the build."
 	# (the three 500ENV floppies) installed on a fixed disc of its own.
 	# The release tests run the test driver on it (hpuxtest.py's diag
 	# case), and docs/DIAGNOSTICS.md's recipes boot it.
-	if [ ! -f software/hd/diag.img ]; then
+	if [ ! -f software/hd/diag.img ] && [ "$have_floppies" = 0 ]; then
+		:
+	elif [ ! -f software/hd/diag.img ]; then
 		say "building the 9020 diagnostics disc, software/hd/diag.img"
 		tools/mkdiagdisc.sh software/hd/diag.img.new >/dev/null
 		mv -f software/hd/diag.img.new software/hd/diag.img

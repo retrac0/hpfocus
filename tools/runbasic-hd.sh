@@ -1,6 +1,6 @@
 #!/bin/bash
 # Boot BASIC from the 520's internal fixed disc -- an installed system,
-# rather than the two shipped boot floppies.
+# rather than HP's two boot floppies.
 #
 # A real 520 could carry an internal Winchester, and HP's BUILD_BOOT
 # utility installs onto one: it copies the boot from the flexible drive to
@@ -51,7 +51,9 @@ fi
 if [ ! -f "$DISC" ]; then
     echo "no fixed-disc image at $DISC."
     echo "tools/setup.sh builds software/hd/basic.img; the header of this script"
-    echo "has the recipe for building one by hand."
+    echo "has the recipe for building one by hand. Either needs the BASIC floppies,"
+    echo "which come from the HP Computer Museum by hand: tools/fetch-media.sh --list,"
+    echo "then tools/fetch-media.sh --from <what you downloaded>."
     exit 1
 fi
 

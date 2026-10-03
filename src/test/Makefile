@@ -69,17 +69,23 @@ TESTS = statetest addrtest dsttest exectest ioptest muxtest hpibtest asitest run
 
 .PHONY: all test clean
 test: all
-	@failed=""; \
+	@failed=""; skipped=""; \
 	python3 ../../tools/check_knobs.py || failed="$$failed check_knobs"; \
 	for t in $(TESTS); do \
 		echo; \
-		./$$t || failed="$$failed $$t"; \
+		./$$t; rc=$$?; \
+		if [ $$rc = 77 ]; then skipped="$$skipped $$t"; \
+		elif [ $$rc != 0 ]; then failed="$$failed $$t"; fi; \
 	done; \
 	echo; \
 	if [ -n "$$failed" ]; then \
 		echo "make test: FAILED:$$failed"; exit 1; \
 	fi; \
-	echo "make test: every harness passed (check_knobs $(TESTS))"
+	if [ -n "$$skipped" ]; then \
+		echo "make test: every harness that ran passed; SKIPPED (media not here):$$skipped"; \
+	else \
+		echo "make test: every harness passed (check_knobs $(TESTS))"; \
+	fi
 
 clean:
 	rm -f dasmtest statetest addrtest dsttest exectest ioptest muxtest hpibtest asitest bootprobe bootrun

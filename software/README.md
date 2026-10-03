@@ -39,9 +39,11 @@ software; HP-UX also carries AT&T and University of California code, and
 its boot banner prints HP's restricted-rights legend. This project has no
 licence for them from HP and states no terms of its own for them. The
 `cct/` images are fetched from bitsavers to your machine and never
-redistributed from here; the museum's floppies and the 5.01 tape are
-still carried in the repository, because the museum's downloads sit
-behind a CAPTCHA and cannot be fetched by a script. **The HP-UX 5.30 unit save is a
+redistributed from here. The museum's floppies and the 5.01 tape are not
+in the repository either: the museum's downloads sit behind a CAPTCHA, so
+you download its four items in a browser (`tools/fetch-media.sh --list`
+names their pages) and `tools/fetch-media.sh --from <folder or .zip>` puts
+each file in place, recognising it by its SHA-256. **The HP-UX 5.30 unit save is a
 real site's working system from 1991**, and it holds that site's user
 accounts, home directories and mailboxes as they were. Please treat them
 accordingly: run the system, but do not republish what you find there.

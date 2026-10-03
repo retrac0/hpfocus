@@ -16,6 +16,18 @@ trap 'rm -rf "$WORK"' EXIT
 DASM=./dasmtest
 [ -x "$DASM" ] || { echo "build dasmtest first: make"; exit 2; }
 
+# The corpora are Hewlett-Packard's code off the 520's tape and floppies,
+# which come from the HP Computer Museum by hand (MEDIA.txt). Without them
+# there is nothing to disassemble: that is a SKIP (status 77), which 'make
+# test' reports as one, not a pass and not a failure.
+for f in software/97089C.hpi software/basic/500BT1.TD0 software/basic/500UT3.TD0; do
+	if [ ! -f "$ROOT/$f" ]; then
+		echo "SKIP: $f is not here (the 520's software: tools/fetch-media.sh --list,"
+		echo "      then tools/fetch-media.sh --from <what you downloaded>)"
+		exit 77
+	fi
+done
+
 echo "extracting test corpora..."
 python3 "$ROOT/tools/lifdir.py" "$ROOT/software/97089C.hpi" \
 	--extract S97080C --out "$WORK/S97080C" >/dev/null

@@ -9,6 +9,15 @@
 #                                     in docs/notes, made with pdftotext
 #   tools/fetch-media.sh PATH...      only these files, named as MEDIA.txt
 #                                     names them
+#   tools/fetch-media.sh --from WHERE...
+#                                     the files that cannot be fetched by a
+#                                     script (the HP Computer Museum's, which
+#                                     sit behind a CAPTCHA): download them in a
+#                                     browser, then name the folder, the files
+#                                     or the .zip archives here. Whatever in
+#                                     them is a file MEDIA.txt lists -- found
+#                                     by SHA-256, not by name -- is put in its
+#                                     place. --list says which pages to visit.
 #   tools/fetch-media.sh --check      verify what is here against MEDIA.txt
 #                                     (size and SHA-256); no network
 #   tools/fetch-media.sh --list       what MEDIA.txt lists: each file, its
@@ -17,9 +26,10 @@
 #   -h, --help                        this
 #
 # The files are Hewlett-Packard's, not this project's, and they come from
-# third-party archives: bitsavers.org (mirror bitsavers.trailing-edge.com)
-# and hparchive.com (mirror: the Internet Archive). MEDIA.txt says which
-# file comes from where, and on what terms this project points at them.
+# third-party archives: bitsavers.org (mirror bitsavers.trailing-edge.com),
+# hparchive.com (mirror: the Internet Archive) and, by hand, the HP
+# Computer Museum (hpmuseum.net). MEDIA.txt says which file comes from
+# where, and on what terms this project points at them.
 #
 # What it does for each file that is not here: tries the primary URL, then
 # the mirrors, with curl (or wget); resumes a download an earlier run left
@@ -60,10 +70,14 @@ NOTES_POPPLER=26.08.0
 
 MODE=fetch
 MANUALS=0
+MUSEUM=0
 NAMED=()
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--manuals|--all) MANUALS=1 ;;
+		--manuals) MANUALS=1 ;;
+		--museum) MUSEUM=1 ;;
+		--all) MANUALS=1; MUSEUM=1 ;;
+		--from) MODE=from ;;
 		--check) MODE=check ;;
 		--list) MODE=list ;;
 		-h|--help) sed -n '2,/^# Exit status/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -82,7 +96,7 @@ human() { if [ "$1" -lt 1048576 ]; then echo "$(( ($1 + 512) / 1024 )) KB"; else
 # Parallel arrays (bash 3.2 has no associative ones): F_* the files, with
 # F_URLS[i] the URLs joined by spaces; T_* the text extractions.
 [ -r "$MANIFEST" ] || { echo "error: $MANIFEST is missing: it is the list this script works from" >&2; exit 1; }
-F_CLASS=(); F_SIZE=(); F_SHA=(); F_PATH=(); F_URLS=()
+F_CLASS=(); F_SIZE=(); F_SHA=(); F_PATH=(); F_URLS=(); F_MANUAL=()
 T_MODE=(); T_SIZE=(); T_SHA=(); T_PATH=(); T_PDF=()
 nf=0; nt=0; lineno=0
 while IFS= read -r line || [ -n "$line" ]; do
@@ -95,10 +109,14 @@ while IFS= read -r line || [ -n "$line" ]; do
 	case "$1" in
 	file)
 		[ $# -eq 5 ] || { echo "error: MEDIA.txt line $lineno: file wants CLASS BYTES SHA256 PATH" >&2; exit 1; }
-		F_CLASS[nf]=$2; F_SIZE[nf]=$3; F_SHA[nf]=$4; F_PATH[nf]=$5; F_URLS[nf]=
+		F_CLASS[nf]=$2; F_SIZE[nf]=$3; F_SHA[nf]=$4; F_PATH[nf]=$5; F_URLS[nf]=; F_MANUAL[nf]=0
 		nf=$((nf + 1)) ;;
-	url)
-		[ $# -eq 2 ] && [ "$nf" -gt 0 ] || { echo "error: MEDIA.txt line $lineno: a url line follows a file line and holds one URL" >&2; exit 1; }
+	manual)
+		[ $# -eq 5 ] || { echo "error: MEDIA.txt line $lineno: manual wants CLASS BYTES SHA256 PATH" >&2; exit 1; }
+		F_CLASS[nf]=$2; F_SIZE[nf]=$3; F_SHA[nf]=$4; F_PATH[nf]=$5; F_URLS[nf]=; F_MANUAL[nf]=1
+		nf=$((nf + 1)) ;;
+	url|page)
+		[ $# -eq 2 ] && [ "$nf" -gt 0 ] || { echo "error: MEDIA.txt line $lineno: a $1 line follows a file or manual line and holds one URL" >&2; exit 1; }
 		F_URLS[nf-1]="${F_URLS[nf-1]}${F_URLS[nf-1]:+ }$2" ;;
 	text)
 		[ $# -eq 6 ] || { echo "error: MEDIA.txt line $lineno: text wants MODE BYTES SHA256 PATH PDF" >&2; exit 1; }
@@ -109,6 +127,143 @@ while IFS= read -r line || [ -n "$line" ]; do
 	esac
 done < "$MANIFEST"
 [ "$nf" -gt 0 ] || { echo "error: MEDIA.txt lists no files" >&2; exit 1; }
+
+# ------------------------------------------------------------------ --from
+# Files a person downloaded: put whatever MEDIA.txt lists where it belongs.
+# They are recognised by SHA-256, not by name, so it does not matter how
+# the archive that held them was laid out or what a browser called it.
+# A .zip is looked into without being unpacked.
+if [ "$MODE" = from ]; then
+	[ ${#NAMED[@]} -gt 0 ] || { echo "--from wants the folder, the files or the .zip archives you downloaded (try --help)" >&2; exit 2; }
+	SOURCES=()
+	for p in "${NAMED[@]}"; do
+		case "$p" in /*) ;; *) p=$OLDPWD/$p ;; esac
+		SOURCES+=("$p")
+	done
+	CACHE=${HPFOCUS_MEDIA_CACHE:-}
+	case "$CACHE" in ''|/*) ;; *) CACHE=$OLDPWD/$CACHE ;; esac
+	exec python3 - "$ROOT" "$MANIFEST" "$CACHE" "${SOURCES[@]}" <<'IMPORT'
+import hashlib, os, shutil, sys, zipfile
+
+root, manifest, cache = sys.argv[1:4]
+sources = sys.argv[4:]
+want = {}            # sha256 -> [size, path, manual?, pages]
+last = None
+for line in open(manifest):
+    f = line.split()
+    if not f or f[0].startswith('#'):
+        continue
+    if f[0] in ('file', 'manual') and len(f) == 5:
+        last = [int(f[2]), f[4], f[0] == 'manual', []]
+        want[f[3]] = last
+    elif f[0] == 'page' and last is not None and len(f) == 2:
+        last[3].append(f[1])
+sizes = {v[0] for v in want.values()}
+
+def sha(stream):
+    h = hashlib.sha256()
+    for b in iter(lambda: stream.read(1 << 20), b''):
+        h.update(b)
+    return h.hexdigest()
+
+def here(path, size, digest):
+    full = os.path.join(root, path)
+    if not os.path.isfile(full) or os.path.getsize(full) != size:
+        return False
+    with open(full, 'rb') as f:
+        return sha(f) == digest
+
+installed, already, clash, seen = [], [], [], set()
+
+def install(digest, opener, label):
+    size, path, _, _ = want[digest]
+    if digest in seen:
+        return
+    seen.add(digest)
+    full = os.path.join(root, path)
+    if os.path.exists(full):
+        if here(path, size, digest):
+            already.append(path)
+        else:
+            clash.append(path)
+        return
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with opener() as src, open(full + '.part', 'wb') as dst:
+        shutil.copyfileobj(src, dst)
+    os.replace(full + '.part', full)
+    installed.append((path, label))
+    if cache:
+        c = os.path.join(cache, path)
+        if not os.path.exists(c):
+            try:
+                os.makedirs(os.path.dirname(c), exist_ok=True)
+                shutil.copyfile(full, c + '.part')
+                os.replace(c + '.part', c)
+            except OSError:
+                pass
+
+def look_in_zip(zpath):
+    try:
+        z = zipfile.ZipFile(zpath)
+    except (zipfile.BadZipFile, OSError):
+        return
+    with z:
+        for m in z.infolist():
+            if m.is_dir() or m.file_size not in sizes:
+                continue
+            with z.open(m) as f:
+                d = sha(f)
+            if d in want:
+                install(d, lambda m=m: z.open(m), '%s: %s' % (zpath, m.filename))
+
+def look_at(fpath):
+    try:
+        size = os.path.getsize(fpath)
+    except OSError:
+        return
+    if size in sizes:
+        with open(fpath, 'rb') as f:
+            d = sha(f)
+        if d in want:
+            install(d, lambda: open(fpath, 'rb'), fpath)
+            return
+    if zipfile.is_zipfile(fpath):
+        look_in_zip(fpath)
+
+for s in sources:
+    if os.path.isdir(s):
+        for d, _, names in os.walk(s):
+            for n in sorted(names):
+                look_at(os.path.join(d, n))
+    elif os.path.exists(s):
+        look_at(s)
+    else:
+        print('warning: %s is not there' % s, file=sys.stderr)
+
+for path, label in installed:
+    print('  installed %s  (from %s)' % (path, label))
+for path in clash:
+    print('  NOT REPLACED %s: a different file is already there; move it away and run this again' % path,
+          file=sys.stderr)
+print('media: %d installed, %d already here' % (len(installed), len(already)))
+
+missing = {}
+for digest, (size, path, manual, pages) in want.items():
+    if manual and not os.path.isfile(os.path.join(root, path)):
+        missing.setdefault(pages[0] if pages else '(no page recorded)', []).append(path)
+if missing:
+    print('Still to download by hand (%d file(s)):' % sum(len(v) for v in missing.values()))
+    for page, paths in missing.items():
+        print('  %s' % page)
+        for q in paths:
+            print('      %s' % q)
+if not installed and not already:
+    print('error: nothing in what you named is a file MEDIA.txt lists.', file=sys.stderr)
+    print('       tools/fetch-media.sh --list shows the files and the pages they come from.', file=sys.stderr)
+    sys.exit(1)
+sys.exit(1 if clash else 0)
+IMPORT
+fi
 
 # Which records this run is about. A named path may be a file or one of
 # the text extractions, which brings its PDF with it.
@@ -152,7 +307,11 @@ if [ ${#NAMED[@]} -gt 0 ]; then
 else
 	i=0
 	while [ "$i" -lt "$nf" ]; do
-		if [ "${F_CLASS[i]}" = software ] || [ "$MANUALS" = 1 ]; then F_WANT[i]=1; fi
+		case "${F_CLASS[i]}" in
+			software) F_WANT[i]=1 ;;
+			manuals) if [ "$MANUALS" = 1 ]; then F_WANT[i]=1; fi ;;
+			museum) if [ "$MUSEUM" = 1 ]; then F_WANT[i]=1; fi ;;
+		esac
 		i=$((i + 1))
 	done
 	if [ "$MANUALS" = 1 ]; then
@@ -215,6 +374,8 @@ if [ "$MODE" = list ]; then
 			case "$last" in
 				software) echo "SOFTWARE: $n files, $(mb "$b") MB -- tools/fetch-media.sh" ;;
 				manuals) echo "MANUALS: $n files, $(mb "$b") MB -- tools/fetch-media.sh --manuals" ;;
+				museum) echo "FROM THE HP COMPUTER MUSEUM: $n files, $(mb "$b") MB -- by hand: download from the"
+					echo "pages below in a browser, then tools/fetch-media.sh --from <folder or .zip>" ;;
 				*) echo "$last: $n files, $(mb "$b") MB" ;;
 			esac
 		fi
@@ -244,14 +405,22 @@ fi
 # named paths): all of it here and matching.
 if [ "$MODE" = check ]; then
 	status=0
-	sw_n=0; sw_ok=0; mn_n=0; mn_ok=0; tx_ok=0; tx_warn=0
+	sw_n=0; sw_ok=0; mn_n=0; mn_ok=0; mu_n=0; mu_ok=0; tx_ok=0; tx_warn=0
 	i=0
 	while [ "$i" -lt "$nf" ]; do
 		p=${F_PATH[i]}
-		if [ "${F_CLASS[i]}" = software ]; then sw_n=$((sw_n + 1)); else mn_n=$((mn_n + 1)); fi
+		case "${F_CLASS[i]}" in
+			software) sw_n=$((sw_n + 1)) ;;
+			museum) mu_n=$((mu_n + 1)) ;;
+			*) mn_n=$((mn_n + 1)) ;;
+		esac
 		if [ -f "$p" ]; then
 			if verify "$p" "${F_SIZE[i]}" "${F_SHA[i]}"; then
-				if [ "${F_CLASS[i]}" = software ]; then sw_ok=$((sw_ok + 1)); else mn_ok=$((mn_ok + 1)); fi
+				case "${F_CLASS[i]}" in
+					software) sw_ok=$((sw_ok + 1)) ;;
+					museum) mu_ok=$((mu_ok + 1)) ;;
+					*) mn_ok=$((mn_ok + 1)) ;;
+				esac
 			else
 				echo "BAD      $p: $WHY"
 				status=1
@@ -277,6 +446,7 @@ if [ "$MODE" = check ]; then
 	done
 	echo "software: $sw_ok of $sw_n here and verified"
 	echo "manuals:  $mn_ok of $mn_n here and verified"
+	echo "from the museum (the 520's software): $mu_ok of $mu_n here and verified"
 	echo "text of the manuals (docs/notes): $tx_ok of $nt here and as MEDIA.txt lists them"
 	if [ "$tx_warn" -gt 0 ]; then
 		echo "warning: $tx_warn text file(s) differ from what poppler $NOTES_POPPLER wrote; another"
@@ -367,22 +537,24 @@ download() {
 # transfer resumes, removed as soon as the file verifies or fails to.
 fetched=0; present=0; failed=0; copied=0
 FAILED_LIST=()
+MANUAL_MISSING=()
 announced=0
 announce() {
 	[ "$announced" = 1 ] && return 0
 	announced=1
 	local n=0 b=0 k=0
 	while [ "$k" -lt "$nf" ]; do
-		if [ "${F_WANT[k]}" = 1 ] && [ ! -f "${F_PATH[k]}" ]; then n=$((n + 1)); b=$((b + F_SIZE[k])); fi
+		if [ "${F_WANT[k]}" = 1 ] && [ "${F_MANUAL[k]}" = 0 ] && [ ! -f "${F_PATH[k]}" ]; then n=$((n + 1)); b=$((b + F_SIZE[k])); fi
 		k=$((k + 1))
 	done
+	[ "$n" -gt 0 ] || return 0
 	echo "fetching $n file(s), $(human "$b"), of Hewlett-Packard's software and manuals."
 	echo "They are HP's, not this project's, and come from third-party archives"
 	echo "(MEDIA.txt lists each file, its source and its SHA-256):"
 	k=0
 	local hosts=" " h u
 	while [ "$k" -lt "$nf" ]; do
-		if [ "${F_WANT[k]}" = 1 ] && [ ! -f "${F_PATH[k]}" ]; then
+		if [ "${F_WANT[k]}" = 1 ] && [ "${F_MANUAL[k]}" = 0 ] && [ ! -f "${F_PATH[k]}" ]; then
 			u=${F_URLS[k]%% *}; h=$(host_of "$u")
 			case "$hosts" in *" $h "*) ;; *) hosts="$hosts$h "; echo "  $h" ;; esac
 		fi
@@ -425,6 +597,13 @@ fetch_one() {
 			return 1
 		fi
 		echo "warning: $CACHE/$p is not the file MEDIA.txt lists ($WHY); downloading instead" >&2
+	fi
+
+	# No script can fetch it: the museum's downloads sit behind a CAPTCHA.
+	if [ "${F_MANUAL[k]}" = 1 ]; then
+		MANUAL_MISSING+=("$k")
+		failed=$((failed + 1)); FAILED_LIST+=("$p")
+		return 1
 	fi
 
 	if [ -z "$TOOL" ]; then
@@ -498,6 +677,39 @@ while [ "$i" -lt "$nf" ]; do
 	i=$((i + 1))
 done
 
+# The files that are downloaded by hand are not asked for by default, but
+# a cache that holds them supplies them, and the ones still absent are
+# named once at the end, with where they come from.
+museum_absent=0
+i=0
+while [ "$i" -lt "$nf" ]; do
+	if [ "${F_MANUAL[i]}" = 1 ] && [ "${F_WANT[i]}" = 0 ] && [ ! -f "${F_PATH[i]}" ]; then
+		p=${F_PATH[i]}
+		if [ -n "$CACHE" ] && [ -f "$CACHE/$p" ] && verify "$CACHE/$p" "${F_SIZE[i]}" "${F_SHA[i]}" \
+				&& mkdir -p "$(dirname "$p")" && cp "$CACHE/$p" "$p.part" && mv -f "$p.part" "$p"; then
+			echo "  cached   $p"
+			copied=$((copied + 1))
+		else
+			rm -f "$p.part"
+			museum_absent=$((museum_absent + 1))
+		fi
+	fi
+	i=$((i + 1))
+done
+
+# The pages the by-hand files come from, each once.
+manual_pages() {
+	local k seen=" " u
+	k=0
+	while [ "$k" -lt "$nf" ]; do
+		if [ "${F_MANUAL[k]}" = 1 ] && [ ! -f "${F_PATH[k]}" ]; then
+			u=${F_URLS[k]%% *}
+			case "$seen" in *" $u "*) ;; *) seen="$seen$u "; echo "    $u" ;; esac
+		fi
+		k=$((k + 1))
+	done
+}
+
 # ------------------------------------------------------- text of the manuals
 made=0; made_warn=0; no_pdftotext=0; no_pdf=0
 i=0
@@ -548,6 +760,23 @@ fi
 total=$((present + fetched + copied + failed))
 if [ "$total" -gt 0 ]; then
 	echo "media: $present already here, $fetched downloaded, $copied from the cache$( [ "$made" -gt 0 ] || [ "$made_warn" -gt 0 ] && echo ", $((made + made_warn)) text file(s) made" )$( [ "$failed" -gt 0 ] && echo ", $failed FAILED" )"
+fi
+if [ ${#MANUAL_MISSING[@]} -gt 0 ]; then
+	{
+		echo
+		echo "These cannot be fetched by a script: the HP Computer Museum's downloads sit"
+		echo "behind a CAPTCHA. Download them in a browser from"
+		manual_pages
+		echo "and then run  tools/fetch-media.sh --from <the folder or the .zip files>"
+		echo "which finds each file by its SHA-256 and puts it in place:"
+		for k in "${MANUAL_MISSING[@]}"; do echo "  ${F_PATH[k]}"; done
+	} >&2
+	[ "$failed" -gt ${#MANUAL_MISSING[@]} ] || exit 1
+elif [ "$museum_absent" -gt 0 ] && [ "$MODE" = fetch ] && [ ${#NAMED[@]} -eq 0 ]; then
+	echo "note: $museum_absent file(s) for the 520 (BASIC, the diagnostics, HP-UX 5.01) are not here."
+	echo "      HP-UX 5.30 on the 540 does not need them. They come from the HP Computer"
+	echo "      Museum by hand: tools/fetch-media.sh --list names the pages, and"
+	echo "      tools/fetch-media.sh --from <folder or .zip> puts what you downloaded in place."
 fi
 if [ "$failed" -gt 0 ]; then
 	{

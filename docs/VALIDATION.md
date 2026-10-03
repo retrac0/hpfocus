@@ -594,7 +594,12 @@ section 8.)*
 
 `make test` now runs check_knobs and every harness whatever an earlier one
 reports, and ends with one line: `make test: every harness passed (...)`,
-or `make test: FAILED: <names>` and exit 1.
+or `make test: FAILED: <names>` and exit 1. One harness needs media: the
+disassembler difftest works on HP's code off the 520's tape and floppies,
+which are downloaded by hand (INSTALL.md section 8). Without them it is
+skipped, and the line says so: `every harness that ran passed; SKIPPED
+(media not here): run_difftest.sh`. The 520 cases of `hpuxtest.py matrix`
+(`basic-mul`, `basic-prog`, `diag`, `ux501`) report `SKIP` likewise.
 
 `golden.sh` decodes all five boot floppies from their TD0s (it used to
 read `software/basic/img/`, which is gitignored and made by nothing, and
@@ -611,7 +616,7 @@ probes now, and what they need differs:
 
 | probes | need |
 |---|---|
-| 10: the six unit harnesses it runs, the disassembler difftest, three `bootrun` traces (`--quick` runs these) | a C++ compiler and the shipped floppies |
+| 10: the six unit harnesses it runs, the disassembler difftest, three `bootrun` traces (`--quick` runs these) | a C++ compiler and the 520's floppies (fetched by hand: INSTALL.md section 8) |
 | 6: BASIC and the diagnostics environment booted under MAME, plain and with the logging knobs on | the emulator (`mame/focus`, or `HPFOCUS_BIN`), and `software/hd/basic.img` and `diag.img`, which `tools/setup.sh` builds |
 | 3: HP-UX booted under MAME (`mame-hpux`, `mame-hpux-firstboot`, `knobs-hpux`) | `software/cct/7914_unitSave_hpux4.0.bin`, the first unit-save tape decompressed in place (`gunzip -k`), and `software/cct/scm.nv` for a battery. A fresh clone has neither, so these three are skipped there, and the run says so |
 

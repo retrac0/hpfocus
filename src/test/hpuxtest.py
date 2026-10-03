@@ -61,6 +61,19 @@ SCREEN = os.path.join(ROOT, 'tools', 'screen.py')
 BASICIMG = os.path.join(ROOT, 'software', 'hd', 'basic.img')
 DIAGIMG = os.path.join(ROOT, 'software', 'hd', 'diag.img')
 DIAGFLOP = os.path.join(ROOT, 'software', 'test', '500MFTST.TD0')
+TAPE501 = os.path.join(ROOT, 'software', '97089C.hpi')
+KERNEL501 = os.path.join(ROOT, 'software', 'cct', 'hpux501.bin')
+
+# The 520's software is Hewlett-Packard's and comes from the HP Computer
+# Museum by hand (MEDIA.txt). A case that needs it and does not have it is
+# SKIPPED, which is neither a pass nor a failure.
+MUSEUM = ("the 520's software is not here: tools/fetch-media.sh --list, then "
+          "tools/fetch-media.sh --from <what you downloaded> and tools/setup.sh --no-build")
+
+
+def skipped(name, what):
+    return {'case': name, 'ok': True, 'skip': True,
+            'why': 'no %s -- %s' % (os.path.relpath(what, ROOT), MUSEUM)}
 BANNER = "HP-UX 5.30 (unknown)login: "
 RATE = 0.06                       # FOCUS_TYPERATE=60: seconds per keystroke
 
@@ -296,8 +309,7 @@ def run_diag(name, spec, out, keep):
     driver's first screen is up within 30 s of RUN."""
     for f in (DIAGIMG, DIAGFLOP):
         if not os.path.exists(f):
-            return {'case': name, 'ok': False,
-                    'why': 'no %s (tools/setup.sh and tools/mkdiagdisc.sh make the disc)' % f}
+            return skipped(name, f)
     fails = []
     for at in spec['at']:
         log = os.path.join(out, '%s-%s.log' % (name, at.replace(',', '-')))
@@ -323,12 +335,14 @@ def run_520(name, spec, out, keep):
     log = os.path.join(out, name + '.log')
     if spec['kind'] == 'basic':
         if not os.path.exists(BASICIMG):
-            return {'case': name, 'ok': False, 'why': 'no %s (tools/setup.sh makes it)' % BASICIMG}
+            return skipped(name, BASICIMG)
         env = {'FOCUS_HDNOSAVE': '1', 'FOCUS_DIMDUMP': '1', 'FOCUS_TYPE': spec['keys'],
                'FOCUS_TYPEAT': spec.get('at', '20')}
         rc = run([RUNBASIC, BASICIMG, '--', '-str', str(spec.get('stop', 30)), '-video', 'none'],
                  env, log, timeout=600)
     else:
+        if not os.path.exists(KERNEL501) and not os.path.exists(TAPE501):
+            return skipped(name, TAPE501)
         env = {'FOCUS_KBDNV': os.path.join(out, name + '-kbd.nv')}
         rc = run([RUNHPUX, '--release', '5.01', '--headless', '--seconds', '100'], env, log,
                  timeout=1200)
@@ -344,9 +358,12 @@ def run_520(name, spec, out, keep):
 
 
 def report(results, out):
-    npass = sum(r['ok'] for r in results)
-    print('%d/%d passed  (logs: %s)' % (npass, len(results), out))
-    return 0 if npass == len(results) else 1
+    ran = [r for r in results if not r.get('skip')]
+    npass = sum(r['ok'] for r in ran)
+    nskip = len(results) - len(ran)
+    print('%d/%d passed%s  (logs: %s)' % (npass, len(ran),
+          ', %d skipped' % nskip if nskip else '', out))
+    return 0 if npass == len(ran) else 1
 
 
 def parallel(jobs, tasks):
@@ -359,7 +376,8 @@ def parallel(jobs, tasks):
             except Exception as e:                 # a broken case is a failed case
                 r = {'case': futs[f], 'ok': False, 'why': 'harness error: %r' % e}
             results.append(r)
-            print('%-14s %s %s' % (r['case'], 'PASS' if r['ok'] else 'FAIL', r.get('why', '')),
+            print('%-14s %s %s' % (r['case'], 'SKIP' if r.get('skip') else 'PASS' if r['ok'] else 'FAIL',
+                                   r.get('why', '')),
                   flush=True)
     return results
 

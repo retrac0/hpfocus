@@ -36,9 +36,11 @@ Hewlett-Packard's, and third-party archives host them:
 `tools/setup.sh` downloads the software the emulator boots (46 MB, from
 bitsavers.org) and checks it; `tools/fetch-media.sh --manuals` fetches the
 manuals the documentation cites (230 MB) and extracts their text. The
-BASIC, demo and diagnostic floppies and the HP-UX 5.01 tape came from the
-HP Computer Museum, whose downloads cannot be scripted, and are still
-carried here ([software/README.md](software/README.md)).
+520's software (the BASIC, demo and diagnostic floppies and the HP-UX 5.01
+tape) is at the HP Computer Museum, whose downloads sit behind a CAPTCHA:
+you download four items in a browser and `tools/fetch-media.sh --from
+<folder or .zip>` puts them in place ([INSTALL.md](INSTALL.md) section 8).
+HP-UX 5.30 on the 540 needs none of that.
 
 ## What works
 
@@ -54,7 +56,7 @@ carried here ([software/README.md](software/README.md)).
   again after a reboot. What they are, and how this release scored, is in
   [docs/VALIDATION.md](docs/VALIDATION.md#8-the-hp-ux-release-tests).
 - **BASIC 2.0 on the 9000/520**, on its own rendered display with a live
-  keyboard. It boots from the shipped floppies or from an installed fixed
+  keyboard. It boots from HP's floppies or from an installed fixed
   disc, and runs typed and stored programs (`tools/runbasic.sh`,
   `tools/runbasic-hd.sh`; `src/test/basictest.sh` checks 25 cases).
 - **HP's 9020 factory diagnostics** boot and run: `LOAD "TEST"` and `RUN`
@@ -875,7 +877,7 @@ through a great many real regressions:
 emulator, not a release test. It compares a tree with a baseline you
 captured yourself from the tree before your change, and there is no
 baseline in the repository. It has nineteen probes now. Ten need only a
-compiler and the shipped floppies (`--quick`); six more need the emulator
+compiler and the 520's floppies (`--quick`); six more need the emulator
 and the two BASIC discs `tools/setup.sh` builds; the three HP-UX ones need
 `software/cct/7914_unitSave_hpux4.0.bin`, which a fresh clone does not
 have, and are skipped there. Its header says how to get them. The tests

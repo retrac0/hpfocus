@@ -82,11 +82,13 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 6. It prepares the media:
    - the HP-UX 5.30 disc, assembled from the two unit-save tapes just
      fetched;
-   - a fixed disc for BASIC, `software/hd/basic.img`: BASIC 2.0 with its
-     English error texts, I/O and mass-storage options installed, and two
-     of HP's utilities on it;
-   - a fixed disc with HP's 9020 diagnostics environment,
-     `software/hd/diag.img` (`tools/mkdiagdisc.sh`).
+   - and, once the 520's floppies are here (section 8: they are downloaded
+     by hand), a fixed disc for BASIC, `software/hd/basic.img` (BASIC 2.0
+     with its English error texts, I/O and mass-storage options installed,
+     and two of HP's utilities on it), and a fixed disc with HP's 9020
+     diagnostics environment, `software/hd/diag.img`
+     (`tools/mkdiagdisc.sh`). Without the floppies it says so and goes on:
+     HP-UX 5.30 does not need them.
 
 It prints a line as each step starts, and during the build a count of
 files compiled once a minute. It ends with `Ready. Next:` and the
@@ -321,6 +323,30 @@ the emulator understands. `tools/runhpux.sh --help` lists the script's
 options, and `--dry-run` prints the MAME command line it would run.
 
 ## 8. BASIC and HP-UX 5.01 on the 520
+
+**First, the 520's software, by hand.** It is Hewlett-Packard's and comes
+from the [HP Computer Museum](https://www.hpmuseum.net/exhibit.php?swc=21),
+whose downloads sit behind a CAPTCHA, so no script can fetch it. In a
+browser, download these four items (each page has a download link):
+
+| item | what | page |
+|---|---|---|
+| 432 | 9020 System BASIC Software, 7 floppies | <https://www.hpmuseum.net/display_item.php?sw=432> |
+| 433 | 9020 Test Software, 6 floppies (the diagnostics) | <https://www.hpmuseum.net/display_item.php?sw=433> |
+| 467 | 9020 Demonstration Software, 7 floppies | <https://www.hpmuseum.net/display_item.php?sw=467> |
+| 534 | HP-UX 5.0 Operating System, the tape | <https://www.hpmuseum.net/display_item.php?sw=534> |
+
+Then, naming the folder they landed in, or the files themselves:
+
+    tools/fetch-media.sh --from ~/Downloads
+    tools/setup.sh --no-build          # builds the BASIC and diagnostics discs
+
+`--from` looks through the folder and inside any `.zip` there for the 21
+files [MEDIA.txt](MEDIA.txt) lists, recognises each by its SHA-256
+whatever it is called, and puts it where the tools expect it. It says
+which files are still missing and which page they come from. You need
+item 432 for BASIC, 433 as well for the diagnostics, and 534 for HP-UX
+5.01; the demonstrations (467) are optional.
 
     tools/runbasic.sh        BASIC 2.0 from its two boot floppies, in a window
     tools/runbasic-hd.sh     BASIC from the 520's fixed disc (setup.sh built software/hd/basic.img)

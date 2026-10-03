@@ -146,7 +146,7 @@ if [ ! -x "${HPFOCUS_BIN:-$ROOT/mame/focus}" ]; then
 	echo "${HPFOCUS_BIN:-mame/focus} is not built; run tools/setup.sh"
 	exit 2
 fi
-[ -f "$DISC" ] || { echo "no fixed disc at $DISC (tools/setup.sh builds it)"; exit 2; }
+[ -f "$DISC" ] || { echo "no fixed disc at $DISC. tools/setup.sh builds it from the BASIC floppies, which come"; echo "from the HP Computer Museum by hand: tools/fetch-media.sh --list, then --from."; exit 2; }
 
 # Never open a window: these runs are headless by definition. The run
 # scripts set this themselves for -video none, but basictest also wants it

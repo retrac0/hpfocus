@@ -208,6 +208,12 @@ media() {
 	echo "assembling boot images..."
 	local v ok=1
 	for v in basic/500BT1 basic/500BT2 test/500ENV1 test/500ENV2 test/500ENV3; do
+		[ -f "$ROOT/software/$v.TD0" ] || {
+			echo "software/$v.TD0 is not here: the 520's floppies come from the HP Computer" >&2
+			echo "Museum by hand (tools/fetch-media.sh --list, then --from)." >&2
+			exit 2; }
+	done
+	for v in basic/500BT1 basic/500BT2 test/500ENV1 test/500ENV2 test/500ENV3; do
 		python3 "$ROOT/tools/td0.py" "$ROOT/software/$v.TD0" \
 			--raw "$MEDIA/${v#*/}.img" >/dev/null || { ok=0; break; }
 	done

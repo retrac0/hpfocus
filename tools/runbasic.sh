@@ -31,10 +31,13 @@ focus_built
 BASIC="$FOCUS_REPO/software/basic"
 
 EXTRA=()
+NEED=("$BASIC/500BT1.TD0" "$BASIC/500BT2.TD0")
 if [ -n "${1:-}" ] && [ "${1#-}" = "$1" ]; then
     EXTRA=(-flop3 "$BASIC/$1.TD0")
+    NEED+=("$BASIC/$1.TD0")
     shift
 fi
+focus_need_media "${NEED[@]}" || exit 1
 
 focus_run hp9020 -flop1 "$BASIC/500BT1.TD0" -flop2 "$BASIC/500BT2.TD0" \
     "${EXTRA[@]}" "$@"

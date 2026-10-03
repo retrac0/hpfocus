@@ -237,8 +237,9 @@ case "$RELEASE" in
 	# the memory volume -- which is the customize step HP's installer did.
 	TAPE="$FOCUS_REPO/software/97089C.hpi"
 	KERNEL="$CCT/hpux501.bin"
-	[ -f "$TAPE" ] || hpux_die "no release tape at $TAPE"
 	if [ ! -f "$KERNEL" ]; then
+		# The tape is needed only to build the kernel image, once.
+		focus_need_media "$TAPE" || exit 1
 		echo "building the 5.01 boot image from the release tape..."
 		python3 "$FOCUS_REPO/tools/hpuxboot.py" "$TAPE" -o "$KERNEL" \
 			--option HPIB_FLEX --option SERIAL --option MEMORY_VOL || exit 1

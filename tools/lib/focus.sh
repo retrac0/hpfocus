@@ -62,6 +62,29 @@ focus_built() {
 # video subsystem even for -video none, which costs real time on a loaded
 # desktop and, on this machine, intermittently leaves the emulated boot
 # dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
+# Hewlett-Packard's software is fetched, not carried (MEDIA.txt). The 540's
+# comes from bitsavers by script; the 520's -- the BASIC, demonstration and
+# test floppies and the HP-UX 5.0 tape -- comes from the HP Computer Museum,
+# whose downloads a person has to make in a browser.
+#
+#   focus_need_media FILE...   status 0 if every FILE is here; else say
+#                              which are not and how to get them, status 1
+focus_need_media() {
+	local f missing=()
+	for f in "$@"; do
+		[ -f "$f" ] || missing+=("${f#"$FOCUS_REPO"/}")
+	done
+	[ ${#missing[@]} -eq 0 ] && return 0
+	{
+		echo "not here: ${missing[*]}"
+		echo "The 520's software is Hewlett-Packard's and is not in the repository. It"
+		echo "comes from the HP Computer Museum, by hand: tools/fetch-media.sh --list"
+		echo "names the pages. Download the items in a browser, then run"
+		echo "  tools/fetch-media.sh --from <the folder or the .zip files>"
+	} >&2
+	return 1
+}
+
 focus_args() {
 	local machine=$1; shift
 	local throttle=() arg

@@ -8,6 +8,8 @@
 #   tools/fetch-media.sh             the software the emulator boots (46 MB)
 #   tools/fetch-media.sh --manuals   the manuals as well (230 MB), and
 #                                    their text extractions in docs/notes
+#   tools/fetch-media.sh --from DIR  put in place what you downloaded by
+#                                    hand (the museum's files, below)
 #   tools/fetch-media.sh --check     verify what is here, without network
 #   tools/fetch-media.sh --list      this list, readably, with what is here
 #
@@ -23,8 +25,8 @@
 # and mail as they were (software/README.md): run it, do not republish
 # what is on it.
 #
-# WHERE THEY COME FROM. Two third-party archives, neither of them this
-# project's, and a mirror of each:
+# WHERE THEY COME FROM. Three third-party archives, none of them this
+# project's. Two can be fetched by a script and have a mirror each:
 #
 #   bitsavers.org    the software (bits/HP/Crisis_Computer_Tapes) and the
 #                    manuals (pdf/hp/9000_500, 9000_cio and disc).
@@ -40,13 +42,21 @@
 # tools/fetch-media.sh sends
 # "hpfocus-fetch-media/<version> (+https://github.com/retrac0/hpfocus)".
 #
-# NOT LISTED HERE. The floppies in software/basic, software/demos and
-# software/test and the tape software/97089C.hpi came from the HP Computer
-# Museum (hpmuseum.net), whose downloads sit behind a CAPTCHA and cannot
-# be fetched by a script; software/README.md has their provenance. The
-# files that remain in docs/notes are this project's own OCR passes over
-# the manuals and two page images, which no command reproduces byte for
-# byte.
+# The third cannot:
+#
+#   hpmuseum.net     the HP Computer Museum: the BASIC, demonstration and
+#                    test floppies and the HP-UX 5.0 tape for the 520. Its
+#                    downloads sit behind a CAPTCHA, so a person fetches
+#                    them in a browser (four items, listed below with their
+#                    pages) and `tools/fetch-media.sh --from <folder or
+#                    .zip>` puts them in place, finding each file by its
+#                    SHA-256 whatever the archive was called or how it was
+#                    laid out. HP-UX 5.30 on the 540 needs none of them;
+#                    BASIC, the diagnostics and HP-UX 5.01 on the 520 do.
+#
+# NOT LISTED HERE. Six files stay in docs/notes: this project's own OCR
+# passes over manuals that have no text layer, and two page images. No
+# command reproduces them byte for byte and no archive holds them.
 #
 # FORMAT. Blank lines and lines starting with # are comments. Fields are
 # separated by single spaces; no path or URL contains one.
@@ -57,6 +67,12 @@
 #       is software (fetched by default) or manuals (--manuals). The url
 #       lines that follow are tried in order: the first is the primary,
 #       the rest are mirrors.
+#
+#   manual CLASS BYTES SHA256 PATH
+#   <tab>page URL
+#       A file no script can fetch. The page line is where a person
+#       downloads it; tools/fetch-media.sh --from recognises it by SHA256.
+#       CLASS is museum.
 #
 #   text MODE BYTES SHA256 PATH PDF
 #       PATH is the text of PDF as pdftotext gives it: `pdftotext -layout
@@ -239,6 +255,68 @@ file manuals 58046088 5282a214b9e9e3119837a1b1e64d34ed694697e599f04df82469ebcdd5
 file manuals 52877127 0fde3d823c96c47dc8e2d7c02c523b0c7b6241cdc8795550221f73e2bb4883b4 docs/hpjournal/HPJournal_1984-05.pdf
 	url https://hparchive.com/Journals/HPJ-1984-05.pdf
 	url https://web.archive.org/web/20251031212857id_/https://hparchive.com/Journals/HPJ-1984-05.pdf
+
+# ------------------------------------------------ from the HP Computer Museum
+# Downloaded by hand, one archive per item, from the item's page (its
+# download link is a CAPTCHA). The exhibit is
+# https://www.hpmuseum.net/exhibit.php?swc=21 . Most of the collection was
+# donated to the museum by Charlie Brett of Fort Collins, Colorado.
+
+# Item 534, HP-UX 5.0 Operating System (1984): the release tape for the 520, as a
+# 9144 cartridge image. Damaged in imaging (software/README.md); the 520's
+# kernel survives, and tools/hpuxboot.py builds a bootable image from it.
+manual museum 16744448 ba1918ad897ba44ddce4603496e2d33b35e1295898cf3c422c7e2b0b80cd2153 software/97089C.hpi
+	page https://www.hpmuseum.net/display_item.php?sw=534
+
+# Item 432, 9020 System BASIC Software (1983): the BASIC Language System 2.0, seven
+# Teledisk floppies. tools/setup.sh builds BASIC's fixed disc from 500BT1,
+# 500BT2 and 500OPT1; src/test/run_difftest.sh disassembles 500BT1 and 500UT3.
+manual museum 277040 12b7649de044ee3bab234af00da93c8600900c7164bfc06c94093d5104d674af software/basic/500BT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 118978 9a29b8afa17c457691563437cf7d7e822fdbfd47340178d6281ab454a6af40c3 software/basic/500BT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 268415 0f5f4b351296715f37e979d193bb6e361259f336973237701a07d5e6f78407bc software/basic/500OPT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 37273 e6c72fb59276e3d9c7512f5038323be4641be7e67ff1a40c7a849e9d90fbb92b software/basic/500OPT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 262818 af2e3bbc8cac7b92ee9e9c086adb871167a6ae9f4ba67271a129ce05dfa29677 software/basic/500UT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 223828 2aeb6d23e11fd4bc2a24acdad8fa8c7e1ec62380a62dddb8f032ea1f09031064 software/basic/500UT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 256570 3d57b0caf7ead1d8ab016ef05845de3234c67e1f889524005bdb15a4f585b0bd software/basic/500UT3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+
+# Item 467, 9020 Demonstration Software (1982): the BASIC demo suite, seven floppies.
+manual museum 105491 f1b3fa3422c38fc2d6da8a75699862e7d6be26c3b79d84f8801b51c8f7f8cf05 software/demos/BASDEM1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 219786 0b131b00094dc1d8e0e04136114f4e0e42fa5d8543e4d72abec27c6f9c547dc2 software/demos/BASDEM2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 202862 9666ba20b24adead4e98ca73f7f662849a18d5e00f9313004d3bb121e810f82c software/demos/BASDEM3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 202554 5971989c3170e71d0f69dbb503761bbe03453168d0dc10a84bdfd1818e700974 software/demos/BASDEM4.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 103156 ef04ebddacb8812d6e42e3cd4b8aad9e05236b377fc7782f0ea6dfee14eaa60d software/demos/BASDEM5.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 161378 8e2c8bc0d8c0ccba27af87f4ce6afc0442324e5dbaa0e305571abf7dae3be948 software/demos/BASDEM6.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 209094 6482a7181bd999b50c116906194283d0162d415439a762f307f1deb12d715559 software/demos/BASDEM7.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+
+# Item 433, 9020 Test Software (1983): the System Functional Tests 3.00, six floppies.
+# tools/mkdiagdisc.sh builds the diagnostics disc from the three 500ENV discs,
+# and the test driver runs off 500MFTST.
+manual museum 141123 ed59f0662f6c13d4c8d5ae5a62544b680e87d815694c2433694cf3b72d6898ca software/test/500EDTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 278088 adf3a820bc319c17d85e59401c7f0d3fde37cbfd3a4f6124327355545eddfeac software/test/500ENV1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 278614 52757f7d0a3c99eb36d22f54cbbdabdc1fd25001e11fa27db2e7ddaaa3c6d4b8 software/test/500ENV2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 266684 5c4d0d6df2e4133de0b16edfbc1369934b869e5820ec3c11cbc06616ab3f28ec software/test/500ENV3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 238822 3a0e3f839f7752c624ab62fcc41a3c4af012b416d4ba7418cbd3afbcb337719d software/test/500MFTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 90825 0c4285ad7a34780e2bd0125fb27b8fc1e01a5e39643f00037c3742ae5ae5e7b6 software/test/500MSTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
 
 # ------------------------------------------------------ text of the manuals
 # docs/notes/<name>.txt, regenerated from the PDFs above.
