@@ -839,6 +839,16 @@ static void test_condition_codes()
 	CHECK(h.one(f3(035)) == exec_trap::none);       // XAX
 	CHECK_EQ(h.cpu.r.condition_code(), CCL);
 
+	// DZRO: "Two words containing all zeros are pushed onto the stack.
+	// Indicators = CCA" (ERS sheet 60), so CCE whatever stood before.
+	h.cpu.r.s = 0x4003;
+	h.cpu.r.put(sf::CC, CCL);
+	CHECK(h.one(f3(007)) == exec_trap::none);       // DZRO
+	CHECK_EQ(h.cpu.r.s, 0x4003 + 8);
+	CHECK_EQ(h.cpu.stk(0), 0u);
+	CHECK_EQ(h.cpu.stk(1), 0u);
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
 	// The doubleword forms report the 64-bit value, not either half. A
 	// negative doubleword has its sign in the word beneath the top, so a
 	// naive CCA on the top word alone would call this one CCG.

@@ -933,9 +933,7 @@ both, pushes the addressed bit as 0/1. X is left holding the byte offset.
 *CCA.*
 
 **`ZERO` / `DZRO`** — Push Zero / Double Push Zero — `F3:6` / `F3:7`
-Push one / two zero words. *CCA* (so always CCE). The core sets it for
-`ZERO` but not yet for `DZRO`, which no observed code follows with a
-branch.
+Push one / two zero words. *CCA* (so always CCE).
 
 **`PSHN`** — Push N Words — `F3:5`
 Push X copies of zero (`b`=0) or of the popped TOS (`b`=1); X counts down

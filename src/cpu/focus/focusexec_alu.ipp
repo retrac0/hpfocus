@@ -157,7 +157,9 @@ private:
 			return exec_trap::none;
 		}
 		case 006: push(0); cca(0); return exec_trap::none;      // ZERO
-		case 007: push(0); push(0); return exec_trap::none;    // DZRO
+		// "Indicators = CCA" (ERS sheet 60), as ZERO: always CCE.
+		case 007: push(0); push(0); r.put(sf::CC, CCE);
+			return exec_trap::none;                            // DZRO
 		case 016: {                                            // DXCH
 			const u32 a = stk(0), b = stk(1), c = stk(2), d = stk(3);
 			set_stk(0, c); set_stk(1, d); set_stk(2, a); set_stk(3, b);

@@ -117,12 +117,10 @@ These affect programs that depend on them. They do not affect booting.
   `ADDI`, `SUBI`, `MPYI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`,
   `DECM`, `INCF` and `DECF` never set Overflow.
 - **Condition codes:** the character-class condition code (CCB) is never
-  produced, and `DZRO` does not set the condition code.
+  produced.
 - **Rarely used instructions:** `STOP,B` does not restore MASK/STATUS when
-  it wakes. An unprivileged `EXIT` does not take every privileged-mode trap
-  the ERS lists. The interrupt mask and request registers do not follow
-  the I/O ERS exactly. Neither operating system is known to depend on any
-  of these.
+  it wakes. The interrupt mask and request registers do not follow the I/O
+  ERS exactly. Neither operating system is known to depend on either.
 
 ## BASIC 2.0 on the 520
 
