@@ -6,6 +6,7 @@
 #include "../iop/focuscards.h"
 #include "../iop/focusscm.h"
 #include "../iop/focusgfx.h"
+#include "../iop/focusasi.h"
 #include "../cpu/focus/focusexec.h"
 
 #include <cstdio>
@@ -295,6 +296,45 @@ static void test_wrif()
 	CHECK(iop.io_control(tgt(CMD_ICEI, 1, 5)));
 	CHECK_EQ(h.mem.read32(cell), 0x5a);
 	CHECK_EQ(h.mem.read32(drt + 12), list + 16);   // walked past DCEI
+}
+
+
+// The 27128A's event codes and status bytes are ATTENTION requests (FR1
+// bit 0, the IOP's attention poll, message 14), not service requests: the
+// card must not put a device interrupt on the IOP for them. HP-UX's ASI
+// handler re-dispatches its last report on every interrupt it gets.
+static void test_asi_events_are_attention()
+{
+	std::printf("ASI: events and status bytes are attention, not interrupts\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	asi_card asi;
+	asi.iop = &iop;
+	asi.pa = 0;
+	iop.attach(0, &asi);
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 0)));      // armed, as HP-UX leaves it
+	asi.write_fr(0, 1);                               // the presence echo
+	asi.read_fr(1);
+	asi.write_fr(9, 0x40);                            // a command: answered 0x30
+	for (int i = 0; i < 4; i++)
+		asi.tick();
+	CHECK(asi.attention());
+	CHECK_EQ(asi.read_fr(1) & 1, 1);
+	CHECK_EQ(iop.take_raise_events(), 0u);
+	CHECK_EQ(iop.interrupt_request(), 0u);
+	CHECK(!h.irq);
+	CHECK_EQ(asi.read_fr(9), 0x30);
+	CHECK(!asi.attention());
+
+	// A typed record is sensed and told through Read Transparent Status;
+	// it does not interrupt either.
+	for (u8 c : { 'l', 's', '\r' })
+		asi.type(c);
+	for (int i = 0; i < 4; i++)
+		asi.tick();
+	CHECK_EQ(iop.take_raise_events(), 0u);
+	CHECK_EQ(iop.interrupt_request(), 0u);
 }
 
 
@@ -1071,6 +1111,7 @@ int main()
 	test_interrupts();
 	test_interrupt_list();
 	test_wrif();
+	test_asi_events_are_attention();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();

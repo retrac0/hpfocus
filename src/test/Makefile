@@ -32,7 +32,7 @@ exectest: exectest.cpp $(CORE)
 	$(CXX) $(CXXFLAGS) exectest.cpp -o $@
 
 ioptest: ioptest.cpp ../iop/focusiop.h ../iop/focusscm.h ../iop/focusgfx.h \
-         ../iop/focuscards.h ../iop/focusprint.h ../iop/focusrtc.h $(CORE)
+         ../iop/focusasi.h ../iop/focuscards.h ../iop/focusprint.h ../iop/focusrtc.h $(CORE)
 	$(CXX) $(CXXFLAGS) ioptest.cpp -o $@
 
 muxtest: muxtest.cpp ../iop/focusiop.h ../iop/focusmux.h $(CORE)

@@ -629,9 +629,32 @@ struct asi_card : public iop_interface
 			if (dbg())
 				dbg()("[%8.3fs asi%u event %02x queued, %u pending]\n",
 						stamp(), pa, code, unsigned(m_pending.size()));
+			// The code is announced through the ATTENTION path and only
+			// there: FR1 bit 0 makes attention() true, the IOP's
+			// attention poll answers with ARD and message 14 (I/O ERS
+			// 4.4), and the kernel's message-14 handler (CORE SYSTEM
+			// 0x25e84: RDTF for the attention log, CAAK, then RIF1 and
+			// RIF9) reads the code here. It is not a service request,
+			// and the card does not raise one for it.
+			//
+			// It used to raise one as well, and that interrupt was the
+			// console's poll-rate band. HP-UX's ASI handler takes one
+			// interrupt per freshly-DMA'd report -- every arm ends ICEI;
+			// IXIT and dispatches on the report buffer, which only a Read
+			// Transparent Status refreshes (docs/HPUX.md 6) -- so an
+			// extra interrupt re-dispatches a stale report. When it
+			// landed between the driver arming its transaction (branch
+			// at 0x1e9864, then Resume Subchannel on FR9) and the IOP
+			// taking that branch, the stale IDL arm (CORE SYSTEM
+			// 0x27518) wrote the idle target back over it: the
+			// transaction never ran and its caller slept for ever.
+			// Measured at FOCUS_IOPPOLL=600 on a kept battery: request
+			// 51 of the boot, a control-device close, is the last the
+			// card ever sees, /etc/rc never prints, and the "event 10
+			// queued" 2 ms after that Resume is the interrupt that does
+			// it. Without the raise the same boot reaches all seven
+			// logins, and so does every poll period from 220 to 1000 us.
 			m_events.push_back(code);
-			if (iop)
-				iop->raise(pa);
 			// One announcement per tick; whatever is left keeps the
 			// clock running so nothing is stranded.
 			start_event_timer();
@@ -1209,8 +1232,13 @@ private:
 		m_status = s;
 		m_status_posted = true;
 		m_ard = false;
-		if (iop && m_arq_enabled)
-			iop->raise(pa);
+		// No service request: a posted status byte is an ATTENTION
+		// request, "the kind that enable the Level 1 ARQ line" (27110A
+		// 4-3), and the IOP keeps attention apart from interrupt
+		// requests (I/O ERS 4.4). Raising one here put a device
+		// interrupt on every completed leg and on every typed record,
+		// each re-dispatching whatever report the driver last read --
+		// see tick() for what that cost.
 	}
 
 	void device_clear()
