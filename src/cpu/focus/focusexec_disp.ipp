@@ -67,14 +67,60 @@ private:
 	// A data segment table entry's location and length-1, for the TCB's
 	// stack and global segment numbers. Numbers below 2048 live in the
 	// system table at its architectural base; the rest in the user table
-	// the DST register points at.
-	void dst_loc_len(u32 seg, u32 &loc, u32 &len_m1)
+	// the DST register points at. Returns the entry's address.
+	u32 dst_loc_len(u32 seg, u32 &loc, u32 &len_m1)
 	{
 		const u32 table = (seg < 2048)
 				? dst_walker::SYSTEM_DST_BASE : r.dst;
 		const u32 ea = table + 16 * (seg & 2047);
 		len_m1 = m_mem.read32(ea + 4);
 		loc = m_mem.read32(ea + 8);
+		return ea;
+	}
+
+	// A segment's registers have been loaded from its DST entry -- SB and
+	// SL, or DB and DL -- so mark the entry Referenced and Dirty.
+	//
+	// "R = Reference bit - set to 1 when data in the segment ... is
+	// accessed. D = Dirty bit - set to 1 when the [unpaged] data segment
+	// is altered" (ERS sheet 32). For every other data segment the
+	// pointer evaluation of sheet 55 keeps them, a reference at a time.
+	// A task's stack and global data segments are the two it does not
+	// reach by pointer: everything it pushes, every marker a call or an
+	// interrupt leaves, every DB-relative store goes through absolute
+	// registers and never near the table. The load of those registers is
+	// the only reference to the entry there will be, so it is where the
+	// segment is recorded as in use and about to be altered.
+	//
+	// HP-UX's memory manager believes D. Its swap-out routine (the
+	// kernel image at 0x1dd58 as loaded on a 2 MB 540) tests the bit --
+	// `LDS Q-24; LSR 3; ANDI #1; TEST; BCCS.E 0x1de92` -- and for a
+	// clean segment goes straight to marking the entry absent and
+	// freeing its memory, with no write to the disc: the copy it last
+	// read is taken to be the segment. With D left to pointer stores, a
+	// stack was dirty only if the kernel happened to store into it by
+	// pointer (a system call's results) since it was last brought in. A
+	// process created and swapped out before that, or one that had only
+	// computed since its last swap-in, was discarded clean, and came
+	// back as whatever its swap slot held -- for a stack never yet
+	// written out, free disc blocks with some other segment's old
+	// contents in them. The dispatcher's next IXIT then found code
+	// where the stack head should be ("System halted due to system
+	// error. TRAP:00000012"), or the process ran on with a stale stack
+	// or stale globals ("Memory fault - core dumped"). It takes memory
+	// pressure: seven logins at once on 2 MB did it now and then, a
+	// dozen background jobs on top of four logins did it every time.
+	//
+	// An entry the OS holds semaphore-locked reads as all ones and is
+	// left alone, as is an absent one, whose other bits are the OS's.
+	void dst_mark_loaded(u32 entry_addr)
+	{
+		const u32 w0 = m_mem.read32(entry_addr);
+		if (w0 == 0xffffffffu || ers32::get(w0, 31, 1))
+			return;
+		const u32 marked = ers32::set(ers32::set(w0, 29, 1, 1), 28, 1, 1);
+		if (marked != w0)
+			m_mem.write32(entry_addr, marked);
 	}
 
 	// The TCB path of IXIT (cases 1-3): restore the task named by the
@@ -94,11 +140,11 @@ private:
 		r.dst = m_mem.read32(ctcbp + 4);
 
 		u32 loc, len;
-		dst_loc_len(ers32::get(entw, 20, 12), loc, len);
+		const u32 global_entry = dst_loc_len(ers32::get(entw, 20, 12), loc, len);
 		r.db = loc;
 		r.dl = loc + len;
 
-		dst_loc_len(ers32::get(entw, 4, 12), loc, len);
+		const u32 stack_entry = dst_loc_len(ers32::get(entw, 4, 12), loc, len);
 		const u32 sb = loc + m_mem.read32(loc);
 		const u32 sl = sb + m_mem.read32(loc + 4);
 		const u32 s = sb + m_mem.read32(sb - 4);
@@ -121,6 +167,9 @@ private:
 						ctcbp, entw, r.dst, ers32::get(entw, 4, 12), loc, len, sb, sl, s);
 			return take_trap(trap_cause::inconsistent_registers, 0);
 		}
+		// The task runs on these two segments from here (dst_mark_loaded).
+		dst_mark_loaded(global_entry);
+		dst_mark_loaded(stack_entry);
 		r.sb = sb;
 		r.sl = sl;
 		r.s = s;

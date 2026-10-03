@@ -352,7 +352,10 @@ With `I` set, the word at the direct address is fetched and interpreted as
 a pointer: **self-relative** when the base is P-relative, a **data segment
 pointer** otherwise. For an external data segment pointer, a post-index is
 added to the pointer's *offset field* (checked against that segment's
-bounds), not to the resolved absolute address.
+bounds), not to the resolved absolute address. A *paged* segment's pointer
+is a 31-bit virtual address, and the index is added to all of it (sheets
+16 and 56): past the nineteen offset bits it carries into the segment
+number, and the reference is to the next segment's page table (§6.2).
 
 The ten worked examples of ERS Figure 2.1 *(sheet 19)* exercise every path:
 HP supplied the memory contents of a program, stack, global data and external
@@ -404,6 +407,18 @@ sweep (TRAP HANDLERS `+0x6390`) semaphore-reads each entry and, when
 referenced — stamps the segment's last-use time and writes it back with
 `R` cleared. The emulator left `R` alone for a while on a misreading of
 the CST layout (§6.1).
+
+A task's stack and global data segments are the two it does not reach by
+pointer: SB, SL, S, Q and DB, DL are absolute registers, and nothing done
+through them evaluates anything. Their DST entries are marked `R` and `D`
+when the registers are loaded from them — by `IXIT`'s Task Control Block
+path for both segments, by `XGDS` for a new global segment — since no
+later reference would. The ERS gives the bits' meaning (sheet 32) and not
+the moment; HP-UX fixes the requirement. Its swap-out routine (kernel
+image 0x1dd58 as loaded on a 2 MB 540) tests `D` and, for a clean segment,
+marks the entry absent and frees the memory without writing it out, so a
+stack or global segment that only the task itself had stored into was
+discarded and later read back from a swap slot holding something else.
 
 A doubleword operand is aligned to a word (§2.2.6), so it can straddle a
 page boundary of a paged segment: its second word is then a reference of
@@ -510,6 +525,17 @@ word 0 mirrors the flag layout (with bit 26 = 1), word 1 is the page frame
 `LOCATION` (low PAGESIZE bits zero). The final address is
 `page LOCATION OR within-page offset` — an OR, since frames are
 page-aligned. Entry for page *n* is at `LOCATION + 8n`.
+
+A paged segment is at most 512 KB, the reach of the pointer's offset
+field, and larger spaces are consecutive DST entries: the evaluation adds
+an index to the whole pointer (`TEMP := PTR + X`), and if that changes the
+segment number it reads the new entry instead — EDS Bounds Violation if
+the sum leaves the table's half of the address space, EDS Pointer
+Violation for segment 0, DST Violation past the table, Unexpected EDS Type
+if the new entry is not paged (sheet 56). HP-UX 5.30 builds a process's
+data space this way, from user segment 11 up, each entry 512 pages of
+1 KB; a program with more than 512 KB of data indexes across the line,
+and the kernel forms transfer addresses across it with `CPTR,B`.
 
 **Chaining**: when an offset runs past `LENGTH`, the walk continues.
 `C`=0: scattered chain — `LINK` names the next DST entry and the spent
@@ -1009,7 +1035,8 @@ TOS afterwards names the *old* global segment. An absent segment is Absent
 Data Segment (042) with the DST entry number as parameter, before anything
 is changed: HP-UX's system-call exit runs `XGDS` back onto a user segment
 the memory manager may have swapped out meanwhile, and relies on the trap.
-Privileged. *CC unaffected.*
+The new segment's entry is marked `R` and `D` (§5.2): the task stores into
+it DB-relative from here on. Privileged. *CC unaffected.*
 
 **`GTSP`** — Get Task Segment Pointers — `F4:12`
 Pop an absolute TCB address into the Current-TCB dedicated location; set
@@ -1557,9 +1584,13 @@ field can't hold the result. *CC unaffected.*
 **`CPTR`** — Convert Pointer — `F4:70`
 `(S)` signed byte delta, `(S-1)` data segment pointer: pop both, push the
 pointer advanced by delta (same format), and leave the delta in X. For an
-EDS pointer, `b`=1 performs a full evaluation (for paged segments);
-otherwise the delta folds into the offset field. Pointer Conversion Trap
-on overflow of the pointer format. *CC unaffected.*
+EDS pointer with `b`=1 the ERS performs a full evaluation; the emulator
+forms the pointer the evaluation ends on without touching the tables'
+`R` bits or reporting absence: the delta goes into the offset field, and
+for a paged segment a sum that leaves the field carries into the segment
+number (§6.2). Without `b` the delta is added to bits 2–31. Pointer
+Conversion Trap when the format cannot hold the result — for an unpaged
+segment, any sum outside the nineteen offset bits. *CC unaffected.*
 
 **`VPTR`** — Validate Pointer — `F4:71`
 Non-trapping probe: `(S)` pointer (popped), `(S-1)` required modes (WRITE
@@ -1718,7 +1749,8 @@ the other exits restore MASK from `(Q+2)`. A task's saved S may lie in the
 overflow area above its SL (an interrupt's marker on a nearly full stack):
 it is resumed, and Stack Overflow is reported before its next
 instruction; only S beyond the stack segment itself is Inconsistent
-Registers. Returning a task to a code segment that was swapped out while
+Registers. The DST entries of the stack and global data segments the task
+is resumed on are marked `R` and `D` (§5.2). Returning a task to a code segment that was swapped out while
 it waited raises Absent Code Segment in the task's own context, at its
 resume point (inferred from what HP-UX's handler accepts; the Appendix C
 flowchart is not available). Assumes the marker at Q with the global-segment pointer,

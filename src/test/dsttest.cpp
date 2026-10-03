@@ -381,6 +381,100 @@ static void test_paged()
 }
 
 
+// Indexing a paged pointer adds to the whole pointer (ERS sheets 16 and
+// 56): past the end of the segment's nineteen offset bits the reference is
+// to the next segment's page table. The layout is HP-UX 5.30's process data
+// space: user segments 11 and 12, each 512 one-kilobyte pages.
+static void test_paged_index_carries()
+{
+	std::printf("an index carries a paged pointer into the next segment\n");
+
+	fixture f;
+	u32 addr = 0;
+	trap t = trap::none;
+
+	const u32 PT11 = 0xa0000, PT12 = 0xa2000;
+	const u32 PAGED = make_w0(0, 10, true, true, false, false, false, false);
+	f.put_entry(11, PAGED, 0x1000, PT11);
+	f.put_entry(12, PAGED, 0x1000, PT12);
+	auto put_page = [&](u32 pt, u32 n, u32 loc, bool absent)
+	{
+		f.mem.write32(pt + 8 * n, ers32::set(ers32::set(0, 27, 1, 1), 31, 1, absent));
+		f.mem.write32(pt + 8 * n + 4, loc);
+	};
+	put_page(PT11, 511, 0x300000, false);        // the last page of segment 11
+	put_page(PT12, 0, 0x380000, false);          // the first of segment 12
+	put_page(PT12, 1, 0, true);
+
+	// The last word of segment 11, and the word after it: PTR(13:19) + X
+	// is 0x80000, which is segment 12, offset 0.
+	CHECK(f.walker.resolve(false, 11, 0x7fffc, false, addr, t));
+	CHECK_EQ(addr, 0x3003fcu);
+	t = trap::none;
+	CHECK(f.walker.resolve(false, 11, 0x80000, false, addr, t));
+	CHECK_EQ(addr, 0x380000u);
+
+	// A store: Dirty is set in segment 12's page, not looked for in 11's.
+	t = trap::none;
+	CHECK(f.walker.resolve(false, 11, 0x800e0, true, addr, t));
+	CHECK_EQ(addr, 0x3800e0u);
+	page_entry pe;
+	pe.w0 = f.mem.read32(PT12);
+	CHECK(pe.dirty());
+
+	// An absent page there is reported with the pointer that names it.
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 11, 0x80404, false, addr, t));
+	CHECK(t == trap::absent_page);
+	CHECK_EQ(f.walker.last_trap_param(), 0x40600404u);
+
+	// A negative index carries the other way.
+	t = trap::none;
+	CHECK(f.walker.resolve(false, 12, u32(-4), false, addr, t));
+	CHECK_EQ(addr, 0x3003fcu);
+
+	// VPTR's view is the same.
+	CHECK_EQ(f.walker.validate(false, 11, 0x800e0, true, false), 1);
+	CHECK_EQ(f.walker.validate(false, 11, 0x80404, false, false), 0);
+
+	// "Read 1st 3 words of new DST entry. If P = 0 then Unexpected EDS
+	// Type Trap."
+	f.put_entry(13, make_w0(0, 0, false, true, false, false, false, false),
+			0x100, 0x60000);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 12, 0x80000, false, addr, t));
+	CHECK(t == trap::unexpected_eds_type);
+	CHECK_EQ(f.walker.validate(false, 12, 0x80000, false, false), -1);
+
+	// "If TLENGTH < 16*PTR(2:11) then DST Violation": the table ends at 64.
+	f.put_entry(64, PAGED, 0x1000, PT11);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 64, 0x80000, false, addr, t));
+	CHECK(t == trap::dst_violation);
+
+	// "If PTR(2:11) = 0 then EDS Pointer Violation": below segment 1.
+	f.put_entry(1, PAGED, 0x1000, PT11);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 1, u32(-4), false, addr, t));
+	CHECK(t == trap::eds_pointer_violation);
+
+	// "If TEMP(0:2) # PTR(0:2) then EDS Bounds Viol": out of the table's
+	// half of the address space altogether.
+	f.set_entry_count(2047);
+	f.put_entry(2047, PAGED, 0x1000, PT11);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 2047, 0x80000, false, addr, t));
+	CHECK(t == trap::eds_bounds_violation);
+
+	// An unpaged segment is as it was: past its end is its LINK's business.
+	f.put_entry(20, make_w0(0, 0, false, true, false, false, false, false),
+			0x100, 0x60000);
+	t = trap::none;
+	CHECK(!f.walker.resolve(false, 20, 0x80000, false, addr, t));
+	CHECK(t == trap::eds_bounds_violation);
+}
+
+
 static void test_system_table()
 {
 	std::printf("system versus user table\n");
@@ -463,6 +557,7 @@ int main()
 	test_protection();
 	test_chaining();
 	test_paged();
+	test_paged_index_carries();
 	test_system_table();
 	test_integration_with_addressing();
 

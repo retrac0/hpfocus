@@ -11,21 +11,51 @@ builds, the entry says so. Add to this file as you find more.
 
 ## HP-UX 5.30 on the emulated 9000/540
 
-- **Many logins at once in 2 MB can crash HP-UX.** With seven users
-  logging in at the same moment, HP-UX sometimes halts with `System halted
-  due to system error. TRAP:00000012`, or shells die with `Memory fault`.
-  Whether it happens depends on timing: moving the typing by a second
-  changes the outcome, and the pre-alpha build did it too. One cause was a
-  disc-write defect, now fixed. A rarer swap-related variant remains under
-  investigation. Logging in one terminal at a time has not shown it.
+- **Heavy load on 2 MB is slow.** With more work than fits in memory
+  HP-UX swaps. Four logins with three background jobs each (`find / |
+  sort`, `ls -lR /usr`, `od`, `cat /bin/* | sum`: 44 processes) need most
+  of 50 emulated minutes on 2 MB, and the logins go on answering. Fit 3 or
+  4 MB (`--ram 3`, `--ram 4`) for that kind of work.
+- **Two crashes an older build still has.** Both were found and fixed at
+  the end of the alpha's review, and a build from before these two commits
+  has them:
+  - Without `IXIT and XGDS mark the segments a task runs on Referenced and
+    Dirty`, a busy machine crashes: `System halted due to system error.
+    TRAP:00000012`, or shells dying with `Memory fault` and `-sh: no
+    space`. That happens every time with a dozen busy processes on 2 or
+    3 MB (on 4 MB a process dumped core), and in about one run in a
+    hundred of seven simultaneous logins on 2 MB.
+  - Without `DST: an index carries a paged pointer into the next segment;
+    CPTR,B too`, any program whose data grows past 512 KB dies with
+    `Memory fault`, on an idle machine too: `sort` on a file of 275 KB
+    does.
+
+  `src/test/hpuxtest.py matrix --only busy` fails on a build with the
+  first, and `src/test/hpuxtest.py soak` on a build with the second.
 - **Some I/O timings stall the boot.** The emulator's default timing works.
   The non-default `FOCUS_IOPPOLL` values 450, 475 and 600 have been seen to
   stop `/etc/rc` or the console. If you set that knob, unset it.
-- **No file-system check, and stopping is a power cut.** HP-UX never runs
-  `fsck` at boot on this disc (`/etc/bcheckrc` is empty). Every way of
-  stopping the emulator, including a clean one, looks to HP-UX like a
-  power failure. Type `sync` before you stop. HP-UX's `/etc/shutdown` is
-  on the disc but has not been tried.
+- **Stopping is a power cut, unless you stop HP-UX first.** Every way of
+  stopping the emulator looks to HP-UX like a power failure. Type `sync`
+  before you stop, or better, stop HP-UX itself: at a root shell,
+  `cd /` and `/etc/stopsys`. It prints `The system is stopped.  You may
+  turn the power off now.` and then a halt report (`System halted due to
+  system error.` with code `00000010`), which is the stop and not a
+  crash. Then stop the emulator. `/etc/shutdown` has not been tried.
+- **Each power cut leaks disc space, and nothing checks the disc.** HP-UX
+  swaps into free blocks of its file system and marks them in use. After
+  a power cut they stay marked: measured, 0.3 to 0.9 MB per boot (488
+  blocks lost on the pristine disc, 3,282 after six boots), out of 57 MB
+  free. The disc's `/etc/bcheckrc` is empty, so no boot runs `fsck`.
+  Nothing else goes wrong: after six such boots, and after two `kill -9`
+  in the middle of a large write, HP-UX's own `/etc/fsck -n` reports only
+  the lost blocks and one nameless empty file, and every file that had
+  been `sync`ed compares equal. To lose none, stop with `/etc/stopsys`
+  (the next boot's `/etc/fsclean -v` then says `ok`). To get lost space
+  back, once, as root, `cp /etc/newconfig/bcheckrc /etc/bcheckrc`: from
+  then on a boot after a power cut runs `fsck -P`, which returns the
+  blocks and adds about 70 seconds to that boot. `tools/runhpux.sh
+  --reset` also does it, by starting over.
 - **At least 2 MB of memory.** `tools/runhpux.sh` fits 2 MB, and `--ram 3`
   and `--ram 4` have also been measured to work. With 1 MB the kernel stops
   after `CLOCK AND DATE NOT SET`.
