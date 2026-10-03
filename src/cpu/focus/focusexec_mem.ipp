@@ -98,10 +98,12 @@ private:
 			// Not an arithmetic shift: the ERS negates a negative TOS,
 			// shifts the magnitude right filling with zeros, and negates
 			// the result back, which rounds toward zero rather than down.
+			// The negations are unsigned: -x of -2^31 is undefined in C++,
+			// and that magnitude, unshifted, negates back to itself.
 			const s32 x = s32(stk(0));
-			const u32 mag = (x < 0) ? u32(-x) : u32(x);
+			const u32 mag = (x < 0) ? 0u - u32(x) : u32(x);
 			const u32 sh = (n >= 32) ? 0 : (mag >> n);
-			const u32 v = (x < 0) ? u32(-s32(sh)) : sh;
+			const u32 v = (x < 0) ? 0u - sh : sh;
 			set_stk(0, v); cca(v); return exec_trap::none; }
 		case 010: { const unsigned n = shift_count(operand, b3);  // LSXL
 			r.x = (n >= 32) ? 0 : (r.x << n);
@@ -836,8 +838,15 @@ private:
 			return exec_trap::none; }                            // ADDI
 		case 005: { const u32 v = stk(0) - imm; set_stk(0, v); cca(v);
 			return exec_trap::none; }                            // SUBI
-		case 006: { const u32 v = u32(s32(stk(0)) * s32(u32(imm)));
-			set_stk(0, v); cca(v); return exec_trap::none; }     // MPYI
+		case 006: {                                              // MPYI
+			// "CCA, Overflow": the product is formed in 64 bits -- a 32-bit
+			// signed multiply that overflows is undefined in C++ -- and
+			// Overflow says whether it fit, as MPY's does.
+			const s64 p = s64(s32(stk(0))) * s64(s32(u32(imm)));
+			const u32 v = u32(u64(p));
+			r.put(sf::O, (p < INT32_MIN || p > INT32_MAX) ? 1 : 0);
+			set_stk(0, v); cca(v); return exec_trap::none;
+		}
 		case 007: {                                              // DIVI
 			if (imm == 0) return exec_trap::divide_by_zero;
 			const u32 v = u32(s32(stk(0)) / s32(u32(imm)));

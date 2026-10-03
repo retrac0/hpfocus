@@ -3146,6 +3146,28 @@ static void test_shift_index()
 	h.cpu.push(u32(-8));
 	CHECK(h.one(f2(007, 1)) == exec_trap::none);
 	CHECK_EQ(h.cpu.stk(0), -4);
+	// -2^31 has no positive magnitude in 32 bits; negated unsigned it
+	// shifts to -2^30, and unshifted it negates back to itself.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x80000000u);
+	CHECK(h.one(f2(007, 1)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0xc0000000u));
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x80000000u);
+	CHECK(h.one(f2(007, 0)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), s32(0x80000000u));
+
+	// MPYI forms its product in 64 bits and says whether it fit.
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(0x40000000u);
+	CHECK(h.one(f5(006, 4)) == exec_trap::none);          // MPYI 4
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.get(sf::O), 1);
+	h.cpu.r.s = h.cpu.r.sb + 3;
+	h.cpu.push(u32(-3));
+	CHECK(h.one(f5(006, 5)) == exec_trap::none);          // MPYI 5
+	CHECK_EQ(h.cpu.stk(0), -15);
+	CHECK_EQ(h.cpu.r.get(sf::O), 0);
 
 	// ASL reports a sign change as Overflow.
 	h.cpu.r.s = h.cpu.r.sb + 3;
