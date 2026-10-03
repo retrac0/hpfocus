@@ -352,7 +352,10 @@ With `I` set, the word at the direct address is fetched and interpreted as
 a pointer: **self-relative** when the base is P-relative, a **data segment
 pointer** otherwise. For an external data segment pointer, a post-index is
 added to the pointer's *offset field* (checked against that segment's
-bounds), not to the resolved absolute address.
+bounds), not to the resolved absolute address. A *paged* segment's pointer
+is a 31-bit virtual address, and the index is added to all of it (sheets
+16 and 56): past the nineteen offset bits it carries into the segment
+number, and the reference is to the next segment's page table (§6.2).
 
 The ten worked examples of ERS Figure 2.1 *(sheet 19)* exercise every path:
 HP supplied the memory contents of a program, stack, global data and external
@@ -522,6 +525,17 @@ word 0 mirrors the flag layout (with bit 26 = 1), word 1 is the page frame
 `LOCATION` (low PAGESIZE bits zero). The final address is
 `page LOCATION OR within-page offset` — an OR, since frames are
 page-aligned. Entry for page *n* is at `LOCATION + 8n`.
+
+A paged segment is at most 512 KB, the reach of the pointer's offset
+field, and larger spaces are consecutive DST entries: the evaluation adds
+an index to the whole pointer (`TEMP := PTR + X`), and if that changes the
+segment number it reads the new entry instead — EDS Bounds Violation if
+the sum leaves the table's half of the address space, EDS Pointer
+Violation for segment 0, DST Violation past the table, Unexpected EDS Type
+if the new entry is not paged (sheet 56). HP-UX 5.30 builds a process's
+data space this way, from user segment 11 up, each entry 512 pages of
+1 KB; a program with more than 512 KB of data indexes across the line,
+and the kernel forms transfer addresses across it with `CPTR,B`.
 
 **Chaining**: when an offset runs past `LENGTH`, the walk continues.
 `C`=0: scattered chain — `LINK` names the next DST entry and the spent
@@ -1570,9 +1584,13 @@ field can't hold the result. *CC unaffected.*
 **`CPTR`** — Convert Pointer — `F4:70`
 `(S)` signed byte delta, `(S-1)` data segment pointer: pop both, push the
 pointer advanced by delta (same format), and leave the delta in X. For an
-EDS pointer, `b`=1 performs a full evaluation (for paged segments);
-otherwise the delta folds into the offset field. Pointer Conversion Trap
-on overflow of the pointer format. *CC unaffected.*
+EDS pointer with `b`=1 the ERS performs a full evaluation; the emulator
+forms the pointer the evaluation ends on without touching the tables'
+`R` bits or reporting absence: the delta goes into the offset field, and
+for a paged segment a sum that leaves the field carries into the segment
+number (§6.2). Without `b` the delta is added to bits 2–31. Pointer
+Conversion Trap when the format cannot hold the result — for an unpaged
+segment, any sum outside the nineteen offset bits. *CC unaffected.*
 
 **`VPTR`** — Validate Pointer — `F4:71`
 Non-trapping probe: `(S)` pointer (popped), `(S-1)` required modes (WRITE

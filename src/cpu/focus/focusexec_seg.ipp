@@ -142,6 +142,45 @@ private:
 		m_mem.write32(ea, ers32::set(w0, 1, 12, u32(int(n) + delta) & 0xfff));
 	}
 
+	// An external data segment pointer advanced by a byte delta, for CPTR
+	// and CPEP with the index bit ("a complete evaluation of the pointer
+	// is performed", ERS sheet 120). While the sum stays inside the
+	// pointer's nineteen offset bits that is the offset field and nothing
+	// else. When it does not, a PAGED segment's pointer carries into the
+	// segment number, as the evaluation on sheet 56 has it (TEMP := PTR +
+	// X; dst_walker::carry_paged), and the result is a pointer into the
+	// next segment: the OFFSET the instruction then tests fits, and there
+	// is no Pointer Conversion Violation. An unpaged segment's pointer
+	// has nowhere to carry to and traps as before.
+	//
+	// HP-UX needs the carry. Its kernel keeps a transfer's user address
+	// as the base of the process's data space (user segment 11, offset 0)
+	// and a byte offset, and forms the address with CPTR,B (IOS and DDMs
+	// +0x4c18, before the MVB that copies) -- so the first read or write
+	// touching a byte past 512 KB of a process's data, which lies in
+	// segment 12, took cause 016 instead of the pointer 0x40600000 + n.
+	exec_trap index_external_pointer(u32 ptr, u32 delta, u32 &out)
+	{
+		const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(delta);
+		if (noff >= 0 && noff < (1 << 19))
+		{
+			out = ers32::set(ptr, 13, 19, u32(noff));
+			return exec_trap::none;
+		}
+		u32 seg = ers32::get(ptr, 2, 11), off = u32(noff);
+		trap t = trap::none;
+		const int c = m_dst.carry_paged(ers32::get(ptr, 1, 1) == 0, seg, off, t);
+		if (c == 0)
+			return exec_trap::pointer_conversion;
+		if (c < 0)
+		{
+			m_addr_trap = t;
+			return exec_trap::address_error;
+		}
+		out = ers32::set(ers32::set(ptr, 2, 11, seg), 13, 19, off);
+		return exec_trap::none;
+	}
+
 	// Adjust a data segment's use count -- DST entry word 0 bits 1-12,
 	// "the number of tasks currently using this segment". Saturating
 	// rather than wrapping, as MUC does: a miscounted release must not

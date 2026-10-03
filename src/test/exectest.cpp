@@ -4462,6 +4462,73 @@ static void test_task_segments_are_marked_dirty()
 	}
 }
 
+// CPTR,B and CPEP,B on an external pointer evaluate it (ERS sheet 120), and
+// for a paged segment the evaluation adds the index to the whole pointer
+// (sheet 56): a sum past 512 KB is a pointer into the next segment, not a
+// Pointer Conversion Violation. HP-UX's kernel forms a transfer's user
+// address this way -- CPTR,B on the base of the process's data space
+// (0x40580000: user segment 11, offset 0) and a byte offset -- so a read,
+// a write or a core dump reaching past 512 KB of a process's data, which
+// is user segment 12, depends on it.
+static void test_cptr_paged_carry()
+{
+	std::printf("CPTR,B and CPEP,B carry a paged pointer into the next segment\n");
+	harness h;
+	h.cpu.r.put(sf::M, 1);
+	const u32 DST = 0x6000;
+	h.cpu.r.dst = DST;
+	h.mem.write32(DST, 16 * 20);
+	for (u32 seg : { 11u, 12u })
+	{
+		h.mem.write32(DST + 16 * seg, 0x000202b8);       // paged, 1 KB pages
+		h.mem.write32(DST + 16 * seg + 4, 0xfff);
+		h.mem.write32(DST + 16 * seg + 8, 0x20000 + 0x1000 * seg);
+	}
+	h.mem.write32(DST + 16 * 5, 0x00020010);             // unpaged, writable
+	h.mem.write32(DST + 16 * 5 + 4, 0x7ffff);
+	h.mem.write32(DST + 16 * 5 + 8, 0x100000);
+
+	// The kernel's own operands, from a core dump of `sort`.
+	h.cpu.push(0x40580000);
+	h.cpu.push(0x000800e0);
+	CHECK(h.one(f4(070, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x406000e0);
+	CHECK_EQ(h.cpu.r.x, 0x000800e0);
+	h.cpu.pop();
+
+	// Inside the segment nothing changes, and a negative delta carries back.
+	h.cpu.push(0x40580000);
+	h.cpu.push(0x0007fffc);
+	CHECK(h.one(f4(070, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x405ffffc);
+	h.cpu.pop();
+	h.cpu.push(0x40600000);
+	h.cpu.push(u32(-4));
+	CHECK(h.one(f4(070, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x405ffffc);
+	h.cpu.pop();
+
+	// CPEP,B: "the pointer is evaluated as in the CPTR instruction".
+	h.cpu.push(0x40580010);
+	h.cpu.r.x = 0x00080000;
+	CHECK(h.one(f4(067, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x40600010);
+	h.cpu.pop();
+
+	// Segment 13 is not there: the sum is no pointer at all.
+	h.cpu.push(0x40600000);
+	h.cpu.push(0x00080000);
+	CHECK(h.one(f4(070, true)) == exec_trap::address_error);
+	h.cpu.pop(); h.cpu.pop();
+
+	// An unpaged segment's pointer has nowhere to carry to: "If the
+	// pointer format cannot accomodate the final offset then a Pointer
+	// Conversion Trap occurs."
+	h.cpu.push(0x40280000 | 0x7fff0);
+	h.cpu.push(0x20);
+	CHECK(h.one(f4(070, true)) == exec_trap::pointer_conversion);
+}
+
 int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
@@ -4523,6 +4590,7 @@ int main()
 	test_reset_clears_flags();
 	test_stop_and_int_are_privileged();
 	test_task_segments_are_marked_dirty();
+	test_cptr_paged_carry();
 	test_factorial();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);

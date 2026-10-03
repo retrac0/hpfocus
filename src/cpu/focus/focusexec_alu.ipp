@@ -1223,10 +1223,11 @@ private:
 			if (ers32::get(ptr, 0, 1) == 0)
 			{
 				if (!b3) return exec_trap::none;
-				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(r.x);
-				if (noff < 0 || noff >= (1 << 19))
-					return exec_trap::pointer_conversion;
-				set_stk(0, ers32::set(ptr, 13, 19, u32(noff)));
+				u32 out;
+				const exec_trap t = index_external_pointer(ptr, r.x, out);
+				if (t != exec_trap::none)
+					return t;
+				set_stk(0, out);
 				return exec_trap::none;
 			}
 
@@ -1313,11 +1314,12 @@ private:
 			r.x = delta;
 			if (b3 && ers32::get(ptr, 0, 1) == 0)
 			{
-				const s32 noff = s32(ers32::get(ptr, 13, 19)) + s32(delta);
-				if (noff < 0 || noff >= (1 << 19))
-					return exec_trap::pointer_conversion;
+				u32 out;
+				const exec_trap t = index_external_pointer(ptr, delta, out);
+				if (t != exec_trap::none)
+					return t;
 				r.s -= 4;
-				set_stk(0, ers32::set(ptr, 13, 19, u32(noff)));
+				set_stk(0, out);
 				return exec_trap::none;
 			}
 			const u32 offset = ers32::get(ptr, 2, 30) + delta;

@@ -125,6 +125,82 @@ public:
 		back = m_run_back;
 	}
 
+	// Indexing a PAGED external data segment pointer (ERS sheets 16, 56).
+	//
+	// "In the paged case the external data segment pointer can be thought
+	// of as a 31-bit virtual address ... For indexed addressing the index
+	// register is added to the entire original pointer/virtual address to
+	// determine a new pointer/virtual address" (sheet 16), and the
+	// evaluation procedure spells it out (sheet 56):
+	//
+	//     TEMP := PTR + X
+	//     If TEMP(0:13) # PTR(0:13) then
+	//         If TEMP(0:2) # PTR(0:2) then EDS Bounds Viol
+	//         PTR := TEMP
+	//         If PTR(2:11) = 0 then EDS Pointer Violation
+	//         If TLENGTH < 16*PTR(2:11) then DST Violation
+	//         Read 1st 3 words of new DST entry
+	//         If P = 0 then Unexpected EDS Type Trap
+	//
+	// So an index that runs off the end of a paged segment's nineteen
+	// offset bits carries into the segment number, and the reference is
+	// to the next segment's page table. That is how HP-UX gives a process
+	// more than 512 KB of data: consecutive DST entries (11, 12, ... in a
+	// user table), each a paged segment of 512 one-kilobyte pages, which
+	// the program treats as one address space. Resolving the sum against
+	// the ORIGINAL segment's page table instead made the first indexed
+	// load across the 512 KB line a Page Table Violation (cause 011): `sort`
+	// on a 275 KB file died of "Memory fault" there, on an idle machine.
+	//
+	// `offset` is PTR(13:19) + X as the caller summed it -- wider than
+	// nineteen bits, or negative. On success `segment` and `offset` name
+	// the same byte in pointer form. Returns 1 when carried, 0 when the
+	// pointer's own segment is not paged (nothing changed; unpaged
+	// segments chain through their LINK fields instead), -1 with `t` set
+	// when the sum is not a pointer the tables allow.
+	int carry_paged(u32 table, u32 tlength, u32 &segment, u32 &offset, trap &t) const
+	{
+		if (!ers32::get(m_mem.read32(table + ENTRY_BYTES * segment), 26, 1))
+			return 0;
+		const std::int64_t va = (std::int64_t(segment) << 19) + std::int64_t(s32(offset));
+		if (va < 0 || (va >> 19) > 0x7ff)
+		{
+			t = trap::eds_bounds_violation;         // TEMP(0:2) # PTR(0:2)
+			return -1;
+		}
+		const u32 seg = u32(va >> 19);
+		if (seg == 0)
+		{
+			t = trap::eds_pointer_violation;
+			return -1;
+		}
+		if (tlength < ENTRY_BYTES * seg)
+		{
+			t = trap::dst_violation;
+			return -1;
+		}
+		if (!ers32::get(m_mem.read32(table + ENTRY_BYTES * seg), 26, 1))
+		{
+			t = trap::unexpected_eds_type;
+			return -1;
+		}
+		segment = seg;
+		offset = u32(va) & 0x7ffff;
+		return 1;
+	}
+
+	// The same for an instruction that only forms the pointer (CPTR and
+	// CPEP with an external pointer and the index bit: "a complete
+	// evaluation of the pointer is performed", sheet 120).
+	int carry_paged(bool system_dst, u32 &segment, u32 &offset, trap &t) const
+	{
+		const u32 table = system_dst ? SYSTEM_DST_BASE : m_r.dst;
+		const u32 tlength = m_mem.read32(table);
+		if (segment == 0 || tlength < ENTRY_BYTES * segment)
+			return 0;
+		return carry_paged(table, tlength, segment, offset, t);
+	}
+
 	// VPTR's view of an external data segment pointer (ERS 155.1): -1
 	// when the pointer is invalid, out of bounds, or asks for a mode the
 	// segment does not grant; 0 when the segment (or its page) is absent;
@@ -160,6 +236,18 @@ public:
 		}
 		else
 		{
+			// A paged pointer indexed out of its segment lands in the
+			// segment the sum names (see carry_paged).
+			if (offset >> 19)
+			{
+				trap t;
+				if (carry_paged(table, tlength, segment, offset, t) != 1)
+					return -1;
+				const u32 ea = table + ENTRY_BYTES * segment;
+				e.w0 = m_mem.read32(ea);
+				e.w1 = m_mem.read32(ea + 4);
+				e.w2 = m_mem.read32(ea + 8);
+			}
 			if (e.absent())
 				return 0;
 			const u32 pagenum = offset >> e.pagesize();
@@ -185,7 +273,7 @@ public:
 	{
 		m_use_slot = 0;
 		m_trap_param = 0;
-		const u32 eds_ptr = (system_dst ? 0u : 0x40000000u)
+		u32 eds_ptr = (system_dst ? 0u : 0x40000000u)
 				| ((segment & 0x7ff) << 19) | (offset & 0x7ffff);
 		const u32 table = system_dst ? SYSTEM_DST_BASE : m_r.dst;
 
@@ -333,6 +421,21 @@ public:
 			{
 				t = trap::unexpected_eds_type;
 				return false;
+			}
+			// Indexed out of the segment: the sum is a pointer into
+			// another one (carry_paged), whose page table this is then
+			// about. `offset` arrives as PTR(13:19) + X, so anything
+			// above its nineteen bits is that carry.
+			if (offset >> 19)
+			{
+				if (carry_paged(table, tlength, segment, offset, t) != 1)
+					return false;
+				eds_ptr = (system_dst ? 0u : 0x40000000u)
+						| ((segment & 0x7ff) << 19) | (offset & 0x7ffff);
+				const u32 ea = table + ENTRY_BYTES * segment;
+				e.w0 = m_mem.read32(ea);
+				e.w1 = m_mem.read32(ea + 4);
+				e.w2 = m_mem.read32(ea + 8);
 			}
 			if (e.absent())
 			{
