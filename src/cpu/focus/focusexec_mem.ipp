@@ -916,9 +916,18 @@ private:
 			// instructions. The Current Instruction register is passed as a
 			// parameter." That is STT entry 2, not the bounds violation at
 			// entry 1 that this used to raise.
+			//
+			// The bounds are "the 5-bit and 19-bit positive integers in
+			// the instruction": CIR(8:5) the lower, CIR(13:19) the upper
+			// (sheet 128; FOCUS.md 8.3 has the same). They were taken
+			// from a 10-bit field at bit 12 and a 12-bit one at the
+			// bottom instead, which agrees with the real layout only for
+			// the two shapes the HP-UX 5.30 kernel happens to use -- [0,
+			// n] with n below 4096 and the always-trapping [1, 0] -- and
+			// trapped a valid CHEK 1,10 or CHEK 0,32767.
 			const s32 v = s32(stk(0));
-			const s32 lo = s32(u32((d >> 12) & 0x3ff));
-			const s32 hi = s32(u32(d & 0xfff));
+			const s32 lo = s32((d >> 19) & 0x1f);
+			const s32 hi = s32(d & 0x7ffff);
 			if (v < lo || v > hi)
 				return take_trap(trap_cause::check_trap, m_cir);
 			return exec_trap::none;

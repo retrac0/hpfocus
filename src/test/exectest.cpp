@@ -1736,8 +1736,31 @@ static void test_system_group()
 		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
 		h.cpu.r.s = h.cpu.r.sb + 3;
 		h.cpu.push(500);
-		CHECK(h.one(u32_insn(002, 0, 0) | (10u << 12) | 20u) == exec_trap::none);
+		CHECK(h.one(u32_insn(002, 0, 0) | (10u << 19) | 20u) == exec_trap::none);
 		CHECK(h.cpu.last_trap() == trap_cause::check_trap);
+
+		// The bounds are CIR(8:5) and CIR(13:19), inclusive (sheet 128,
+		// FOCUS.md 8.3) -- not a 10-bit and a 12-bit field, which only
+		// coincide with them for [0, n < 4096] and [1, 0].
+		auto chek = [&](s32 v, u32 lo, u32 hi) {
+			h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+			h.cpu.r.s = h.cpu.r.sb + 3;
+			h.cpu.push(u32(v));
+			h.one(u32_insn(002, 0, 0) | (lo << 19) | hi);
+			return h.cpu.r.pb == 0x1000 && h.cpu.r.p == 0x1004;   // passed
+		};
+		CHECK(chek(5, 1, 10));
+		CHECK(chek(1, 1, 10));
+		CHECK(chek(10, 1, 10));
+		CHECK(!chek(11, 1, 10));
+		CHECK(!chek(0, 1, 10));
+		CHECK(chek(5000, 0, 32767));
+		CHECK(chek(0x7ffff, 31, 0x7ffff));
+		CHECK(!chek(30, 31, 0x7ffff));
+		CHECK(!chek(-1, 0, 25));
+		CHECK(chek(25, 0, 25));
+		CHECK(!chek(0, 1, 0));                    // the always-trap idiom
+		CHECK(!chek(1, 1, 0));
 	}
 
 	// ---- MUC (ERS sheet 127) -----------------------------------------
