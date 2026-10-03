@@ -375,6 +375,31 @@ static void test_asi_pause()
 }
 
 
+// Every order ends with the card asking for its next one (27130A IMS
+// 13.2.3.3, ORD_EXIT) -- including the CLC of a read-card-information
+// request, which used to leave the list's next ICEI waiting.
+static void test_asi_order_exit()
+{
+	std::printf("ASI: every order ends with an SRQ for the next\n");
+	asi_card asi;
+	asi.write_fr(8, 0xb8);                   // CLC
+	CHECK(!asi.poll_request());
+	for (u8 b : { 0x00, 0x00, 0x04, 0xfd, 0x00, 0x00, 0x01 })
+		asi.dma_write(b);                    // read card information, sf 253
+	asi.dma_complete(true);
+	CHECK(asi.poll_request());
+	asi.write_fr(8, 0x88);                   // RTS: SWI for the channel
+	CHECK_EQ(asi.dma_read(), 1);
+	asi.dma_read(); asi.dma_read();
+	asi.dma_complete(false);
+	CHECK(asi.poll_request());
+	asi.write_fr(8, 0x68);                   // RD: the switch byte
+	CHECK_EQ(asi.dma_read(), asi.switches);
+	asi.dma_complete(false);
+	CHECK(asi.poll_request());
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -1150,6 +1175,7 @@ int main()
 	test_wrif();
 	test_asi_events_are_attention();
 	test_asi_pause();
+	test_asi_order_exit();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();

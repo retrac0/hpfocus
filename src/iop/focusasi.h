@@ -622,6 +622,15 @@ struct asi_card : public iop_interface
 		// announces the completion the driver is waiting for.
 		start_event_timer();
 		post(STAT_DONE);
+		// The order is done, and the card asks for its next one. "This
+		// is a place where all (or at least most) order processing
+		// routines exit. It initiates an SRQ for the next order"
+		// (27130A firmware IMS 13.2.3.3, ORD_EXIT) -- after the data
+		// transfer, since an order with a data phase completes when its
+		// END arrives (BIC_END, 13.2.8.12). HP-UX's lists rely on it:
+		// every leg is followed by an ICEI that waits for exactly this
+		// request before the next order. Only PAU withholds it.
+		m_want_order = true;
 	}
 
 	//----------------------------------------------------------------
@@ -1112,10 +1121,11 @@ private:
 		// took no more input for the rest of the run (keystrokes queued,
 		// card disarmed by the driver's DCE/DINT at CORE SYSTEM
 		// +0x4134). Measured on six console logins: three died that way
-		// before this, none after. Read card information is left as it
-		// was: raising the request there too broke the console open at
-		// FOCUS_IOPPOLL 300 and 600, so for that request the rule is not
-		// established.
+		// before this, none after. Read card information follows the
+		// same rule now that dma_complete raises the request at every
+		// order's end (ORD_EXIT): it used to be left out because raising
+		// it broke the console open at FOCUS_IOPPOLL 300 and 600, but
+		// what broke was the card's own stray interrupts, not the rule.
 		switch (m_request)
 		{
 		case REQ_READ_DATA:
