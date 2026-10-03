@@ -11,15 +11,20 @@
 # of 8, a bare bootstrap loader card.
 #
 # Build the disc first. tools/setup.sh does it (software/hd is gitignored,
-# so a fresh clone has none); by hand, all three steps idempotent:
+# so a fresh clone has none): BASIC 2.0 with the ERRORS_ENG, IO and MS
+# options and the CAT_BOOT and BUILD_BOOT utilities. By hand:
 #
-#   mkdir -p software/basic/img software/hd
-#   for d in 500BT1 500BT2; do python3 tools/td0.py --raw \
-#       software/basic/img/$d.img software/basic/$d.TD0; done
+#   mkdir -p software/hd
+#   python3 tools/td0.py --raw /tmp/500OPT1.img software/basic/500OPT1.TD0
+#   python3 tools/sdfread.py --extract /tmp/opt1 /tmp/500OPT1.img
 #   tools/mkharddisc.py software/hd/basic.img
 #   tools/installbasic.py software/hd/basic.img \
-#       --basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
-#       --option <extracted option binaries...>
+#       --basic software/basic/500BT1.TD0 software/basic/500BT2.TD0 \
+#       --option /tmp/opt1/ERRORS_ENG /tmp/opt1/IO /tmp/opt1/MS \
+#       --copy software/basic/500OPT1.TD0:CAT_BOOT,BUILD_BOOT
+#
+# Without --option the disc is plain BASIC: it boots, CATs and STOREs, but
+# errors are bare numbers and CREATE is an IMPROPER COMMAND.
 #
 # A disc built before sdfwrite.py's free-map fix (0ec4035) boots, but BASIC
 # cannot CREATE or STORE on it (ERROR 455): this script says so when it is
@@ -45,13 +50,8 @@ fi
 
 if [ ! -f "$DISC" ]; then
     echo "no fixed-disc image at $DISC."
-    echo "tools/setup.sh builds software/hd/basic.img; or build one by hand:"
-    echo "  mkdir -p software/basic/img"
-    echo "  for d in 500BT1 500BT2; do python3 tools/td0.py --raw \\"
-    echo "      software/basic/img/\$d.img software/basic/\$d.TD0; done"
-    echo "  tools/mkharddisc.py $DISC"
-    echo "  tools/installbasic.py $DISC --basic software/basic/img/500BT1.img \\"
-    echo "      software/basic/img/500BT2.img"
+    echo "tools/setup.sh builds software/hd/basic.img; the header of this script"
+    echo "has the recipe for building one by hand."
     exit 1
 fi
 

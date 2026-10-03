@@ -22,7 +22,8 @@
 #   tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
 #       -flop1 "$PWD/software/test/500MFTST.TD0"
 #
-# and, at the BASIC prompt, LOAD "TEST" and RUN.
+# and, at the BASIC prompt, LOAD "TEST" and RUN -- each ended with Insert,
+# which is the 520's EXECUTE key in the window (Return is its ENTER key).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

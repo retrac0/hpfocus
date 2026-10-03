@@ -45,7 +45,11 @@
 #   5. media -- tools/runhpux.sh --prepare: the pristine HP-UX 5.30 disc
 #      assembled from the tapes (read-only), its primed battery, and the
 #      working copy runs use (var/, about 400 MB); and BASIC's fixed disc,
-#      software/hd/basic.img, for tools/runbasic-hd.sh.
+#      software/hd/basic.img, for tools/runbasic-hd.sh: BASIC 2.0 with its
+#      ERRORS_ENG, IO and MS options and the CAT_BOOT and BUILD_BOOT
+#      utilities, all off the shipped floppies. A basic.img that is
+#      already there is kept, and named if an older sdfwrite.py built it
+#      (BASIC cannot CREATE or STORE on such a disc: delete it and rerun).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -308,9 +312,13 @@ fi
 if [ "$MEDIA" = 1 ]; then
 	say "preparing the HP-UX 5.30 machine"
 	tools/runhpux.sh --prepare | awk '/== volume header/ { skip = 1 } !skip { print "   " $0 }'
-	# BASIC's fixed disc for tools/runbasic-hd.sh, from the two shipped boot
-	# floppies. software/basic/img holds their raw decodes (golden.sh and
-	# older recipes name them there); both are gitignored.
+	# BASIC's fixed disc for tools/runbasic-hd.sh: the two shipped boot
+	# floppies, with the ERRORS_ENG, IO and MS option binaries and the
+	# CAT_BOOT and BUILD_BOOT utilities off the first option disc. That is
+	# the disc src/test/basictest.sh's figures were taken on (the options
+	# change AVAILABLE MEMORY, and bring the error texts and CREATE).
+	# software/basic/img holds the floppies' raw decodes (golden.sh and
+	# older recipes name them there); both directories are gitignored.
 	if [ ! -f software/hd/basic.img ]; then
 		say "building BASIC's fixed disc, software/hd/basic.img"
 		mkdir -p software/basic/img software/hd
@@ -318,9 +326,15 @@ if [ "$MEDIA" = 1 ]; then
 			[ -f software/basic/img/$d.img ] || \
 				python3 tools/td0.py --raw software/basic/img/$d.img software/basic/$d.TD0 >/dev/null
 		done
+		opt=$(mktemp -d software/hd/opt.XXXXXX)
+		python3 tools/td0.py --raw "$opt/500OPT1.img" software/basic/500OPT1.TD0 >/dev/null
+		python3 tools/sdfread.py --extract "$opt/files" "$opt/500OPT1.img" >/dev/null
 		python3 tools/mkharddisc.py software/hd/basic.img.new >/dev/null
 		python3 tools/installbasic.py software/hd/basic.img.new \
-			--basic software/basic/img/500BT1.img software/basic/img/500BT2.img >/dev/null
+			--basic software/basic/img/500BT1.img software/basic/img/500BT2.img \
+			--option "$opt/files/ERRORS_ENG" "$opt/files/IO" "$opt/files/MS" \
+			--copy software/basic/500OPT1.TD0:CAT_BOOT,BUILD_BOOT >/dev/null
+		rm -rf "$opt"
 		mv -f software/hd/basic.img.new software/hd/basic.img
 	else
 		# An existing disc is kept: it may hold the user's own BASIC files.
