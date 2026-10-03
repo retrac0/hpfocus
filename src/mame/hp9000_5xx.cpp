@@ -2681,13 +2681,17 @@ void hp9000_5xx_state::start_timers()
 	m_iop_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_tick), this);
 	m_iop_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
 	// FOCUS_IOPPOLL=<us> is how close to "continuously" the interface
-	// poll runs, and the default is the middle of a band with a measured
-	// edge at each end. Slower than about 700 us and HP-UX's console open
-	// starts losing its hand-offs again (2x56 and a 66 return at 900);
-	// faster than about 200 us and the 520's boot stops reaching its
-	// banner at all -- 150 and 100 both fail, 200 does not, and what it
-	// is that the 520 cannot take at that rate is NOT yet known. So 400
-	// us, roughly a factor of two clear either way.
+	// poll runs. HP-UX 5.30 used to boot only inside a band around the
+	// default -- above about 450 us its console channel died early in the
+	// boot -- and that band turned out to be the serial card's model, not
+	// the poll: the ASI raised a device interrupt for every event it
+	// announced, which the real card only signals as an attention, and
+	// timed its Pause instead of waiting for Resume Subchannel. With those
+	// right (focusasi.h) HP-UX boots and runs sessions from 220 to 1000 us.
+	// The 520's lower edge is still there: faster than about 200 us its
+	// boot stops reaching the banner -- 150 and 100 fail, 200 does not --
+	// and what it cannot take at that rate is NOT yet known. 400 us stays
+	// the default, clear of it.
 	m_iop_poll_timer = timer_alloc(FUNC(hp9000_5xx_state::iop_poll_tick), this);
 	const unsigned poll_us = unsigned(knob::number("FOCUS_IOPPOLL", 400));
 	m_iop_poll_timer->adjust(attotime::from_usec(poll_us), 0,

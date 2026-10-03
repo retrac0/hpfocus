@@ -139,9 +139,9 @@ inline constexpr spec CATALOGUE[] = {
   "How often the IOP polls the interfaces, in microseconds. The ERS has it "
   "polling continuously; this is the emulated stand-in, and it has to be "
   "short compared with what the CPU does between two entries of a command "
-  "list or the two processors race over the list itself. Default 400 us, "
-  "the middle of a measured band: above ~700 the console open loses its "
-  "hand-offs again, below ~200 the 520 stops reaching its banner." },
+  "list or the two processors race over the list itself. Default 400 us. "
+  "HP-UX 5.30 boots and runs sessions from 220 to 1000 us; below ~200 the "
+  "520 stops reaching its banner." },
 { "FOCUS_IOPPARKALWAYS", "", group::iop, true,
   "Suspend a command list on every ICEI, even when the interface is already "
   "answering the poll. The A/B control for the continuous-poll model: with "
@@ -193,10 +193,9 @@ inline constexpr spec CATALOGUE[] = {
   "The multiplexing capability in the identity block: 0 subchannel only, "
   "1 in-channel only, 2 both (27128A 4-67; the ASI ships configured with 1)." },
 { "FOCUS_ASIPAUSE", "<ms>", group::cards, true,
-  "How long the ASI's Pause order pauses before the card asks for its next "
-  "order. The driver's idle loop is PAU then read transparent status, so "
-  "this is what paces it; 1 ms reproduces the ~1000 status reads a second "
-  "the real driver makes." },
+  "Default 0: the ASI's Pause order waits for Resume Subchannel (FR9 "
+  "0x4n) or for something to report, as the card does. n>0 also ends a "
+  "pause after n ms -- the old 1 ms model, kept for A/B." },
 { "FOCUS_ASINOASYNC", "", group::cards, true,
   "Silence the asynchronous events the serial card's firmware senses -- "
   "'transmit buffer is empty', which the tty subsystem's drain waits for, "
