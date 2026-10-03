@@ -762,7 +762,35 @@ private:
 public:
 	virtual focus::iop_interface &focus_iface() override { return card; }
 	virtual void focus_tick() override { card.tick(); }
+
+	// A machine reset is a reset of the card and the drive: both go back
+	// to power-on -- the drive answering QSTAT 2 until a Request Status
+	// collects it, the card's presence echo armed for the powerup scan,
+	// no transaction, order or event left over. Its MEDIUM stays exactly
+	// as the run left it: it is a disc, and what was written to it is not
+	// unwritten by pressing reset. Nor is the file behind it let go.
+	void reset_card()
+	{
+		focus::iop_core *const iop = card.iop;
+		if (!iop)
+			return;
+		const unsigned sc = card.pa;
+		std::vector<u8> medium = std::move(card.disc.image);
+		std::function<void(u64, u64)> on_write = std::move(card.disc.on_write);
+		card = focus::hpib_card();
+		apply_knobs(*iop, sc);
+		card.disc.image = std::move(medium);
+		card.disc.on_write = std::move(on_write);
+	}
+
 	virtual void focus_configure(focus::iop_core &iop, unsigned sc) override
+	{
+		apply_knobs(iop, sc);
+		configure_medium(iop, sc);
+	}
+
+private:
+	void apply_knobs(focus::iop_core &iop, unsigned sc)
 	{
 		card.iop = &iop;
 		card.pa = sc;
@@ -776,6 +804,10 @@ public:
 		card.amigo_id = u16(knob::number("FOCUS_CS80ID", card.amigo_id, 16));
 		card.system_controller =
 				knob::number("FOCUS_HPIBSC", card.system_controller ? 1 : 0) != 0;
+	}
+
+	void configure_medium(focus::iop_core &iop, unsigned sc)
+	{
 		// The drive on this card's bus. Its medium is the card's own
 		// image device; FOCUS_HPIBDISC remains as a way to hand a raw
 		// file to a card without going through MAME's media system.
@@ -1263,6 +1295,8 @@ private:
 	void save_aside(const std::vector<u8> &now, const std::string &path,
 			const char *what);
 	disc_file m_fixed_file;         // the 520's fixed disc, when claimed
+	void reset_cards();
+	bool m_reset_seen = false;      // a machine_reset has run already
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap,
 			const rectangle &cliprect);
 	void gfx_dump(screen_device &screen);
@@ -3424,6 +3458,35 @@ void hp9000_5xx_state::save_aside(const std::vector<u8> &now,
 }
 
 
+// Every card in the backplane back to power-on, its wiring kept: the
+// model object is replaced by a fresh one and given its knobs again, and
+// what the machine hung on it -- the console's output, the drive's medium
+// and the file it writes through to -- is put back.
+void hp9000_5xx_state::reset_cards()
+{
+	for (unsigned sc = 0; sc < m_cio.size(); sc++)
+	{
+		if (!m_cio[sc])
+			continue;
+		device_t *const dev = m_cio[sc]->get_card_device();
+		if (auto *hpib = dynamic_cast<hp27110_hpib_device *>(dev))
+			hpib->reset_card();
+		else if (auto *asi = dynamic_cast<hp27128_asi_device *>(dev))
+		{
+			std::function<void(u8)> on_char = std::move(asi->card.on_char);
+			asi->card = focus::asi_card();
+			asi->focus_configure(m_iop, sc);
+			asi->card.on_char = std::move(on_char);
+		}
+		else if (auto *mux = dynamic_cast<hp27140_mux_device *>(dev))
+		{
+			mux->card = focus::mux_card();
+			mux->focus_configure(m_iop, sc);
+		}
+	}
+}
+
+
 void hp9000_5xx_state::machine_reset()
 {
 	// iop_core::reset() rebuilds every channel_state but carries the
@@ -3442,6 +3505,20 @@ void hp9000_5xx_state::machine_reset()
 	// actually has. Which of the two is right for the hardware is an
 	// emulation question and not a tidying one; the difference is left
 	// standing and written down rather than unified by hand.
+	// A reset after the first is a soft reset of a machine that has run
+	// (MAME's F3, its UI's Reset, a script's soft_reset), and every card
+	// in the backplane goes back to power-on with it -- MAME resets its
+	// own devices, but the card models' state lives in plain objects. Left
+	// as they were, the console card was still in the middle of the last
+	// run's dialogue and the HP-IB card still answered the powerup scan's
+	// presence test as already found; with the IOP's channel number also
+	// fixed (focusiop.h) but the cards stale, HP-UX's second boot halted
+	// with system error 116. The cold start is left exactly as it was:
+	// the first reset follows machine_start, which has just configured
+	// every card.
+	if (m_reset_seen)
+		reset_cards();
+	m_reset_seen = true;
 	m_iop.reset();
 	m_scm.reset();
 	m_console6.reset();

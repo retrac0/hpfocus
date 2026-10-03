@@ -1039,6 +1039,45 @@ static void test_rtc_nvm()
 }
 
 
+// A machine reset must put the IOP back the way it powers on. The powerup
+// module addresses the IOP by the channel number the loader's inventory
+// announces (2 on these machines) and then WRITES the number it wants with
+// WMCN -- so a reset that keeps the last system's number leaves the next
+// powerup talking to a channel nobody answers, and one that keeps
+// uncollected events delivers the last run's timer tick and device
+// interrupts into it.
+static void test_reset_is_power_on()
+{
+	std::printf("IOP reset returns to the power-on state\n");
+	test_host h;
+	iop_core iop(h, 2);
+	iop.reset();
+
+	// What HP-UX's powerup does: WMCN 0, then WMCN <channel 1>.
+	CHECK(iop.io_write(tgt(CMD_WMCN, 2, 0), ers32::set(0, 3, 3, 1)));
+	CHECK_EQ(iop.channel_number(), 1);
+	CHECK(!iop.io_write(tgt(CMD_WDC, 2, 0), 1));
+
+	// A timer event and a device raise left standing by the run.
+	test_card card;
+	iop.attach(3, &card);
+	CHECK(iop.io_write(tgt(CMD_WTMS, 1, 0), 2u << 8));
+	CHECK(iop.io_control(tgt(CMD_ETMI, 1, 0)));
+	iop.timer_tick(10);
+	CHECK(iop.io_control(tgt(CMD_EINT, 1, 3)));
+	iop.raise(3);
+
+	iop.reset();
+
+	// The next boot finds the IOP where the inventory says it is...
+	CHECK_EQ(iop.channel_number(), 2);
+	CHECK(iop.io_write(tgt(CMD_WMCN, 2, 0), 0));
+	// ...and is not handed the last run's events.
+	CHECK(!iop.take_timer_event());
+	CHECK_EQ(iop.take_raise_events(), 0u);
+}
+
+
 int main()
 {
 	std::printf("FOCUS IOP tests\n\n");
@@ -1051,6 +1090,7 @@ int main()
 	test_scm();
 	test_rtc_nvm();
 	test_gfx();
+	test_reset_is_power_on();
 
 	std::printf("\n%d checks, %d failed\n", g_run, g_fail);
 	std::printf(g_fail ? "FAIL\n" : "PASS\n");

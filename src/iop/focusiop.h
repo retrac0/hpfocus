@@ -268,7 +268,8 @@ public:
 		virtual void iop_interrupt(bool state) = 0;
 	};
 
-	explicit iop_core(host &h, u8 channel = 1) : m_host(h), m_channel(channel) { }
+	explicit iop_core(host &h, u8 channel = 1)
+		: m_host(h), m_channel(channel), m_power_on_channel(channel) { }
 
 	void reset()
 	{
@@ -297,6 +298,21 @@ public:
 		m_lockout = false;
 		m_enabled = true;
 		m_int_enable = true;
+		// The MPB channel number is a register the powerup WRITES (WMCN),
+		// having addressed the IOP by the number it answers at power-on --
+		// the one the loader's inventory announces. HP-UX's powerup moves
+		// it from 2 to 0 and then to 1, and a reset that left 1 standing
+		// made the next powerup's first WMCN, still sent to channel 2, an
+		// I/O command nobody answered: an untrappable fault 0x1d8 bytes
+		// into the boot ("stopped, trap 8 at P=001001D8" in -log), and a
+		// 540 whose console stayed blank after a soft reset.
+		m_channel = m_power_on_channel;
+		// Events the host had not collected yet belong to the run that
+		// was reset away; left standing, the next powerup's first
+		// messages would be a stale timer tick and stale interrupts.
+		m_dma_mask = 0;
+		m_timer_event = false;
+		m_raise_events = 0;
 		update_interrupt();
 	}
 
@@ -1424,6 +1440,7 @@ private:
 	host &m_host;
 	channel_state m_chan[CHANNELS];
 	u8 m_channel;
+	const u8 m_power_on_channel;    // what m_channel is after a reset
 	u32 m_dma_mask = 0;
 	u32 m_int_mask = 0;
 	u32 m_int_request = 0;
