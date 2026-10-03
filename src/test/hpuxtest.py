@@ -175,7 +175,7 @@ def dev(term):
     return 'console' if term == 'console' else 'tty0%d' % (int(term.split(':')[1]) + 1)
 
 
-BAD = (('halted', r'System halted|panic|TRAP:'), ('memfault', r'memory fault'),
+BAD = (('halted', r'System halted|panic|TRAP:'), ('memfault', r'(?i)memory fault'),
        ('cannot_open', r'cannot open'), ('core', r'core dumped'))
 
 
