@@ -273,6 +273,31 @@ static void test_interrupt_list()
 }
 
 
+// WRIF (list opcode 0114) reads the card register named by the command
+// word's IC field and stores it (I/O ERS sheet 38). HP-UX's HP27110
+// driver reads its status byte this way: command word 0x06b0004c is
+// WRIF, IC 6, PA 5.
+static void test_wrif()
+{
+	std::printf("IOP command list: Write RIF Result to Memory\n");
+	test_host h;
+	iop_core iop(h, 1);
+	iop.reset();
+	test_card card;
+	iop.attach(5, &card);
+	card.fr[6] = 0x5a;
+	const u32 drt = 128 * 1 + 16 * 5, list = 0x4000, cell = 0x5000;
+	h.mem.write32(drt + 12, list);
+	h.mem.write32(list + 0, 0x06b0004c);     // WRIF FR6
+	h.mem.write32(list + 4, cell);
+	h.mem.write32(list + 8, 074);            // DCEI
+	h.mem.write32(cell, 0xdeadbeef);
+	CHECK(iop.io_control(tgt(CMD_ICEI, 1, 5)));
+	CHECK_EQ(h.mem.read32(cell), 0x5a);
+	CHECK_EQ(h.mem.read32(drt + 12), list + 16);   // walked past DCEI
+}
+
+
 static void test_dma()
 {
 	std::printf("IOP DMA\n");
@@ -1045,6 +1070,7 @@ int main()
 	test_registers();
 	test_interrupts();
 	test_interrupt_list();
+	test_wrif();
 	test_dma();
 	test_poll_and_timer();
 	test_cpu_to_iop();
