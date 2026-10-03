@@ -45,7 +45,7 @@ STOP=${FOCUS_BASICTEST_STOP:-30}
 # it becomes a pass.
 #
 # Cases marked WORKS are regression guards -- they pass today and must go on
-# passing. All 24 do. A case that is known to be wrong goes in KNOWN_FAIL
+# passing. All 25 do. A case that is known to be wrong goes in KNOWN_FAIL
 # below: it scores XFAIL (or XPASS, once fixed -- then take it off the
 # list) and does not count against the exit status. The list is empty:
 # `concat` (SCON's bound, S-4 not S-14) and `real-add` (LADD,B dropping
@@ -100,6 +100,11 @@ CASES=(
 	# Came back a few ulp low (5.49999999907) while LADD,B dropped the
 	# carry between the limbs of BASIC's decimal-to-binary conversion.
 	"real-add      | DISP 4.5+1\n         | 5.5"
+	# --- a typed program ----------------------------------------------
+	# Program lines are stored with ENTER (\r) -- EXECUTE (\n) runs a line
+	# as a command -- and a program needs its END (else ERROR 5, Improper
+	# context terminator). PRINT scrolls, so all three values stay on screen.
+	"prog-loop     | 10 FOR I=1 TO 3\r;20 PRINT I*I\r;30 NEXT I\r;40 END\r;RUN\n | 9 | 20,26,32,38,44 | 56"
 )
 
 # Cases known to be wrong today, space-separated with a space at each end.

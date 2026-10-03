@@ -18,7 +18,7 @@
 # appear (the console and the six ports of the multiplexer), root's `who`
 # on the console answers, and nothing halts, panics, faults or fails to
 # open a terminal. This is the matrix the alpha was released against
-# (scratch/alpha/hpuxmatrix.py), cut down to one case.
+# (src/test/hpuxtest.py matrix), cut down to one case.
 #
 # Exit status 0 only if every boot passed. Put the output in a bug report.
 
