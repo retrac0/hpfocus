@@ -1930,10 +1930,18 @@ void hp9000_5xx_state::configure_peripherals()
 		bind_terminal("console",
 				[this](u8 c, bool raw) { if (raw) m_console6.type(c);
 						else kbd_put(c); }, true);
-	m_iop.attach(6, &m_console6);
-	// SC6 keyboard interrupts are enabled by the hardware itself; the
-	// internal disc's select code is armed the same way when present.
-	m_iop.enable_interrupt(6);
+	// The keyboard board is the 520's: select code 6 of a 530/540 is a
+	// backplane slot like 0-5 (530/540 Service 2-27), and a 540 with
+	// nothing in it must read as an empty slot, not as a keyboard that
+	// is not there. HP-UX's scan skipped the phantom board only because
+	// it answers FR3 = 2; an empty -cio6 used to be outranked by it.
+	if (has_internal_disc())
+	{
+		m_iop.attach(6, &m_console6);
+		// SC6 keyboard interrupts are enabled by the hardware itself;
+		// the internal disc's select code is armed the same way.
+		m_iop.enable_interrupt(6);
+	}
 	// The 520's internal disc is built-in hardware, always present, at
 	// its own select code -- where the 530/540 put the SCM instead.
 	if (has_internal_disc())
@@ -3004,7 +3012,10 @@ void hp9000_5xx_state::machine_reset()
 	}
 	else
 		m_iop.attach(focus::scm_device::SELECT_CODE, &m_scm);
-	m_iop.attach(6, &m_console6);
+	// The keyboard board at select code 6 is the 520's alone; see
+	// configure_peripherals().
+	if (has_internal_disc())
+		m_iop.attach(6, &m_console6);
 	for (unsigned sc = 0; sc < m_cio.size(); sc++)
 		if (m_cio[sc])
 			if (focus::iop_interface *const iface = m_cio[sc]->iface())
@@ -3013,7 +3024,8 @@ void hp9000_5xx_state::machine_reset()
 				m_iop.enable_interrupt(sc);
 			}
 	attach_probes();
-	m_iop.enable_interrupt(6);
+	if (has_internal_disc())
+		m_iop.enable_interrupt(6);
 	m_prev_rq = 0;
 
 	// A loader ROM image would be installed here. None is dumped, so the
