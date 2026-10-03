@@ -510,7 +510,7 @@ fi
 	fi
 	if [ "$MULTIUSER" = 1 ]; then
 		echo "  login     root, no password; Return at the two TERM = prompts"
-		echo "            (the logins appear about 90 s after power-on)"
+		echo "            (the logins appear within a minute of power-on)"
 	else
 		echo "  shell     root's csh on the console; Return at its TERM = prompt"
 	fi

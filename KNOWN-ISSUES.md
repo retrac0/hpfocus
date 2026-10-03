@@ -46,10 +46,11 @@ builds, the entry says so. Add to this file as you find more.
 - **No networking.** The kernel on this disc contains TCP/IP and a LAN
   driver, but no LAN card is emulated and the disc does not start any
   networking.
-- **MAME's startup warning.** In a window, MAME first shows a warning that
-  the loader ROM `09020-80001.bin` is missing. Press any key to continue.
-  No dump of that ROM exists, and the emulator performs the loader's job
-  itself.
+- **No loader ROM.** No dump of the SCM loader ROM (`09020-80000`/`80001`)
+  exists, and the emulator performs the loader's job itself. The 540 starts
+  without any MAME warning. The 520 (BASIC, the diagnostics, HP-UX 5.01)
+  first shows MAME's red `THIS SYSTEM DOESN'T WORK` screen, because its
+  driver is flagged unfinished: press any key to continue.
 - **The disc is a real site's 1991 system.** The HP-UX 5.30 disc is a
   unit save of a working installation. It includes that site's user
   accounts, home directories and mailboxes. Please do not publish what
@@ -128,6 +129,9 @@ These affect programs that depend on them. They do not affect booting.
 
 - `DISP "A"&"B"` halts with `TRAP:00000001`, and `DISP 4.5+1` shows
   `5.49999999907`.
+- In the window, Enter is the 520's STORE key and Ctrl-J its EXECUTE key.
+  A command typed with Enter (`RUN`, `DISP 2+3`) answers `IMPROPER LINE
+  NUMBER`; Esc clears the line. See INSTALL.md section 8.
 - The 520 reports `CLOCK AND DATE NOT SET` unless it has a battery file
   (`FOCUS_KBDNV`) and a seeded clock (`FOCUS_RTCTIME=now`).
 

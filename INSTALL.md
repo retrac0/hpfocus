@@ -105,13 +105,12 @@ It should end with `PASS`. Then boot HP-UX with a window:
 
 What happens:
 
-- **MAME's warning screen comes first.** It says the loader ROM
-  `09020-80001.bin` is missing and that the machine "might not run
-  correctly". Press any key. This is expected: no dump of that ROM exists,
-  and the emulator does the loader's job itself.
-- **The window is the system console.** The kernel prints its copyright
-  banner and `/etc/rc` runs. About 90 seconds after power-on, `login:`
-  appears on the console and on the six terminal ports.
+- **The window is the system console.** It opens black, with a cursor, and
+  stays that way for the first ten seconds or so while the kernel loads.
+  There is no MAME warning screen to dismiss on this machine. Then the
+  kernel prints its copyright banner and `/etc/rc` runs. Within a minute
+  of power-on (about 45 emulated seconds), `login:` appears on the console
+  and on the six terminal ports.
 - **Log in as `root`.** There is no password. Press Return at the two
   `TERM =` prompts: `/etc/profile` asks once and root's `.profile` asks
   again.
@@ -120,11 +119,15 @@ What happens:
 
 Without `--multiuser`, `tools/runhpux.sh` boots to **single-user mode**.
 There, root's csh runs on the console with no login: press Return at its
-`TERM =` prompt and you get the prompt `gator#`.
+`TERM =` prompt and you get the prompt `gator#`. Once the machine has been
+booted multiuser the shell is `/bin/sh` and the prompt `unrcad#`: the
+multiuser set-up rewrites root's `/etc/passwd` entry (`tools/hpuxconfig.py`),
+and that stays on the disc until `--reset`.
 
-**Keys:** the window passes your typing to the emulated terminal. If
-MAME's own keys get in the way (Tab opens its menu), press Scroll Lock to
-toggle MAME's UI keys on and off.
+**Keys:** every key you press in the window goes to the emulated terminal,
+Tab and Esc included. MAME's own keys are switched off when the machine
+starts. Scroll Lock switches them on (Tab then opens MAME's menu, and Esc
+quits MAME, cleanly) and off again.
 
 ## 4. More terminals
 
@@ -150,8 +153,12 @@ multiplexer). Log in as above.
 - **Other clients work too.** Run `stty raw -echo; nc 127.0.0.1 4001; stty
   sane`, or `socat -,rawer,escape=0x1d TCP:127.0.0.1:4001`. HP-UX does the
   echoing, so your local terminal must not.
+- **`nc` has no way out.** In raw mode ^C goes to HP-UX like any other
+  key, so stop `nc` from another terminal (`pkill -x nc`). `hpuxterm.py`
+  and the `socat` line above both leave on Ctrl-].
 - **The ports already in use?** `--port-base 5000` moves them to
-  5001–5006.
+  5001–5006. Then tell `hpuxterm.py` too: `tools/hpuxterm.py --base 5000 1`
+  (the run prints the command for each port when it starts).
 - **Pseudo terminals instead:** `--ports pty` fits a pty to each port.
   The build prints `cio2:mux6:port0: pseudo terminal /dev/pts/N`, and you
   attach with `tools/hpuxterm.py /dev/pts/N`, `screen /dev/pts/N 9600`
@@ -173,7 +180,9 @@ system at boot: `/etc/bcheckrc` on this disc is empty. To stop:
 
 `tools/runhpux.sh` turns ^C, `kill` and a closed terminal into a clean exit
 (`tools/mame/stopfile.lua`): MAME stops and the disc and battery files are
-saved. A second ^C sends SIGTERM to MAME, and a third sends SIGKILL.
+saved. It takes a second or two and ends with a line like `disc: system
+disc written through to ...`. If MAME does not stop, a second ^C sends it
+SIGTERM, and a third sends SIGKILL.
 
 Avoid `kill -9` on MAME itself. On a build where disc writes reach the
 image only at exit, it loses the whole session. (The storage changes in
@@ -231,7 +240,14 @@ builds can hold damaged files (see KNOWN-ISSUES.md). Start from
 
 This runs with the console on this terminal's output. Type into it with a
 `FOCUS_TYPE` script, or put it on TCP or a pty with `--console`. The
-multiplexer ports work as in section 4. ^C stops the run cleanly.
+multiplexer ports work as in section 4. ^C stops the run cleanly. MAME
+prints `Warning: -video none doesn't make much sense without
+-seconds_to_run` when it starts; ignore it.
+
+For a console you can type at, with no window at all:
+
+    tools/runhpux.sh --multiuser --console tcp      # in one terminal
+    tools/hpuxterm.py console                       # in another
 
     tools/runhpux.sh --seconds 60 ...
 
@@ -241,8 +257,11 @@ A typed session in single-user mode, as a batch job:
     FOCUS_TYPE='\n;ls /\n' FOCUS_TYPEAT=30,40 tools/runhpux.sh --seconds 60
 
 The first `\n` answers csh's `TERM =` prompt (at about 24 s), and then
-`ls /` runs at 40 s. In multiuser mode, `@<terminal>=` addresses one
-terminal (`console`, or `2:0` … `2:5` for tty01 … tty06):
+`ls /` runs at 40 s. A `;` in `FOCUS_TYPE` ends one script and starts the
+next, each typed at its own `FOCUS_TYPEAT` time: write `\x3b` for a
+semicolon HP-UX should see (`'\n;date\x3b who\n'`). In multiuser mode,
+`@<terminal>=` addresses one terminal (`console`, or `2:0` … `2:5` for
+tty01 … tty06):
 
     FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' FOCUS_TYPEAT=100,110,118,126 \
     FOCUS_TAP=2:0 tools/runhpux.sh --multiuser --seconds 140
@@ -256,9 +275,35 @@ options, and `--dry-run` prints the MAME command line it would run.
     tools/runbasic.sh        BASIC 2.0 from its two boot floppies, in a window
     tools/runbasic-hd.sh     BASIC from the 520's fixed disc (setup.sh built software/hd/basic.img)
 
-`BASIC Ready for use.` appears after about 55 emulated seconds. Type at the
-window, and Enter runs the line. To build `software/hd/diag.img`, which
-holds HP's 9020 diagnostics environment, run `tools/mkdiagdisc.sh`.
+- **MAME's warning screen comes first on the 520.** A red box says `THIS
+  SYSTEM DOESN'T WORK` and `Press any key to continue`. Press a key. MAME
+  says this about every driver flagged as unfinished, which the 520's is.
+- **`BASIC Ready for use.`** appears after about 55 emulated seconds.
+- **The keys.** The 520's keyboard has two keys where yours has Enter:
+  - **Enter is STORE.** It enters a numbered program line (`10 A=3`).
+  - **Ctrl-J is EXECUTE.** It runs a command: `RUN`, `LIST`, `DISP 2+3`.
+    Pressing Enter after a command answers `IMPROPER LINE NUMBER`.
+  - **Esc clears the input line**, which you need after an error: the
+    line stays, with the cursor where BASIC stopped reading.
+  - Scroll Lock switches MAME's own keys on and off, as in section 3.
+
+A session without a window: `\r` is STORE and `\n` is EXECUTE in
+`FOCUS_TYPE`, `FOCUS_DIMDUMP=1` prints the screen memory as the run goes,
+and `tools/screen.py` turns the last of it into the screen. Leave about
+five seconds between lines.
+
+    FOCUS_DIMDUMP=1 FOCUS_TYPE='10 A=3\r;20 B=4\r;30 DISP A*B+2\r;40 END\r;RUN\n' \
+    FOCUS_TYPEAT=60,66,72,78,84 tools/runbasic-hd.sh -- -video none -str 95 \
+      | tools/screen.py
+
+This ends with ` 14` on the screen.
+
+`tools/mkdiagdisc.sh` builds `software/hd/diag.img`, which holds HP's 9020
+diagnostics environment. Boot it with the test disc in the flexible
+drive, then `LOAD "TEST"` and `RUN` (`docs/DIAGNOSTICS.md`):
+
+    tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
+        -flop1 "$PWD/software/test/500MFTST.TD0"
 
     tools/runhpux.sh --release 5.01 --headless
 
@@ -280,7 +325,15 @@ whether the boot was `--fresh`.
   MAME revision, or someone edited the two patched files. Run
   `git -C mame checkout -- scripts/src/cpu.lua src/mame/mame.lst` and
   `tools/setup.sh` again.
-- **The window stays on MAME's warning:** press any key (section 3).
+- **The window stays on a red MAME warning:** that is the 520 (BASIC, HP-UX
+  5.01 in a window). Press any key (section 8). The 540 has none.
+- **`tools/hpuxterm.py: Permission denied`:** the file lost its executable
+  bit (some ways of copying a tree drop it). `chmod +x tools/*.py
+  tools/*.sh`, or run it as `python3 tools/hpuxterm.py 1`.
+- **`hpuxterm: cannot connect to 127.0.0.1:4001: Connection refused`:**
+  no multiuser run is listening there. The ports open a few seconds after
+  `tools/runhpux.sh --multiuser` starts. If the run was given
+  `--port-base N`, give `hpuxterm.py` `--base N`.
 - **No `login:` after two minutes:** run `tools/smoketest.sh`. If it
   passes, your working machine's state is the difference: try
   `tools/runhpux.sh --scratch --multiuser`, and `--reset` if that boots.

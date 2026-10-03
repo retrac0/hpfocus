@@ -8,10 +8,13 @@
 # 520 would from its internal drive. Swap discs at runtime through MAME's
 # file manager (Tab menu).
 #
-# The banner "BASIC Ready for use." arrives after ~55 emulated seconds --
-# a few minutes of wall clock at current emulation speed. Type at the
-# window; Enter executes the line. What works and what does not is tracked
-# in docs/IMPLEMENTATION.md and the hpux-boot-frontier notes.
+# MAME first shows its red "THIS SYSTEM DOESN'T WORK" warning (the 520's
+# driver is flagged unfinished): press any key. The banner "BASIC Ready
+# for use." arrives after ~55 emulated seconds. Type at the window: Enter
+# is the 520's STORE key (it enters a numbered program line), Ctrl-J is
+# EXECUTE (it runs a command: RUN, LIST, DISP 2+3) and Esc clears the
+# input line. What works and what does not is tracked in
+# docs/IMPLEMENTATION.md and the hpux-boot-frontier notes.
 #
 #   tools/runbasic.sh              boot the BASIC system volumes
 #   tools/runbasic.sh 500OPT1      also mount a third volume for after boot
