@@ -37,11 +37,11 @@ private:
 			return do_lra(base, raw, ind, idx);
 		case 4:     // LDDS -- load double, word offset
 		{
-			u32 a;
-			if (!ea(base, raw * 4, ind, idx, false, a))
+			u32 a, a2;          // a2: see ea_double, on the page boundary
+			if (!ea_double(base, raw * 4, ind, idx, false, a, a2))
 				return exec_trap::address_error;
 			push(m_mem.read32(a));
-			push(m_mem.read32(a + 4));
+			push(m_mem.read32(a2));
 			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
@@ -1580,6 +1580,20 @@ private:
 		if (!e.ok())
 			return exec_trap::address_error;
 
+		// LDSI/SDSI: a doubleword whose first word is the last of its
+		// page has its second in another page, resolved for itself before
+		// anything is popped or written (see ea_double).
+		u32 second = e.addr + 4;
+		if (width == 8 && e.run_fwd < 8)
+		{
+			const ea_result e2 = m_au.resolve_data_pointer(ptr, indexed,
+					store, 4);
+			m_addr_trap = e2.t;
+			if (!e2.ok())
+				return exec_trap::address_error;
+			second = e2.addr;
+		}
+
 		if (!store)
 		{
 			pop();
@@ -1595,7 +1609,7 @@ private:
 			case 2: push(u32(s32(s16(m_mem.read16(e.addr))))); break;
 			case 4: push(m_mem.read32(e.addr)); break;
 			case 8: push(m_mem.read32(e.addr));
-				push(m_mem.read32(e.addr + 4)); break;
+				push(m_mem.read32(second)); break;
 			}
 			cca(stk(0));
 			return exec_trap::none;
@@ -1607,7 +1621,7 @@ private:
 		case 2: m_mem.write16(e.addr, u16(pop())); break;
 		case 4: m_mem.write32(e.addr, pop()); break;
 		case 8: { const u32 low = pop(), high = pop();
-			m_mem.write32(e.addr, high); m_mem.write32(e.addr + 4, low); } break;
+			m_mem.write32(e.addr, high); m_mem.write32(second, low); } break;
 		}
 		pop();                              // the pointer
 		return exec_trap::none;

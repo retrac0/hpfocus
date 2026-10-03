@@ -2809,6 +2809,90 @@ static void test_halfword_sign()
 	h.cpu.pop();
 }
 
+// A doubleword is aligned to a WORD (ERS 2.2.6), so one can start on the
+// last word of a page: its second word is in the next page, whose frame is
+// anywhere. LDSI/SDSI/LDD/STD/LDDS must reach it there -- not in whatever
+// frame follows the first one physically -- and if that page is absent,
+// trap before anything is popped or written.
+static void test_double_cross_page()
+{
+	std::printf("doublewords straddling a page boundary\n");
+	harness h;
+	paged_segment(h, true);
+	const u32 next_frame = PG_FRAME0 + 0x400;  // physically after page 0
+	h.mem.write32(pg_phys(0x3fc), 0x11112222);
+	h.mem.write32(pg_phys(0x400), 0x33334444); // first word of page 1
+	h.mem.write32(next_frame, 0xbadbad00);
+
+	h.cpu.push(pg_ptr(0x3fc));
+	CHECK(h.one(f4(007)) == exec_trap::none);  // LDSI
+	CHECK_EQ(h.cpu.stk(1), 0x11112222);
+	CHECK_EQ(h.cpu.stk(0), 0x33334444);
+
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(pg_ptr(0x3fc));
+	h.cpu.push(0x55556666); h.cpu.push(0x77778888);
+	CHECK(h.one(f4(027)) == exec_trap::none);  // SDSI
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x55556666);
+	CHECK_EQ(h.mem.read32(pg_phys(0x400)), 0x77778888);
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	CHECK_EQ(h.cpu.r.s, 0x4003);
+
+	// LDD / STD / LDDS through a pointer in the global segment.
+	h.mem.write32(h.cpu.r.db + 0x10, pg_ptr(0x3fc));
+	h.cpu.r.s = 0x4003;
+	const u32 ldd = (7u << 29) | (020u << 24) | (1u << 23) | (2u << 19) | 0x10;
+	CHECK(h.one(ldd) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0x55556666);
+	CHECK_EQ(h.cpu.stk(0), 0x77778888);
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(0x0a0a0a0a); h.cpu.push(0x0b0b0b0b);
+	const u32 std_ = (7u << 29) | (035u << 24) | (1u << 23) | (2u << 19) | 0x10;
+	CHECK(h.one(std_) == exec_trap::none);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);
+	CHECK_EQ(h.mem.read32(pg_phys(0x400)), 0x0b0b0b0b);
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	h.cpu.r.s = 0x4003;
+	CHECK(h.one(f1(4, true, false, 2, 4)) == exec_trap::none);   // LDDS DB+4,I
+	CHECK_EQ(h.cpu.stk(1), 0x0a0a0a0a);
+	CHECK_EQ(h.cpu.stk(0), 0x0b0b0b0b);
+
+	// The second page absent: every one of them traps with nothing done.
+	page1_present(h, false);
+	h.cpu.r.s = 0x4003;
+	h.cpu.push(pg_ptr(0x3fc));
+	u32 s0 = h.cpu.r.s;
+	CHECK(h.one(f4(007)) == exec_trap::address_error);          // LDSI
+	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.cpu.stk(0), pg_ptr(0x3fc));
+	h.cpu.push(0x55556666); h.cpu.push(0x77778888);
+	s0 = h.cpu.r.s;
+	CHECK(h.one(f4(027)) == exec_trap::address_error);          // SDSI
+	CHECK(h.cpu.last_addr_trap() == trap::absent_page);
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);         // not written
+	CHECK_EQ(h.mem.read32(next_frame), 0xbadbad00);
+	s0 = h.cpu.r.s;
+	CHECK(h.one(ldd) == exec_trap::address_error);              // LDD
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK(h.one(std_) == exec_trap::address_error);             // STD
+	CHECK_EQ(h.cpu.r.s, s0);
+	CHECK_EQ(h.mem.read32(pg_phys(0x3fc)), 0x0a0a0a0a);
+	CHECK(h.one(f1(4, true, false, 2, 4)) == exec_trap::address_error);
+	CHECK_EQ(h.cpu.r.s, s0);
+
+	// One wholly inside a page is the plain case, and unaffected.
+	page1_present(h, true);
+	h.cpu.r.s = 0x4003;
+	h.mem.write32(pg_phys(0x3f4), 0x01020304);
+	h.mem.write32(pg_phys(0x3f8), 0x05060708);
+	h.cpu.push(pg_ptr(0x3f4));
+	CHECK(h.one(f4(007)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0x01020304);
+	CHECK_EQ(h.cpu.stk(0), 0x05060708);
+}
+
 // LBIT and SBIT must leave their operands on the stack until the pointer
 // has evaluated: an absent page traps back to the instruction (note 2),
 // the marker is pushed on top of S, and the retry has to find the same
@@ -3121,6 +3205,7 @@ int main()
 	test_lra_index();
 	test_sbit();
 	test_bit_restart();
+	test_double_cross_page();
 	test_halfword_sign();
 	test_cst_reference();
 	test_segment_causes();

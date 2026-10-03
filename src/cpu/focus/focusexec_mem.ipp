@@ -15,6 +15,42 @@
 ***************************************************************************/
 
 private:
+	// The effective addresses of both words of a doubleword operand (LDD,
+	// LDDS, STD), as ea() reports one. Almost always the second is the
+	// first plus four. But an external data segment is physically
+	// contiguous only within a page (or one segment of a chain), and
+	// section 2.2.6 aligns a doubleword to a WORD, not to eight bytes:
+	// one that starts on the last word of a page has its second word in
+	// the next page -- another page table entry, a frame anywhere in
+	// memory, possibly absent. Reading on past the first word's frame
+	// returned a word of whatever frame followed it physically, and a
+	// store overwrote it (another page, perhaps another process's). The
+	// second word is then a reference of its own, resolved -- and, if
+	// absent, trapped on -- before the instruction pops or writes
+	// anything, so the trap returns to an instruction that can simply run
+	// again. A doubleword that runs off the end of an unchained segment
+	// is a bounds violation of its own the same way.
+	bool ea_double(base_reg base, u32 offset, bool ind, bool idx, bool modify,
+			u32 &out, u32 &out2)
+	{
+		const ea_result e = m_au.effective_address(base, offset, ind, idx,
+				modify);
+		m_addr_trap = e.t;
+		out = e.addr;
+		if (!e.ok())
+			return false;
+		if (on_ea)
+			on_ea(r.p, e.addr);
+		out2 = out + 4;
+		if (e.run_fwd >= 8)
+			return true;
+		const ea_result e2 = m_au.effective_address(base, offset, ind, idx,
+				modify, 4);
+		m_addr_trap = e2.t;
+		out2 = e2.addr;
+		return e2.ok();
+	}
+
 	// Format 2: 6-bit operand -- shifts and short branches.
 	exec_trap exec_fmt2(u8 op2, u8 operand, bool b3)
 	{
@@ -955,10 +991,10 @@ private:
 			return exec_trap::none;
 		}
 		case 020: {                                               // LDD
-			u32 a;
-			if (!ea(base, off, ind, idx, false, a))
+			u32 a, a2;
+			if (!ea_double(base, off, ind, idx, false, a, a2))
 				return exec_trap::address_error;
-			push(m_mem.read32(a)); push(m_mem.read32(a + 4));
+			push(m_mem.read32(a)); push(m_mem.read32(a2));
 			dcca(stk(1), stk(0));
 			return exec_trap::none;
 		}
@@ -1093,11 +1129,11 @@ private:
 			return exec_trap::none;
 		}
 		case 035: {                                               // STD
-			u32 a;
-			if (!ea(base, off, ind, idx, true, a))
+			u32 a, a2;
+			if (!ea_double(base, off, ind, idx, true, a, a2))
 				return exec_trap::address_error;
 			const u32 low = pop(), high = pop();
-			m_mem.write32(a, high); m_mem.write32(a + 4, low);
+			m_mem.write32(a, high); m_mem.write32(a2, low);
 			return exec_trap::none;
 		}
 		case 036:                                                 // LRA
