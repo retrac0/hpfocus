@@ -47,7 +47,8 @@
 #      working copy runs use (var/, about 400 MB); and BASIC's fixed disc,
 #      software/hd/basic.img, for tools/runbasic-hd.sh: BASIC 2.0 with its
 #      ERRORS_ENG, IO and MS options and the CAT_BOOT and BUILD_BOOT
-#      utilities, all off the shipped floppies. A basic.img that is
+#      utilities, all off the shipped floppies; and the 9020 diagnostics
+#      disc, software/hd/diag.img (tools/mkdiagdisc.sh). An image that is
 #      already there is kept, and named if an older sdfwrite.py built it
 #      (BASIC cannot CREATE or STORE on such a disc: delete it and rerun).
 
@@ -341,6 +342,18 @@ if [ "$MEDIA" = 1 ]; then
 		# One built by an older sdfwrite.py is named, with the way out.
 		source tools/lib/focus.sh
 		focus_basic_disc_warn software/hd/basic.img
+	fi
+	# The 9020 diagnostics disc: HP's System Functional Test environment
+	# (the three 500ENV floppies) installed on a fixed disc of its own.
+	# The release tests run the test driver on it (hpuxtest.py's diag
+	# case), and docs/DIAGNOSTICS.md's recipes boot it.
+	if [ ! -f software/hd/diag.img ]; then
+		say "building the 9020 diagnostics disc, software/hd/diag.img"
+		tools/mkdiagdisc.sh software/hd/diag.img.new >/dev/null
+		mv -f software/hd/diag.img.new software/hd/diag.img
+	else
+		source tools/lib/focus.sh
+		focus_basic_disc_warn software/hd/diag.img
 	fi
 else
 	say "skipping the media (--no-media); tools/runhpux.sh prepares them on first use"
