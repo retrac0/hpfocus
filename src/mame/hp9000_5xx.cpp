@@ -1543,6 +1543,7 @@ private:
 	bool m_ptys_reported = false;
 	std::FILE *m_print_text = nullptr;
 	void report_state(const char *why);
+	void check_stop_signal();
 	// machine_start, in the order it does them.
 	void install_ram_boards();
 	void load_batteries();
@@ -2879,6 +2880,8 @@ void hp9000_5xx_state::machine_start()
 	// start; see catch_stop_signals.
 	s_stop_signal = 0;
 	catch_stop_signals(stop_signal);
+	machine().add_notifier(MACHINE_NOTIFY_FRAME, machine_notify_delegate(
+			&hp9000_5xx_state::check_stop_signal, this));
 #ifdef SIGPIPE
 	std::signal(SIGPIPE, SIG_IGN);
 #endif
@@ -3273,16 +3276,28 @@ void hp9000_5xx_state::deliver_iop_interrupts()
 }
 
 
-TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
+// The host asked the run to stop (see catch_stop_signals): end it the way
+// -seconds_to_run does, exit notifiers and all. Looked for on the
+// millisecond tick and on every frame. The tick alone is emulated time,
+// which stands still while the machine is paused (P, or MAME's menu in a
+// window): a ^C there did nothing, and the second one -- back to the default
+// action -- killed the run without its exit, losing the batteries and the
+// 520's fixed disc. A paused machine still draws frames, so the frame
+// notifier sees the request.
+void hp9000_5xx_state::check_stop_signal()
 {
-	// The host asked the run to stop (see catch_stop_signals): end it the
-	// way -seconds_to_run does, exit notifiers and all.
 	if (const int sig = s_stop_signal)
 	{
 		s_stop_signal = 0;
 		osd_printf_info("\nsignal %d: stopping the run\n", sig);
 		machine().schedule_exit();
 	}
+}
+
+
+TIMER_CALLBACK_MEMBER(hp9000_5xx_state::iop_tick)
+{
+	check_stop_signal();
 	// The transfers the fast poll leaves alone, at the rate the devices
 	// driving them expect.
 	m_iop.pace_uncounted_dma();
