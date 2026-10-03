@@ -235,7 +235,7 @@ private:
 			s32 x = string_resume(d, count);
 			byte_cursor dst;
 			{
-				const exec_trap t2 = cursor_open(dst, u32(s32(stk(1)) + x),
+				const exec_trap t2 = cursor_open(dst, stk(1) + u32(x),
 						true, true, d);
 				if (t2 != exec_trap::none) return t2;
 			}

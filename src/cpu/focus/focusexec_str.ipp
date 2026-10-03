@@ -205,8 +205,11 @@ private:
 	{
 		if (!r.test(sf::P))
 			return 0;
+		// (In 64 bits: X is whatever the marker held, and -1 times -2^31
+		// is not a 32-bit number.)
 		const s32 x = s32(r.x);
-		if (d * x < 0 || d * x > count)
+		const s64 done = s64(d) * s64(x);
+		if (done < 0 || done > s64(count))
 			return 0;
 		return x;
 	}
@@ -238,8 +241,8 @@ private:
 		// The pointers as the program stacked them, and how far along
 		// them a move that was interrupted had got.
 		s32 x = string_resume(d, count);
-		const u32 tptr = u32(s32(stk(1)) + x);
-		const u32 sptr = u32(s32(stk(2)) + x);
+		const u32 tptr = stk(1) + u32(x);
+		const u32 sptr = stk(2) + u32(x);
 		const s32 rem = count - d * x;      // bytes still to move
 
 		u32 sba;

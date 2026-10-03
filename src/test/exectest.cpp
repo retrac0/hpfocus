@@ -1646,6 +1646,27 @@ static void test_mvb_resume()
 		CHECK_EQ(h.mem.read8(pg_phys(0x200 + i)), u8(i * 7 + 3));
 	CHECK_EQ(h.cpu.r.s, s0);
 
+	// A pending STATUS whose X cannot be progress is not believed, at the
+	// extremes included: -2^31 on a descending move (whose negation does
+	// not exist in 32 bits) and 2^31-1 on an ascending one. Both start
+	// over from the pointers as stacked.
+	const u16 back = u16(insn | 0x1000);
+	h.cpu.r.x = 0x80000000u;
+	h.cpu.r.put(sf::P, 1);
+	h.cpu.push(sptr + 7); h.cpu.push(pg_ptr(0x280 + 7)); h.cpu.push(8);
+	CHECK(h.one(back) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, u32(-8));
+	for (u32 i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(pg_phys(0x280 + i)), u8(i * 7 + 3));
+	CHECK_EQ(h.cpu.r.s, s0);
+	h.cpu.r.x = 0x7fffffffu;
+	h.cpu.r.put(sf::P, 1);
+	h.cpu.push(sptr); h.cpu.push(pg_ptr(0x2c0)); h.cpu.push(8);
+	CHECK(h.one(insn) == exec_trap::none);
+	CHECK_EQ(h.cpu.r.x, 8);
+	for (u32 i = 0; i < 8; i++)
+		CHECK_EQ(h.mem.read8(pg_phys(0x2c0 + i)), u8(i * 7 + 3));
+	CHECK_EQ(h.cpu.r.s, s0);
 }
 
 // The same, through the real trap sequence and with SDEC 0, so every word
