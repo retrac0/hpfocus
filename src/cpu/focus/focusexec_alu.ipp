@@ -1410,6 +1410,12 @@ private:
 			// errno=14". The old segment's number is the TCB field as
 			// it stood before the exchange, bit 20 selecting the table.
 			dst_use_count(ea, +1);
+			// DB and DL now address the new segment, and what the task
+			// stores DB-relative from here on never touches its entry
+			// again: this is where it becomes Referenced and Dirty (see
+			// dst_mark_loaded). HP-UX's system-call exit is an XGDS back
+			// onto the user's global segment.
+			dst_mark_loaded(ea);
 			{
 				const u32 old_table = ers32::get(w, 20, 1)
 						? r.dst : dst_walker::SYSTEM_DST_BASE;

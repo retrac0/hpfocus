@@ -405,6 +405,18 @@ referenced — stamps the segment's last-use time and writes it back with
 `R` cleared. The emulator left `R` alone for a while on a misreading of
 the CST layout (§6.1).
 
+A task's stack and global data segments are the two it does not reach by
+pointer: SB, SL, S, Q and DB, DL are absolute registers, and nothing done
+through them evaluates anything. Their DST entries are marked `R` and `D`
+when the registers are loaded from them — by `IXIT`'s Task Control Block
+path for both segments, by `XGDS` for a new global segment — since no
+later reference would. The ERS gives the bits' meaning (sheet 32) and not
+the moment; HP-UX fixes the requirement. Its swap-out routine (kernel
+image 0x1dd58 as loaded on a 2 MB 540) tests `D` and, for a clean segment,
+marks the entry absent and frees the memory without writing it out, so a
+stack or global segment that only the task itself had stored into was
+discarded and later read back from a swap slot holding something else.
+
 A doubleword operand is aligned to a word (§2.2.6), so it can straddle a
 page boundary of a paged segment: its second word is then a reference of
 its own — the next page's frame, which may be absent — and is evaluated
@@ -1009,7 +1021,8 @@ TOS afterwards names the *old* global segment. An absent segment is Absent
 Data Segment (042) with the DST entry number as parameter, before anything
 is changed: HP-UX's system-call exit runs `XGDS` back onto a user segment
 the memory manager may have swapped out meanwhile, and relies on the trap.
-Privileged. *CC unaffected.*
+The new segment's entry is marked `R` and `D` (§5.2): the task stores into
+it DB-relative from here on. Privileged. *CC unaffected.*
 
 **`GTSP`** — Get Task Segment Pointers — `F4:12`
 Pop an absolute TCB address into the Current-TCB dedicated location; set
@@ -1718,7 +1731,8 @@ the other exits restore MASK from `(Q+2)`. A task's saved S may lie in the
 overflow area above its SL (an interrupt's marker on a nearly full stack):
 it is resumed, and Stack Overflow is reported before its next
 instruction; only S beyond the stack segment itself is Inconsistent
-Registers. Returning a task to a code segment that was swapped out while
+Registers. The DST entries of the stack and global data segments the task
+is resumed on are marked `R` and `D` (§5.2). Returning a task to a code segment that was swapped out while
 it waited raises Absent Code Segment in the task's own context, at its
 resume point (inferred from what HP-UX's handler accepts; the Appendix C
 flowchart is not available). Assumes the marker at Q with the global-segment pointer,
