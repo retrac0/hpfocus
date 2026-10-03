@@ -613,14 +613,24 @@ private:
 			// The top of stack is a bit offset: bits 0-28 give the byte
 			// index, which goes to X, and bits 29-31 the bit within that
 			// byte, counted from the most significant (ERS sheet 61).
+			//
+			// The operands stay on the stack until the pointer has been
+			// evaluated. Every trap the evaluation can raise -- absent
+			// page, absent segment, absent page table -- is a note-2 trap
+			// that returns to THIS instruction, and its marker is pushed
+			// at S: popped first, the two operand words lay under the
+			// marker, and the re-executed LBIT read its bit offset and
+			// pointer out of whatever was beneath them and left its
+			// caller's stack two words short. The class of defect HPUX.md
+			// 10.3 records for MVB.
 			const u32 spec = stk(0);
 			const u32 bitno = spec & 7;
 			r.x = u32(s32(spec) >> 3);
 			const u32 ptr = stk(1);
-			r.s -= 8;
 			const ea_result e = m_au.resolve_data_pointer(ptr, true, false);
 			m_addr_trap = e.t;
 			if (!e.ok()) return exec_trap::address_error;
+			r.s -= 8;
 			const u32 v = (m_mem.read8(e.addr) >> (7 - bitno)) & 1;
 			push(v); cca(v);
 			return exec_trap::none;
@@ -637,10 +647,11 @@ private:
 			const u32 bitno = spec & 7;
 			r.x = u32(s32(spec) >> 3);
 			const u32 ptr = stk(2);
-			r.s -= 12;
+			// Popped only once the pointer is good; see LBIT.
 			const ea_result e = m_au.resolve_data_pointer(ptr, true, true);
 			m_addr_trap = e.t;
 			if (!e.ok()) return exec_trap::address_error;
+			r.s -= 12;
 			const u8 mask = u8(1u << (7 - bitno));
 			const u8 old = m_mem.read8(e.addr);
 			m_mem.write8(e.addr, bit ? (old | mask) : (old & u8(~mask)));

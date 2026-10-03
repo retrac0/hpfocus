@@ -2554,6 +2554,124 @@ static void test_sbit()
 	CHECK_EQ(h.mem.read8(addr - 1), 0x80);
 }
 
+// The paged user data segment the restart tests share: user DST entry 1,
+// writable, 1 KB pages, page 0 at 0x30000 and page 1 at 0x31000 -- NOT
+// physically adjacent to page 0's frame, which is the point of several of
+// them. Page 1 starts absent when asked.
+static const u32 PG_DST = 0x20000, PG_PTAB = 0x21000;
+static const u32 PG_FRAME0 = 0x30000, PG_FRAME1 = 0x31000;
+static void paged_segment(harness &h, bool page1_present)
+{
+	h.cpu.r.dst = PG_DST;
+	h.mem.write32(PG_DST, 16 * 4);
+	u32 w0 = 0;
+	w0 = ers32::set(w0, 22, 4, 10);
+	w0 = ers32::set(w0, 26, 1, 1);
+	w0 = ers32::set(w0, 27, 1, 1);
+	h.mem.write32(PG_DST + 16, w0);
+	h.mem.write32(PG_DST + 20, 0xfff);
+	h.mem.write32(PG_DST + 24, PG_PTAB);
+	h.mem.write32(PG_DST + 28, 0);
+	const u32 present = ers32::set(0, 27, 1, 1);
+	h.mem.write32(PG_PTAB + 0, present);
+	h.mem.write32(PG_PTAB + 4, PG_FRAME0);
+	h.mem.write32(PG_PTAB + 8, page1_present ? present
+			: ers32::set(present, 31, 1, 1));
+	h.mem.write32(PG_PTAB + 12, PG_FRAME1);
+}
+static void page1_present(harness &h, bool in)
+{
+	const u32 present = ers32::set(0, 27, 1, 1);
+	h.mem.write32(PG_PTAB + 8, in ? present : ers32::set(present, 31, 1, 1));
+}
+// An EDS pointer into that segment, and the physical address of an offset.
+static u32 pg_ptr(u32 off)
+{
+	u32 p = ers32::set(0, 1, 1, 1);
+	p = ers32::set(p, 2, 11, 1);
+	return ers32::set(p, 13, 19, off);
+}
+static u32 pg_phys(u32 off)
+{
+	return (off < 0x400 ? PG_FRAME0 : PG_FRAME1 - 0x400) + off;
+}
+// A handler segment (CST entry 1) whose absent-page vector is a bare EXIT
+// 0, and the program running in segment 5 at 0x1000: a fault, the "pager"
+// making the page present, and the handler's return, all through the real
+// trap sequence -- marker, STATUS and X travel the way they do in HP-UX.
+static const u32 RT_HB = 0x2000, RT_HLEN = 0x400;
+static void restart_handler(harness &h)
+{
+	const u32 CST = 0x200;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST, 16 * 8);
+	h.mem.write32(CST + 16 + 4, RT_HLEN - 1);
+	h.mem.write32(CST + 16 + 8, RT_HB);
+	h.mem.write32(CST + 80 + 4, 0xfff);
+	h.mem.write32(CST + 80 + 8, 0x1000);
+	const u32 HPL = RT_HB + (RT_HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 040, 0x100);       // absent page -> HB+0x100
+	h.put(RT_HB + 0x100, f5(023, 0));          // EXIT 0
+	h.cpu.enable_traps(true);
+	h.cpu.r.status = 0;
+	h.cpu.r.put(sf::CSN, 5);
+}
+
+// LBIT and SBIT must leave their operands on the stack until the pointer
+// has evaluated: an absent page traps back to the instruction (note 2),
+// the marker is pushed on top of S, and the retry has to find the same
+// two (three) words it started with. This runs the whole round trip --
+// trap 040 into code segment 1, the page made present, EXIT, retry.
+static void test_bit_restart()
+{
+	std::printf("LBIT/SBIT restart after an absent page\n");
+	harness h;
+	paged_segment(h, false);
+	restart_handler(h);
+	h.mem.write8(pg_phys(0x408), 0x04);        // byte 0x408, bit 5 set
+
+	const u32 ptr = pg_ptr(0x3f8);             // in page 0
+	const u32 spec = 8 * 16 + 5;               // 16 bytes on: page 1, bit 5
+
+	h.cpu.push(0x11111111u);
+	h.cpu.push(ptr);
+	h.cpu.push(spec);
+	const u32 s_before = h.cpu.r.s;
+
+	CHECK(h.one(f4(002, true)) == exec_trap::none);        // LBIT: traps
+	CHECK(h.cpu.last_trap() == trap_cause::absent_page);
+	CHECK_EQ(h.cpu.r.p, RT_HB + 0x100);
+
+	page1_present(h, true);                                // "page it in"
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT
+	CHECK_EQ(h.cpu.r.p, 0x1000);
+	CHECK_EQ(h.cpu.r.s, s_before);                         // operands intact
+	CHECK_EQ(h.cpu.stk(0), spec);
+	CHECK_EQ(h.cpu.stk(1), ptr);
+
+	CHECK(h.cpu.step() == exec_trap::none);                // LBIT again
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.stk(1), 0x11111111u);
+	CHECK_EQ(h.cpu.r.s, s_before - 4);
+
+	// SBIT the same way: bit 6 of the same byte, page 1 absent again.
+	page1_present(h, false);
+	h.cpu.pop();
+	h.cpu.push(ptr);
+	h.cpu.push(8 * 16 + 6);
+	h.cpu.push(1);
+	const u32 s2 = h.cpu.r.s;
+	CHECK(h.one(f4(003, true)) == exec_trap::none);        // SBIT: traps
+	CHECK(h.cpu.last_trap() == trap_cause::absent_page);
+	page1_present(h, true);
+	CHECK(h.cpu.step() == exec_trap::none);                // EXIT
+	CHECK_EQ(h.cpu.r.s, s2);
+	CHECK(h.cpu.step() == exec_trap::none);                // SBIT again
+	CHECK_EQ(h.mem.read8(pg_phys(0x408)), 0x06);
+	CHECK_EQ(h.cpu.r.s, s2 - 12);
+	CHECK_EQ(h.cpu.stk(0), 0x11111111u);
+}
+
 // UP and DOWN (format 4, 020/021): the semaphore pair named only by the
 // shipped assembler and executed only by the HP-UX kernels. Layout fixed
 // by both kernels' data and the BASIC kernel's software twin: word 0 the
@@ -2810,6 +2928,7 @@ int main()
 	test_shift_index();
 	test_lra_index();
 	test_sbit();
+	test_bit_restart();
 	test_up_down();
 	test_up_down_wait_list();
 	test_xgds_absent();
