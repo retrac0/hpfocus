@@ -82,7 +82,7 @@ enum class trap_cause : u8
 	privileged_mode           = 026,
 	privileged_mode_data      = 027,
 	unexpected_pointer_type   = 030,
-	user_trap                 = 031,   // 1 = integer overflow, 2 = divide by zero
+	user_trap                 = 031,   // param 0x20|type divide by zero, 0x00|type overflow
 	illegal_decimal           = 032,
 	exponent_size             = 033,
 	fp_operand                = 034,
@@ -486,6 +486,8 @@ public:
 		exec_trap t = is32 ? exec_fmt6() : exec_16(op1, w);
 		if (pending && t == exec_trap::none)
 			r.put(sf::P, 0);
+		if (t == exec_trap::none && m_traps_enabled && r.test(sf::T) && r.test(sf::O))
+			t = overflow_trap();
 
 		// Faults the core detects become architectural traps once a handler
 		// segment exists.
@@ -497,6 +499,32 @@ public:
 		if (t == exec_trap::none)
 			r.status |= ers32::mask(9, 1);              // instruction complete: EM set again
 		return t;
+	}
+
+	// The integer overflow User Trap, cause 31 (ERS sheets 47-48): "This
+	// trap occurs whenever both the overflow and trap bits are set [e.g.
+	// SETR] ... The overflow bit is cleared if the trap is taken" -- a note
+	// 1 trap, detected at the end of the instruction, whose parameter is
+	// condition 0 (overflow) in bits 24-27 and the result type in bits
+	// 28-31: 4 for DIV's doubleword quotient, 0 for the halfword ISC
+	// checks, 1 for the 32-bit rest. It was never taken, so Overflow with
+	// STATUS.T set was simply ignored, and BASIC is the program that
+	// notices: its DOUBLE (32-bit integer) arithmetic leaves overflow to
+	// this trap, and without it DISP 2147483647+1 printed -2147483648 and
+	// 123456789*987 printed 1592766455 where the trap gives BASIC's own
+	// "ERROR 23: DOUBLE overflow". HP-UX runs user processes with T set
+	// and its handler ignores integer overflow, so C programs are
+	// unaffected; its kernel runs with T clear.
+	exec_trap overflow_trap()
+	{
+		r.put(sf::O, 0);
+		const u32 op = m_cir & 0xffffefffu;
+		const u32 type = (op == 0x0013u) ? 4u : (op == 0x001cu) ? 0u : 1u;   // DIV, ISC
+		// When the bits arrived with a branch -- an EXIT restoring a
+		// status that has both -- the next instruction is its target.
+		if (m_branched)
+			m_next = r.p;
+		return take_trap(trap_cause::user_trap, type);
 	}
 
 	// Map an execution fault onto the architectural trap that represents it.
@@ -515,7 +543,32 @@ public:
 		case exec_trap::bounds_violation:
 			return take_trap(trap_cause::bounds_violation, r.p);
 		case exec_trap::divide_by_zero:
-			return take_trap(trap_cause::user_trap, 2);
+		{
+			// User Trap, cause 31 (ERS sheets 47-48): "These traps are
+			// enabled by the trap bit in the Status register. If this bit
+			// is 0 when a trap is encountered, the overflow bit in the
+			// Status register is set and no trap is taken. The overflow
+			// bit is cleared if the trap is taken." HP-UX runs its user
+			// processes with T set and its kernel with T clear.
+			//
+			// The parameter is a pair of fields, not a small integer:
+			// bits 24-27 the condition (0 overflow, 2 "Invalid Argument
+			// (divide-by-zero)") and bits 28-31 the result type (0 a
+			// 16-bit integer, 1 a 32-bit one, 4 a 64-bit one). The bare
+			// 2 this used to pass reads as "overflow of a type-2 result",
+			// and HP-UX's handler ignores integer overflow, so `1 / 0` in
+			// a C program quietly gave back its dividend, `1 % 0` zero,
+			// and `expr 7 / 0` printed 7. With 0x21 the same program dies
+			// of SIGFPE, "Floating exception - core dumped", exit 136.
+			if (!r.test(sf::T))
+			{
+				r.put(sf::O, 1);
+				return exec_trap::none;
+			}
+			r.put(sf::O, 0);
+			const bool dbl = (m_cir & 0xffffefffu) == 0x0013u;   // DIV: doubleword quotient
+			return take_trap(trap_cause::user_trap, 0x20u | (dbl ? 4u : 1u));
+		}
 		case exec_trap::pointer_conversion:
 			return take_trap(trap_cause::pointer_conversion, 0);
 		case exec_trap::address_error: {

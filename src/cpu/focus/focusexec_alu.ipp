@@ -174,22 +174,33 @@ private:
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
+		// ADD and SUB (ERS sheets 74-75, items 56-57). The b bit makes each
+		// the TOP limb of a multiple precision chain whose lower limbs are
+		// LADD/LSUB: "(S-1)+(S)+Carry" and "(S-1)-(S)-(1-Carry)". The
+		// borrow is carried inverted -- Carry set means no borrow, as LSUB
+		// and DLSB have it -- so SUB,B takes away 1-Carry, not Carry, and
+		// SUB leaves its own carry out the same way up. And the indicators
+		// with b set are "CCA only if result#0": a zero top limb must not
+		// erase the nonzero a lower limb reported, which is what lets a
+		// doubleword compare branch on the chain's condition code.
 		case 020: {                                            // ADD
 			const u32 a = pop(), b = pop();
 			const u64 sum = u64(b) + u64(a) + (b3 && r.test(sf::C) ? 1 : 0);
 			set_overflow_add(b, a, u32(sum));
 			r.put(sf::C, (sum >> 32) & 1);
 			push(u32(sum));
-			cca(u32(sum));
+			if (!b3 || u32(sum) != 0)
+				cca(u32(sum));
 			return exec_trap::none;
 		}
 		case 021: {                                            // SUB
 			const u32 a = pop(), b = pop();
-			const u64 diff = u64(b) - u64(a) - (b3 && r.test(sf::C) ? 1 : 0);
+			const u64 diff = u64(b) - u64(a) - (b3 && !r.test(sf::C) ? 1 : 0);
 			set_overflow_sub(b, a, u32(diff));
-			r.put(sf::C, (diff >> 32) & 1);
+			r.put(sf::C, ((diff >> 32) & 1) ^ 1);              // set = no borrow
 			push(u32(diff));
-			cca(u32(diff));
+			if (!b3 || u32(diff) != 0)
+				cca(u32(diff));
 			return exec_trap::none;
 		}
 		case 022: { cycles = CYCLES_MPY;                       // MPY
@@ -224,10 +235,35 @@ private:
 			if (divisor == 0)
 				return exec_trap::divide_by_zero;
 			const s64 dividend = (s64(u64(stk(2)) << 32)) | u64(stk(1));
+			// The one doubleword quotient that will not fit -- -2^63 by
+			// -1 -- and, unguarded, a division the host itself faults on:
+			// x86-64 raises #DE for it, so any program, privileged or
+			// not, that pushed 0x80000000, 0, -1 and divided ended the
+			// whole emulator with SIGFPE. The quotient's overflow is the
+			// ERS's own answer ("Indicators = CCA on quotient,
+			// Overflow"); the dividend is left standing as the quotient
+			// with a zero remainder, which is what DIVS already does for
+			// its own -2^31 by -1.
+			if (dividend == INT64_MIN && divisor == -1)
+			{
+				r.put(sf::O, 1);
+				set_stk(0, 0);
+				dcca(stk(2), stk(1));
+				return exec_trap::none;
+			}
 			s64 quot = dividend / divisor;
 			s32 rem = s32(dividend % divisor);
+			// "If CIR(19:1)=1 then the remainder is always positive. In
+			// both cases, dividend = quotient*divisor + remainder" (sheet
+			// 76): a remainder forced positive takes the quotient with
+			// it, one step away from zero. Negating the remainder alone
+			// broke the identity and gave the wrong modulus besides: -7
+			// by 3 came back as -2 remainder 1, not -3 remainder 2.
 			if (b3 && rem < 0)
-				rem = -rem;
+			{
+				if (divisor > 0) { rem += divisor; quot -= 1; }
+				else             { rem -= divisor; quot += 1; }
+			}
 			set_stk(2, u32(u64(quot) >> 32));
 			set_stk(1, u32(u64(quot)));
 			set_stk(0, u32(rem));
@@ -235,7 +271,12 @@ private:
 			return exec_trap::none;
 		}
 		case 024: {                                            // NEG
-			const u32 v = u32(-s32(pop()));
+			// Negated in unsigned arithmetic: -s32 of -2^31 is undefined
+			// in C++. That one value is also the overflow the indicator
+			// line ("CCA, Overflow") is there for -- it negates to itself.
+			const u32 x = pop(), v = 0u - x;
+			if (x == 0x80000000u)
+				r.put(sf::O, 1);
 			push(v); cca(v);
 			return exec_trap::none;
 		}
@@ -274,7 +315,13 @@ private:
 				return exec_trap::none;
 			}
 			s32 quot = dividend / divisor, rem = dividend % divisor;
-			if (b3 && rem < 0) { rem = -rem; }
+			// As in DIV: a remainder forced positive moves the quotient
+			// too, so that dividend = quotient*divisor + remainder.
+			if (b3 && rem < 0)
+			{
+				if (divisor > 0) { rem += divisor; quot -= 1; }
+				else             { rem -= divisor; quot += 1; }
+			}
 			set_stk(1, u32(quot));
 			set_stk(0, u32(rem));
 			cca(u32(quot));
@@ -399,23 +446,46 @@ private:
 			r.put(sf::CC, (b < a) ? CCL : (b == a) ? CCE : CCG);
 			return exec_trap::none;
 		}
+		// The logical group (ERS sheet 76, items 61.1-61.3) works on 32-bit
+		// POSITIVE integers: the limbs of multiple precision arithmetic.
+		// "(S-1):=(S-1)+(S)+If CIR(19:1)=1 then Carry else 0" and
+		// "(S-1):=(S-1)-(S)-If CIR(19:1)=1 then 1-Carry else 0" -- the b
+		// bit chains the carry in, and the borrow travels inverted, Carry
+		// set meaning no borrow, exactly as DLSB above has it. Neither
+		// form took a carry in at all. HP-UX's decimal-to-binary
+		// conversion -- the C compiler's for a floating constant, and
+		// atof's -- builds its mantissa with LMPY / LADD / LADD,B, so
+		// every carry between limbs was lost: `double x = 1.0;` printed
+		// as 9.999993116074e-01, atof("0.1") came back exactly 2^22 units
+		// low, and 20! as 2.432900333385e+18.
+		//
+		// The indicators are not CCA either -- an unsigned result has no
+		// sign: "If result#0 then CCG; if result=0 and CIR(19:1)=0 then
+		// CCE; if result=0 and CIR(19:1)=1 then [unchanged]", the same
+		// chaining rule as the decimal pair. LMPY, which set none, reports
+		// "If result#0 then CCG else CCE" on its doubleword product.
 		case 060: {                                            // LADD
 			const u32 a = pop(), b = pop();
-			const u64 sum = u64(b) + u64(a);
+			const u64 sum = u64(b) + u64(a) + (b3 && r.test(sf::C) ? 1 : 0);
 			r.put(sf::C, (sum >> 32) & 1);
-			push(u32(sum)); cca(u32(sum));
+			push(u32(sum));
+			if (u32(sum) != 0) r.put(sf::CC, CCG);
+			else if (!b3)      r.put(sf::CC, CCE);
 			return exec_trap::none;
 		}
 		case 061: {                                            // LSUB
 			const u32 a = pop(), b = pop();
-			const u64 diff = u64(b) - u64(a);
-			r.put(sf::C, (diff >> 32) & 1);
-			push(u32(diff)); cca(u32(diff));
+			const u64 diff = u64(b) - u64(a) - (b3 && !r.test(sf::C) ? 1 : 0);
+			r.put(sf::C, ((diff >> 32) & 1) ^ 1);              // set = no borrow
+			push(u32(diff));
+			if (u32(diff) != 0) r.put(sf::CC, CCG);
+			else if (!b3)       r.put(sf::CC, CCE);
 			return exec_trap::none;
 		}
 		case 062: { cycles = CYCLES_MPY;                       // LMPY
 			const u64 prod = u64(pop()) * u64(pop());
 			push(u32(prod >> 32)); push(u32(prod));
+			r.put(sf::CC, prod != 0 ? CCG : CCE);
 			return exec_trap::none;
 		}
 		case 064: { const u32 v = ~pop(); push(v); cca(v);
@@ -561,8 +631,14 @@ private:
 				// floor(log10) is computed instead -- the caller's loop
 				// adjusts in both directions, so being right first time
 				// only makes it converge on the first pass.
+				// An infinity or a NaN has no decimal exponent, and
+				// converting its log to an integer is undefined in C++;
+				// it is the FP Operand Trap's case on the hardware (cause
+				// 34), which is not modelled, so it gets 0 -- the plain
+				// form then reports the mantissa out of range and the
+				// caller's rescaling ends in POT's Exponent Size trap.
 				const double n = pop_double();
-				const s32 i = (n == 0.0) ? 0
+				const s32 i = (n == 0.0 || !std::isfinite(n)) ? 0
 						: s32(std::floor(std::log10(std::fabs(n))));
 				push(u32(i));
 				cca(u32(i));
@@ -584,13 +660,13 @@ private:
 			const double ip = std::floor(a);
 			if (ip < 1.0)
 			{
-				r.s -= 8; set_stk(0, u32(i - 1));
+				r.s -= 8; set_stk(0, u32(i) - 1u);
 				r.put(sf::CC, CCL);
 				return exec_trap::none;
 			}
 			if (ip > 9.0)
 			{
-				r.s -= 8; set_stk(0, u32(i + 1));
+				r.s -= 8; set_stk(0, u32(i) + 1u);
 				r.put(sf::CC, CCG);
 				return exec_trap::none;
 			}

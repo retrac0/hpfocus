@@ -446,6 +446,349 @@ static void test_arithmetic()
 	CHECK_EQ(h.cpu.stk(0), s32(~0xf0ffu));
 }
 
+// The divisions a guest can hand the core that the host cannot do: -2^63 by
+// -1 in DIV and -2^31 by -1 in DIVS overflow the quotient, and in C++ both
+// are undefined -- x86-64 raises a divide error, which ended the emulator
+// with SIGFPE. Each must set Overflow and carry on.
+static void test_divide_extremes()
+{
+	std::printf("division overflow\n");
+	harness h;
+	const u32 base = h.cpu.r.s;
+
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);       // DIV
+	CHECK_EQ(h.cpu.r.s, base + 12);                 // shape unchanged
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(2), 0x80000000u);            // quotient = dividend
+	CHECK_EQ(h.cpu.stk(1), 0);
+	CHECK_EQ(h.cpu.stk(0), 0);                      // remainder
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023, true)) == exec_trap::none); // DIV,B
+	CHECK(h.cpu.r.test(sf::O));
+
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(033)) == exec_trap::none);       // DIVS
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(1), 0x80000000u);
+	CHECK_EQ(h.cpu.stk(0), 0);
+
+	// One step inside the range still divides.
+	h.cpu.r.s = base; h.cpu.r.put(sf::O, 0);
+	h.cpu.push(0x80000000u); h.cpu.push(1); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);
+	CHECK(!h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.stk(2), 0x7fffffffu);
+	CHECK_EQ(h.cpu.stk(1), 0xffffffffu);
+	CHECK_EQ(h.cpu.stk(0), 0);
+}
+
+// Integer divide by zero is User Trap 31 (ERS sheets 47-48): with STATUS.T
+// clear it only sets Overflow and execution goes on; with T set the trap is
+// taken, Overflow cleared, and the parameter word says "invalid argument"
+// (bits 24-27 = 2) for a 32-bit (1) or 64-bit (4) result -- 0x21 or 0x24.
+// HP-UX turns 0x21 into SIGFPE; the bare 2 it used to get read as an
+// integer overflow, which it ignores.
+static void test_divide_by_zero_trap()
+{
+	std::printf("integer divide by zero\n");
+	harness h;
+	const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);
+	h.mem.write32(CST + 16 + 4, HLEN - 1);
+	h.mem.write32(CST + 16 + 8, HB);
+	const u32 HPL = HB + (HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 031, 0x100);             // User Trap handler
+	h.cpu.enable_traps(true);
+	const u32 s0 = h.cpu.r.s, q0 = h.cpu.r.q;
+	auto reset = [&](bool t) {
+		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+		h.cpu.r.s = s0; h.cpu.r.q = q0;
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::T, t ? 1 : 0);
+	};
+
+	// T clear: Overflow, no trap, on to the next instruction.
+	reset(false);
+	h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(033)) == exec_trap::none);        // DIVS
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.r.pb, 0x1000);
+	CHECK_EQ(h.cpu.r.s, s0 + 8);
+
+	// T set: the trap, with its two-field parameter at Q+12.
+	reset(true);
+	h.cpu.r.put(sf::O, 1);
+	h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(033)) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x21);
+	CHECK(!h.cpu.r.test(sf::O));
+
+	reset(true);
+	h.cpu.push(0); h.cpu.push(7); h.cpu.push(0);
+	CHECK(h.one(f3(023, true)) == exec_trap::none);  // DIV,B: 64-bit quotient
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x24);
+
+	reset(true);
+	h.cpu.push(7);
+	CHECK(h.one(f5(007, 0)) == exec_trap::none);     // DIVI 0
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.mem.read32(h.cpu.r.q + 12), 0x21);
+}
+
+// Integer overflow is the same User Trap, condition 0: it stands "whenever
+// both the overflow and trap bits are set", clears Overflow when taken, and
+// returns past the instruction (note 1). BASIC's DOUBLE arithmetic depends
+// on it to report ERROR 23 instead of printing a wrapped result.
+static void test_overflow_trap()
+{
+	std::printf("integer overflow trap\n");
+	harness h;
+	const u32 CST = 0x200, HB = 0x2000, HLEN = 0x400;
+	h.mem.write32(0, CST);
+	h.mem.write32(CST + 16 + 0, 0);
+	h.mem.write32(CST + 16 + 4, HLEN - 1);
+	h.mem.write32(CST + 16 + 8, HB);
+	const u32 HPL = HB + (HLEN - 1) - 3;
+	h.mem.write32(HPL - 4 * 031, 0x100);
+	h.cpu.enable_traps(true);
+	const u32 s0 = h.cpu.r.s, q0 = h.cpu.r.q;
+	auto reset = [&](bool t) {
+		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+		h.cpu.r.s = s0; h.cpu.r.q = q0;
+		h.cpu.r.status = 0;
+		h.cpu.r.put(sf::T, t ? 1 : 0);
+		h.cpu.r.put(sf::M, 1);
+	};
+	auto param = [&]() { return h.mem.read32(h.cpu.r.q + 12); };
+	auto ret = [&]() { return h.cpu.word_below_pub(h.cpu.r.q, 2); };
+
+	// T clear: Overflow only.
+	reset(false);
+	h.cpu.push(0x7fffffffu); h.cpu.push(1);
+	CHECK(h.one(f3(020)) == exec_trap::none);        // ADD
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.r.pb, 0x1000);
+
+	// T set: the trap, Overflow cleared, back to the next instruction.
+	reset(true);
+	h.cpu.push(0x7fffffffu); h.cpu.push(1);
+	CHECK(h.one(f3(020)) == exec_trap::none);
+	CHECK(h.cpu.last_trap() == trap_cause::user_trap);
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x01);
+	CHECK_EQ(ret(), 0x1002 - 0x1000);
+	CHECK(!h.cpu.r.test(sf::O));
+
+	// No overflow, no trap.
+	reset(true);
+	h.cpu.push(2); h.cpu.push(3);
+	CHECK(h.one(f3(022)) == exec_trap::none);        // MPY
+	CHECK_EQ(h.cpu.r.p, 0x1002);
+	CHECK_EQ(h.cpu.stk(0), 6);
+
+	reset(true);
+	h.cpu.push(123456789); h.cpu.push(987);
+	CHECK(h.one(f3(022)) == exec_trap::none);        // MPY overflows
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x01);
+
+	reset(true);
+	h.cpu.push(0x12345);
+	CHECK(h.one(f3(034)) == exec_trap::none);        // ISC: a halfword check
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x00);
+
+	reset(true);
+	h.cpu.push(0x80000000u); h.cpu.push(0); h.cpu.push(u32(-1));
+	CHECK(h.one(f3(023)) == exec_trap::none);        // DIV: doubleword
+	CHECK_EQ(h.cpu.r.p, HB + 0x100);
+	CHECK_EQ(param(), 0x04);
+}
+
+// The logical group as multiple precision limbs (ERS sheet 76, 61.1-61.3):
+// the b bit chains Carry in, LSUB's borrow travels inverted (Carry set =
+// no borrow), and the code is CCG/CCE with a zero limb leaving it alone
+// when chained. HP-UX's atof and the C compiler's floating constants are
+// built from exactly these, and every lost carry put them 2^22 ulp low.
+static void test_logical_carry_chain()
+{
+	std::printf("logical add/subtract carry chain\n");
+	harness h;
+	const u32 base = h.cpu.r.s;
+	auto two = [&](u16 insn, u32 b, u32 a, int carry_in, u32 cc_in) {
+		h.cpu.r.s = base;
+		h.cpu.r.put(sf::C, carry_in);
+		h.cpu.r.put(sf::CC, cc_in);
+		h.cpu.push(b); h.cpu.push(a);
+		return h.one(insn);
+	};
+
+	CHECK(two(f3(060), 0xffffffffu, 1, 0, CCL) == exec_trap::none);    // LADD
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+	CHECK_EQ(h.cpu.r.s, base + 4);
+
+	two(f3(060), 5, 6, 1, CCL);                                       // carry ignored
+	CHECK_EQ(h.cpu.stk(0), 11);
+	CHECK(!h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(060, true), 5, 6, 1, CCL);                                 // LADD,B
+	CHECK_EQ(h.cpu.stk(0), 12);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(060, true), 0x40000000u, 0x40000000u, 0, CCE);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // unsigned: no CCL
+	two(f3(060, true), 0xffffffffu, 0, 1, CCG);                       // zero limb
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // left alone
+
+	two(f3(061), 7, 5, 0, CCL);                                       // LSUB
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK(h.cpu.r.test(sf::C));                                       // no borrow
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(061), 5, 7, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 0xfffffffeu);
+	CHECK(!h.cpu.r.test(sf::C));                                      // borrow
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(061), 5, 5, 0, CCL);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+	two(f3(061, true), 7, 5, 0, CCL);                                 // LSUB,B: 1-C
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK(h.cpu.r.test(sf::C));
+	two(f3(061, true), 7, 5, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	two(f3(061, true), 5, 5, 0, CCE);
+	CHECK_EQ(h.cpu.stk(0), 0xffffffffu);
+	CHECK(!h.cpu.r.test(sf::C));
+	two(f3(061, true), 5, 5, 1, CCG);                                 // zero limb
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK(h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+
+	// A 96-bit sum and difference, limb by limb from the bottom:
+	// 0x00000001_ffffffff_ffffffff + 1 = 0x00000002_00000000_00000000.
+	const u32 x[3] = { 0xffffffffu, 0xffffffffu, 1 }, y[3] = { 1, 0, 0 };
+	u32 s[3];
+	h.cpu.r.s = base;
+	for (int i = 0; i < 3; i++)
+	{
+		h.cpu.push(x[i]); h.cpu.push(y[i]);
+		h.one(f3(060, i != 0));
+		s[i] = h.cpu.pop();
+	}
+	CHECK_EQ(s[0], 0); CHECK_EQ(s[1], 0); CHECK_EQ(s[2], 2);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	// ...and back: 0x00000002_00000000_00000000 - 1.
+	for (int i = 0; i < 3; i++)
+	{
+		h.cpu.push(s[i]); h.cpu.push(y[i]);
+		h.one(f3(061, i != 0));
+		s[i] = h.cpu.pop();
+	}
+	CHECK_EQ(s[0], 0xffffffffu); CHECK_EQ(s[1], 0xffffffffu); CHECK_EQ(s[2], 1);
+	CHECK(h.cpu.r.test(sf::C));
+
+	// ADD,B and SUB,B are the signed top limb over LADD/LSUB (sheets
+	// 74-75): SUB,B takes away 1-Carry, and with b the code is CCA only on
+	// a nonzero result. 0x00000001_00000000 - 1 = 0x00000000_ffffffff:
+	h.cpu.r.s = base;
+	h.cpu.push(0); h.cpu.push(1);
+	h.one(f3(061));                                                   // low
+	const u32 lo = h.cpu.pop();
+	h.cpu.push(1); h.cpu.push(0);
+	CHECK(h.one(f3(021, true)) == exec_trap::none);                   // SUB,B
+	CHECK_EQ(h.cpu.stk(0), 0);                                        // high
+	CHECK_EQ(lo, 0xffffffffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);                          // from LSUB
+	CHECK(!h.cpu.r.test(sf::O));
+	// -1 - 1 as a doubleword: 0xffffffff_ffffffff - 1, no borrow out of the
+	// low limb, so the high limb stays -1 and reports CCL.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(1);
+	h.one(f3(061));
+	CHECK_EQ(h.cpu.pop(), 0xfffffffeu);
+	h.cpu.push(0xffffffffu); h.cpu.push(0);
+	h.one(f3(021, true));
+	CHECK_EQ(h.cpu.stk(0), 0xffffffffu);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	// SUB alone: Carry out set when there was no borrow.
+	two(f3(021), 7, 5, 0, CCE);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK(h.cpu.r.test(sf::C));
+	two(f3(021), 5, 7, 1, CCE);
+	CHECK_EQ(h.cpu.stk(0), -2);
+	CHECK(!h.cpu.r.test(sf::C));
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	// ADD,B over LADD: 0x00000000_ffffffff + 1 = 0x00000001_00000000.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(1);
+	h.one(f3(060));
+	CHECK_EQ(h.cpu.pop(), 0);
+	h.cpu.push(0); h.cpu.push(0);
+	CHECK(h.one(f3(020, true)) == exec_trap::none);                   // ADD,B
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	// A zero top limb leaves the low limb's report standing.
+	two(f3(020, true), 0, 0, 0, CCG);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	two(f3(021, true), 3, 3, 1, CCL);
+	CHECK_EQ(h.cpu.stk(0), 0);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	two(f3(020), 0, 0, 0, CCG);                                       // plain: CCA
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+
+	// LMPY: the doubleword product, CCG unless it is zero.
+	h.cpu.r.s = base; h.cpu.r.put(sf::CC, CCL);
+	h.cpu.push(0xffffffffu); h.cpu.push(0xffffffffu);
+	CHECK(h.one(f3(062)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 0xfffffffeu);
+	CHECK_EQ(h.cpu.stk(0), 1);
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+	h.cpu.r.s = base;
+	h.cpu.push(0); h.cpu.push(0x12345678u);
+	h.one(f3(062));
+	CHECK_EQ(h.cpu.r.condition_code(), CCE);
+}
+
+// NEG works in unsigned arithmetic -- -s32 of -2^31 is undefined in C++ --
+// and that one value, which negates to itself, sets Overflow (ERS sheet 76:
+// "Indicators = CCA, Overflow"). Overflow is only ever set by it, never
+// cleared: BOV, BNO and SETR clear it (sheet 12).
+static void test_negate()
+{
+	std::printf("negate\n");
+	harness h;
+	h.cpu.push(0x80000000u);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 0x80000000u);
+	CHECK(h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.pop(); h.cpu.push(5);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), -5);
+	CHECK(h.cpu.r.test(sf::O));                     // still set
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.r.put(sf::O, 0);
+	CHECK(h.one(f3(024)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(0), 5);
+	CHECK(!h.cpu.r.test(sf::O));
+	CHECK_EQ(h.cpu.r.condition_code(), CCG);
+}
+
 // Every instruction whose ERS entry names an indicator has to set one. The
 // condition code is the easiest effect in this architecture to leave out:
 // nothing in an instruction's own test looks at it, and an omission only
@@ -961,7 +1304,39 @@ static void test_new_groups()
 	h.cpu.r.s = base;
 	h.cpu.push(u32(-17)); h.cpu.push(5);
 	CHECK(h.one(f3(033, true)) == exec_trap::none);            // positive rem
+	// "dividend = quotient*divisor + remainder" holds for the b form too
+	// (ERS sheet 76): -17 = -4*5 + 3, so the quotient moves with it. The
+	// old expectation, remainder 2 beside quotient -3, broke the identity.
+	CHECK_EQ(h.cpu.stk(1), -4);
+	CHECK_EQ(h.cpu.stk(0), 3);
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-7)); h.cpu.push(u32(-3));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 3);                                 // -7 = 3*-3 + 2
 	CHECK_EQ(h.cpu.stk(0), 2);
+	h.cpu.r.s = base;
+	h.cpu.push(7); h.cpu.push(u32(-3));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), -2);                                // already >= 0
+	CHECK_EQ(h.cpu.stk(0), 1);
+	h.cpu.r.s = base;
+	h.cpu.push(u32(-7)); h.cpu.push(u32(0x80000000u));
+	CHECK(h.one(f3(033, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(1), 1);                                 // -7 = 1*-2^31 + (2^31-7)
+	CHECK_EQ(h.cpu.stk(0), 0x7ffffff9);
+	// DIV,B on a doubleword dividend: -7 by 3 is -3 remainder 2.
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(u32(-7)); h.cpu.push(3);
+	CHECK(h.one(f3(023, true)) == exec_trap::none);
+	CHECK_EQ(h.cpu.stk(2), -1);
+	CHECK_EQ(h.cpu.stk(1), -3);
+	CHECK_EQ(h.cpu.stk(0), 2);
+	CHECK_EQ(h.cpu.r.condition_code(), CCL);
+	h.cpu.r.s = base;
+	h.cpu.push(0xffffffffu); h.cpu.push(u32(-7)); h.cpu.push(3);
+	CHECK(h.one(f3(023)) == exec_trap::none);                  // plain DIV
+	CHECK_EQ(h.cpu.stk(1), -2);
+	CHECK_EQ(h.cpu.stk(0), -1);
 
 	// Privileged absolute load and store.
 	h.cpu.r.s = base;
@@ -1774,8 +2149,31 @@ static void test_system_group()
 		h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
 		h.cpu.r.s = h.cpu.r.sb + 3;
 		h.cpu.push(500);
-		CHECK(h.one(u32_insn(002, 0, 0) | (10u << 12) | 20u) == exec_trap::none);
+		CHECK(h.one(u32_insn(002, 0, 0) | (10u << 19) | 20u) == exec_trap::none);
 		CHECK(h.cpu.last_trap() == trap_cause::check_trap);
+
+		// The bounds are CIR(8:5) and CIR(13:19), inclusive (sheet 128,
+		// FOCUS.md 8.3) -- not a 10-bit and a 12-bit field, which only
+		// coincide with them for [0, n < 4096] and [1, 0].
+		auto chek = [&](s32 v, u32 lo, u32 hi) {
+			h.cpu.r.pb = 0x1000; h.cpu.r.pl = 0x1ffc;
+			h.cpu.r.s = h.cpu.r.sb + 3;
+			h.cpu.push(u32(v));
+			h.one(u32_insn(002, 0, 0) | (lo << 19) | hi);
+			return h.cpu.r.pb == 0x1000 && h.cpu.r.p == 0x1004;   // passed
+		};
+		CHECK(chek(5, 1, 10));
+		CHECK(chek(1, 1, 10));
+		CHECK(chek(10, 1, 10));
+		CHECK(!chek(11, 1, 10));
+		CHECK(!chek(0, 1, 10));
+		CHECK(chek(5000, 0, 32767));
+		CHECK(chek(0x7ffff, 31, 0x7ffff));
+		CHECK(!chek(30, 31, 0x7ffff));
+		CHECK(!chek(-1, 0, 25));
+		CHECK(chek(25, 0, 25));
+		CHECK(!chek(0, 1, 0));                    // the always-trap idiom
+		CHECK(!chek(1, 1, 0));
 	}
 
 	// ---- MUC (ERS sheet 127) -----------------------------------------
@@ -2563,6 +2961,14 @@ static void test_decimal_conversion()
 	reset(); pushd(0.0);
 	CHECK(h.one(f4(001, true)) == exec_trap::none);
 	CHECK_EQ(s32(h.cpu.stk(0)), 0);
+	// An infinity or a NaN has no exponent; converting log10 of one to an
+	// integer is undefined behaviour in the host, so it is pinned to 0.
+	for (double n : { HUGE_VAL, -HUGE_VAL, std::nan("") })
+	{
+		reset(); pushd(n);
+		CHECK(h.one(f4(001, true)) == exec_trap::none);
+		CHECK_EQ(s32(h.cpu.stk(0)), 0);
+	}
 
 	// ---- POT: A and B with A/B = 10^I --------------------------------
 	for (int i : { 0, 1, -1, 22, -22, 307, -307 })
@@ -3459,6 +3865,11 @@ int main()
 {
 	std::printf("FOCUS execution core tests\n\n");
 	test_arithmetic();
+	test_divide_extremes();
+	test_logical_carry_chain();
+	test_divide_by_zero_trap();
+	test_overflow_trap();
+	test_negate();
 	test_stack_ops();
 	test_condition_codes();
 	test_branches();
