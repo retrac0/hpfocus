@@ -4753,14 +4753,18 @@ void hp9000_5xx_state::hp9040(machine_config &config)
 // Series 500 collection does not include one. The documented alternative is
 // to emulate the loader's behaviour at a high level, which is what the plan
 // plumps for -- the protocol is fully described even though the code is not.
+//
+// The region stays, erased to 0xFF, which is what machine_reset hands the
+// SCM whether or not a file is found. The file itself is no longer named:
+// a missing ROM_LOAD_OPTIONAL entry makes MAME hold every windowed run on a
+// 'press any key' warning before emulation starts. When a dump turns up,
+// name it here again (ROM_LOAD with its real CRC and SHA1).
 ROM_START(hp9020)
 	ROM_REGION(0x2000, "loader", ROMREGION_ERASEFF)
-	ROM_LOAD_OPTIONAL("09020-80001.bin", 0x0000, 0x2000, NO_DUMP)
 ROM_END
 
 ROM_START(hp9040)
 	ROM_REGION(0x2000, "loader", ROMREGION_ERASEFF)
-	ROM_LOAD_OPTIONAL("09020-80001.bin", 0x0000, 0x2000, NO_DUMP)
 ROM_END
 
 } // anonymous namespace
@@ -4768,4 +4772,4 @@ ROM_END
 
 //   YEAR  NAME    PARENT  COMPAT  MACHINE  INPUT  CLASS             INIT        COMPANY            FULLNAME         FLAGS
 COMP(1982, hp9020, 0,      0,      hp9020,  0,     hp9000_5xx_state, empty_init, "Hewlett-Packard", "HP 9000/520", MACHINE_NOT_WORKING | MACHINE_NO_SOUND)
-COMP(1982, hp9040, 0,      0,      hp9040,  0,     hp9000_5xx_state, empty_init, "Hewlett-Packard", "HP 9000/540", MACHINE_NOT_WORKING | MACHINE_NO_SOUND)
+COMP(1982, hp9040, 0,      0,      hp9040,  0,     hp9000_5xx_state, empty_init, "Hewlett-Packard", "HP 9000/540", MACHINE_NO_SOUND_HW)

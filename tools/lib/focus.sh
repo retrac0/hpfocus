@@ -50,6 +50,12 @@ focus_built() {
 # command line comes after this one and wins, so any backend can still be
 # asked for.
 #
+# MAME's start-up information screen ("Press any key to continue") would
+# hold a windowed run before the machine powers on -- and the run scripts'
+# own hooks with it -- so it is skipped. The 540 is flagged as working and
+# raises no warning screen; the 520 still does, once per run, because its
+# driver flags it not working.
+#
 # A headless run has no business opening a window. MAME initialises SDL's
 # video subsystem even for -video none, which costs real time on a loaded
 # desktop and, on this machine, intermittently leaves the emulated boot
@@ -66,7 +72,7 @@ focus_args() {
 		*" -video none "*) export SDL_VIDEODRIVER=dummy ;;
 	esac
 	FOCUS_CMD=("$FOCUS_BIN" "$machine" ${throttle[@]+"${throttle[@]}"} \
-		-video soft -sound none "$@")
+		-video soft -sound none -skip_gameinfo "$@")
 }
 
 focus_run() {
