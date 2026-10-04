@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Install BASIC onto a fixed-disc image, the way BUILD_BOOT would.
 
 HP's own BUILD_BOOT utility, on the option disc, describes the job:

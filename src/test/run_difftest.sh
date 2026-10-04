@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Differential test: the MAME C++ disassembler against tools/focusdis.py.
 #
 # Two independent implementations of the same spec, compared instruction by

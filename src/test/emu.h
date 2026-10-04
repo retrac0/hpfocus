@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Minimal stand-in for MAME's emu.h, sufficient to build and exercise
 // focusdasm.cpp outside the MAME tree.
 //

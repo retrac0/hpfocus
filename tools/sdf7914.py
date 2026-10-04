@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the SDF filesystem on the HP 7914 unit-save tapes.
 
 The two tapes hold one 132 MB SDF volume. Block 0 -- the superblock -- was

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Reconstruct the 500's display from a FOCUS_DIMDUMP log.
 
 FOCUS_DIMDUMP prints the display card's frame buffer in *vram* order:

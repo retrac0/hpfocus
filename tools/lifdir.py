@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """List the LIF directory of a Series 500 media image.
 
 LIF (Logical Interchange Format) is HP's device-independent volume format.

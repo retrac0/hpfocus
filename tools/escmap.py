@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Map every constant-operand ESCP site in a Series 500 boot image.
 
 ESCP raises the kernel's software exception -- the "escape" that TRY

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Extract and disassemble the modules worth reading out of the 500ENV1-3
 # boot image into disasm/.
 #

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Generate a MAME debugger script that runs HP's factorial on the emulated CPU.
 
 The program is the recursive factorial from section 7 of the Instruction Set

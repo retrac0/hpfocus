@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the FOCUS Data Segment Table walk (src/cpu/focus/focusdst.h).
 //
 // Covers the unpaged path, both chaining modes, the paged path, and each

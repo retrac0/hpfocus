@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Reader for HP SDF, the Series 500 Structured Directory Format.
 
 Structures are from the Series 500 fs(5) and inode(5) manual pages,

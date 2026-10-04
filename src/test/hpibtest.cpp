@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the HP 27110A HP-IB card and the CS/80 drive behind it
 // (src/iop/focushpib.h), driven the way HP-UX 5.30's HP27110 module drives
 // them: WC and a control block, then RD or WD with one DMA leg per 1 KB

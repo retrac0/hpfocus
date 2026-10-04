@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the HP 27128A Asynchronous Serial Interface model
 // (src/iop/focusasi.h): its line discipline, driven through the IOP the way
 // HP-UX's HP27128/30 driver drives it -- orders on FR8, DMA legs for the

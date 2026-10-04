@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the FOCUS addressing unit (src/cpu/focus/focusaddr.h).
 //
 // The centrepiece is Figure 2.1 of the Instruction Set ERS (sheet 19), a

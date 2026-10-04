@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Cross-check docs/opcodes.csv against the ERS section 6.2 prose.
 
 opcodes.csv is a hand transcription of Appendix B, which is authoritative.

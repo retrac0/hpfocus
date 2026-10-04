@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Build a fixed disc that boots HP's 9020 System Functional Test environment.
 #
 # The test programs are not BASIC 2.0 programs. 500ENV1-3 are a three-volume

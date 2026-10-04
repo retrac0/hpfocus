@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Map the named modules in a Series 500 boot image.
 
 Both the HP-UX kernel (`os.req`) and the BASIC system boot discs are built from

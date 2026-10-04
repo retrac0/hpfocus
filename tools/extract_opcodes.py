@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Extract the FOCUS opcode map from the Instruction Set ERS text layer.
 
 Section 6.2 of the ERS describes each instruction with a line of the form

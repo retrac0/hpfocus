@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Joel Heikkila
+--
 -- focusdbg.lua -- headless debugger harness for the FOCUS driver.
 --
 -- Run with:  focus hp9020 -quik <image> -debug -debugger none \

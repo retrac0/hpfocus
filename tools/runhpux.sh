@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Boot HP-UX on an emulated Series 500.
 #
 #   tools/runhpux.sh                  5.30 on the 540, single user: root's
@@ -105,7 +108,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/hpux.sh"
 focus_repo
 hpux_paths
 
-usage() { sed -n '2,/^# Anything else/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+usage() { sed -n '5,/^# Anything else/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 
 # ------------------------------------------------------------------ options
 RELEASE=5.30

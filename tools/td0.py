@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Decode Teledisk (.TD0) floppy images to raw sector images.
 
 The Series 500 disks here are all signature "TD" (normal compression), so the

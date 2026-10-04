@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Unit tests for the FOCUS register model (src/cpu/focus/focusstate.h).
 //
 // The interesting risk here is bit numbering: the ERS counts bit 0 as the

@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the HP 27140A six-channel multiplexer model (src/iop/focusmux.h),
 // driven through the IOP the way HP-UX's HP27140 driver drives it: orders on
 // FR8, the Connect Subchannel command on FR9, DMA legs for the blocks, and

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Report how much of the real FOCUS code the execution core can run.
 
 Parses the case labels out of src/cpu/focus/focusexec.h to learn which

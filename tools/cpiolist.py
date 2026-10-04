@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """List a Series 500 HP-UX cpio archive extracted from the LIF tape.
 
 The tape's S* filesets are old-binary cpio (magic 070707) with **big-endian**

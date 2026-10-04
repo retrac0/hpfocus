@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the Segment Transfer Tables out of a Series 500 boot image.
 
 A FOCUS code segment ends with its STT, and every transfer between segments

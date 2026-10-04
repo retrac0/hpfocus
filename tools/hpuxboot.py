@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Build a bootable HP-UX kernel image from the 97089C release tape.
 
 The 5.01 tape ships the kernel the way `osmgr` installs it, not the way a

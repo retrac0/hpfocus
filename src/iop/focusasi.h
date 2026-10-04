@@ -1,5 +1,5 @@
-// license:BSD-3-Clause
-// copyright-holders:
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 /***************************************************************************
 
     HP 27128A Asynchronous Serial Interface (ASI), and the 27130A eight

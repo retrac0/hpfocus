@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Tests for the terminal relay, tools/hpuxterm.py hub.
 
     src/test/hubtest.py [path to hpuxterm.py]

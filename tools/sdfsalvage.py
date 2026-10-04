@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Superseded by sdf7914.py -- kept only for the floppy-style volumes.
 
 This walked a single image whose superblock was missing, on the assumption

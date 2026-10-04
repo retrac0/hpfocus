@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Boot BASIC from the 520's internal fixed disc -- an installed system,
 # rather than HP's two boot floppies.
 #

@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Joel Heikkila
+--
 -- stopfile.lua -- stop the emulator the clean way when a file appears.
 --
 -- tools/runhpux.sh runs MAME with  -autoboot_script tools/mame/stopfile.lua

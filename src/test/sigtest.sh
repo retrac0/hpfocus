@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Does a host signal stop the emulator cleanly, whatever it is doing?
 #
 #   src/test/sigtest.sh [binary]      (default: $HPFOCUS_BIN, as for the run

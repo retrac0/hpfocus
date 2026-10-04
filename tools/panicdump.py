@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Decode the HP-UX Series 500 panic report back into symbols.
 
 When this kernel cannot go on it prints "System halted due to system

@@ -1,5 +1,5 @@
-// license:BSD-3-Clause
-// copyright-holders:
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 /***************************************************************************
 
     Console and probe interface cards for the HP 9000 Series 500.

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Boot BASIC 2.0 on the emulated HP 9000/520, interactively: a window with
 # the 520's display, taking keystrokes as the machine's keyboard.
 #

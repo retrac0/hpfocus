@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Behaviour-preservation harness: capture the emulator's exact output now,
 # compare it after a refactor.
 #
@@ -86,7 +89,7 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ -n "$MODE" ] || { sed -n '2,31p' "$0" | sed 's/^# \?//'; exit 2; }
+[ -n "$MODE" ] || { sed -n '5,34p' "$(basename "$0")" | sed 's/^# \?//'; exit 2; }
 
 mkdir -p "$BASE" "$WORK" "$MEDIA"
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Assemble the whole HP-UX system disc from the two 7914 unit-save tapes.
 
 The tapes are two consecutive spans of one SDF volume, imaged from disc

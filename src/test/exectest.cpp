@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the FOCUS execution core (src/cpu/focus/focusexec.h).
 //
 // The end-to-end case is the recursive factorial program from section 7 of

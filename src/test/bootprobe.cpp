@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 #include <algorithm>
 #include <string>
 // Sweep candidate entry points into a SYSTEM POWERUP module and report how

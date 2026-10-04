@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Standalone builds of the FOCUS sources for testing outside a MAME tree.
 # The real build happens inside MAME; this exists so the same source can be
 # exercised without one.

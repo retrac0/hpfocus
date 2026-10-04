@@ -1,5 +1,5 @@
-// license:BSD-3-Clause
-// copyright-holders:
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 /***************************************************************************
 
     The Series 500 alphanumeric display, select code 0.

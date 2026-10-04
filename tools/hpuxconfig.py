@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Turn the assembled HP-UX 5.30 system disc multiuser, in place.
 
 The volume tools/mkhpuxdisc.py assembles boots to a single-user shell, for

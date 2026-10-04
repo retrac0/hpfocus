@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # From a fresh clone to a machine that boots HP-UX, in one command.
 #
 #   tools/setup.sh                 everything: check, fetch MAME, wire, build,
@@ -78,7 +81,7 @@ while [ $# -gt 0 ]; do
 		-j*) JOBS=${1#-j} ;;
 		--mame-source) SOURCE=${2:?--mame-source needs a URL or directory}; shift ;;
 		--) shift; MAKE_EXTRA=("$@"); break ;;
-		-h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '5,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown option '$1' (try --help)" >&2; exit 2 ;;
 	esac
 	shift

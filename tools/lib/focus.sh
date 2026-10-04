@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Shared machinery for the run scripts -- sourced, not executed.
 #
 # tools/runbasic.sh, runbasic-hd.sh and runhpux.sh each start a machine

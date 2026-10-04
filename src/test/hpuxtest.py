@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """HP-UX regression tests: the matrix the alpha was released against.
 
     src/test/hpuxtest.py matrix [--only a,b] [--skip a,b] [--jobs N] [--list]

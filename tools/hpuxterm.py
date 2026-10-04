@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Reach the emulated machine's terminals from the host.
 
     tools/hpuxterm.py 1                 log in on /dev/tty01 (MUX port 0)

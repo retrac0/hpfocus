@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the Instruction Set ERS: one sheet, one instruction, or the code's
 citations of it.
 

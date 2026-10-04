@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # The HP-UX 5.30 machine's media and state -- sourced, not executed.
 #
 # THE RULE: nothing boots the only copy of anything. Every run of the 540

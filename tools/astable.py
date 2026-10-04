@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the FOCUS instruction table out of the HP-UX Series 500 assembler.
 
 `/bin/as` (HP-UX 5.30, recovered from the 7914 unit-save tapes with

@@ -1,5 +1,5 @@
-// license:BSD-3-Clause
-// copyright-holders:
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 /***************************************************************************
 
     HP FOCUS Data Segment Table

@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Tests for the FOCUS I/O Processor (src/iop/focusiop.h), including the CPU
 // driving it through IOW / IOR / IOC.
 

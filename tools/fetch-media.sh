@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Fetch Hewlett-Packard's software and manuals, which this repository
 # points at (MEDIA.txt) and does not carry.
 #
@@ -80,7 +83,7 @@ while [ $# -gt 0 ]; do
 		--from) MODE=from ;;
 		--check) MODE=check ;;
 		--list) MODE=list ;;
-		-h|--help) sed -n '2,/^# Exit status/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '5,/^# Exit status/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		-*) echo "unknown option '$1' (try --help)" >&2; exit 2 ;;
 		*) NAMED+=("${1#./}") ;;
 	esac

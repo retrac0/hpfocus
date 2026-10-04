@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Writer for HP SDF, the Series 500 Structured Directory Format.
 
 The mirror image of tools/sdfread.py: that one takes a shipped volume

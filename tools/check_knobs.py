@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Check that the knob catalogue and the source agree.
 
 src/cpu/focus/focusknobs.h carries the one index of the emulator's FOCUS_*

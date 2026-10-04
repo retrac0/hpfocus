@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Does HP-UX come up and take a login? PASS or FAIL in about a minute.
 #
 #   tools/smoketest.sh              one multiuser boot of a fresh copy of
@@ -36,7 +39,7 @@ while [ $# -gt 0 ]; do
 		--seconds) SECS=$2; shift ;;
 		--twice) TWICE=1 ;;
 		--keep) KEEP=1 ;;
-		-h|--help) sed -n '2,/^# Exit status/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '5,/^# Exit status/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown option '$1' (try --help)" >&2; exit 2 ;;
 	esac
 	shift

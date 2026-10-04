@@ -123,10 +123,29 @@ The details, and what to do about each, are in
 | `src/cpu/focus/`, `src/iop/`, `src/mame/` | the CPU core, the I/O processor and cards, the hp9020/hp9040 driver |
 | `tools/` | run scripts, disc and media tools, disassembler (`tools/focusdis.py`) |
 
-The sources in `src/` carry `license:BSD-3-Clause` headers. MAME, which
-they build into, is GPL-2.0-or-later as a whole. The HP software in
-`software/` is Hewlett-Packard's: see [software/README.md](software/README.md)
-for where each image came from.
+## Licence
+
+| what | licence |
+|---|---|
+| the emulator: `src/cpu/focus/`, `src/iop/`, `src/mame/hp9000_5xx.cpp` and the C++ in `src/test/` | GNU GPL, version 2 or any later version ([COPYING](COPYING)). The file headers say `license:GPL-2.0+`, which is how MAME spells SPDX `GPL-2.0-or-later`. |
+| everything else that is the project's: `tools/`, the scripts and `Makefile` in `src/test/`, `docs/opcodes.csv`, and the documentation (this file, `INSTALL.md`, `KNOWN-ISSUES.md`, `MEDIA.txt`, the `.md` files under `docs/` and `software/`) | MIT ([LICENSE-MIT](LICENSE-MIT)) |
+| `src/iop/focusfont.h` and `tools/mame/focus-mame.patch` | BSD-3-Clause ([LICENSE-BSD-3-Clause](LICENSE-BSD-3-Clause)). They are MAME's: its terminal font, and an edit to two of its files. |
+
+Copyright (c) 2026 Joel Heikkila, the two MAME files apart. Each source
+file names its own licence on its first lines, and that line is what
+counts where this table and a file disagree.
+
+MAME is not part of this repository. `tools/setup.sh` fetches it and the
+emulator is built into it. MAME's own terms (`mame/COPYING` and
+`mame/README.md`: the GPL, version 2 or later, for the program as a whole)
+are what a built `mame/focus` is distributed under.
+
+Hewlett-Packard's software and manuals are HP's and nothing here licenses
+them. The repository does not carry them: [MEDIA.txt](MEDIA.txt) points at
+where they are published, and [software/README.md](software/README.md)
+says where each image came from. The same holds for what is quoted or
+transcribed from HP's documents, which is the six files in `docs/notes/`
+and the passages cited in the documentation.
 
 ---
 

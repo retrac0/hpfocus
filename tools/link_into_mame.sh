@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Wire this project's FOCUS sources into the MAME checkout in mame/.
 #
 #   tools/link_into_mame.sh            link and register (idempotent)
@@ -36,7 +39,7 @@ PATCH="$ROOT/tools/mame/focus-mame.patch"
 CHECK=0
 case "${1:-}" in
 	--check) CHECK=1 ;;
-	-h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '5,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 	"") ;;
 	*) echo "unknown option '$1' (try --help)" >&2; exit 2 ;;
 esac

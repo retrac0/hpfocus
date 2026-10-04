@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Run a boot image through the loader handoff the SYSTEM POWERUP module
 // actually expects, as reverse-engineered from the module itself (see
 // docs/IMPLEMENTATION.md).

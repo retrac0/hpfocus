@@ -1,4 +1,5 @@
-// license:BSD-3-Clause
+// license:GPL-2.0+
+// copyright-holders:Joel Heikkila
 // Standalone driver for focusdasm.cpp, used to differentially test the C++
 // disassembler against tools/focusdis.py.
 //

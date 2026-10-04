@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read a stored BASIC 2.0 program file from a Series 500 disc.
 
 BASIC's stored programs are not source listings and not pure object code:

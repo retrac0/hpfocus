@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Does BASIC compute the right answer?
 #
 # src/test/golden.sh proves the emulator did not *change*. It says nothing

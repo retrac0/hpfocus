@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Rebuild the 520's graphics raster from a FOCUS_GFXDUMP log.
 
 FOCUS_GFXDUMP=<n> makes the emulator print the graphics plane every n
