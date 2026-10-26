@@ -746,6 +746,15 @@ releases, the BASIC behaviour table (22 of 24 pass; `concat` and
 on the CPU. `--list` shows the cases; names given on the command line pick
 cases by prefix.
 
+`tests/dasm_difftest.py` compares MAME's disassembler (`unidasm -arch
+focus`, from a `TOOLS=1` build) against [tools/focusdis.py](tools/focusdis.py)
+over the same 550,030 instructions of real code as before -- identical.
+
+The `mame/` branch is split for upstream review as three stacked
+branches: `pr/focus-cpu` (the CPU and disassembler), `pr/hp-cio` (the CIO
+bus and cards), and `pr/hp9k5xx` (the I/O processor, boards, driver and
+software list, on top of the other two).
+
 ## Documentation
 
 Eleven primary documents are in [docs/bitsavers/](docs/bitsavers/), mirrored
