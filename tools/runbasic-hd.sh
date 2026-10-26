@@ -19,7 +19,7 @@
 #
 #   tools/runbasic-hd.sh                 boot the fixed disc
 #   tools/runbasic-hd.sh other.img       boot a different one
-#   tools/runbasic-hd.sh -- -flop3 x.TD0 also mount a flexible volume
+#   tools/runbasic-hd.sh -- -flop1 x.TD0 also mount a flexible volume
 
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/focus.sh"
@@ -50,4 +50,4 @@ case "$DISC" in
     *)  DISC="$FOCUS_REPO/$DISC" ;;
 esac
 
-focus_run hp9020 -hard1 "$DISC" "$@"
+focus_run hp9k520 -hard "$(focus_hd "$DISC" "$(basename "${DISC%.*}")")" "$@"

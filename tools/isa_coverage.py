@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report how much of the real FOCUS code the execution core can run.
 
-Parses the case labels out of src/cpu/focus/focusexec.h to learn which
+Parses the case labels out of mame/src/devices/cpu/focus/focus_*.cpp to learn which
 (format, opcode) pairs are implemented, then disassembles the HP-UX kernel and
 the BASIC boot disc and weights coverage by how often each opcode actually
 occurs. Static frequency, not a dynamic trace, but it is the right guide for
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # includes, so the dispatchers no longer live in one file. Scanning all of
 # them keeps this honest: a dispatcher that moved would otherwise report as
 # implementing nothing, and the coverage figure would quietly collapse.
-CORE = sorted((ROOT / "src/cpu/focus").glob("focusexec*"))
+CORE = sorted((ROOT / "mame/src/devices/cpu/focus").glob("focus_*.cpp"))
 
 spec = importlib.util.spec_from_file_location("fd", ROOT / "tools/focusdis.py")
 fd = importlib.util.module_from_spec(spec)
@@ -41,13 +41,13 @@ def implemented() -> set:
     out = set()
     found = set()
     for name, fmt in FUNCS.items():
-        m = re.search(rf"exec_trap {name}\(", src)
+        m = re.search(rf"exec_trap focus_device::{name}\(", src)
         if not m:
             continue
         found.add(name)
         # Scan forward to the next function definition at the same level.
         rest = src[m.end():]
-        nxt = re.search(r"\n\t(?:exec_trap|void|bool|u32) \w+\(", rest)
+        nxt = re.search(r"\n(?:focus_device::exec_trap|void|bool|u32|int) focus_device::\w+\(", rest)
         body = rest[:nxt.start()] if nxt else rest
         for c in re.finditer(r"case (\d+):", body):
             lit = c.group(1)

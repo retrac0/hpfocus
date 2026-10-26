@@ -1,16 +1,12 @@
 # Shared machinery for the run scripts -- sourced, not executed.
 #
-# tools/runbasic.sh, runbasic-hd.sh and runhpux.sh each start a machine
-# under MAME, and each of them used to carry its own copy of the same
-# three decisions about how to do it, comments and all. Three copies of a
-# paragraph is three places for it to drift; this is that paragraph once.
-#
 #   focus_repo             cd to the repository root, set $FOCUS_REPO
 #   focus_built            check mame/focus exists, or say how to build it
+#   focus_hd SRC NAME      a raw fixed-disc image as MAME's hard disk device
+#                          takes it: a .hd link beside the source
 #   focus_run MACHINE ARGS run it, adding the throttle and video arguments
 #                          the rest of the command line implies
 
-# The repository root, from the directory this file lives in.
 focus_repo() {
 	FOCUS_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 	cd "$FOCUS_REPO"
@@ -19,31 +15,26 @@ focus_repo() {
 focus_built() {
 	if [ ! -x "$FOCUS_REPO/mame/focus" ]; then
 		echo "mame/focus is not built; run:"
-		echo "  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9000_5xx.cpp -j8"
+		echo "  cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9k_5xx.cpp -j8"
 		exit 1
 	fi
 }
 
-# Throttling. A batch run wants to go as fast as it can; an interactive
-# one wants the window to keep up. Unthrottled, a machine that idles in
-# STOP races its emulated clock to thousands of percent, and MAME spends
-# so long emulating between presentations that the window never draws and
-# the event pump never sees a close or a signal -- a blank window you have
-# to kill by hand. So -nothrottle is added only for a run that ends by
-# itself, which is what -seconds_to_run means.
-#
-# Video backend. MAME defaults to opengl, and a driver that cannot present
-# through it leaves a window that renders the blinking cursor and never
-# updates the text -- the machine running perfectly behind a screen that
-# looks dead. These displays are character cells over a modest raster, so
-# the software renderer costs nothing and always works. A -video on the
-# command line comes after this one and wins, so any backend can still be
-# asked for.
-#
-# A headless run has no business opening a window. MAME initialises SDL's
-# video subsystem even for -video none, which costs real time on a loaded
-# desktop and, on this machine, intermittently leaves the emulated boot
-# dead. SDL_VIDEODRIVER=dummy gives SDL a backend that draws nowhere.
+# MAME's hard disk device takes a raw image by its extension. The image is
+# the machine's own disc and is written as the system writes it.
+focus_hd() {
+	local src=$1 name=$2
+	case "$src" in /*) ;; *) src="$FOCUS_REPO/$src" ;; esac
+	local link="$(dirname "$src")/$name.hd"
+	ln -sf "$(basename "$src")" "$link"
+	echo "$link"
+}
+
+# A run that ends by itself (-seconds_to_run) goes as fast as it can; an
+# interactive one is throttled so the window keeps up. The software
+# renderer always works for these character-cell displays; a -video on the
+# command line comes later and wins. A headless run gives SDL a video
+# backend that draws nowhere.
 focus_run() {
 	local machine=$1; shift
 	local throttle=() arg

@@ -36,11 +36,11 @@
 # requires before it will bring up its device world. Delete the file to
 # simulate a dead battery.
 #
-# Typed input and listening: FOCUS_TAP names the terminals a run listens
-# to ('console', '<sc>:<port>'), FOCUS_TYPE='@<term>=...' types at them,
-# FOCUS_TYPEAT=<s>,... says when. FOCUS_HELP=1 lists every knob.
-# Interactive ports: -cio2:mux6:port0 terminal, or -cio2:mux6:port0
-# null_modem -bitb socket.127.0.0.1:4000 and nc.
+# The SCM's clock and configuration memory are battery-backed: MAME keeps
+# them in its NVRAM directory, seeded on first use from software/cct/scm.nv,
+# a battery a real boot wrote. Delete mame/nvram/hp9k540 to simulate a
+# dead battery. Interactive ports: -cio2:mux:port0 terminal, or
+# -cio2:mux:port0 null_modem -bitb socket.127.0.0.1:4000 and nc.
 
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/focus.sh"
@@ -80,23 +80,22 @@ case "$RELEASE" in
 			--option HPIB_FLEX --option SERIAL --option MEMORY_VOL || exit 1
 	fi
 	# 5.01 has no root of its own on the tape, so the 5.30 volume is what
-	# it is given to mount -- the same disc, the same HP-IB card, one slot
-	# along from where a 540 keeps it because a 520's own select codes 0,
-	# 1, 6 and 7 are its display, graphics, keyboard and internal disc.
-	# Without a disc at all the kernel raises escape 116 against the NULL
-	# driver before it ever reaches its banner.
+	# it is given to mount, on an HP-IB card at select code 5 -- a 520's
+	# own select codes 0, 1, 6 and 7 are its display, graphics, keyboard
+	# and internal disc. The kernel itself boots from a fixed disc built
+	# around it. Both discs are written by the running system, so 5.01
+	# gets a copy of the 5.30 volume rather than the one 5.30 boots from.
 	DISC="$CCT/7914_hpux_volume.bin"
 	[ -f "$DISC" ] || { echo "no system disc at $DISC; run tools/runhpux.sh once"; exit 1; }
-	# And it mounts READ-ONLY. 5.01 does reach that file system and does
-	# write to it -- the HP-IB log is full of its writes -- but those are
-	# a 5.01 kernel's writes to a 5.30 installation, which is not a
-	# machine that ever existed, and letting them stick would quietly
-	# spoil the one system in this tree that boots to a shell. Set
-	# FOCUS_HDNOSAVE= to let them through on purpose.
-	export FOCUS_HDNOSAVE="${FOCUS_HDNOSAVE-1}"
-	export FOCUS_KBDNV="${FOCUS_KBDNV:-$CCT/kbd501.nv}"
-	focus_run hp9020 -mpb3 1m -mpb4 1m -cio5 hpib -hard2 "$DISC" \
-		-quik "$KERNEL" "$@"
+	ROOT501="$CCT/7914_hpux_volume_501.bin"
+	[ -f "$ROOT501" ] || cp "$DISC" "$ROOT501"
+	BOOT="$FOCUS_REPO/software/hd/hpux501.img"
+	if [ ! -f "$BOOT" ]; then
+		python3 "$FOCUS_REPO/tools/mkharddisc.py" "$BOOT" >/dev/null || exit 1
+		python3 "$FOCUS_REPO/tools/installbasic.py" "$BOOT" --boot-image "$KERNEL" >/dev/null || exit 1
+	fi
+	focus_run hp9k520 -ram 2m -hard1 "$(focus_hd "$BOOT" hpux501)" \
+		-cio5 hpib -hard2 "$(focus_hd "$ROOT501" hpux501-root)" "$@"
 	;;
 5.30|530)
 	;;
@@ -140,14 +139,16 @@ if [ "$MULTIUSER" = 1 ]; then
 	python3 tools/hpuxconfig.py "$DISC" || exit 1
 	case " $* " in
 		*" -cio2 "*) ;;
-		*) set -- -cio2 mux6 "$@" ;;
+		*) set -- -cio2 mux "$@" ;;
 	esac
 fi
 
-# RAM. The machine default is HP's 1 MB base configuration, but the
-# HP-UX image is 597 KB and its relocated world reaches past 0xb2000:
-# together they cannot fit under 1 MB, so this boot pins the two 1 MB
-# boards it was brought up and measured on. Fit different boards by
-# editing here; a second -mpb3 on the command line is a MAME error.
-export FOCUS_SCMNV="${FOCUS_SCMNV:-$CCT/scm.nv}"
-focus_run hp9040 -mpb3 1m -mpb4 1m -hard1 "$DISC" "$@"
+# RAM. The machine default is HP's 1 MB base configuration, but the HP-UX
+# image is 597 KB and its relocated world reaches past 0xb2000, so this
+# boot fits the 2 MB it was brought up and measured on.
+NV="$FOCUS_REPO/mame/nvram/hp9k540"
+if [ ! -f "$NV/scm_rtc" ] && [ -f "$CCT/scm.nv" ]; then
+	mkdir -p "$NV"
+	cp "$CCT/scm.nv" "$NV/scm_rtc"
+fi
+focus_run hp9k540 -ram 2m -hard "$(focus_hd "$DISC" 7914_hpux_volume)" "$@"

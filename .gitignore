@@ -1,13 +1,3 @@
-# Build artifacts -- everything src/test/Makefile builds
-src/test/addrtest
-src/test/bootprobe
-src/test/bootrun
-src/test/dasmtest
-src/test/dsttest
-src/test/exectest
-src/test/ioptest
-src/test/muxtest
-src/test/statetest
 *.o
 
 # Python
@@ -31,3 +21,7 @@ software/hd/*.img
 # shipped 500ENV discs in one command, so only the README is tracked
 disasm/*
 !disasm/README.md
+
+# MAME's hard disk device takes raw images through a .hd name; the run
+# scripts make these links beside the images they point at.
+*.hd

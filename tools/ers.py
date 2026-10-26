@@ -393,7 +393,7 @@ def cites() -> int:
 
     checked = confirmed = mismatched = outside = unplaceable = 0
     findings = []
-    for d in ("src/cpu/focus", "src/iop", "src/mame", "src/test"):
+    for d in ("mame/src/devices/cpu/focus", "mame/src/devices/bus/hp_cio", "mame/src/mame/hp"):
         for f in sorted((ROOT / d).rglob("*")):
             if f.suffix not in (".h", ".cpp", ".ipp"):
                 continue
@@ -488,7 +488,7 @@ def indicators() -> int:
     import io
     import contextlib
 
-    core = sorted((ROOT / "src/cpu/focus").glob("focusexec*"))
+    core = sorted((ROOT / "mame/src/devices/cpu/focus").glob("focus_*.cpp"))
     src = "\n".join(f.read_text() for f in core)
 
     funcs = {f"exec_fmt{n}": n for n in range(1, 7)}

@@ -651,17 +651,19 @@ software/
   README.md            provenance and per-image analysis
   97089C.hpi           HP-UX 5.01 tape (damaged; the 520 kernel survives)
   basic/ demos/ test/  20 Teledisk discs, all decoding cleanly
-src/
-  cpu/focus/           MAME CPU device + disassembler, registers,
-                       addressing, DST walk, execution core
-  iop/                 I/O processor: DMA, interrupts, interval timer
-  mame/                the hp9020 / hp9040 machine driver
-  test/                standalone builds + unit and differential tests
-mame/                  MAME upstream, shallow submodule
+tests/
+  run_tests.py         the regression suite: boots, BASIC table, ISA checks
+  harness.lua          its MAME -autoboot_script side
+mame/                  MAME, on the hp9k5xx branch: the driver lives here
+  src/devices/cpu/focus/        the FOCUS CPU and disassembler
+  src/devices/bus/hp_cio/       HP CIO bus: 27110A HP-IB, 27128A ASI, 27140A MUX
+  src/mame/hp/hp9k_5xx.cpp      the hp9k520 / hp9k540 driver
+  src/mame/hp/hp9k5xx_*         IOP, display, graphics, keyboard board,
+                                internal disc, SCM, RTC/NVM, printer
+  hash/hp9k5xx_flop.xml         software list for the shipped discs
 tools/
   focusdis.py          FOCUS disassembler + validation harness
-  gen_dasm_tables.py   generate the C++ opcode tables from opcodes.csv
-  link_into_mame.sh    symlink src/cpu/focus into the MAME tree
+  gen_dasm_tables.py   regenerate the disassembler's opcode tables from opcodes.csv
   td0.py               decode Teledisk images to raw sectors
   lifdir.py            list/extract LIF volumes
   cpiolist.py          list/extract big-endian old-binary cpio
@@ -706,35 +708,43 @@ Four encoding questions were resolved along the way and folded back into the
 spec: format 6's `BASE` width, the `BCCS`/`BCC` branch fields, the `EXF`/`DPF`
 sub-fields, and the full `STATUS` bit layout.
 
+The emulator is now an ordinary MAME driver on the `hp9k5xx` branch of the
+`mame/` submodule, structured for upstream submission: the FOCUS CPU, an HP
+CIO card bus, and the `hp9k520` / `hp9k540` machines. The standalone core,
+its unit tests and the `FOCUS_*` environment knobs are gone; the log entries
+below that name a `FOCUS_*` knob describe instruments of the pre-MAME
+emulator. Diagnostics are now each device's `LOG_*` flags (set `VERBOSE` in
+the source and run with `-log`), and MAME's debugger does the rest.
+
 ```sh
-git submodule update --init --depth 1 mame   # ~930 MB
-./tools/link_into_mame.sh
-cd src/test && make test
+git submodule update --init --depth 1 mame   # then: cd mame && git checkout hp9k5xx
+cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9k_5xx.cpp -j8
+cd .. && tests/run_tests.py
 ```
 
-Two harnesses sit above the unit tests, because unit tests keep passing
-through a great many real regressions:
+Running it:
 
-- **`src/test/golden.sh`** — behaviour preservation. Seventeen probes,
-  including two multi-million-instruction traces and three real boots,
-  compared byte for byte against a recorded baseline. It answers "did
-  anything change?", which is the question a refactor has to answer.
-- **`src/test/basictest.sh`** — behaviour *correctness*. A table of
-  (keystrokes, expected screen line) cases, each booted headless, typed at
-  with `FOCUS_TYPE` and read back through `FOCUS_DIMDUMP` and
-  [tools/screen.py](tools/screen.py). It answers "does BASIC give the right
-  answer?", which golden.sh cannot. Cases that pass are regression guards;
-  cases that fail are the work list, and the score is the measure of
-  progress. `--list` shows the table, `--only <name>` runs one.
+```sh
+tools/runbasic.sh                # BASIC 2.0 from the two shipped floppies
+tools/runbasic-hd.sh             # BASIC from the fixed disc (tools/mkharddisc.py)
+tools/runhpux.sh                 # HP-UX 5.30 on a 540, to the single-user shell
+tools/runhpux.sh --multiuser     # ...to a login on every port of a 27140A
+tools/runhpux.sh --release 5.01  # HP-UX 5.01 on a 520
+```
 
-`tools/screen.py` rebuilds the display from a `FOCUS_DIMDUMP` log. That is
-not a formality: the dump prints the frame buffer in vram order, while the
-6845 scrolls by moving its start address, so past the first screenful the
-dumped row numbers no longer name displayed lines.
+or directly, e.g. `mame/focus hp9k520 -flop1 500BT1.TD0 -flop2 500BT2.TD0`,
+`mame/focus hp9k520 basic20` from the software list, or `mame/focus hp9k540
+-ram 2m -hard1 disc.hd`. Raw fixed-disc images mount with a `.hd`
+extension (or as CHDs); the system writes to them.
 
-`tools/gfxscreen.py` does the same for the graphics plane and a
-`FOCUS_GFXDUMP` log -- 560 x 455 pixels, a digit per pixel holding its three
-plane bits, with `--plane` for one plane and `--ppm` for a picture.
+`tests/run_tests.py` is the regression suite. Each case boots MAME headless
+with an `-autoboot_script` (tests/harness.lua) that waits for text on the
+520's screen or a serial terminal, types through the natural keyboard, and
+checks what comes back: the boot milestones of both machines and both HP-UX
+releases, the BASIC behaviour table (22 of 24 pass; `concat` and
+`real-add` are the work list), and the ERS section 7 factorial run straight
+on the CPU. `--list` shows the cases; names given on the command line pick
+cases by prefix.
 
 ## Documentation
 

@@ -116,8 +116,11 @@ def copies(specs: list[str]) -> list[tuple[str, bytes, int]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("disc", type=Path, help="fixed-disc image to install onto")
-    ap.add_argument("--basic", type=Path, nargs="+", required=True,
+    ap.add_argument("--basic", type=Path, nargs="+",
             help="the BASIC boot volumes, in order (500BT1, 500BT2)")
+    ap.add_argument("--boot-image", type=Path,
+            help="install this assembled boot image instead (for example "
+                 "the 5.01 kernel tools/hpuxboot.py builds)")
     ap.add_argument("--option", type=Path, nargs="*", default=[],
             help="option binaries to add to the boot area")
     ap.add_argument("--copy", action="append", default=[], metavar="IMAGE[:A,B]",
@@ -126,17 +129,22 @@ def main() -> int:
             help="write the assembled boot image here as well")
     args = ap.parse_args()
 
-    # Assemble the boot image from its volumes with the existing tool, so
-    # there is one implementation of the volume-descriptor rules.
-    tmp = args.image or Path("/tmp/hpfocus-boot.bin")
-    r = subprocess.run([sys.executable, str(Path(__file__).parent / "bootimage.py"),
-            str(tmp), *[str(p) for p in args.basic]],
-            capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    if r.returncode:
-        sys.stderr.write(r.stderr)
-        return r.returncode
-    image = tmp.read_bytes()
+    if bool(args.basic) == bool(args.boot_image):
+        ap.error("give either --basic volumes or --boot-image")
+    if args.boot_image:
+        image = args.boot_image.read_bytes()
+    else:
+        # Assemble the boot image from its volumes with the existing tool,
+        # so there is one implementation of the volume-descriptor rules.
+        tmp = args.image or Path("/tmp/hpfocus-boot.bin")
+        r = subprocess.run([sys.executable, str(Path(__file__).parent / "bootimage.py"),
+                str(tmp), *[str(p) for p in args.basic]],
+                capture_output=True, text=True)
+        sys.stdout.write(r.stdout)
+        if r.returncode:
+            sys.stderr.write(r.stderr)
+            return r.returncode
+        image = tmp.read_bytes()
 
     end, segs = chain_end(image)
     print(f"\nboot image: {len(image):,} bytes, {segs} segments, "
