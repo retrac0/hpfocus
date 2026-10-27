@@ -1328,6 +1328,8 @@ Graphics side: rubber-band memory, line drawing, erase memory.
 >
 > | cmd | data | meaning |
 > |---|---|---|
+> | `0x128` | 1 | `NOT(x)`: where a positioned transfer starts |
+> | `0x129` | 1 | `NOT(y)`, and the card then answers reads and writes from that pixel |
 > | `0x12a` | 1 | pen colour, a plane mask: `0x3f` is all three |
 > | `0x12b` | 1 | background colour, `0x38` is none |
 > | `0x12d` | 2 | a point of a polyline — see below |
@@ -1335,6 +1337,21 @@ Graphics side: rubber-band memory, line drawing, erase memory.
 > | `0x402`, `0x403` | 1 | `0x400` and `0x3b0`, written by `HUMAN INTERFACE` at boot *[unread]* |
 >
 > and `0x12c`, `0x12e`, `0x12f` and `0x400` go by at boot carrying nothing.
+>
+> **`DUMP GRAPHICS` reads the screen back a row at a time:** `0x100`,
+> `0x128` with `NOT(0)`, `0x129` with `NOT(row)`, then 105 words by DMA —
+> 35 of each plane, interleaved as the self test's whole-memory read is — and
+> only then `0x1a1` and another `0x100`. The order is the evidence. BASIC
+> waits for the row before it issues `0x1a1`, so a card that holds the
+> transfer for it times the dump out (`ERROR 168`), and the words must flow
+> from the moment the position is complete. A card that knew neither command
+> answered every word with the echo of its last parameter, which is why the
+> first dumps printed each row as `NOT(row)` repeated. Two things are
+> **[inferred]**: that a position serves writes the same way, and that
+> `0x100` ends the test-pattern mode. The power-up self test leaves all
+> three planes in it and only `FR1 = 0` cleared it, which the dump never
+> writes; the self test never sends `0x100` between setting a mode and
+> reading it, and the display's power-up test still passes.
 >
 > **7. How a point is encoded.** Both words of `0x12d` are the one's
 > complement of a field whose low ten bits are the coordinate and whose bit
@@ -1573,10 +1590,19 @@ recovered from the running system and is recorded in the emulator source
 
 ---
 
-### 2.9 Internal thermal printer *(520 Service 2-41…2-44; CE Handbook 5-6)*
+### 2.9 Internal thermal printer *(520 Service 2-41…2-46; CE Handbook 5-6, 5-8)*
 
 The one peripheral in this machine whose programming interface the manuals
 give outright, rather than leaving to be read off HP's binaries.
+
+**The mechanism is the HP 9845's.** The CE Handbook's parts list gives the
+printhead as `09845-67163` and its chip module as `09845-67161`. A fixed
+line of 560 heating elements, 77 to the inch, over paper a stepper advances
+1/154 inch at a time; a character field's dot row is two steps, a 150% tall
+one three. Graphics go to the head "in 8-bit groups, so up to 70 groups are
+printed at a time" *(2-46)*. MAME already emulates the 9845's printer, and
+the two share that geometry, not the firmware: the 520's is an 8039 program,
+and its command set differs (§2.9.3).
 
 An optional module on the 9020A/B and standard on the 9020C, with its own
 logic board: an 8039-class microprocessor, 64 bytes of internal RAM, 8 KB of
@@ -1605,11 +1631,12 @@ optional input device — one interface, one or more registers per device.
 | reads of R0, R2, R4, R5, R6, R7 | present the **status byte** |
 
 Data is a stream of ASCII bytes: characters fill an 80-byte line buffer,
-printed on the 81st or on a control code; a subset of control codes acts
-immediately; escape sequences start with code 27 and normally end with a
-capital letter, and the ones that do not apply are ignored. The escape set
-itself is **not** in either manual — these are hardware books — so it has to
-come off a run, which is what the model's register log is for.
+printed on the 81st or on a Carriage Return, Line Feed or Backspace; a
+subset of control codes acts immediately; escape sequences start with code
+27 and normally end with a capital letter, and the ones that do not apply
+are ignored. The escape set itself is **not** in either manual — these are
+hardware books — so §2.9.3 is what came off runs and off HP's own printer
+test.
 
 The status byte, MSB first, is `PSFL DSTF MSTF OOPP HDFL VHLO PTTH HDTH`:
 power supply failure, dangerous self-test failure, don't care, out of paper,
@@ -1638,7 +1665,54 @@ off a running machine:
   line and the keyboard shares it, so a printer that polls at any other time
   costs the machine its keystrokes.
 
-#### 2.9.3 What is modelled
+#### 2.9.3 The command set, as found
+
+BASIC adds nothing of its own: `PRINTER IS 6` sends no setup, and `PRINT`
+sends the text and `CR LF`. What a program asks for goes through as it is.
+The rest was read off `(17)PRINTER`, HP's printer test on `500MFTST`, whose
+`Pattern` subprogram carries its escape strings as literals, and off a
+`DUMP GRAPHICS` run:
+
+| bytes | meaning | from |
+|---|---|---|
+| CR, LF, BS | dump the line; CR returns, LF feeds a line, BS steps back a column — so CR or BS without LF overprints | Service 2-46 |
+| `0x80`–`0x8f` | HP display enhancements, passed through by BASIC: bit 0 inverse, bit 2 underline | a run |
+| `ESC & d @`…`O` | the same as a letter: `B` inverse, `D` underline; `@` all off | `(17)PRINTER` |
+| `ESC * r A` / `B` | raster graphics on / off | `DUMP GRAPHICS` |
+| `ESC * b 70 W` + 70 bytes | one raster row, 560 dots, most significant bit leftmost | `DUMP GRAPHICS`, `(17)PRINTER` |
+| `ESC & n 35 c 1 d 3 e … 1 N` | define character 35, a row per letter from `d` | `(17)PRINTER` |
+| `ESC & n 35 C` | the code alone: drop the definition | `(17)PRINTER` |
+| `ESC & l 0 T` | sent by the test; not interpreted | `(17)PRINTER` |
+| `ESC & k 1 S` / `0 S` | 150% tall on / off | **[inferred]** — the 9845's sequence on the same mechanism |
+| `ESC Y` / `ESC Z` | display functions on / off | **[inferred]** — HP's convention, and what the self test's layout needs |
+
+`DUMP GRAPHICS` is the whole screen as 455 raster rows inside `ESC*rA` …
+`ESC*rB`, 34,588 bytes. The test's character definition puts a row per letter
+**from `d`, which is the field's row 1**: the arrowhead it defines
+(1, 3, 7, 15, 31, 127, …) appears in the handbook's printout in inverse
+video, and the band there starts with a solid row before the first
+definition row. That fits the ROM font, whose row 0 is never inked.
+Overline has a place in the field and no sequence anyone has seen. Nothing
+here says how R5 selects Katakana: "by processor command as determined by
+the keyboard language configuration" *(2-45)*.
+
+#### 2.9.4 The character set
+
+The 4 KB font ROM is not dumped, and its packing of a 7 × 12 field into 8
+bytes is not documented either. But the printer's **front-panel self test**
+(Paper Advance and Top of Form together) prints every code of both sets in
+display functions mode, and the CE Handbook reproduces that printout on page
+5-8 — 400 dpi, one bit deep, about 3.1 pixels a dot. [tools/printerfont.py](../tools/printerfont.py)
+reads all 512 glyphs off it: the lines are 80 fields of 7 × 12 dots, CR ends
+each set's first line after printing its own glyph (so lines start at
+`0x00`, `0x0e`, `0x5e`, `0xae`, `0xfe`), and a dot is on when most of its
+pitch-sized block is ink. `_` sits on row 11; row 0 is empty throughout,
+which is where overline goes, and row 11 nearly so, which is where underline
+goes. Re-printed from the table, the self test matches the handbook's line
+for line. It is still a reading of a picture, so a dot or two in a glyph can
+be wrong; the tool prints the least certain codes.
+
+#### 2.9.5 What is modelled
 
 The MAME model is a child of the 520's keyboard board, not a card of its own:
 select code 6 is one interface with several devices behind it, so the
@@ -1649,21 +1723,31 @@ keyboard board and no printer.
 
 The status byte always reads 0x00 and the presence bit always stands: the
 fault bits are named so that one can be injected, but nothing injects them.
-The register log traces every access, escape sequences included, and a
-second log carries the printed lines as text.
+The register log traces every access, the escape log every sequence, and a
+third log carries the printed lines as text.
 
 The presence bit, the flag handshake, the loopback and the poll are all in
 and graded by HP's own test, which gets as far as **failure 08, "printer
 status false"**.
 
-**It prints.** `PRINTER IS 6` then `PRINT` puts the line on paper. The paper
-is a MAME printer image, which takes the raw byte stream:
+**It prints on paper.** The paper is a MAME bitmap printer on continuous
+roll, 8.27 inches wide at one pixel per 1/154-inch step, the head's 560 dots
+two pixels each and centred; stretches of roll are written to the snapshot
+directory as PNGs. The raw byte stream still goes to a printer image beside
+it:
 
 ```
-$ mame hp9k520 ... -prin paper.bin
+$ mame hp9k520 ... -prin paper.bin -snapshot_directory snap
 $ od -c paper.bin
 H E L L O   W O R L D \r \n   4 2   \r \n T H I R D \r \n
 ```
+
+Text, true overprinting, underline and inverse in both encodings, tall
+characters, user-defined characters and raster rows are all drawn; so is the
+front-panel self test, from two IPT_OTHER buttons, *Printer Paper Advance*
+and *Printer Top of Form*. Form feed goes to the next 11-inch page, which is
+the bitmap's; the real printer's lines per page are programmable and how is
+not known.
 
 The path is **DMA, not byte writes**, and four things had to be right:
 
@@ -1692,9 +1776,11 @@ and corrected the same wrong count in the disc path.
 
 **What is still wrong.** The powerup self test stops at failure 08, "printer
 status false", so the boot carries one `Self test error 1: IO address 6, 0`
-line. Printing itself is unaffected. The escape sequences and the R5
-interface commands are still only logged, not interpreted, and nothing
-renders the 560-dot raster.
+line. Printing itself is unaffected. The R5 interface commands other than
+loopback are only logged, so nothing selects Katakana yet; `ESC & l` and the
+vertical pitch, lines per page and margins it presumably sets are not
+interpreted; and the two inferred sequences above want a program that uses
+them to confirm.
 
 **R0 is contested and the manual wins.** This model used it for the
 keyboard's pending keycode, which the 520 manual does not assign to the
