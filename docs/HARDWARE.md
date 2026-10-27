@@ -1609,7 +1609,7 @@ printed on the 81st or on a control code; a subset of control codes acts
 immediately; escape sequences start with code 27 and normally end with a
 capital letter, and the ones that do not apply are ignored. The escape set
 itself is **not** in either manual — these are hardware books — so it has to
-come off a run, which is what `FOCUS_PRINTLOG` is for.
+come off a run, which is what the model's register log is for.
 
 The status byte, MSB first, is `PSFL DSTF MSTF OOPP HDFL VHLO PTTH HDTH`:
 power supply failure, dangerous self-test failure, don't care, out of paper,
@@ -1640,21 +1640,27 @@ off a running machine:
 
 #### 2.9.3 What is modelled
 
-`src/iop/focusprint.h`, reached through `console_card` — select code 6 is one
-interface with several devices behind it, so the keyboard board owns the slot
-and routes the printer's registers. `FOCUS_PRINTER` fits it (off by default:
-it is an option, and fitting it registers another device),
-`FOCUS_PRINTLOG` traces it, `FOCUS_PRINTSTATUS` injects fault bits,
-`FOCUS_PRINTPRESENT` withholds the R1 presence bit.
+The MAME model is a child of the 520's keyboard board, not a card of its own:
+select code 6 is one interface with several devices behind it, so the
+keyboard board owns the slot and routes the printer's registers. It is an
+option, so it is **not fitted by default**; the keyboard board's *Internal
+printer* configuration setting fits it, from the next reset. The 540 has no
+keyboard board and no printer.
+
+The status byte always reads 0x00 and the presence bit always stands: the
+fault bits are named so that one can be injected, but nothing injects them.
+The register log traces every access, escape sequences included, and a
+second log carries the printed lines as text.
 
 The presence bit, the flag handshake, the loopback and the poll are all in
 and graded by HP's own test, which gets as far as **failure 08, "printer
 status false"**.
 
-**It prints.** `PRINTER IS 6` then `PRINT` puts the line on paper:
+**It prints.** `PRINTER IS 6` then `PRINT` puts the line on paper. The paper
+is a MAME printer image, which takes the raw byte stream:
 
 ```
-$ ... -prin paper.bin        FOCUS_PRINTTEXT=paper.txt
+$ mame hp9k520 ... -prin paper.bin
 $ od -c paper.bin
 H E L L O   W O R L D \r \n   4 2   \r \n T H I R D \r \n
 ```
@@ -1686,8 +1692,9 @@ and corrected the same wrong count in the disc path.
 
 **What is still wrong.** The powerup self test stops at failure 08, "printer
 status false", so the boot carries one `Self test error 1: IO address 6, 0`
-line. Printing itself is unaffected. The escape sequences are still only
-logged, not interpreted, and nothing renders the 560-dot raster.
+line. Printing itself is unaffected. The escape sequences and the R5
+interface commands are still only logged, not interpreted, and nothing
+renders the 560-dot raster.
 
 **R0 is contested and the manual wins.** This model used it for the
 keyboard's pending keycode, which the 520 manual does not assign to the
