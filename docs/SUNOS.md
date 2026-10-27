@@ -933,3 +933,11 @@ Two cases still fail, and neither is this bug:
   compiles and runs, and comes back a few ulp low. This is a wrong answer
   where it used to be a halt, so it is a fresh and much sharper frontier than
   anything sections 6-14 had.
+
+**Both since fixed.** `SCON` bounds-checked its target temp against
+fourteen words below S where sheet 112 says four. The `4.5+1` error was
+exactly 2^-30, and neither `FADD` nor the decimal conversions made it:
+BASIC builds the literal 4.5 as 45 x 0.1 in a software double multiply
+that sums 32-bit partial products with `LADD` and carries into the next
+word with `LADD,B`. The core ignored the b bit, which sheet 76 defines as
+carry in (`LSUB,B` subtracts 1-Carry), so the middle word's carry was lost.

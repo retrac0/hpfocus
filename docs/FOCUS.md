@@ -1022,8 +1022,12 @@ Set Overflow if the TOS does not fit a halfword (`(0:17)` not all equal).
 Operand stays. *CCA, Overflow.*
 
 **`LADD` / `LSUB`** — Logical Add / Subtract — `F3:60` / `F3:61`
-Unsigned add/subtract of the top two words; Carry is the borrow/carry out,
-Overflow untouched — the multi-precision building block. *CCA, Carry.*
+Unsigned add/subtract of the top two words, Overflow untouched — the
+multi-precision building block. `b` chains the carry in: `LADD,B` adds
+Carry, `LSUB,B` subtracts 1−Carry, so after `LSUB` Carry set means *no*
+borrow (as `DLAD`/`DLSB`). BASIC's software double multiply depends on
+`LADD,B`. *CCG if the result is nonzero; CCE if zero and `b` clear,
+else CC unchanged; Carry.*
 
 **`LMPY`** — Logical Multiply — `F3:62`
 Unsigned 32×32 → full 64-bit product pushed as a doubleword. *CC

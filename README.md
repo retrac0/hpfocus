@@ -78,11 +78,9 @@ kernel-weighted figure understates it.
 
 The string-descriptor instructions (`SLD`, `SVAL`, `SCON`, `SAS`) went the
 same way and are covered by five `exectest` cases; the note that used to
-name them here was stale. What is left in the gap is **`BTD` and `DTB`**,
-the binary-to-decimal pair on ERS sheets 84–85 — and they are not academic:
-`DISP 8/2` computes 4.0 correctly and then traps 020 converting it for
-display, so they sit directly on the path that shows a computed number.
-`DLAD` and `DLSB`, the rest of the decimal group, are implemented.
+name them here was stale. So did the decimal group: **`BTD`, `DTB` and
+`POT`**, the binary-to-decimal conversions on ERS sheets 84–87, are
+implemented beside `DLAD` and `DLSB`, and BASIC prints real numbers.
 Everything else left is an opcode Appendix B does not assign — data that a
 linear scan misreads as code, since a run of `0xff` decodes as format 6
 opcode 37.
@@ -151,11 +149,20 @@ went from 11 passing to 22 of 24; the account is below and in
 STORE, and a numbered line needs `\r` or BASIC answers `IMPROPER COMMAND`.)
 
 Two cases still failed, and neither was that bug: `DISP "A"&"B"` halted on
-string concatenation, and `DISP 4.5+1` answers `5.49999999907` — a wrong
-answer where it used to be a halt. The concatenation is fixed: `SCON`
-bounds-checked its target temp against fourteen words below S where sheet
-112 says four, so every temp short enough to sit nearer the top — the
-two-operand `"A"&"B"` among them — raised Bounds Violation (trap 001).
+string concatenation, and `DISP 4.5+1` answered `5.49999999907` — a wrong
+answer where it used to be a halt. Both are fixed. `SCON` bounds-checked
+its target temp against fourteen words below S where sheet 112 says four,
+so every temp short enough to sit nearer the top — the two-operand
+`"A"&"B"` among them — raised Bounds Violation (trap 001).
+
+The `4.5+1` error was exactly 2⁻³⁰, and neither the add nor the decimal
+conversions made it: `FADD` was handed 4.4999999990686774. BASIC builds
+the literal as 45 × 0.1 in its own software double multiply, which sums
+32-bit partial products with `LADD` and folds each carry into the next
+word with `LADD,B`. The core ignored the b bit, so the carry out of the
+middle word was lost. Sheet 76 has `LADD,B` add Carry and `LSUB,B`
+subtract 1−Carry — the convention `DLAD`/`DLSB` already followed — and
+with that the BASIC table passes in full.
 
 > **The rest of this subsection is a superseded log.** Everything from here
 > to "Recovered software" is the investigation that chased the symptoms of
@@ -744,8 +751,8 @@ extension (or as CHDs); the system writes to them.
 with an `-autoboot_script` (tests/harness.lua) that waits for text on the
 520's screen or a serial terminal, types through the natural keyboard, and
 checks what comes back: the boot milestones of both machines and both HP-UX
-releases, the BASIC behaviour table (27 of 28 pass; `real-add` is the
-work list), and the ERS section 7 factorial run straight
+releases, the BASIC behaviour table (all 28 pass), and the ERS section 7
+factorial run straight
 on the CPU. `--list` shows the cases; names given on the command line pick
 cases by prefix.
 
@@ -867,6 +874,10 @@ nothing on the boot path was touched. Full account in
 Still failing, and unrelated: `DISP "A"&"B"` halts (string concatenation),
 and `DISP 4.5+1` answers `5.49999999907` — a wrong answer where it used to be
 a halt, which is a far sharper frontier than anything below.
+
+*Since fixed, both:* `SCON` checked its target temp against the wrong
+bound, and `LADD,B` dropped the carry BASIC's software double multiply
+chains through. See "Current state" above.
 
 ## `RUN` of a typed program: the short table, confirmed by experiment
 
