@@ -352,28 +352,44 @@ sixteen locations; 16–63 are NVM bytes:
 | 14 | Timer Resolution | | |
 | 15 | Timeout Scan Resolution | | |
 
-> **Observed.** The map is **one field numbering answered by both parts**, not
-> a split down the middle. A battery file HP-UX 5.30 wrote holds the time of
-> day in the clock and, at the map's own offsets *in the NVM*, clock check 14,
-> stack size 6, century 19 and year 70. Both parts carry the low sixteen. That
-> is why [`src/iop/focusrtc.h`](../src/iop/focusrtc.h) states the map once and
-> both boards decode through it.
+> **Observed.** The map is **the operating systems' field numbering, not the
+> chip's**. BASIC and HP-UX 5.30 carry the same clock driver (SUN OS KERNEL
+> 0x7b68..0x8378; CORE SYSTEM +0x8814..+0x8e98), and its field accessor sends
+> offsets 0, 2, 4, 6, 7 and 8 to the clock and **every other offset to the
+> NVM** through R13. So the century (5), the year (9) and the clock check byte
+> (1) are NVM bytes, whatever the clock holds.
 
-> **Open question — how wide is a location?** Both manuals say "16 four-bit
-> locations", and in the same breath "a 4-bit multiplexed address/data bus
-> provides I/O for the chip". A nibble cannot hold the 59 HP-UX stores in a
-> minute location or the 70 it stores in a year, and BASIC's driver undoes the
-> bus inversion with a byte-wide `NOT` (trap seg 0x48072). So the emulator
-> reads the four bits as the **bus** and a location as a byte, which is what
-> boots — but that is an inference, not a quotation. HP's own `(7)KEYBOARD`
-> diagnostic (`Rtc_update`, `Reset_time`) settles it, and has never been run.
+**A location is one BCD digit.** Read literally, "16 four-bit locations" is
+right. With R1 bit 7 set, which both boards answer, the driver latches the
+complement of a location, reads R9, inverts it and masks it to four bits
+(`NOT; ANDI #15`). Any digit above 9 is escape 941. A two-digit field is read
+as units, then tens through the auto-increment, with location 1 (tenths of a
+second) read before and after and the read retried if it moved:
 
-> **Open question — the clock check byte.** Nothing known writes offset 1, and
-> nothing here does. `FOCUS_RTCTIME` seeds a moment into both parts and HP-UX
-> clears the century and the year again during bring-up and installs its own,
-> so the OS does not accept a clock it did not set itself. The check byte is
-> the likely gate: a real run's battery holds 1 there in the clock and 14 in
-> the NVM.
+| Location | Contents | Location | Contents |
+|---|---|---|---|
+| 0 | test | 8, 9 | day of month |
+| 1 | tenths of seconds | 10 | day of week, 1 = Monday ... 7 = Sunday |
+| 2, 3 | seconds (not writable; a stop zeroes them) | 11, 12 | month |
+| 4, 5 | minutes | 13 | leap status: `1 << ((year - 1) mod 4)`, so 8 in a leap year |
+| 6, 7 | hours | 14 | stop (0) / start (1) |
+| | | 15 | interrupt control |
+
+That is the register file of a National MM58174A, which has no year. (The
+identification is from the layout, not from a parts list.)
+
+**The clock check byte must read 240.** The driver writes 240 (`0xF0`) to it
+when it sets the clock, 15 when it initialises a blank NVM, and 14 when a set
+clock later fails its checks: the day of week must agree with the date, or
+with the next year's calendar, which is how it notices the chip rolling over
+a new year. At boot, anything but 240 is escape 941, `CLOCK AND DATE NOT SET`,
+and the software clock starts at 0, 1 January 1900. Before the NVM is trusted
+at all it must pass a checksum: one, plus offset 3, plus every byte from 14 up
+except 46-47, modulo 16384, stored high byte first at 46. A blank part fails
+that and is reinitialised, so a new battery always reports the clock unset
+once. The MAME model loads the host's time the way the driver's own set
+sequence leaves the part, check byte included. The 540's SCM gets UTC,
+because HP-UX keeps GMT in the chip.
 
 #### 2.4.2 The same part on the 520 *(520 Service, sheets 2-32/2-34)*
 

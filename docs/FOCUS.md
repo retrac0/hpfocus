@@ -1615,18 +1615,37 @@ EDS reference and so is free to carry that meaning. Both HP-UX kernels
 feed both forms; both their call sites use the same `{0, 1}` layout, an
 unlocked one-unit mutex.
 
-`DOWN` decrements the count. If it stays non-negative the instruction is
-done. Otherwise the task blocks: its wait-link node at `CTCBP−8`
-(`{forward, backward}`, the direction `LDEL` expects) is pushed on the
-list head, its state word at `CTCBP−16` takes 2 in the low halfword, and
-the task leaves through the dispatcher exactly as `DISP` enters it. The
-TCB stays spliced into the dispatcher's priority chain — the `LLSH` walk
-skips anything whose state is not 1.
+The wait list is the one both kernels' software semaphore keeps (HP-UX
+CORE SYSTEM +0x5068..+0x5498, SUN OS KERNEL 0x4a76..0x4b52): a **circular**
+`LINS`/`LDEL` list of the waiters' link nodes, in priority order, with the
+head word pointing at the first. HP-UX runs the software path and these
+instructions on the same semaphores, so the microcode has to keep the list
+exactly that way.
 
-`UP` increments the count. If it is still non-positive there is a waiter:
-the head node is unlinked, its state word set back to 1, and the MSG
-doorbell bit the dispatcher's idle mask always leaves enabled is raised,
-so a processor sitting in `STOP` returns to find it.
+`DOWN` decrements the count. If it stays non-negative the instruction is
+done. Otherwise the task blocks. Its wait-link node at `CTCBP−8`
+(`{forward, backward}`, the backward word 4 bytes on) goes into the list
+after every waiter whose priority value, at node−4 (`CTCBP−12`), is not
+greater than its own: the software's `LLSH 3` over the waiters already
+queued, then `LINS`. The head moves only if the node went in first. The
+semaphore is noted at node+112, the state word at `CTCBP−16` takes 2 in the
+low halfword, and the task leaves through the dispatcher exactly as `DISP`
+enters it. The TCB stays spliced into the dispatcher's priority chain — the
+`LLSH` walk skips anything whose state is not 1.
+
+`UP` increments the count. If it is still non-positive there is a waiter,
+the head. The last one simply empties the list; otherwise it is `LDEL`ed
+and its forward link becomes the head. Its state word is set back to 1,
+and the MSG doorbell bit the dispatcher's idle mask always leaves enabled
+is raised, so a processor sitting in `STOP` returns to find it.
+
+A single waiter's node is circular: it points at itself. An earlier model
+pushed waiters on the head of a nil-terminated list and woke them by
+following the forward link, which left a lone waiter on its own list after
+it was woken. With the clock unset that never mattered. Once the clock was
+accepted, the timing moved and HP-UX's IOS lock ended up "waking" a running
+task while two real waiters slept for good: the multiuser boot stopped
+after `/etc/rc`'s `expreserve` whenever the 27140A was fitted.
 
 A semaphore already locked (−1) by another processor is handled by
 re-executing the instruction. *CC unaffected.*

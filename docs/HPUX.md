@@ -1272,7 +1272,8 @@ more carefully than this one, or another copy of 97089C.
 
 Worth recording, because each cost a run: the `.opt` driver modules make no
 difference to the escape 116 halt (it happens before any of them would be
-asked for); `FOCUS_KBDNV` and `FOCUS_RTCTIME` do not clear "CLOCK AND DATE
-NOT SET", which the 520 prints under BASIC too; and 020/021 — the
+asked for); "CLOCK AND DATE NOT SET", which the 520 prints under BASIC too,
+is the clock check byte (HARDWARE.md 2.4.1) and goes from the second boot on
+a battery; and 020/021 — the
 unassigned format 4 opcodes this kernel used to stop on after 1.26M
 instructions — no longer arise at all, because `UP`/`DOWN` are implemented.
