@@ -85,7 +85,7 @@ BASIC_FLOPS = ['-flop1', str(SW / 'basic' / '500BT1.TD0'), '-flop2', str(SW / 'b
 READY = 'BASIC Ready for use.'
 
 # (name, keystrokes, the line the screen should show). Keystrokes are
-# posted once BASIC is ready; '\n' is EXECUTE. real-add is the work list.
+# posted once BASIC is ready; '\n' is EXECUTE.
 BASIC_TABLE = [
 	('disp-int', 'DISP 7\n', '7'),
 	('disp-string', 'DISP "HI"\n', 'HI'),
@@ -116,7 +116,7 @@ BASIC_TABLE = [
 	('sqrt2', 'DISP SQR(2)\n', '1.41421356237'),
 	('real-add', 'DISP 4.5+1\n', '5.5'),
 ]
-KNOWN_FAILING = {'basic-real-add'}
+KNOWN_FAILING = set()
 
 
 def factorial_case():
