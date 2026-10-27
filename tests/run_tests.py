@@ -217,6 +217,27 @@ def cases(work):
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-single')],
 			[{'wait': '/etc/rc', 'on': console}], 400,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	def hdd_list():
+		d = Path(work) / 'roms' / 'hp9k5xx_hdd' / 'hpux530'
+		chd = d / 'hpux530.chd'
+		if not chd.exists():
+			d.mkdir(parents=True, exist_ok=True)
+			vol = Path(work) / 'hpux530-rebuilt.bin'
+			subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkhpuxdisc.py'),
+					str(SW / 'cct' / '7914_unitSave_hpux4.0.bin'),
+					str(SW / 'cct' / '7914_unitSave_hpux4.0_tape2.bin'), str(vol)],
+					check=True, stdout=subprocess.DEVNULL)
+			subprocess.run([str(ROOT / 'mame' / 'chdman'), 'createhd', '-i', str(vol), '-o', str(chd),
+					'-chs', '1168,7,64', '-ss', '256'], check=True,
+					stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		return ['hpux530', '-rompath', str(Path(work) / 'roms')]
+	# As imaged, the system asks for its run level; single user logs in as
+	# root on the console.
+	add('hpux-softlist', 'hp9k540', hdd_list,
+			[{'wait': 'ENTER RUN LEVEL', 'on': console}, {'sleep': 2}, {'post': 's\n', 'to': console},
+			 {'wait': 'TERM =', 'on': console, 'within': 200}, {'sleep': 2}, {'post': '\n', 'to': console},
+			 {'sleep': 5}, {'post': 'expr 6 \\* 7\n', 'to': console}, {'posted': True},
+			 {'line': '42', 'on': console, 'within': 30}], 600)
 	mux0 = ':cio2:mux:port0:terminal'
 	add('hpux-multi', 'hp9k540',
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-multi', multiuser=True),
