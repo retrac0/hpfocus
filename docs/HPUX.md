@@ -1039,9 +1039,9 @@ and a login typed into any of them reaches a root shell:
     unrcad# who
     root       tty01        Feb  6 22:29
 
-Interactively: `tools/runhpux.sh --multiuser -cio2:mux6:port0 null_modem
+Interactively: `tools/runhpux.sh --multiuser -cio2:mux:port0 null_modem
 -bitb socket.127.0.0.1:4000` and `nc 127.0.0.1 4000`, or
-`-cio2:mux6:port0 terminal` for a window. Port N of the card is
+`-cio2:mux:port0 terminal` for a window. Port N of the card is
 `/dev/tty0(N+1)`; `FOCUS_TAP=all` prints every terminal the machine has,
 and `FOCUS_TAP=bogus` lists them.
 
@@ -1077,8 +1077,8 @@ whole run. `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they meant.
 protocol -- HARDWARE.md 2.6.6 has the register map and block formats, and
 the dialogue HP-UX was watched running: the powerup scan's CSC + IDY, the
 HP27140 module's download of its 5,330-byte Z80 image, subfunction 152 on
-every port, and a continuous RD/WD poll. `-cio<n> mux6` fits it; the six
-ports are MAME rs232 slots `cio<n>:mux6:port0..5`, empty by default.
+every port, and a continuous RD/WD poll. `-cio<n> mux` fits it; the six
+ports are MAME rs232 slots `cio<n>:mux:port0..5`, empty by default.
 
 ### 10.2 The disc
 
@@ -1090,6 +1090,25 @@ with gettydefs entry H, and the `/dev/tty01..06` i-nodes are restamped
 major 29, minor `0x02 0N 04` -- the 27140A driver, port N, direct access
 (mkdev(1M)'s "Modem MUX ... Hard wire"). They were `c 31 0x000N00`, a
 27130A at select code 0 on the machine the tapes came from.
+
+### 10.6 The disc's own card: the 27130A
+
+The 27130A eight-channel MUX is the `mux8` slot option (HARDWARE.md
+2.6.4), and with it the disc's device numbering can stay as HP-UX had it:
+`--card 27130` keeps the gettys on the `HP27128/30` driver, major 31, minor
+`Sc 0N 00`, with tty0N on port N.
+
+    tools/runhpux.sh --multiuser --card 27130 -cio2:mux8:port1 terminal
+    tools/runhpux.sh --multiuser --card 27130 --sc 0
+
+The first puts the card at select code 2 beside the ASI console; the
+second is the whole of the original machine, one 27130A at select code 0
+whose port 0 is `/dev/console` and whose ports 1–6 carry the gettys
+(`runhpux.sh` fits a terminal on port 0; add `-cio0:mux8:portN terminal`
+for the others). Without `--multiuser`, `-cio0 mux8 -cio0:mux8:port0
+terminal` boots the unmodified disc to its console on the MUX. The test
+cases `hpux-mux8-console`, `hpux-mux8-multi` and `hpux-mux8-sc0` (logins on
+ports 1 and 3 with the console on port 0) cover the three.
 
 ### 10.3 The defect that kept it single-user: MVB is not resumable
 

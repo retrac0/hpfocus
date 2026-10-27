@@ -59,13 +59,14 @@ def hd(work, src, name):
 	return str(dst)
 
 
-def hpux_volume(work, name, multiuser=False):
+def hpux_volume(work, name, multiuser=False, card='27140', sc=2):
 	vol = SW / 'cct' / '7914_hpux_volume.bin'
 	if not vol.exists():
 		subprocess.run([str(ROOT / 'tools' / 'runhpux.sh'), '--prepare'], check=True)
 	path = hd(work, vol, name)
 	if multiuser:
-		subprocess.run([sys.executable, str(ROOT / 'tools' / 'hpuxconfig.py'), path],
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'hpuxconfig.py'), path,
+				'--card', card, '--sc', str(sc)],
 				check=True, stdout=subprocess.DEVNULL)
 	return path
 
@@ -200,6 +201,31 @@ def cases(work):
 		add('basic-' + name, 'hp9k520', lambda n=name: ['-hard', hd(work, SW / 'hd' / 'basic.img', 'basic-' + n)],
 				[{'wait': READY, 'on': 'screen'}, {'sleep': 3}, *typing,
 				 {'sleep': 4}, {'line': want, 'on': 'screen'}], 80)
+	# The 27112A GPIO through BASIC's own HP27112 driver: a word written
+	# with OUTPUT comes back through the loopback plug with ENTER. "AB"
+	# is 0x4142.
+	gpio_disc = Path(work) / 'gpio.img'
+
+	def setup_gpio():
+		if gpio_disc.exists():
+			return
+		opts = Path(work) / 'opt1'
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'sdfread.py'),
+				str(SW / 'basic' / 'img' / '500OPT1.img'), '--extract', str(opts)],
+				check=True, stdout=subprocess.DEVNULL)
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkharddisc.py'), str(gpio_disc)],
+				check=True, stdout=subprocess.DEVNULL)
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'installbasic.py'), str(gpio_disc),
+				'--basic', str(SW / 'basic' / 'img' / '500BT1.img'), str(SW / 'basic' / 'img' / '500BT2.img'),
+				'--option', *(str(opts / o) for o in ('IO', 'HP27112', 'ERRORS_ENG'))],
+				check=True, stdout=subprocess.DEVNULL)
+	add('gpio-loopback', 'hp9k520',
+			lambda: ['-hard', hd(work, gpio_disc, 'gpio-loopback'), '-cio3', 'gpio'],
+			[{'wait': READY, 'on': 'screen'}, {'sleep': 3},
+			 {'post': 'OUTPUT 3;"AB"\n'}, {'posted': True}, {'sleep': 3},
+			 {'post': 'ENTER 3 USING "#,W";W\n'}, {'posted': True}, {'sleep': 3},
+			 {'post': 'DISP W\n'}, {'posted': True}, {'sleep': 3},
+			 {'line': '16706', 'on': 'screen'}], 80, setup=setup_gpio)
 	hpux501 = Path(work) / 'hpux501.img'
 
 	def setup501():
@@ -248,6 +274,38 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# The machine the disc came from: a 27130A at select code 0, its port
+	# 0 /dev/console (c 31 0x000000).
+	mux8con = ':cio0:mux8:port0:terminal'
+	add('hpux-mux8-console', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-console'),
+					'-cio0', 'mux8', '-cio0:mux8:port0', 'terminal'],
+			[{'wait': '/etc/rc', 'on': mux8con}], 400,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# ...and a getty on one of its ports, the card at select code 2 with
+	# tty0N on port N, the disc's own numbering.
+	mux8 = ':cio2:mux8:port1:terminal'
+	add('hpux-mux8-multi', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-multi', multiuser=True, card='27130'),
+					'-cio2', 'mux8', '-cio2:mux8:port1', 'terminal'],
+			[{'wait': 'login:', 'on': mux8}, {'sleep': 5}, {'post': 'root\n', 'to': mux8},
+			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux8, 'within': 120},
+			 {'wait': 'TERM =', 'on': mux8, 'within': 60}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# The whole of that machine: one 27130A at select code 0 carrying the
+	# console on port 0 and the terminals on the rest, two of them used.
+	sc0 = [f':cio0:mux8:port{p}:terminal' for p in range(4)]
+	add('hpux-mux8-sc0', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-sc0', multiuser=True, card='27130', sc=0),
+					'-cio0', 'mux8', '-cio0:mux8:port0', 'terminal',
+					'-cio0:mux8:port1', 'terminal', '-cio0:mux8:port3', 'terminal'],
+			[{'wait': 'login:', 'on': sc0[1]}, {'wait': 'login:', 'on': sc0[3]},
+			 {'wait': 'login:', 'on': sc0[0]},
+			 {'sleep': 5}, {'post': 'root\n', 'to': sc0[1]}, {'posted': True},
+			 {'wait': 'TERM =', 'on': sc0[1], 'within': 120},
+			 {'post': 'root\n', 'to': sc0[3]}, {'posted': True},
+			 {'wait': 'TERM =', 'on': sc0[3], 'within': 120}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
 	return c
 

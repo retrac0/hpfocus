@@ -683,10 +683,13 @@ Ordered by what unblocks the most, soonest:
    is presentation rather than function — it makes the machine *watchable*
    but blocks nothing — so it comes after the machine is doing real work.
 
-6. **GPIO / GP-IO (98622) and the CIO expander.** The general-purpose
-   parallel interface and the 97098 I/O expander that adds select codes.
-   Breadth rather than depth: needed for full diagnostic coverage and
-   period-authentic configurations, not for any boot. Last.
+6. **GPIO and the CIO expander.** The general-purpose parallel interface
+   is done: the 27112A is the `gpio` slot option, with a loopback plug on
+   its cable, and BASIC's `HP27112` option drives it (HARDWARE.md §2.6.5).
+   The 27130A eight-channel MUX is in alongside it as `mux8` (§2.6.4).
+   The 97098 I/O expander that adds select codes is still to do. Breadth
+   rather than depth: needed for full diagnostic coverage and
+   period-authentic configurations, not for any boot.
 
 The through-line: items 1–2 are what "boot" now means, and both are driver
 work standing on device models the CPU/IOP/DST layers already support. The

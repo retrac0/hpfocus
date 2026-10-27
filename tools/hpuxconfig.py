@@ -19,10 +19,14 @@ login on every port of an HP 27140A six-channel multiplexer:
                  8 bits) on every one, since a MAME terminal is 8N1 and
                  entry M is 7-bit even parity behind carrier detect.
   /dev/tty01..06 the nodes exist, but as `c 31 0x000N00` -- the 27130A
-                 eight-channel MUX the disc came off. A 27140A port is
-                 major 29, minor `Sc 0N 04`: select code, port, direct
-                 (hard-wired) access (mkdev(1M): "Modem MUX ... Hard wire
-                 ... c 29 0xScAd04"). tty01 is port 0.
+                 eight-channel MUX the disc came off, at select code 0,
+                 whose port 0 was /dev/console (`c 31 0x000000`). A 27140A
+                 port is major 29, minor `Sc 0N 04`: select code, port,
+                 direct (hard-wired) access (mkdev(1M): "Modem MUX ...
+                 Hard wire ... c 29 0xScAd04"). tty01 is port 0.
+                 With --card 27130 they stay on the HP27128/30 driver,
+                 major 31, minor `Sc 0N 00`, and keep the disc's own
+                 numbering: tty0N is port N.
 
 Every edit is the same size or shorter than what it replaces, so nothing
 is allocated: a file is rewritten into the extents it already has and its
@@ -32,6 +36,7 @@ Idempotent -- running it on a patched disc changes nothing -- and undone
 by deleting the volume, which tools/runhpux.sh rebuilds from the tapes.
 
     python3 tools/hpuxconfig.py software/cct/7914_hpux_volume.bin [--sc 2]
+    python3 tools/hpuxconfig.py --card 27130 --sc 0 software/cct/7914_hpux_volume.bin
     python3 tools/hpuxconfig.py --check software/cct/7914_hpux_volume.bin
 """
 import argparse
@@ -48,6 +53,7 @@ FA_REC = sdf.FA_REC
 PORTS = 6
 MAJOR_MUX6 = 29     # "9020 console, HP98700 console, HP27140 terminal interface"
 MODE_DIRECT = 0x04
+MAJOR_HP27128 = 31  # HP27128/30: the ASI and the 27130A MUX
 
 PASSWD_OLD = b"root:,..:0:1:The Super User:/usr/root:/bin/csh"
 PASSWD_NEW = b"root::0:1:The Super User:/usr/root:/bin/sh"
@@ -176,12 +182,19 @@ def fix_inittab(vol):
     return "initdefault 2, gettys tty01..tty%02d respawn (H)" % PORTS
 
 
-def fix_devices(vol, sc):
+def device_number(card, sc, tty):
+    """(major, minor) of /dev/tty<tty> on the given card."""
+    if card == "27130":
+        return MAJOR_HP27128, (sc << 16) | (tty << 8)
+    return MAJOR_MUX6, (sc << 16) | ((tty - 1) << 8) | MODE_DIRECT
+
+
+def fix_devices(vol, sc, card="27140"):
     done = []
     for n in range(PORTS):
         name = "/dev/tty%02d" % (n + 1)
         ino = vol.lookup(name)
-        want = (MAJOR_MUX6, (sc << 16) | (n << 8) | MODE_DIRECT)
+        want = device_number(card, sc, n + 1)
         if vol.device_of(ino) == want:
             continue
         vol.set_device(ino, *want)
@@ -213,7 +226,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("volume", type=Path, help="the assembled system disc")
     ap.add_argument("--sc", type=int, default=2,
-                    help="the select code the 27140A sits at (default 2)")
+                    help="the select code the multiplexer sits at (default 2)")
+    ap.add_argument("--card", choices=("27140", "27130"), default="27140",
+                    help="which multiplexer the gettys run on (default 27140)")
     ap.add_argument("--check", action="store_true",
                     help="show the files and nodes; change nothing")
     args = ap.parse_args()
@@ -223,7 +238,7 @@ def main():
         return 0
     print("/etc/passwd:  " + fix_passwd(vol))
     print("/etc/inittab: " + fix_inittab(vol))
-    print("/dev/tty0N:   " + fix_devices(vol, args.sc))
+    print("/dev/tty0N:   " + fix_devices(vol, args.sc, args.card))
     n = vol.commit()
     print(f"{n} write(s) to {args.volume}" if n else "volume unchanged")
     return 0

@@ -1005,15 +1005,64 @@ file, the stack, the I/O state and the segment table. That is the whole
 write path working end to end: CLC, request block, configuration
 subfunctions, and 80-column `write device data`.
 
-#### 2.6.4 27130A 8-channel MUX
+#### 2.6.4 27130A 8-channel MUX *(modelled: mame/src/devices/bus/hp_cio/hp27128.cpp, slot option `mux8`)*
 
 The same firmware family as the ASI (Z-80A, identical CLC model and receive
 pipeline) with eight ports behind one select code: identity ID 5, port ID
 meaningful (logical→physical mapping configurable via WCC SF 34), request
 codes 1/2/4/5/6 *(Tech Ref, 4-3)*. This is the terminal fan-out card for
-multi-user HP-UX on the 530/540.
+multi-user HP-UX on the 530/540 — and it is the card the HP-UX disc in
+`software/cct` came off: its `/dev/console` is `c 31 0x000000` and
+`/dev/tty01..07` are `c 31 0x000N00`, a 27130A at select code 0 with the
+console on port 0 and terminals on ports 1–7, all through the
+`HP27128/30` module (major 31).
 
-#### 2.6.5 27112A GPIO
+The identity block is the ASI's shape *(27130B Tech Ref, 4-42)*: card ID 5,
+firmware ID 0, **7** active ports − 1, **2** requests per port − 1 (three
+requests), blocking size **252**, MPX 1 (in-channel) and MOD 2 (byte and
+word). The model answers byte 4 as `MPX << 4 | MOD`, the 27140A's
+documented packing.
+
+**What HP-UX 5.30 does with it** (logging the card through a multi-user
+boot and a login): every port is configured with write card configuration
+subfunction 0 (the whole 58-byte block) and subfunction 5, its receive
+buffers flushed with control card subfunction 2, and the port given a block
+of **three logical channels** — port 1 uses 3, 4 and 5, port 2 uses 6, 7
+and 8, and so on: 3 for configuration and control, 4 for reads, 5 for
+writes. Across 131 transactions **none opened while another was still
+open**: each CLC runs to its read-status block before the next, so the
+card needs to track one open request, not a table of logical channels.
+Reads are event-driven, as on the ASI: the card senses a record and
+reports AES event 1 with the port's ID, the host acknowledges with a write
+transparent control (order `0x98`), then opens *read device data* on that
+port's read channel.
+
+**Records end as the port is configured, and the read says why.** Byte 0 of
+the configuration block is the frontplane control of subfunction 1; getty's
+cooked-mode block writes `0xb2`, which fixes the bit order as bit 0 end on
+count, bit 1 single text terminator, bit 4 echo, bit 5 edit, bit 7
+handshakes. Bytes 1–2 are the end-on-count length, byte 3 bit 0 alert 1
+read mode, bytes 22–23 the interrupt masks and byte 49 the number of single
+text terminators, with the characters from byte 50 (getty's block has 4:
+`0a 0d 04 00`, LF, CR, ^D and NUL) *(27128A Tech Ref, 4-42/4-45)*. While getty waits for a
+login name the port is in alert 1 mode with no terminators, so each
+keystroke is its own record, of message type 8 *(4-13, 4-66)*. Two things
+the ASI had been getting away with broke here and are fixed for both cards:
+
+- A record ended at whatever length the *last* request had asked for —
+  on a MUX often another port's one-byte echo write — so a login name
+  arrived a character early.
+- The read-status block's transfer length counted the padding byte an
+  odd-length record is read with, because the IOP moves halfwords. A
+  one-character record was reported as two, the host handed getty the
+  character and a NUL, and getty took the NUL for a break: it cycled its
+  line speed and printed the banner again.
+
+A data-available event is told once per record and again only after a
+read — "each event must be acknowledged before another event is received
+on that port" *(27130A Tech Ref, 4-43)*.
+
+#### 2.6.5 27112A GPIO *(modelled: mame/src/devices/bus/hp_cio/hp27112.cpp, slot option `gpio`)*
 
 The only fully register-level card — no microprocessor between the channel
 and the wires. Two write registers and three read registers, selected by the
@@ -1034,6 +1083,40 @@ connection comes first via write_adapter_command (STT), after which the card
 raises SRQ whenever ready *(Tech Ref, 3-25/3-26)*. Word or byte transfers,
 switch-selected handshake modes. This is the card the 97060A graphics
 processor connects through (§2.7.5).
+
+**The FR registers, read off BASIC's `HP27112` option** (500OPT1, 2,154
+bytes, disassembled with `tools/focusdis.py`):
+
+| FR | read | write |
+|---|---|---|
+| 1 | read_sense: RFC, PST, PRE always set, NMI never; ARE bit 1, ARQ bit 0 *(3-16)*. The driver escapes 129 unless bit 6 (passed self test) is set | write_control |
+| 2 | read_data with channel end | write_data with channel end |
+| 8 | — | write_order |
+| 9 | read_status: RFC `0x0n`, AES `0x1n`, ADT `0x3n` *(3-18)* | write_command: STT `0x2n`, ABT `0x0n` |
+
+The register-level data path is `IFPL` (wait for SRQ), `WIF8` with the
+order, `IFPL` again, **`RDEB`** (IOP opcode 0116, Device End in bit 30 and
+Burst Request in bit 31 — the IOP model did not implement it until this
+driver needed it), then `RIF2`. The driver writes the order again before
+every word, which is what channel end on FR2 means: no further handshake
+starts without a new order. Larger transfers go through the system's DMA
+routines with orders `0x60` (RD) and `0x70` (WD). The FR9 read is the
+status byte, and the machine itself confirms it: the 520's slot scan issues
+STT, identifies (the card answers 1 and Device End), issues ABT, takes the
+attention request and reads FR9 = `0x33` — ADT for subchannel 3. That
+coding is also the Z80 cards' `0x30` "configured" event (§2.6.0).
+
+The emulated card's far end is a **loopback plug** — DOUT→DIN, CTL→STS,
+PCNTL→PFLAG, PEND held low — with every line passed through the logic sense
+its SW1 switch gives it, and the SW2 handshake configuration (internal
+handshake, pulse mode, input clock mode) honoured; all switches default
+open, positive true with full handshake and input-following clocking. The
+`J2 peripheral` configuration setting unplugs it, which leaves PFLAG
+floating busy so a transfer waits as it would on the real card. Under
+BASIC, `OUTPUT 3;"AB"` then `ENTER 3 USING "#,W";W` reads back 16706 —
+`0x4142` (test case `gpio-loopback`). HP's `(19)GPIO` test on 500EDTST is
+not reachable yet: the Test Supervisor stops before offering any test, on
+the interpreter error DIAGNOSTICS.md §3 describes.
 
 #### 2.6.6 27140A 6-channel modem MUX *(modelled: src/iop/focusmux.h)*
 

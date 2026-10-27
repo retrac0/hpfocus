@@ -3,6 +3,8 @@
 #
 #   tools/runhpux.sh                  5.30 on the 540, to the single-user shell
 #   tools/runhpux.sh --multiuser      5.30 on the 540, to a login on every port
+#   tools/runhpux.sh --multiuser --card 27130 [--sc N]
+#                                     ...on a 27130A instead of a 27140A
 #   tools/runhpux.sh --release 5.01   5.01 on the 520, from the release tape
 #
 # TWO RELEASES, TWO MACHINES, AND TWO QUITE DIFFERENT KINDS OF MEDIA. It
@@ -40,7 +42,9 @@
 # them in its NVRAM directory, seeded on first use from software/cct/scm.nv,
 # a battery a real boot wrote. Delete mame/nvram/hp9k540 to simulate a
 # dead battery. Interactive ports: -cio2:mux:port0 terminal, or
-# -cio2:mux:port0 null_modem -bitb socket.127.0.0.1:4000 and nc.
+# -cio2:mux:port0 null_modem -bitb socket.127.0.0.1:4000 and nc. On a
+# 27130A (-cio2 mux8) tty0N is port N, as on the machine the disc came
+# from, so the first getty is -cio2:mux8:port1.
 
 set -e
 source "$(dirname "${BASH_SOURCE[0]}")/lib/focus.sh"
@@ -50,10 +54,16 @@ CCT="$FOCUS_REPO/software/cct"
 # ------------------------------------------------------------------ options
 RELEASE=5.30
 MULTIUSER=0
+CARD=27140
+SC=2
 ARGS=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--multiuser) MULTIUSER=1 ;;
+		--card) CARD=$2; shift ;;
+		--card=*) CARD=${1#--card=} ;;
+		--sc) SC=$2; shift ;;
+		--sc=*) SC=${1#--sc=} ;;
 		--release) RELEASE=$2; shift ;;
 		--release=*) RELEASE=${1#--release=} ;;
 		*) ARGS+=("$1") ;;
@@ -129,17 +139,34 @@ if [ ! -f "$DISC" ]; then
 fi
 
 # --multiuser: the same disc, made to boot to run level 2 with a login on
-# every port of an HP 27140A six-channel multiplexer at select code 2.
+# every port of an HP 27140A six-channel multiplexer at select code 2, or
+# with --card 27130 a 27130A eight-channel one (--sc moves either).
 # tools/hpuxconfig.py makes the three edits in place (root's passwd entry,
 # the gettys in inittab, the tty01..tty06 device numbers) and is
 # idempotent, so it runs on every such boot; the card is fitted unless
-# the caller has already said what -cio2 holds. Without the flag nothing
-# here changes.
+# the caller has already said what that slot holds. A 27130A at select
+# code 0 is the disc's own machine: it replaces the console card, and its
+# port 0 is the console. Without the flag nothing here changes.
 if [ "$MULTIUSER" = 1 ]; then
-	python3 tools/hpuxconfig.py "$DISC" || exit 1
+	case "$CARD" in
+		27140) OPT=mux ;;
+		27130) OPT=mux8 ;;
+		*) echo "unknown multiplexer '$CARD'; 27140 or 27130"; exit 2 ;;
+	esac
+	if [ "$SC" = 0 ] && [ "$CARD" != 27130 ]; then
+		echo "select code 0 is the console's, and /dev/console is an HP27128/30 port; only --card 27130 can take it"
+		exit 2
+	fi
+	python3 tools/hpuxconfig.py "$DISC" --card "$CARD" --sc "$SC" || exit 1
 	case " $* " in
-		*" -cio2 "*) ;;
-		*) set -- -cio2 mux "$@" ;;
+		*" -cio$SC "*) ;;
+		*)
+			if [ "$SC" = 0 ]; then
+				set -- -cio0 "$OPT" -cio0:$OPT:port0 terminal "$@"
+			else
+				set -- -cio$SC "$OPT" "$@"
+			fi
+			;;
 	esac
 fi
 
