@@ -85,8 +85,7 @@ BASIC_FLOPS = ['-flop1', str(SW / 'basic' / '500BT1.TD0'), '-flop2', str(SW / 'b
 READY = 'BASIC Ready for use.'
 
 # (name, keystrokes, the line the screen should show). Keystrokes are
-# posted once BASIC is ready; '\n' is EXECUTE. 22 of these pass on the
-# pre-MAME emulator; concat and real-add are the work list.
+# posted once BASIC is ready; '\n' is EXECUTE. real-add is the work list.
 BASIC_TABLE = [
 	('disp-int', 'DISP 7\n', '7'),
 	('disp-string', 'DISP "HI"\n', 'HI'),
@@ -105,6 +104,10 @@ BASIC_TABLE = [
 	('two-item', 'DISP 4,5\n', '4                   5'),
 	('compare', 'DISP 1=1\n', '1'),
 	('concat', 'DISP "A"&"B"\n', 'AB'),
+	('concat-three', 'DISP "AB"&"CD"&"EF"\n', 'ABCDEF'),
+	('concat-long', 'DISP "ABCDEFGHIJ"&"KLMNOPQRST"\n', 'ABCDEFGHIJKLMNOPQRST'),
+	('concat-var', 'A$="XY"&"Z"\nDISP A$&A$\n', 'XYZXYZ'),
+	('concat-chr', 'DISP "gam"&CHR$(101)&"s"\n', 'games'),
 	('list', 'LIST\n', 'AVAILABLE MEMORY = 487696'),
 	('list-twice', ['LIST\n', 'LIST\n'], 'AVAILABLE MEMORY = 487696'),
 	('frac-div', 'DISP 9/2\n', '4.5'),
@@ -113,7 +116,7 @@ BASIC_TABLE = [
 	('sqrt2', 'DISP SQR(2)\n', '1.41421356237'),
 	('real-add', 'DISP 4.5+1\n', '5.5'),
 ]
-KNOWN_FAILING = {'basic-concat', 'basic-real-add'}
+KNOWN_FAILING = {'basic-real-add'}
 
 
 def factorial_case():

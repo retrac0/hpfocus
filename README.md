@@ -150,9 +150,12 @@ went from 11 passing to 22 of 24; the account is below and in
 (Note which key ends a line: in `FOCUS_TYPE`, `\n` is EXECUTE and `\r`
 STORE, and a numbered line needs `\r` or BASIC answers `IMPROPER COMMAND`.)
 
-Two cases still fail, and neither is that bug: `DISP "A"&"B"` halts on
+Two cases still failed, and neither was that bug: `DISP "A"&"B"` halted on
 string concatenation, and `DISP 4.5+1` answers `5.49999999907` — a wrong
-answer where it used to be a halt.
+answer where it used to be a halt. The concatenation is fixed: `SCON`
+bounds-checked its target temp against fourteen words below S where sheet
+112 says four, so every temp short enough to sit nearer the top — the
+two-operand `"A"&"B"` among them — raised Bounds Violation (trap 001).
 
 > **The rest of this subsection is a superseded log.** Everything from here
 > to "Recovered software" is the investigation that chased the symptoms of
@@ -741,8 +744,8 @@ extension (or as CHDs); the system writes to them.
 with an `-autoboot_script` (tests/harness.lua) that waits for text on the
 520's screen or a serial terminal, types through the natural keyboard, and
 checks what comes back: the boot milestones of both machines and both HP-UX
-releases, the BASIC behaviour table (22 of 24 pass; `concat` and
-`real-add` are the work list), and the ERS section 7 factorial run straight
+releases, the BASIC behaviour table (27 of 28 pass; `real-add` is the
+work list), and the ERS section 7 factorial run straight
 on the CPU. `--list` shows the cases; names given on the command line pick
 cases by prefix.
 
