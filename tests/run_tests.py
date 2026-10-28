@@ -92,6 +92,29 @@ def hpux_login(port):
 			{'post': 'cd /tmp\n', 'to': port}, {'posted': True}]
 
 
+# A library no test links against, big enough to carry the test sources.
+HPUX_CARRIER = '/lib/libUPLIB.a'
+
+
+def hpux_carry(image, files):
+	"""Put files on a copy of the 5.30 volume, as a shell archive written
+	over HPUX_CARRIER: `sh /lib/libUPLIB.a` in the running system unpacks
+	them into the current directory. The keyboard posts twenty characters
+	a second, which is hours for a few hundred kilobytes; the disc is
+	instant. The volume is a per-test copy, so the library is only lost
+	from that copy. `files` is a list of (name, bytes)."""
+	sys.path.insert(0, str(ROOT / 'tools'))
+	import hpuxconfig
+	text = b''
+	for name, data in files:
+		if not data.endswith(b'\n'):
+			data += b'\n'
+		text += b"cat > %s <<'@EOF@'\n" % name.encode() + data + b'@EOF@\n'
+	vol = hpuxconfig.Volume(Path(image))
+	vol.write_file(vol.lookup(HPUX_CARRIER), text)
+	vol.commit()
+
+
 def hpux_type_files(port, src, names):
 	"""Type files into the current directory with here-documents. The
 	tty's canonical input holds 256 characters, so no line may be
@@ -364,6 +387,21 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# The instruction-set edge cases (tests/hpux/gen_isa.py): the ERS's
+	# expectations for some 1700 cases, built by HP's own assembler and
+	# run under HP-UX. The sources travel on the disc.
+	isa_files = (HPUX_TESTS / 'isa.files').read_text().split()
+
+	def isa_disc():
+		d = hpux_volume(work, 'hpux-cc-isa', multiuser=True)
+		hpux_carry(d, [(n, (HPUX_TESTS / n).read_bytes()) for n in ['isa.dat', *isa_files]])
+		return d
+	add('hpux-cc-isa', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', isa_disc(), '-cio2', 'mux', '-cio2:mux:port0', 'terminal'],
+			[*hpux_login(mux0),
+			 {'post': f'clear; sh {HPUX_CARRIER}; cc -o isa {" ".join(isa_files)} && ./isa\n', 'to': mux0},
+			 {'posted': True}, {'wait': ' passed 0 failed', 'on': mux0, 'within': 600}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
 	# ...and with 4 MB, where HP-UX moves 16 KB per disc transfer: long
 	# enough for the mux to interrupt in the middle of one.

@@ -34,7 +34,11 @@ section 11.
 27110's CS/80 model kept only the first page of every multi-page write, so
 swapped-out pages came back as stale disc blocks — and its first checks
 found `SUB,B` subtracting Carry instead of 1−Carry (`docs/HPUX.md`
-section 12).
+section 12). It now runs some 1,700 instruction-set edge cases generated
+from the ERS (`hpux-cc-isa`), which found sticky Overflow, a dozen
+instructions that never set it, `DIV,B`'s quotient, `BUN`, `SETR` letting
+user code go privileged, and binary floating point with no rounding modes,
+inexact flag or traps (`docs/VALIDATION.md` section 8).
 
 **The 520's internal thermal printer prints on paper.** Text, overprinting,
 underline and inverse, user-defined characters and `DUMP GRAPHICS` screen

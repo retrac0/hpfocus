@@ -677,3 +677,55 @@ did before any of this.
 | O4 | `IXIT` restores the mask from Q+2 on every exit from the ICS; the flowchart does so only when CSN ≠ 1. | The message-trap entry masks messages, which the ERS does not, and relies on the restore; the two go together. |
 | O5 | `IXIT` with an external interrupt pending returns and takes it at the next instruction boundary; the flowchart chains straight into the interrupt handler. | Same frames, one instruction later. |
 | O6 | The CST lock protocol (read the entry's first word, leave −1 while using it) and the reference bit are not modelled. | Single CPU; and the reference bit is the unified table's absence bit (section 4). |
+
+---
+
+## 8. Edge cases run under HP-UX, built by HP's own assembler
+
+Sections 3-7 read the core against the ERS. This one runs it: some 1,700
+cases, each an instruction sequence with its operands and starting STATUS,
+assembled by HP-UX 5.30's `/bin/as`, linked by its `ld` and run on the
+emulated 540 (`tests/run_tests.py hpux-cc-isa`). `tests/hpux/gen_isa.py`
+computes every expectation from the ERS text, independently of the core,
+and writes the routines (`isaops*.s`), the vectors (`isa.dat`) and a C
+driver (`isa.c`) that catches signals, so a trap the kernel turns into one is
+an outcome rather than a crash.
+
+A user program can see everything that matters: `PSHR 4` reads STATUS, and
+`SETR 4` may set what the ERS lets unprivileged code set -- Carry, Overflow,
+IR, the user trap bit, the rounding mode and the condition code -- so each
+case presets them just before the instruction. HP-UX runs user code with
+STATUS.T set, which turns an integer overflow into cause 031 and clears
+Overflow; the cases clear T to see the flag itself.
+
+### Findings, all fixed
+
+| | finding | sheet |
+|---|---|---|
+| E1 | Overflow was assigned by every instruction that sets it, so one that did not overflow cleared it. It is sticky: "cleared only by the Branch on Overflow, Branch on No Overflow, and Set Registers instructions". | 12 |
+| E2 | `ADDI`, `SUBI`, `MPYI`, `NEG`, `ADAX`, `ADXA`, `ADXI`, `SBXI`, `INCM`, `DECM`, `INCF` and `DECF` never set Overflow at all, though every one lists it. | 74-81 |
+| E3 | `ASL` compared only the final sign with the first. "If the sign bit changes" during the shift is the test multiplying by 2^CNT needs: `0x40000000` shifted four ends positive, and from 32 on anything non-zero overflows. | 72 |
+| E4 | `DIV,B` and `DIVS,B` made a negative remainder positive by negating it, leaving the quotient as it was; −7/2 gave −3 r 1. "dividend = quotient\*divisor + remainder": it is −4 r 1. | 74-75 |
+| E5 | `BUN` branched whatever the condition code. Only `11`, which no instruction sets. | 94 |
+| E6 | `BIR` with a zero offset branched to itself. With IR set it is a Floating Point Result Trap. | 94 |
+| E7 | Unprivileged `SETR` could write any STATUS bit, privileged mode included, and set BRKPT, DST and S. Those three are a Mode Violation; only STATUS(0:9), (10:3) and (16:2) change. Privileged `SETR` leaves EM, P and the CSN alone. | 71 |
+| E8 | Binary floating point was the host's IEEE arithmetic: no rounding modes, no inexact flag, infinities, NaNs and denormals computed on. It is now the ERS's: all four rounding modes, IR set by inexact results, Operand Traps for NaN, infinity, denormal, divide by zero and an unconvertible `CDSF`, and Result Traps for overflow and underflow with a wrapped exponent and the LSB, round and sticky bits. | 82-101, App. F |
+| E9 | `FNEG` and `FNGS` of +0 gave −0. Negation is "subtracted from +0". | 86, 92 |
+
+Everything else run -- add, subtract and multiply in every width and form,
+the immediates, compares, the index register group, loads and stores of
+every width, shifts at counts 0-63 direct and indexed, `EXF`/`DPF` across
+the word end and with indexing carrying into the width, the stack group,
+the branch group on all four condition codes, `TCC`, `CRB`, `LBIT`/`SBIT`,
+decimal add and subtract with their carry chains and illegal-digit traps,
+`MVB` in both directions and overlapping, `CMPB`, `FILB` -- already agreed.
+
+### Not covered
+
+User code cannot reach a paged data segment (`malloc` hands out global
+data pointers), so the doubleword access that straddles a page boundary
+(found by reading the core: `LDD`/`STD` take the second word at physical
+`+4`) is unchecked and unchanged. `TRAN` and the scans need more memory
+per case than the harness gives; the string-descriptor instructions and
+`BTD`/`DTB`/`POT` are exercised by BASIC rather than here. Privileged
+instructions are out of reach of a user program by design.

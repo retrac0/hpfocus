@@ -1393,3 +1393,19 @@ on its level's list, not only at the tail.
 All of 2, 3, 4, 6 and 8 MB now reach the mux's login, and
 `hpux-multi-4m` keeps it so. `hpux-mux8-multi`, the 27130A login that had
 failed since it was added, passes with the same fix.
+
+### 12.2 Getting files in and output out
+
+The keyboard posts twenty characters a second, so typing is for small
+files only; beyond a few kilobytes the sources travel on the disc instead.
+`hpux_carry` in `tests/run_tests.py` writes them, as a shell archive, over
+`/lib/libUPLIB.a` -- a 305 KB library nothing here links -- on the run's own
+copy of the volume, and `sh /lib/libUPLIB.a` unpacks them in seconds.
+Output comes back the same way: `tools/hpuxrun.py` runs a command with its
+output in a file, `sync`s, and reads the file off the disc image once the
+machine stops. `as` keeps a per-file table of procedures that overflows
+somewhere under 300, so large generated sources are split.
+
+`hpux-cc-isa` uses all of this to run the instruction-set edge cases of
+`tests/hpux/gen_isa.py` -- 1,715 of them in under a minute of host time
+(VALIDATION.md section 8).

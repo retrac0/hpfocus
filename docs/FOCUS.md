@@ -1107,9 +1107,14 @@ per `b`. *CC unaffected.*
 
 Formats are IEEE Draft 5.11 single (binary32) and double (binary64); no
 extended format, no hardware sqrt/rem/integer-part. Rounding follows
-`STATUS.RM`; inexact operations set `STATUS.IR`. Operand/result traps: FP
-Operand (033/034 group) and FP Result. Doubles occupy two stack words, high
-word deeper. FP condition codes: `CCL` <, `CCE` =, `CCG` > (or sign class
+`STATUS.RM`; inexact operations set `STATUS.IR` (sticky; `BIR` clears it).
+There are no special values: a NaN, infinity or denormalised operand, a
+divide by zero, and a `CDSF` whose exponent a single cannot hold are FP
+Operand traps (034), taken before the stack changes; overflow and underflow
+are FP Result traps (035), taken after the result is pushed with its
+exponent wrapped by 1536 (double) or 192 (single), the parameter carrying
+the overflow/underflow bit and the LSB, round and sticky bits from before
+rounding. Doubles occupy two stack words, high word deeper. FP condition codes: `CCL` <, `CCE` =, `CCG` > (or sign class
 for the monadic ops).
 
 Conformance *(ERS Appendix F, sheet 145)* is against Draft 5.11 of the
@@ -1128,7 +1133,8 @@ Pop two doubles, push the double result. *CC per result sign, IR.*
 Same on singles. *CC, IR.*
 
 **`FNEG` / `FNGS`** — Floating Negate double/single — `F3:55` / `F3:76`
-Negate in place. *CC.*
+Negate in place, as "subtracted from +0": −(+0) is +0 (−0 when rounding
+toward −∞). *CC.*
 
 **`FCMP`** — Floating Compare — `F3:50` · **`FCPS`** — single — `F3:77`
 CCC on the deeper operand versus the top one. The top operand is popped;
