@@ -138,7 +138,9 @@ Functional Tests come with their own environment -- `500ENV1-3` are a
 three-volume boot image, not a filesystem, and they carry a `GRAPHICS`
 binary that appears on no option disc -- so `tools/mkdiagdisc.sh` installs
 that instead of BASIC 2.0, and the 31,652-byte `TEST` driver then loads off
-the test disc and runs, up to the Test Supervisor's first question. It used to stop in
+the test disc and runs to its program menu. HP's `KEYBOARD` test passes;
+where each of the other mainframe tests stops is in DIAGNOSTICS.md 3. It
+used to stop in
 its first subprogram with `ERROR 702, No graphics driver/CRT graphics hw
 failure`; **the graphics display is modelled now** and the display draws --
 `PLOTTER IS 1,"INTERNAL"` then `FRAME` puts a rectangle round the raster.

@@ -173,7 +173,7 @@ BASIC_TABLE = [
 	('run-sub', ['10 CALL Xyz', STORE, '20 END', STORE, '30 SUB Xyz', STORE,
 			'40 DISP 6*7', STORE, '50 SUBEND', STORE, 'RUN\n'], '42'),
 ]
-KNOWN_FAILING = {'diag-supervisor-display'}
+KNOWN_FAILING = set()
 
 
 def factorial_case():
@@ -245,14 +245,25 @@ def diag_cases(add, work):
 			['-ram', '2m', *(a for k in (1, 2, 3) for a in (f'-flop{k}', str(test / f'500ENV{k}.TD0')))],
 			[{'wait': READY, 'on': 'screen'}], 60)
 
-	def booted(disc, tag):
-		return lambda: ['-ram', '2m', '-hard', hd(work, SW / 'hd' / 'diag.img', tag),
-				'-flop1', str(test / (disc + '.TD0'))]
-	ready = [{'wait': READY, 'on': 'screen'}, {'sleep': 3}]
+	def booted(tag):
+		return lambda: ['-ram', '2m', '-hard', hd(work, SW / 'hd' / 'diag.img', tag)]
+
+	# HP's procedure: the environment boots from the Winchester and the
+	# test disc goes into the flexible drive afterwards, which the drive
+	# reports as a media change. With a Winchester fitted the flexible
+	# drive is :CS80,7,1, where the supervisor looks for its programs.
+	def ready(disc):
+		return [{'wait': READY, 'on': 'screen'}, {'sleep': 3},
+				{'insert': str(test / (disc + '.TD0')), 'into': ':disc:floppy1'}, {'sleep': 1},
+				{'type': 'MASS STORAGE IS ":CS80,7,1"\n', 'rate': 0.12}, {'sleep': 3}]
+
+	def answer(text):
+		return [{'press': 'CLR LINE'}, {'sleep': 1}, {'type': text, 'rate': 0.2}, {'sleep': 1}, STORE]
+
 	for disc, label, programs in TEST_DISCS:
 		short = disc[3:].lower()
-		add('diag-cat-' + short, 'hp9k520', booted(disc, 'cat-' + short),
-				[*ready, {'type': 'CAT\n', 'rate': 0.15},
+		add('diag-cat-' + short, 'hp9k520', booted('cat-' + short),
+				[*ready(disc), {'type': 'CAT\n', 'rate': 0.15},
 				 {'wait': 'LABEL:  ' + label, 'on': 'screen', 'within': 30},
 				 *({'wait': p, 'on': 'screen', 'within': 10} for p in ['TEST', *programs])], 120)
 		# LOAD prints nothing when it works, and the next command
@@ -261,17 +272,25 @@ def diag_cases(add, work):
 		for p in programs:
 			loads += [{'type': f'LOAD "{p}"\n', 'rate': 0.12}, {'sleep': 8},
 					{'absent': 'ERROR', 'on': 'screen'}]
-		add('diag-load-' + short, 'hp9k520', booted(disc, 'load-' + short),
-				[*ready, *loads], 60 + 12 * len(programs))
-	supervisor = [*ready, {'type': 'LOAD "TEST"\n', 'rate': 0.15}, {'sleep': 15},
+		add('diag-load-' + short, 'hp9k520', booted('load-' + short),
+				[*ready(disc), *loads], 60 + 12 * len(programs))
+	supervisor = [*ready('500MFTST'), {'type': 'LOAD "TEST"\n', 'rate': 0.15}, {'sleep': 15},
 			{'type': 'RUN\n', 'rate': 0.15}, {'wait': WELCOME, 'on': 'screen', 'within': 60}]
-	add('diag-supervisor', 'hp9k520', booted('500MFTST', 'supervisor'), supervisor, 150)
-	# The first question: where results go. The answer reaches the
-	# program, which then stops on SYMBOL TABLE ENTRIES NOT ALLOWED IN
-	# COMPILED ONLY CONTEXT instead of showing its menu.
-	add('diag-supervisor-display', 'hp9k520', booted('500MFTST', 'supervisor-display'),
-			[*supervisor, {'sleep': 10}, {'press': 'CLR LINE'}, {'sleep': 1},
-			 {'type': 'DISPLAY\n', 'rate': 0.2}, {'wait': 'PROGRAM MENU', 'on': 'screen', 'within': 40}], 200)
+	add('diag-supervisor', 'hp9k520', booted('supervisor'), supervisor, 150)
+	# The first question: where results go. INPUT is answered with ENTER,
+	# which on this keyboard is STORE; EXECUTE runs the line as a live
+	# keyboard command instead.
+	menu = [*supervisor, {'sleep': 10}, *answer('DISPLAY'),
+			{'wait': 'PROGRAM MENU', 'on': 'screen', 'within': 40}]
+	add('diag-supervisor-display', 'hp9k520', booted('supervisor-display'), menu, 200)
+	# HP's KEYBOARD test on its own: the clock, the configuration memory,
+	# the keyboard ID and the beeper, register by register.
+	add('diag-keyboard', 'hp9k520', booted('keyboard'),
+			[*menu, {'sleep': 5}, *answer('KEYBOARD'),
+			 {'wait': 'press RETURN to run', 'on': 'screen', 'within': 60}, {'sleep': 5}, *answer(''),
+			 {'wait': 'number of times', 'on': 'screen', 'within': 60}, {'sleep': 5}, *answer(''),
+			 {'wait': 'Program sequence complete', 'on': 'screen', 'within': 120},
+			 {'absent': 'ERROR', 'on': 'screen'}, {'absent': 'FAIL', 'on': 'screen'}], 400)
 
 
 def cases(work):

@@ -184,6 +184,64 @@ be a thorough workout of the 6845 and the frame buffer.
 
 ## 3. Where the tests stop now
 
+**2026-10-28: the supervisor reaches its menu and runs the tests.** Three
+things stood between the first question and the `PROGRAM MENU`, and only
+one of them was the question.
+
+*`INPUT` is answered with ENTER, and ENTER is STORE.* BASIC turns each
+function key into the second byte of the two-byte key codes HP BASIC uses
+everywhere (`diag.bin` 0x235f8 holds the bitmap of which keycodes are
+function keys, 0x23614 the table): EXECUTE gives `X`, STORE gives `E` --
+ENTER -- and CLR LINE `K`. Typing `DISPLAY` and pressing EXECUTE runs it as
+a live-keyboard command while the program waits, which is where `SYMBOL
+TABLE ENTRIES NOT ALLOWED IN COMPILED ONLY CONTEXT` came from. The same
+table says keycode `0x1d`, mapped as CONTINUE, is `S`: STEP, which is why
+pressing it stopped the program `PAUSED IN FNChoose$`.
+
+*The test disc is `:CS80,7,1`, and the emulator had the units the other way
+round.* `MAIN` sets `Msus$=":CS80,7,1"` and `Get_menu` catalogues it with
+`SELECT "("`. Every program on these discs agrees about a 520 with a
+Winchester: `(15)WINCHESTER` uses `:CS80,7,0`, `(10)FLOPPY` and `TEST` use
+`:CS80,7,1`, and `BUILD_BOOT` installs to `:CS80,7`. The 520 manual has the
+flexible controller at unit 0 and the loader card at unit 1 when there is
+no Winchester (2-53), and BASIC puts its system volume on unit 0 either
+way. So fitting a Winchester moves the flexible drive to unit 1. The
+driver, `LCS80` (`IOS and DDMs` +0x0c), selects a unit by writing its
+complement to FR8 and reads FR3 to see which kind of controller answered,
+so the card decides what each FR8 value reaches. The two devices are also
+separate controllers, each with its own unit, address, length, status and
+power-on report; sharing them made the driver's zero-length readiness check
+land past the end of the floppy at the Winchester's last block.
+
+*A burst request moved data on a channel the driver had disabled.* The
+driver reprograms a channel as `DDMA`, `WDS`, `WDC`, `WDA`, `SDC`. The
+IOP honoured a burst request as soon as the count was written, so when its
+poll landed between `WDC` and `WDA` the transfer ran from where the last
+one had ended, and the card received the tail of an old command instead of
+the new one -- six bytes of a status-mask command where a Describe should
+have been. Section 2.4 of the I/O ERS ANDs the poll response with the DMA
+Mask register, bursts included. It depended on timing, which is why the
+same `CAT` would fail on one run and work on the next.
+
+The disc can also be changed while the machine runs now: loading a floppy
+image puts it in the drive, which reports a media change. That is HP's
+procedure -- boot the environment from the Winchester, then insert the
+test disc -- and `tests/run_tests.py` follows it.
+
+Run one at a time from the menu, the mainframe tests stand as follows:
+
+| test | result |
+|---|---|
+| `KEYBOARD` | passes: clock, configuration memory, keyboard ID, beeper |
+| `STATUS` | runs and lists the inventory |
+| `AGRAPHICS`, `BGRAPHICS` | report, correctly, that they need a 9020A or 9020B |
+| `DISPLAY` | the display interface test fails: FR8, FR9 and FR12 do not hold what is written, FR12 is not 0x0008 after reset, and the interface ID is 6 where 1 is expected |
+| `CGRAPHICS` | `ERROR 418 IN Alphanumerics: Illegal screen size in CREATE SCREEN` |
+| `WINCHESTER` | `ERROR #455`, possible corrupt directory |
+| `PRINTER` | `INVALID SELF TEST NUMBER RECEIVED` with no printer configured |
+| `LTPEN` | stays in its self test |
+| `FLOPPY` | returns to the menu at once |
+
 **2026-08-25: the graphics blocker is gone.** With the display graphics
 interface modelled at select code 1 (`src/iop/focusgfx.h`, HARDWARE.md
 §2.7.4), `Clear_screen` succeeds and HP's driver runs:

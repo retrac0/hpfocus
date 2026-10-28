@@ -22,6 +22,8 @@
 --   { press = "NAME" }                           hold the key whose input
 --                                                field is NAME, for a key
 --                                                with no character (STORE)
+--   { insert = PATH, into = TAG }                put a disc in a drive while
+--                                                the machine runs
 --   { reset = SPEC }                             load an ISA case at a reset
 --   { setup = SPEC }                             load one into a running CPU
 --   { expect = { [addr] = word } }               compare words, see H.cpu_check
@@ -198,6 +200,13 @@ function H.run(name, steps, limit)
 			advance()
 		elseif s.posted then
 			if manager.machine.natkeyboard.empty then advance() end
+		elseif s.insert then
+			local err = manager.machine.images[s.into]:load(s.insert)
+			if err then
+				finish(false, "cannot insert " .. s.insert .. ": " .. tostring(err))
+			else
+				advance()
+			end
 		elseif s.press then
 			local f = input_field(s.press)
 			if not f then
