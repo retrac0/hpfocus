@@ -238,6 +238,18 @@ function H.run(name, steps, limit)
 					local q, sp = cpu.state["Q"].value & ~3, cpu.state["S"].value & ~3
 					words("stk", math.max(cpu.state["SB"].value & ~3, sp - 4 * 63), 64)
 					words("Q", q - 4 * 16, 24)
+					words("code", (cpu.state["P"].value & ~3) - 64, 32)
+					-- The call chain: each marker's return P and STATUS,
+					-- then down by its delta-Q word.
+					local mq, sb = q, cpu.state["SB"].value & ~3
+					for _ = 1, 40 do
+						if mq <= sb then break end
+						local delta = space:read_u32(mq)
+						print(string.format("  frame Q=%06x ret=%08x status=%08x x=%08x", mq,
+								space:read_u32(mq - 8), space:read_u32(mq - 4), space:read_u32(mq - 12)))
+						if delta == 0 or delta > mq - sb then break end
+						mq = mq - delta
+					end
 					local cst = space:read_u32(0)
 					for e = 1, 1023 do
 						if space:read_u32(cst + 16 * e) == 0xffffffff then
