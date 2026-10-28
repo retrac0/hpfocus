@@ -544,29 +544,35 @@ The cause number *is* the STT entry in segment 1. In octal:
 
 | # | Cause | | # | Cause |
 |---|---|---|---|---|
-| 001 | Bounds Violation | | 030 | Unexpected Pointer Type |
-| 002 | Check Trap (`CHEK`, `CRB`) | | 031 | User Trap (param 1 = integer overflow, 2 = divide by zero) |
+| 001 | Bounds Violation | | 027 | Privileged Mode Data |
+| 002 | Check Trap (`CHEK`, `CRB`) | | 030 | Unexpected Pointer Type |
+| 003 | Breakpoint | | 031 | User Trap (STATUS.T gated; param bits 24-27 0 = overflow, 2 = divide by zero; 28-31 result type) |
 | 004 | Machine Instruction Trap | | 032 | Illegal Decimal Number |
 | 005 | String Trap | | 033 | Exponent Size |
 | 010 | Reset | | 034 | FP Operand |
 | 011 | Page Table Violation | | 035 | FP Result |
 | 012 | Inconsistent Registers | | 036 | Unexpected EDS Type |
-| 016 | Pointer Conversion | | 040 | Absent Page |
-| 017 | External Program Pointer | | 041 | Uncallable Procedure |
-| 020 | Unimplemented Instruction | | 042 | Absent Data Segment |
-| 021 | STT Violation | | 043 | Absent Page Table |
-| 022 | CST Violation | | 044 | Start of Line |
-| 023 | DST Violation | | 045 | Variable Trace |
-| 024 | Stack Overflow | | 046 | Start of Procedure |
-| 025 | Stack Underflow | | 047 | End of Procedure |
-| 026 | Privileged Mode | | 050 | Start of Subroutine |
-| 027 | Privileged Mode Data | | 051 | End of Subroutine |
-| | | | 052 | Code Segment Violation |
+| 013 | EDS Bounds Violation | | 037 | Absent Code Segment |
+| 014 | System Error (param 0 = too many `PSEB`) | | 040 | Absent Page |
+| 015 | EDS Pointer Violation | | 041 | Uncallable Procedure |
+| 016 | Pointer Conversion | | 042 | Absent Data Segment |
+| 017 | External Program Pointer | | 043 | Absent Page Table |
+| 020 | Unimplemented Instruction | | 044 | Start of Line |
+| 021 | STT Violation (param 1 = length, 2 = external pointer in STT) | | 045 | Variable Trace |
+| 022 | CST Violation | | 046 | Start of Procedure |
+| 023 | DST Violation | | 047 | End of Procedure |
+| 024 | Stack Overflow | | 050 | Start of Subroutine |
+| 025 | Stack Underflow | | 051 | End of Subroutine |
+| 026 | Privileged Mode (param 1 = instruction, 2 = `EXIT` to privileged, 3 = `EXIT` changing I or setting P) | | 052 | Code Segment Violation |
 | | | | 053 | Branch Violation |
 | | | | 054 | Message Trap |
 | | | | 055 | Instruction Sequencing |
 | | | | 056 | Start of Line Check |
 | | | | 057 | Data Segment Write |
+
+A cause with no parameter of its own passes the external program pointer
+the trap sequence formed: segment 1, the cause's STT entry (sheet 44,
+step 4).
 
 ### 7.3 External interrupts
 

@@ -149,7 +149,9 @@ format,field,octal,mnemonic,operand,flags
 # nor in the Pascal compiler's table; the names come from /bin/as, HP-UX 5.30
 # (tools/astable.py). 020/021 are the kernel-only instructions both HP-UX
 # kernels execute: the semaphore signal/wait pair. CTCB matches the ERS's
-# "Current TCB Pointer" (CTCBP). Semantics undocumented.
+# "Current TCB Pointer" (CTCBP). None of them is in the 12/82 ERS -- its
+# index omits them too -- and the HP Journal, March 1984, describes the
+# semaphore operators instead (VALIDATION.md section 7).
 4,OP3,20,UP,"",
 4,OP3,21,DOWN,"",
 4,OP3,24,CTCB,"",
@@ -233,7 +235,8 @@ format,field,octal,mnemonic,operand,flags
 6,OP2,20,LDD,"byte offset",I X BASE
 # GMPY is not in the chart or the compiler table; the name comes from /bin/as,
 # HP-UX 5.30 (tools/astable.py), which gives it operand syntax 'ds' rather
-# than the memory-op 'xi'. Semantics undocumented.
+# than the memory-op 'xi'. Semantics undocumented: the 12/82 chart leaves the
+# slot blank, and the emulator traps it as unimplemented.
 6,OP2,21,GMPY,"",
 6,OP2,22,LDH,"byte offset",I X BASE
 6,OP2,23,DECM,"byte offset",I X BASE

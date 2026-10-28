@@ -114,7 +114,9 @@ BASIC_FLOPS = ['-flop1', str(SW / 'basic' / '500BT1.TD0'), '-flop2', str(SW / 'b
 READY = 'BASIC Ready for use.'
 
 # (name, keystrokes, the line the screen should show). Keystrokes are
-# posted once BASIC is ready; '\n' is EXECUTE.
+# posted once BASIC is ready; '\n' is EXECUTE, and STORE enters a program
+# line.
+STORE = {'press': 'STORE'}
 BASIC_TABLE = [
 	('disp-int', 'DISP 7\n', '7'),
 	('disp-string', 'DISP "HI"\n', 'HI'),
@@ -144,6 +146,9 @@ BASIC_TABLE = [
 	('big-div', 'DISP 100/8\n', '12.5'),
 	('sqrt2', 'DISP SQR(2)\n', '1.41421356237'),
 	('real-add', 'DISP 4.5+1\n', '5.5'),
+	('run-typed', ['10 DISP 2+3', STORE, 'RUN\n'], '5'),
+	('run-sub', ['10 CALL Xyz', STORE, '20 END', STORE, '30 SUB Xyz', STORE,
+			'40 DISP 6*7', STORE, '50 SUBEND', STORE, 'RUN\n'], '42'),
 ]
 KNOWN_FAILING = {'diag-supervisor-display'}
 
@@ -274,10 +279,15 @@ def cases(work):
 	diag_cases(add, work)
 	for name, keys, want in BASIC_TABLE:
 		typing = []
-		for k, chunk in enumerate([keys] if isinstance(keys, str) else keys):
-			if k:
-				typing.append({'sleep': 6})
-			typing += [{'post': chunk}, {'posted': True}]
+		prev = None
+		for chunk in [keys] if isinstance(keys, str) else keys:
+			if isinstance(chunk, dict):
+				typing += [chunk, {'sleep': 1}]
+			else:
+				if isinstance(prev, str):
+					typing.append({'sleep': 6})
+				typing += [{'post': chunk}, {'posted': True}]
+			prev = chunk
 		add('basic-' + name, 'hp9k520', lambda n=name: ['-hard', hd(work, SW / 'hd' / 'basic.img', 'basic-' + n)],
 				[{'wait': READY, 'on': 'screen'}, {'sleep': 3}, *typing,
 				 {'sleep': 4}, {'line': want, 'on': 'screen'}], 80)
@@ -355,16 +365,6 @@ def cases(work):
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
-	# The machine the disc came from: a 27130A at select code 0, its port
-	# 0 /dev/console (c 31 0x000000).
-	mux8con = ':cio0:mux8:port0:terminal'
-	add('hpux-mux8-console', 'hp9k540',
-			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-console'),
-					'-cio0', 'mux8', '-cio0:mux8:port0', 'terminal'],
-			[{'wait': '/etc/rc', 'on': mux8con}], 400,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
-	# ...and a getty on one of its ports, the card at select code 2 with
-	# tty0N on port N, the disc's own numbering.
 	# HP's own C toolchain as the test bench: the sources in tests/hpux
 	# are typed into /tmp, built with cc, as and ld, and run.
 	add('hpux-cc-cpu', 'hp9k540',
@@ -375,6 +375,16 @@ def cases(work):
 			 {'post': 'clear; sh run.sh\n', 'to': mux0}, {'posted': True},
 			 {'line': 'hpux cc tests: yes', 'on': mux0, 'within': 400}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# The machine the disc came from: a 27130A at select code 0, its port
+	# 0 /dev/console (c 31 0x000000).
+	mux8con = ':cio0:mux8:port0:terminal'
+	add('hpux-mux8-console', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-console'),
+					'-cio0', 'mux8', '-cio0:mux8:port0', 'terminal'],
+			[{'wait': '/etc/rc', 'on': mux8con}], 400,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# ...and a getty on one of its ports, the card at select code 2 with
+	# tty0N on port N, the disc's own numbering.
 	mux8 = ':cio2:mux8:port1:terminal'
 	add('hpux-mux8-multi', 'hp9k540',
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-multi', multiuser=True, card='27130'),

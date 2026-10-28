@@ -89,6 +89,11 @@ HP's prose, and cannot be until someone reads the pages.** `UP` and `DOWN`
 are the semaphore pair the whole dispatcher blocks and wakes on, so this is
 the most valuable gap in the document, not the least.
 
+**Closed in section 7:** the page images settle it — the 12/82 revision
+has no such instructions. Its opcode chart leaves their slots blank and its
+index does not list them. `UP` and `DOWN` were checked against the HP
+Journal's description instead.
+
 Originally this finding named seventeen instructions. Fourteen were
 recovered — eleven by reading the page and three by teaching the reader
 what the scan actually produces (section 5).
@@ -440,16 +445,13 @@ compliance. Not done:
 - **`WTC`**, the one instruction `--indicators` still reports. Its entry
   says "Indicators same as for RFC", and RFC has no locatable heading, so
   the requirement cannot be read off the document at all;
-- **the trap, dispatcher and segmentation groups** (`focusexec_trap.ipp`,
-  `focusexec_seg.ipp`, `focusexec_disp.ipp`) against sheets 44–52 and the
-  flowcharts on 140–142. Still the highest-value remaining slice: it is what
-  the typed-program scaffold (trap 021) and the HP-UX console bring-up both
-  run through;
-- **UP, DOWN and GMPY** (Finding R1), which need the page images;
-- **the I/O subsystem** — `src/iop/` against `FOCUS_IO_ERS_Dec82` and the
-  card technical references. Expect a different result shape: the
-  FR-register join is documented in no single manual and was reconstructed
-  from behaviour, so those entries will read `UNDOCUMENTED`.
+- **the card technical references** against the CIO card models. The
+  IOP itself has now been read against `FOCUS_IO_ERS_Dec82` (section 7);
+  the FR-register join between IOP and card is documented in no single
+  manual and was reconstructed from behaviour.
+
+The trap, dispatcher and segmentation groups, `UP`/`DOWN`/`GMPY`, and the
+IOP were audited afterwards; section 7 has the results.
 
 One tool limitation worth knowing: `--indicators` reports one row per
 mnemonic and resolves variants to their base, so a variant whose base is
@@ -570,3 +572,108 @@ tools/ers.py --insn BCC        # any one instruction
 
 `--cites` exits non-zero when a citation names a sheet that does not
 describe it, so it can be run as a check. It reports zero today.
+
+---
+
+## 7. Traps, the dispatcher, segmentation, UP/DOWN/GMPY and the IOP
+
+The slice section 4 left for last, read against sheets 40–52 (interrupts
+and traps), 95–100 (PCL, EXIT, IXIT, DISP, PSDB, PSEB and the debug aids),
+the Appendix C flowcharts on 139–142 and Appendix D, and the I/O ERS
+command set on its sheets 29–41. The flowcharts have no usable text layer;
+they were read from the page images (`pdftoppm -r 110`).
+
+### UP, DOWN and GMPY are not in this ERS at all (Finding R1, closed)
+
+Finding R1 said the three headings could not be located. They cannot be
+located because they are not there. The opcode chart on sheet 137 leaves
+format 4 opcodes 020–024 and format 6 opcode 021 blank (between `LDD` and
+`LDH`), and the alphabetical index on sheets 131–135 runs `DTB`, `DUP`,
+`DXCH`; `GTSP` alone under G; and `TSTD`, `TRY`, `VPTR`. The instructions
+postdate the 12/82 revision; nothing in the repository's copy can confirm
+them.
+
+The nearest primary source is the HP Journal, March 1984, describing SUN's
+semaphores: a two-word area holding a value and a pointer to a linked list
+of processes; `DOWN` decrements and, if the value was ≤ 0, blocks the
+process and queues its TCB **in priority order**; `UP` increments and, if
+the value was < 0, readies the first waiter, preempting if it outranks the
+caller; the queue-head word doubles as the multiprocessor lock word. The
+implementation agrees on every point the article makes. The same article
+names two more operators added during development — a conditional `UP` that
+frees every waiter with an escape code, and an indivisible `DOWN`-and-`UP` —
+which fit the two blank slots 022 and 023 between `DOWN` and `CTCB`. Neither
+kernel is known to execute them.
+
+`GMPY` is not "inferred from usage": format 6 opcode 021 has no case in
+`exec_fmt6` and traps as unimplemented. Only its name, from `/bin/as`, is
+known.
+
+### Findings, all fixed
+
+| | finding | sheet |
+|---|---|---|
+| T1 | An EDS pointer naming segment 0 trapped as cause 030, Unexpected Pointer Type. It is **015**, External Data Segment Pointer Violation. | 47 |
+| T2 | An offset outside an external data segment trapped as cause 001. "STT#13 is used for external data segments": it is **013**, which also clears STAT(9:1) first (note 4). | 45, 47 |
+| T3 | Causes 003, 013, 014 and 015 were missing from the cause table altogether. | 45–47 |
+| T4 | A privileged instruction in unprivileged mode trapped as 020, Unimplemented Instruction, at fifteen sites. It is **026** with parameter 1. | 48 |
+| T5 | An unprivileged `EXIT` could return to privileged mode, change STATUS.I, or set the pending bit. The flowchart traps all three: 026 with parameter 2, then 3. | 96, 140 |
+| T6 | `PSEB` with a zero count trapped as 012, Inconsistent Registers. It is System Error, **014** parameter 0, "Too many PSEB instructions executed". | 47, 99 |
+| T7 | Parameters: STT Violation passed an offset or a slot where the ERS passes the condition number (1 or 2); Privileged Mode passed 0; Inconsistent Registers passed 0, not CIR; divide by zero passed 2, not Invalid Argument with a result type (0x21, or 0x24 for `DIV`); `SOL` and `SOLC` passed eight bits, not three. Every cause with no parameter of its own passed something invented; step 4 says it is the external program pointer step 1 formed (segment 1, the cause's STT entry). | 44–52 |
+| T8 | Divide by zero always trapped. The user trap is gated by STATUS.T: clear, "the overflow bit is set and no trap is taken". | 48 |
+| T9 | Integer overflow with STATUS.T set never trapped at all. Cause 031 "occurs whenever both the overflow and trap bits are set" at the end of an instruction, clearing Overflow. | 48–49 |
+| T10 | Note 4's STAT(9:1) clear was applied only for the Machine Instruction Trap, not for 013, 037, 040, 042 and 043. | 52 |
+| T11 | `SOP` tested the End-of-Procedure bit. It clears STATUS(0:5) and tests the **overall debug bit**, which sheet 13 derives from FLAGS and the top two CSN bits. | 13, 100 |
+| T12 | `SOLC` trapped on the Start-of-Line bit. It stores P−PB at Q+1 and traps when the word at SB+1 is non-zero (and on Q = S, a bounds violation). | 100 |
+| S4 | `PCL` through an external pointer naming STT entry 0 read the length word as a pointer and branched to PB + length. Entry 0 "is the length entry, in which case P is set to PB". | 29, 139 |
+| S5 | The absolute environment (segment 0, global pointers) used PL = 0xfffffffc and DL = 0xffffffff. The ERS gives octal 3777777774 and 3777777777, the top of the 29-bit space. | 42–43 |
+| D1 | `DISP` never set the dispatcher flag, so the dispatcher ran with it clear: `IXIT` case 1 was reached only by accident, and an interrupt inside the dispatcher was never flagged as one. | 98–99, 141–142 |
+| D2 | `DISP` set CCL when it deferred. The sheet says CCG deferred, and CCE — set *before* the marker is pushed — when it enters, so the task later resumes seeing CCE. | 99 |
+| D3 | `PSEB` never dispatched. When the count reaches zero with (QI)(0:1) set it restarts the dispatcher (flag set) or executes `DISP` (flag clear). | 99 |
+
+D1 had a consequence worth recording. `IXIT` carried a non-ERS door for the
+boot handoff: a flagged marker with an empty (QI) and a zero
+pseudo-disable count entered the dispatcher through the TCB. Once `DISP`
+set the flag, an interrupt arriving while the dispatcher idled produced
+exactly that state on the ICS, the door dispatched through a TCB that was
+half switched, and every boot hung. The handoff is now told apart the way
+the ERS does — it is the one `IXIT` not executed on the ICS ("IXIT assumes
+it is executing on the ICS", sheet 98) — and the case 5 the sheet describes
+is taken everywhere else.
+
+Also corrected: `EXF` cited sheet 116 again in the MAME tree; it is 73
+(Finding C1 had fixed it before the import).
+
+### The IOP against the I/O ERS
+
+The command set matches the summary table on I/O ERS sheets 40–41 with
+these exceptions, all fixed:
+
+| | finding | I/O ERS sheet |
+|---|---|---|
+| I1 | DTMI (046), RIRS (0110) and WIRR (0113) were not implemented. | 34, 37 |
+| I2 | DCEI (074), WRIF (0114) and WCSM (0115) worked only inside command lists; the ERS also defines each as a direct MPB command. | 35, 37–38 |
+| I3 | WRIF inside a list issued its Read Interface with opcode 0, which `io_read` refuses, so it never stored anything. | 37 |
+| I4 | The register a RIF/WIF addresses is "the logical 'or'" of the address's IC field and the opcode's n; the code took one or the other. | 33 |
+| I5 | ICEI "sets a bit in the Interrupt Mask register" for its PA; it did not. | 35–36 |
+| I6 | The attention poll mask powered up as zero. "At power on, the mask is set to all ones." | 37 |
+
+### What changed
+
+The regression suite (`tests/run_tests.py`) gained two typed-program cases
+— a one-line `RUN`, and a `CALL` into a typed `SUB` — which needed a
+harness step to press STORE, a key with no character. Every case passes
+that passed before, including the HP-UX single-user, multiuser and
+software-list boots; the two 27130A multiplexer cases fail exactly as they
+did before any of this.
+
+### Still open
+
+| | what | why it is not changed |
+|---|---|---|
+| O1 | The IOP's Interrupt Mask is two things: a WIMK word read with the opposite sense (a set bit masks) and a per-PA enable that EINT, DINT, SDEC, ICEI and DCEI drive. In the ERS they are one register with one sense. | Both kernels' console and disc paths were tuned against the split; unifying it is a separate piece of work with its own measurements. |
+| O2 | An I/O instruction no IOP answers raises Message bit 7 and takes cause 054 at once, on the current stack, with the opcode as parameter. The ERS separates two cases: an undefined opcode sets bit 7 "and is otherwise ignored", and a channel nobody answers is an MPB slave error, System Error 014 with parameter 5–7. | Boot code issues opcodes the 12/82 IOP did not have; what the shipped IOP did with them is not known. |
+| O3 | A CST use count that would go below 0 or above 4095 should trap (System Error 014, parameter 1; sheets 28, 47). `cst_use_count` wraps. | The emulator's own bookkeeping would have to be shown exact first, or the trap turns a counting slip into a panic. |
+| O4 | `IXIT` restores the mask from Q+2 on every exit from the ICS; the flowchart does so only when CSN ≠ 1. | The message-trap entry masks messages, which the ERS does not, and relies on the restore; the two go together. |
+| O5 | `IXIT` with an external interrupt pending returns and takes it at the next instruction boundary; the flowchart chains straight into the interrupt handler. | Same frames, one instruction later. |
+| O6 | The CST lock protocol (read the entry's first word, leave −1 while using it) and the reference bit are not modelled. | Single CPU; and the reference bit is the unified table's absence bit (section 4). |
