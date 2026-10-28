@@ -27,6 +27,14 @@ sections 6, 8, 9 and 10. **HP-UX 5.01, off the release tape, reaches its
 copyright banner on the emulated 520** — `tools/runhpux.sh --release 5.01`,
 section 11.
 
+**The 520's internal thermal printer prints on paper.** Text, overprinting,
+underline and inverse, user-defined characters and `DUMP GRAPHICS` screen
+dumps come out as page images, in a font read dot by dot off the CE
+Handbook's picture of the printer's self test (`docs/HARDWARE.md` 2.9).
+Above, that picture; below, the emulator's own self test:
+
+![The printer self test: the CE Handbook's printout above, the emulator's below](docs/notes/printer-selftest.png)
+
 Much of what follows is a running log and is dated; where it says "the
 current frontier", read it as the frontier at the time it was written.
 
