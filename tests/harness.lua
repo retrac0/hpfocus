@@ -198,6 +198,55 @@ function H.run(name, steps, limit)
 				if trim(l) ~= "" then print("  | " .. l) end
 			end
 			advance()
+		elseif s.sample then
+			-- Where the processor spends its time: P, PB and STATUS once a
+			-- frame for s.sample seconds, then the commonest. s.dump adds
+			-- the registers, the stack and any CST entry left locked.
+			local cpu = manager.machine.devices[":cpu"]
+			s.hist = s.hist or {}
+			s.n = (s.n or 0) + 1
+			local key = string.format("PB=%x P=%x STATUS=%08x", cpu.state["PB"].value,
+					cpu.state["P"].value, cpu.state["STATUS"].value)
+			s.hist[key] = (s.hist[key] or 0) + 1
+			if t - mark >= s.sample then
+				local keys = {}
+				for k in pairs(s.hist) do keys[#keys + 1] = k end
+				table.sort(keys, function(a, b) return s.hist[a] > s.hist[b] end)
+				print(string.format("-- sample: %d frames, %d places", s.n, #keys))
+				for j = 1, math.min(#keys, s.top or 25) do
+					print(string.format("  %5d %s", s.hist[keys[j]], keys[j]))
+				end
+				if s.dump then
+					local space = cpu.spaces["program"]
+					local regs = {}
+					for _, r in ipairs({ "P", "PB", "PL", "SB", "SL", "S", "Q", "DB", "DL", "DST",
+							"X", "STATUS", "CIR", "MSG", "MASK" }) do
+						regs[#regs + 1] = string.format("%s=%x", r, cpu.state[r].value)
+					end
+					print("  " .. table.concat(regs, " "))
+					local function words(label, from, n)
+						local row = {}
+						for k = 0, n - 1 do
+							row[#row + 1] = string.format("%08x", space:read_u32(from + 4 * k))
+							if #row == 8 or k == n - 1 then
+								print(string.format("  %s %06x: %s", label,
+										from + 4 * (k + 1 - #row), table.concat(row, " ")))
+								row = {}
+							end
+						end
+					end
+					local q, sp = cpu.state["Q"].value & ~3, cpu.state["S"].value & ~3
+					words("stk", math.max(cpu.state["SB"].value & ~3, sp - 4 * 63), 64)
+					words("Q", q - 4 * 16, 24)
+					local cst = space:read_u32(0)
+					for e = 1, 1023 do
+						if space:read_u32(cst + 16 * e) == 0xffffffff then
+							words(string.format("locked %d", e), cst + 16 * e, 4)
+						end
+					end
+				end
+				advance()
+			end
 		elseif s.posted then
 			if manager.machine.natkeyboard.empty then advance() end
 		elseif s.insert then
