@@ -1359,3 +1359,37 @@ says `1-Carry`, and `ADD,B`/`SUB,B` setting CC on a zero result where it
 should be left alone. With `LSUB` already following the ERS, `LSUB; SUB,B`
 -- the top limb of a doubleword subtract -- came out with its borrow
 inverted.
+
+## 13. More than 2 MB: the interrupt list the mux cut in two (2026-10-27)
+
+With `-ram 3m` or `4m` the multiuser 540 never offered a login on the
+27140A: the kernel halted with escape 56 (a timeout) from `CORE SYSTEM
++0x250`, the re-raise handler, after its timed waits had expired on and off
+for five seconds. 2, 6 and 8 MB booted. Without the mux, 4 MB booted too.
+
+The waits that expired were the disc's. The fatal chain runs TRAP HANDLERS
+-> SDF_DISC -> IOS -> the timed wait, and the transfer behind it was a
+16 KB HP-IB read that stopped after a few of its 1 KB DMA legs. HP-UX sizes
+its disc transfers to the memory it has -- mostly 8 KB at 2 MB, 16 KB at
+4 MB -- and a longer transfer spends longer exposed to the mux.
+
+Each leg ends with an interrupt: the IOP links the device's DRT entry onto
+the list for its level (I/O ERS 4.1.4) and the CPU takes it from the head.
+In the failing read the disc's entry went on behind the mux's, the console's
+behind it, and then the mux was linked AGAIN. The IOP refused to re-link a
+device that was the list's tail, but this one was the head: making it the
+new last entry zeroed its link, and the disc and console entries behind it
+fell off the list. The CPU serviced the mux and the console and never saw
+the disc's completion, so the next leg was never started.
+
+The ERS's interrupt mask exists to stop exactly this -- requests "from
+devices which have interrupt requests pending at the CPU already" (4.1.2).
+The emulation could break it because a DMA finishes inside the `SDEC` that
+starts it: a command list that ends `SDEC ... DCEI` raises its completion
+before its own `DCEI` re-enables the device, which can then request again
+while still queued. `raise` now declines to link a device that is anywhere
+on its level's list, not only at the tail.
+
+All of 2, 3, 4, 6 and 8 MB now reach the mux's login, and
+`hpux-multi-4m` keeps it so. `hpux-mux8-multi`, the 27130A login that had
+failed since it was added, passes with the same fix.

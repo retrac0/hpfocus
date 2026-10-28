@@ -365,6 +365,15 @@ def cases(work):
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+	# ...and with 4 MB, where HP-UX moves 16 KB per disc transfer: long
+	# enough for the mux to interrupt in the middle of one.
+	add('hpux-multi-4m', 'hp9k540',
+			lambda: ['-ram', '4m', '-hard', hpux_volume(work, 'hpux-multi-4m', multiuser=True),
+					'-cio2', 'mux', '-cio2:mux:port0', 'terminal'],
+			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
+			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
+			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
 	# HP's own C toolchain as the test bench: the sources in tests/hpux
 	# are typed into /tmp, built with cc, as and ld, and run.
 	add('hpux-cc-cpu', 'hp9k540',
