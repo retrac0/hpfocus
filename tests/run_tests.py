@@ -78,6 +78,34 @@ def battery(work, system, tag, src):
 	shutil.copyfile(src, d / tag)
 
 
+HPUX_TESTS = ROOT / 'tests' / 'hpux'
+
+
+def hpux_login(port):
+	"""Log in as root on a multiuser HP-UX 5.30 terminal and wait for the
+	shell. /etc/profile asks for the terminal type twice."""
+	return [{'wait': 'login:', 'on': port}, {'sleep': 5}, {'post': 'root\n', 'to': port},
+			{'wait': 'TERM =', 'on': port, 'within': 120}, {'post': '\n', 'to': port},
+			{'wait': 'Remember to verify', 'on': port, 'within': 60}, {'sleep': 2},
+			{'post': '\n', 'to': port},
+			{'wait': 'SUPERUSER', 'on': port, 'within': 60}, {'sleep': 3},
+			{'post': 'cd /tmp\n', 'to': port}, {'posted': True}]
+
+
+def hpux_type_files(port, src, names):
+	"""Type files into the current directory with here-documents. The
+	tty's canonical input holds 256 characters, so no line may be
+	longer; the quoted delimiter keeps the shell's hands off $ and `."""
+	steps = []
+	for name in names:
+		text = (src / name).read_text()
+		if any(len(l) > 200 for l in text.splitlines()):
+			raise ValueError(f'{name}: a line too long to type')
+		steps += [{'post': f"cat > {name} <<'@EOF@'\n{text}@EOF@\n", 'to': port},
+				{'posted': True}]
+	return steps
+
+
 #--------------------------------------------------------------------------
 #  the cases
 #--------------------------------------------------------------------------
@@ -337,6 +365,16 @@ def cases(work):
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
 	# ...and a getty on one of its ports, the card at select code 2 with
 	# tty0N on port N, the disc's own numbering.
+	# HP's own C toolchain as the test bench: the sources in tests/hpux
+	# are typed into /tmp, built with cc, as and ld, and run.
+	add('hpux-cc-cpu', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-cc-cpu', multiuser=True),
+					'-cio2', 'mux', '-cio2:mux:port0', 'terminal'],
+			[*hpux_login(mux0),
+			 *hpux_type_files(mux0, HPUX_TESTS, ['cpu.c', 'carry.s', 'dword.c', 'ldst.s', 'run.sh']),
+			 {'post': 'clear; sh run.sh\n', 'to': mux0}, {'posted': True},
+			 {'line': 'hpux cc tests: yes', 'on': mux0, 'within': 400}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
 	mux8 = ':cio2:mux8:port1:terminal'
 	add('hpux-mux8-multi', 'hp9k540',
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-multi', multiuser=True, card='27130'),

@@ -1296,3 +1296,66 @@ is the clock check byte (HARDWARE.md 2.4.1) and goes from the second boot on
 a battery; and 020/021 — the
 unassigned format 4 opcodes this kernel used to stop on after 1.26M
 instructions — no longer arise at all, because `UP`/`DOWN` are implemented.
+
+## 12. HP's C toolchain runs: the writes the disc never got (2026-10-27)
+
+The 5.30 disc carries a complete C toolchain -- `/bin/cc`, `/lib/cpp`,
+`/lib/ccom`, `/lib/c2`, `/bin/as`, `/bin/ld`, `/lib/crt0.o`, `libc.a` and
+92 headers -- and logged in as root on the 27140A it compiles, links and
+runs. It did so exactly three times. The fourth `cc` of a session died
+"Fatal error in /lib/cpp" (cc's word for a child killed by a signal), `ld`
+took memory faults, and once the console filled with garbage.
+
+Run by hand, `cpp` alone never failed; it failed only after `ccom` and `as`
+had run, with SIGSEGV, at the same compile in repeated runs. Its last
+instruction was `LBSI` through the "pointer" `0x696e666f` -- the ASCII
+"info". Following that word back, through a ring of the last 4,000
+instructions and a record of the last writer of every physical frame:
+
+1. `cpp` faulted on an absent page of user segment 0xb, its data;
+2. the pager read CS/80 block 386360 into the frame and restarted the
+   instruction, which loaded the pointer from it;
+3. block 386360 is free space holding stale C source. The kernel had put
+   that page in the swap area at exec -- segment 0xb's pages map to
+   `0x5e500 + 4 x page` -- and believed it had been written there.
+
+It had asked for the write. A swap-out of several pages is one Set Length
+and Locate and Write, with the data sent as one WD block per page, each from
+its own frame. The 27110's CS/80 model closed the write on the first block:
+`commit_write` cleared the write and `data_block` cleared the pending flag,
+so every block after the first fell on the floor -- 562 of them in one
+ten-compile session. Nothing complained, and the pages came back from swap
+holding whatever the area held before. The first three compiles fit in
+memory and never swapped.
+
+A write now stays open until its Set Length is met, each block landing after
+the last, and stays pending across the WD orders of one transaction
+(`hp27110.cpp`). 180 consecutive compile-link-run cycles of a two-file
+program pass, where a third or more failed once the first few had filled
+memory.
+
+### 12.1 The toolchain as a test bench
+
+With `cc` reliable, `tests/run_tests.py hpux-cc-cpu` logs in, types the
+files in `tests/hpux/` into `/tmp` with here-documents, builds them with
+HP's own `cc`, `as` and `ld`, and runs them; each program prints its
+failures and a pass/fail count. The checks are written against the ERS, in
+HP's assembler syntax where an instruction has no C spelling. Things worth
+knowing when writing them:
+
+- `as` spells the b bit of the add/sub group `,c` (`sub,c`, `ladd,c`,
+  `dlad,c`); `sub c` and `sub b` are refused.
+- Arguments are at `Q-31`, `Q-35`, `Q-39`, ... and a function's result is
+  stored through `Q-20,i`; `ldx ~L.n` / `pshn` / ... / `exit 0` with the
+  `~L.n: word 0` after it is cc's frame. `~L` labels are local to a `proc`.
+- `cc a.c a.s` builds both into `a.o`; give the two files different names.
+- The tty's canonical input holds 256 characters. A longer typed line loses
+  characters, so files are typed, never long commands.
+- `malloc` and `sbrk` return global data segment pointers (`0x8000xxxx`):
+  an ordinary program never holds a pointer into a paged segment.
+
+The first checks (`carry.s`) found `SUB,B` subtracting Carry where sheet 75
+says `1-Carry`, and `ADD,B`/`SUB,B` setting CC on a zero result where it
+should be left alone. With `LSUB` already following the ERS, `LSUB; SUB,B`
+-- the top limb of a doubleword subtract -- came out with its borrow
+inverted.

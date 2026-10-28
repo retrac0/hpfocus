@@ -971,7 +971,9 @@ word, then the CPU's MPB channel number. Privileged. *CC unaffected.*
 Pop two words, push `B + A` / `B − A` as two's complement. `b`: include
 Carry (`SUB` subtracts `1−C`), for multi-precision chains — and then CC is
 updated **only if the result is nonzero**, so a zero partial doesn't erase
-the class of the lower words. *CCA, Carry, Overflow.*
+the class of the lower words. Carry after `SUB` means no borrow, as after
+`LSUB`; a doubleword subtract is `LSUB` on the low words, then `SUB,B`.
+Checked under HP-UX by `tests/hpux/carry.s`. *CCA, Carry, Overflow.*
 
 **`ADDI` / `SUBI`** — Add / Subtract Immediate — `F5:4` / `F5:5`
 TOS ± the 8-bit immediate, in place. *CCA.*

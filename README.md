@@ -27,6 +27,15 @@ sections 6, 8, 9 and 10. **HP-UX 5.01, off the release tape, reaches its
 copyright banner on the emulated 520** — `tools/runhpux.sh --release 5.01`,
 section 11.
 
+**HP's own C compiler runs under HP-UX 5.30**, and is a test bench:
+`cc`, `as` and `ld` build and run programs on the emulated 540, and
+`tests/run_tests.py hpux-cc-cpu` types the C and assembler checks in
+`tests/hpux/` into it and runs them. Getting there took a disc fix — the
+27110's CS/80 model kept only the first page of every multi-page write, so
+swapped-out pages came back as stale disc blocks — and its first checks
+found `SUB,B` subtracting Carry instead of 1−Carry (`docs/HPUX.md`
+section 12).
+
 **The 520's internal thermal printer prints on paper.** Text, overprinting,
 underline and inverse, user-defined characters and `DUMP GRAPHICS` screen
 dumps come out as page images, in a font read dot by dot off the CE
