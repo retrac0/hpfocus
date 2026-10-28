@@ -125,7 +125,7 @@ Functional Tests come with their own environment -- `500ENV1-3` are a
 three-volume boot image, not a filesystem, and they carry a `GRAPHICS`
 binary that appears on no option disc -- so `tools/mkdiagdisc.sh` installs
 that instead of BASIC 2.0, and the 31,652-byte `TEST` driver then loads off
-the test disc and runs, up to the Test Supervisor's menu. It used to stop in
+the test disc and runs, up to the Test Supervisor's first question. It used to stop in
 its first subprogram with `ERROR 702, No graphics driver/CRT graphics hw
 failure`; **the graphics display is modelled now** and the display draws --
 `PLOTTER IS 1,"INTERNAL"` then `FRAME` puts a rectangle round the raster.
@@ -761,8 +761,14 @@ with an `-autoboot_script` (tests/harness.lua) that waits for text on the
 checks what comes back: the boot milestones of both machines and both HP-UX
 releases, the BASIC behaviour table (all 28 pass), and the ERS section 7
 factorial run straight
-on the CPU. `--list` shows the cases; names given on the command line pick
-cases by prefix.
+on the CPU. The `diag-` cases use the 9020 test floppies: the `500ENV`
+set boots, each test disc's catalog shows its label and every program,
+every program on it loads without an error, and `TEST` runs to the Test
+Supervisor's welcome. Answering its first question is the frontier:
+`diag-supervisor-display` is known to fail, with `SYMBOL TABLE ENTRIES
+NOT ALLOWED IN COMPILED ONLY CONTEXT` where the program menu should be.
+`--list` shows the cases; names given on the command line pick cases by
+prefix.
 
 `tests/dasm_difftest.py` compares MAME's disassembler (`unidasm -arch
 focus`, from a `TOOLS=1` build) against [tools/focusdis.py](tools/focusdis.py)

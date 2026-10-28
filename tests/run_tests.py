@@ -117,7 +117,7 @@ BASIC_TABLE = [
 	('sqrt2', 'DISP SQR(2)\n', '1.41421356237'),
 	('real-add', 'DISP 4.5+1\n', '5.5'),
 ]
-KNOWN_FAILING = set()
+KNOWN_FAILING = {'diag-supervisor-display'}
 
 
 def factorial_case():
@@ -167,6 +167,57 @@ def factorial_case():
 	return steps
 
 
+# The 09020 test discs: (disc, label, the programs on it). TEST, the
+# Test Supervisor, is on all three.
+TEST_DISCS = [
+	('500MFTST', '09020-11011R0300', ['(6)STATUS', '(12)DISPLAY', '(8)AGRAPHICS', '(13)BGRAPHICS',
+			'(18)CGRAPHICS', '(17)PRINTER', '(10)FLOPPY', '(22)LTPEN', '(7)KEYBOARD', '(15)WINCHESTER']),
+	('500MSTST', '09020-10014R0300', ['(6)CS80', '(11)SS80', '(7)TAPE', '(18)9895', '(8)8290X',
+			'(13)9885', '(23)9121']),
+	('500EDTST', '09020-11013R0300', ['(8)SRM', '(6)EXPRINTER', '(11)PLOTTER', '(16)DIGITIZER',
+			'(7)97060', '(12)97062', '(17)RGB_ALIGN', '(9)HPIB', '(14)HPIO', '(19)GPIO', '(24)ASI']),
+]
+WELCOME = 'Welcome to the HP 9000 Test Supervisor'
+
+
+def diag_cases(add, work):
+	"""The test discs, under the BASIC on diag.img. Typing is a character
+	at a time: the supervisor reads its keyboard slower than the natural
+	keyboard posts."""
+	test = SW / 'test'
+	add('diag-env-floppy', 'hp9k520',
+			['-ram', '2m', *(a for k in (1, 2, 3) for a in (f'-flop{k}', str(test / f'500ENV{k}.TD0')))],
+			[{'wait': READY, 'on': 'screen'}], 60)
+
+	def booted(disc, tag):
+		return lambda: ['-ram', '2m', '-hard', hd(work, SW / 'hd' / 'diag.img', tag),
+				'-flop1', str(test / (disc + '.TD0'))]
+	ready = [{'wait': READY, 'on': 'screen'}, {'sleep': 3}]
+	for disc, label, programs in TEST_DISCS:
+		short = disc[3:].lower()
+		add('diag-cat-' + short, 'hp9k520', booted(disc, 'cat-' + short),
+				[*ready, {'type': 'CAT\n', 'rate': 0.15},
+				 {'wait': 'LABEL:  ' + label, 'on': 'screen', 'within': 30},
+				 *({'wait': p, 'on': 'screen', 'within': 10} for p in ['TEST', *programs])], 120)
+		# LOAD prints nothing when it works, and the next command
+		# overwrites an error, so each one is checked before the next.
+		loads = []
+		for p in programs:
+			loads += [{'type': f'LOAD "{p}"\n', 'rate': 0.12}, {'sleep': 8},
+					{'absent': 'ERROR', 'on': 'screen'}]
+		add('diag-load-' + short, 'hp9k520', booted(disc, 'load-' + short),
+				[*ready, *loads], 60 + 12 * len(programs))
+	supervisor = [*ready, {'type': 'LOAD "TEST"\n', 'rate': 0.15}, {'sleep': 15},
+			{'type': 'RUN\n', 'rate': 0.15}, {'wait': WELCOME, 'on': 'screen', 'within': 60}]
+	add('diag-supervisor', 'hp9k520', booted('500MFTST', 'supervisor'), supervisor, 150)
+	# The first question: where results go. The answer reaches the
+	# program, which then stops on SYMBOL TABLE ENTRIES NOT ALLOWED IN
+	# COMPILED ONLY CONTEXT instead of showing its menu.
+	add('diag-supervisor-display', 'hp9k520', booted('500MFTST', 'supervisor-display'),
+			[*supervisor, {'sleep': 10}, {'press': 'CLR LINE'}, {'sleep': 1},
+			 {'type': 'DISPLAY\n', 'rate': 0.2}, {'wait': 'PROGRAM MENU', 'on': 'screen', 'within': 40}], 200)
+
+
 def cases(work):
 	c = []
 
@@ -192,6 +243,7 @@ def cases(work):
 	add('diag-hd', 'hp9k520', lambda: ['-ram', '2m', '-hard', hd(work, SW / 'hd' / 'diag.img', 'diag'),
 			'-flop1', str(SW / 'test' / '500MFTST.TD0')],
 			[{'wait': READY, 'on': 'screen'}], 60)
+	diag_cases(add, work)
 	for name, keys, want in BASIC_TABLE:
 		typing = []
 		for k, chunk in enumerate([keys] if isinstance(keys, str) else keys):

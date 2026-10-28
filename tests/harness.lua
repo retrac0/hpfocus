@@ -16,6 +16,12 @@
 --                                                keyboard; TAG picks the
 --                                                keyboard device (else all)
 --   { posted = true }                            until the typing is done
+--   { type = "keys", rate = s, to = TAG }         post a character at a time
+--   { show = SOURCE }                            print what a source shows
+--   { absent = TEXT, on = SOURCE }               fail if any line holds TEXT
+--   { press = "NAME" }                           hold the key whose input
+--                                                field is NAME, for a key
+--                                                with no character (STORE)
 --   { reset = SPEC }                             load an ISA case at a reset
 --   { setup = SPEC }                             load one into a running CPU
 --   { expect = { [addr] = word } }               compare words, see H.cpu_check
@@ -73,6 +79,13 @@ local function lines_of(source)
 		return H.screen_lines()
 	end
 	return H.terminal_lines(source)
+end
+
+local function input_field(name)
+	for _, port in pairs(manager.machine.ioport.ports) do
+		local f = port.fields[name]
+		if f then return f end
+	end
 end
 
 local function select_keyboard(tag)
@@ -151,14 +164,51 @@ function H.run(name, steps, limit)
 			if (s.within or 0) <= t - mark then
 				finish(false, string.format("no line '%s'", s.line), s.on)
 			end
+		elseif s.absent then
+			for _, l in ipairs(lines_of(s.on)) do
+				if l:find(s.absent, 1, true) then
+					finish(false, string.format("'%s' on %s", s.absent, s.on or "screen"), s.on)
+					return
+				end
+			end
+			advance()
 		elseif s.sleep then
 			if t - mark >= s.sleep then advance() end
 		elseif s.post then
 			select_keyboard(s.to)
 			manager.machine.natkeyboard:post(s.post)
 			advance()
+		elseif s.type then
+			-- One character at a time, for input a program reads slower
+			-- than the natural keyboard types.
+			s.at = s.at or 1
+			s.next = s.next or t
+			if t >= s.next then
+				if s.at == 1 then select_keyboard(s.to) end
+				manager.machine.natkeyboard:post(s.type:sub(s.at, s.at))
+				s.at = s.at + 1
+				s.next = t + (s.rate or 0.25)
+				if s.at > #s.type then advance() end
+			end
+		elseif s.show then
+			print("-- " .. s.show .. " at " .. string.format("%.1f", t))
+			for _, l in ipairs(lines_of(s.show)) do
+				if trim(l) ~= "" then print("  | " .. l) end
+			end
+			advance()
 		elseif s.posted then
 			if manager.machine.natkeyboard.empty then advance() end
+		elseif s.press then
+			local f = input_field(s.press)
+			if not f then
+				finish(false, "no key " .. s.press)
+			elseif not s.down then
+				f:set_value(1)
+				s.down = t
+			elseif t - s.down >= 0.1 then
+				f:clear_value()
+				advance()
+			end
 		elseif s.expect then
 			local space = manager.machine.devices[":cpu"].spaces["program"]
 			for addr, want in pairs(s.expect) do
