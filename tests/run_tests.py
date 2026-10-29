@@ -101,6 +101,37 @@ def hpux_volume(work, name, multiuser=False, card='27140', sc=2):
 	return path
 
 
+def raw_volume(work, name):
+	"""A shipped floppy as a raw image, decoded from its Teledisk file
+	into the work directory (software/basic/img holds the same, if
+	tools/setup.sh has made them)."""
+	made = SW / 'basic' / 'img' / (name + '.img')
+	if made.exists():
+		return made
+	raw = Path(work) / (name + '.img')
+	if not raw.exists():
+		td0 = SW / 'basic' / (name + '.TD0')
+		if not td0.exists():
+			raise FileNotFoundError(td0.name)
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'td0.py'), '--raw', str(raw), str(td0)],
+				check=True, stdout=subprocess.DEVNULL)
+	return raw
+
+
+def hpux501_kernel():
+	"""The 5.01 boot image, built from the release tape as
+	tools/runhpux.sh --release 5.01 builds it."""
+	kernel = SW / 'cct' / 'hpux501.bin'
+	if not kernel.exists():
+		tape = SW / '97089C.hpi'
+		if not tape.exists():
+			raise FileNotFoundError(tape.name)
+		subprocess.run([sys.executable, str(ROOT / 'tools' / 'hpuxboot.py'), str(tape), '-o', str(kernel),
+				'--option', 'HPIB_FLEX', '--option', 'SERIAL', '--option', 'MEMORY_VOL'],
+				check=True, stdout=subprocess.DEVNULL)
+	return kernel
+
+
 def battery(work, system, tag, src):
 	"""Preload a battery-backed part's contents."""
 	prepare_hpux()
@@ -374,12 +405,12 @@ def cases(work):
 			return
 		opts = Path(work) / 'opt1'
 		subprocess.run([sys.executable, str(ROOT / 'tools' / 'sdfread.py'),
-				str(SW / 'basic' / 'img' / '500OPT1.img'), '--extract', str(opts)],
+				str(raw_volume(work, '500OPT1')), '--extract', str(opts)],
 				check=True, stdout=subprocess.DEVNULL)
 		subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkharddisc.py'), str(gpio_disc)],
 				check=True, stdout=subprocess.DEVNULL)
 		subprocess.run([sys.executable, str(ROOT / 'tools' / 'installbasic.py'), str(gpio_disc),
-				'--basic', str(SW / 'basic' / 'img' / '500BT1.img'), str(SW / 'basic' / 'img' / '500BT2.img'),
+				'--basic', str(raw_volume(work, '500BT1')), str(raw_volume(work, '500BT2')),
 				'--option', *(str(opts / o) for o in ('IO', 'HP27112', 'ERRORS_ENG'))],
 				check=True, stdout=subprocess.DEVNULL)
 	add('gpio-loopback', 'hp9k520',
@@ -396,7 +427,7 @@ def cases(work):
 			subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkharddisc.py'), str(hpux501)],
 					check=True, stdout=subprocess.DEVNULL)
 			subprocess.run([sys.executable, str(ROOT / 'tools' / 'installbasic.py'), str(hpux501),
-					'--boot-image', str(SW / 'cct' / 'hpux501.bin')], check=True, stdout=subprocess.DEVNULL)
+					'--boot-image', str(hpux501_kernel())], check=True, stdout=subprocess.DEVNULL)
 	add('hpux501-banner', 'hp9k520',
 			lambda: ['-ram', '2m', '-hard1', hd(work, hpux501, 'hpux501-boot'),
 					'-cio5', 'hpib', '-hard2', hpux_volume(work, 'hpux501-root')],
@@ -413,6 +444,9 @@ def cases(work):
 		d = Path(work) / 'roms' / 'hp9k5xx_hdd' / 'hpux530'
 		chd = d / 'hpux530.chd'
 		if not chd.exists():
+			# MAME's CHD tool comes with a TOOLS=1 build only.
+			if not (ROOT / 'mame' / 'chdman').exists():
+				raise FileNotFoundError('mame/chdman, which a MAME build with TOOLS=1 makes')
 			d.mkdir(parents=True, exist_ok=True)
 			vol = Path(work) / 'hpux530-rebuilt.bin'
 			tapes = []
@@ -526,7 +560,7 @@ def run_case(case, mame, work):
 			case['setup']()
 		args = case['args']() if callable(case['args']) else case['args']
 	except FileNotFoundError as e:
-		return case['name'], None, f'media not here ({e})'
+		return case['name'], None, f'not here: {e}'
 	except subprocess.CalledProcessError as e:
 		return case['name'], False, f'setup failed: {e}'
 	missing = [a for a in args if isinstance(a, str) and a.startswith(str(SW)) and not Path(a).exists()]
@@ -606,7 +640,7 @@ def main():
 				unexpected += not known
 				print(f'  FAIL  {name}' + ('  (known)' if known else '') + f'  {why}')
 	print(f'{len(table) - failed - skipped} passed, {failed} failed, {unexpected} unexpected'
-			+ (f', {skipped} skipped (tools/fetch-media.sh)' if skipped else ''))
+			+ (f', {skipped} skipped' if skipped else ''))
 	return 1 if unexpected or (args.strict and skipped) else 0
 
 

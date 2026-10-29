@@ -106,7 +106,7 @@ Useful options:
 | `--check` | check the prerequisites only |
 | `--no-build` | do everything except the build |
 | `-j N` | build with N jobs. The default is one per CPU, reduced if memory is short: a MAME compile job can take 1.5 GB |
-| `-- NOWERROR=1` | pass options to MAME's make. NOWERROR=1 helps when a newer compiler warns about MAME's code |
+| `-- NOWERROR=1` | pass options to MAME's make. NOWERROR=1 helps when a newer compiler warns about MAME's code; `-- TOOLS=1` also builds MAME's `chdman` and `unidasm`, which the `hpux-softlist` test and `tests/dasm_difftest.py` need (without them those are skipped) |
 | `--mame-source URL\|DIR` | fetch MAME from the project's fork, a mirror or a local clone that has the pinned commit (or set `HPFOCUS_MAME_SOURCE`) |
 
 If you put a checkout of the pinned commit in `mame/` yourself (`git -C
