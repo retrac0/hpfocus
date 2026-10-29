@@ -778,12 +778,14 @@ releases, the BASIC behaviour table (all 28 pass), and the ERS section 7
 factorial run straight
 on the CPU. The `diag-` cases use the 9020 test floppies: the `500ENV`
 set boots, each test disc's catalog shows its label and every program,
-every program on it loads without an error, and `TEST` runs to the Test
-Supervisor's welcome. Answering its first question is the frontier:
-`diag-supervisor-display` is known to fail, with `SYMBOL TABLE ENTRIES
-NOT ALLOWED IN COMPILED ONLY CONTEXT` where the program menu should be.
-`--list` shows the cases; names given on the command line pick cases by
-prefix.
+every program on it loads without an error, `TEST` runs to the Test
+Supervisor's program menu, and HP's `KEYBOARD` test passes. One case is
+known to fail: `hpux-mux8-sc0`, the 27130A carrying the console as well
+as gettys, where the card model's one-transaction-at-a-time firmware
+loses requests HP-UX overlaps (`docs/HPUX.md` 10.6). `--list` shows the
+cases; names given on the command line pick cases by prefix; `--work`
+puts the work directory, a couple of gigabytes for a full run, where you
+choose.
 
 `tests/dasm_difftest.py` compares MAME's disassembler (`unidasm -arch
 focus`, from a `TOOLS=1` build) against [tools/focusdis.py](tools/focusdis.py)

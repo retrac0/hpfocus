@@ -43,20 +43,15 @@ local function trim(s)
 	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
--- The 520's display: the frame buffer through the CRTC's display start
--- and row count, the way the hardware scans it out.
+-- The 520's display: the first 30 rows of the display interface's frame
+-- buffer, 80 cells each, attribute high and character low.
 function H.screen_lines()
-	local dim = manager.machine.devices[":dim"]
 	local vram = manager.machine.memory.shares[":dim:vram"]
-	local crtc = emu.item(dim.items["0/crtc"])
-	local start = ((crtc:read(12) << 8) | crtc:read(13)) & 4095
-	local rows = crtc:read(6)
-	if rows == 0 or rows > 26 then rows = 26 end
 	local lines = {}
-	for r = 0, rows - 1 do
+	for r = 0, 29 do
 		local t = {}
 		for c = 0, 79 do
-			local ch = vram:read_u16(((start + r * 80 + c) & 4095) * 2) & 0xff
+			local ch = vram:read_u16((r * 80 + c) * 2) & 0xff
 			t[#t + 1] = (ch >= 32 and ch < 127) and string.char(ch) or " "
 		end
 		lines[#lines + 1] = table.concat(t)

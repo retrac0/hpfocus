@@ -1110,6 +1110,21 @@ terminal` boots the unmodified disc to its console on the MUX. The test
 cases `hpux-mux8-console`, `hpux-mux8-multi` and `hpux-mux8-sc0` (logins on
 ports 1 and 3 with the console on port 0) cover the three.
 
+**The second does not work yet**, and `hpux-mux8-sc0` is the suite's one
+known failure. With the console and the gettys on one card, HP-UX opens
+transactions on several logical channels at once: the console driver's
+write-configuration CLC arrives between a getty's read-card-information
+CLC and the RTS that would have told it SWI. The card model keeps a
+single transaction, so the second CLC overwrites the first and the getty
+waits for ever -- or, as the timing falls, prints `login:` and never
+answers. HP's firmware gives every request a request block of its own,
+one of each kind per port, and reports their progress through an RTS
+queue (27130A firmware IMS, chapter 10 and 13.2.5-13.2.6). Setting the
+open transaction aside for the new one and resuming it at the next RTS
+fixes the overwrite, but then the completion events of the two collapse
+into one and the whole card stops, console included: the model needs
+that queue, per-request SWI and EDD, not a patch.
+
 ### 10.3 The defect that kept it single-user: MVB is not resumable
 
 None of that got past init: the FIX root ENTRY IN /etc/passwd message
