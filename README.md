@@ -29,9 +29,7 @@ media tools, the regression suite and the documentation.
     tools/smoketest.sh                # a couple of minutes: PASS or FAIL
     tools/runhpux.sh --multiuser      # HP-UX 5.30; log in as root, no password
 
-Until the project's MAME fork is published, the submodule's pinned commit
-is on no server, and `tools/setup.sh --mame-source DIR` has to be given a
-clone that has it. To stop HP-UX, type `cd /` and `/etc/stopsys` at a root
+To stop HP-UX, type `cd /` and `/etc/stopsys` at a root
 shell, wait for `The system is stopped.`, and close the window.
 
 [INSTALL.md](INSTALL.md) covers the rest: prerequisites for Debian/Ubuntu,

@@ -37,8 +37,8 @@
 #      bus and the hp9k520/hp9k540 drivers. Fetched shallow by SHA straight
 #      into mame/: about 210 MB of download and 1.2 GB on disc. A mame/ that
 #      already holds a MAME tree is used as it is (with a warning if it is
-#      not the pinned commit). Until the fork is published, the pinned
-#      commit is on no server: give --mame-source a clone that has it.
+#      not the pinned commit). The fork is github.com/retrac0/mame, and
+#      .gitmodules names it.
 #   3. build -- make SUBTARGET=focus SOURCES=src/mame/hp/hp9k_5xx.cpp in
 #      mame/, which gives mame/focus. About 1,190 files: measured at 2 h at
 #      -j4 on a heavily loaded 8-core machine; expect 20-40 minutes on an
@@ -212,7 +212,7 @@ elif [ "$PIN" != "$MAME_PIN_FALLBACK" ]; then
 	echo "   note: the mame gitlink pins $PIN; tools/setup.sh's fallback says $MAME_PIN_FALLBACK"
 fi
 if [ -z "$SOURCE" ]; then
-	SOURCE=$(git config -f .gitmodules submodule.mame.url 2>/dev/null || echo https://github.com/mamedev/mame.git)
+	SOURCE=$(git config -f .gitmodules submodule.mame.url 2>/dev/null || echo https://github.com/retrac0/mame.git)
 fi
 case "$SOURCE" in
 	/*|http*|git@*|ssh:*|git:*|file:*) ;;
@@ -241,8 +241,9 @@ else
 	# second fetch trips over, so running setup again simply fetches again.
 	if ! git -C mame fetch --depth 1 origin "$PIN"; then
 		die "could not fetch MAME ${PIN:0:12} from $SOURCE. The commit is on the
-hp9k5xx branch of the project's MAME fork, not upstream MAME: give that
-fork with --mame-source URL|DIR (or HPFOCUS_MAME_SOURCE), or put any clone
+hp9k5xx branch of the project's MAME fork (github.com/retrac0/mame), not
+upstream MAME: give that fork, or a mirror of it, with --mame-source URL|DIR
+(or HPFOCUS_MAME_SOURCE), or put any clone
 with that commit checked out in mame/, and run tools/setup.sh again."
 	fi
 	git -C mame -c advice.detachedHead=false checkout -q --detach FETCH_HEAD

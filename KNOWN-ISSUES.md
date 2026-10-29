@@ -334,9 +334,8 @@ code is known to.
 - **The first build is long.** About 1,190 files: expect 20 to 40 minutes
   on an idle 8-core machine, and much longer on a busy or smaller one.
 - **MAME is a fork, pinned.** The emulator is the `hp9k5xx` branch of the
-  project's MAME fork, and the `mame` submodule pins a commit on it. That
-  fork is not published yet, so a fresh clone has nowhere to fetch the
-  pinned commit from: `tools/setup.sh --mame-source` needs a clone that
-  has it.
+  project's MAME fork, [retrac0/mame](https://github.com/retrac0/mame/tree/hp9k5xx),
+  and the `mame` submodule pins a commit on it. It is not in upstream MAME,
+  so `git clone` of mamedev/mame does not have it.
 - **Python 3.8 or later.** That floor was checked by reading the code, not
   by running it on 3.8.

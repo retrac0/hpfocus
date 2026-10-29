@@ -70,10 +70,10 @@ emulated HP 9000 Model 540. It is an **alpha**: read
 
 1. It checks the prerequisites.
 2. It fetches the MAME commit that the `mame` submodule pins, on the
-   `hp9k5xx` branch of the project's MAME fork, which carries the FOCUS
-   CPU, the CIO cards and the 520/540 driver. It is fetched shallow by
-   SHA: about 210 MB to download. **Until that fork is published the
-   commit is on no server**: give `--mame-source` a clone that has it.
+   `hp9k5xx` branch of the project's MAME fork
+   ([retrac0/mame](https://github.com/retrac0/mame/tree/hp9k5xx)), which
+   carries the FOCUS CPU, the CIO cards and the 520/540 driver. It is
+   fetched shallow by SHA: about 210 MB to download.
 3. It builds `mame/focus`, logging to `var/setup/build.log`.
 4. It fetches Hewlett-Packard's software (`tools/fetch-media.sh`): six
    tape and disc images, 46 MB, from bitsavers.org, each checked against

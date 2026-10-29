@@ -1,6 +1,6 @@
 [submodule "mame"]
 	path = mame
-	url = https://github.com/mamedev/mame.git
+	url = https://github.com/retrac0/mame.git
 	shallow = true
 	branch = hp9k5xx
 	ignore = untracked
