@@ -563,7 +563,9 @@ def run_case(case, mame, work):
 		return case['name'], None, f'not here: {e}'
 	except subprocess.CalledProcessError as e:
 		return case['name'], False, f'setup failed: {e}'
-	missing = [a for a in args if isinstance(a, str) and a.startswith(str(SW)) and not Path(a).exists()]
+	# ...and so is one whose steps put a disc that is not here in a drive.
+	inserted = [s['insert'] for s in case['steps'] if 'insert' in s]
+	missing = [a for a in [*args, *inserted] if isinstance(a, str) and a.startswith(str(SW)) and not Path(a).exists()]
 	if missing:
 		return case['name'], None, 'media not here: ' + ', '.join(Path(m).name for m in missing)
 	script = cwork / 'test.lua'
