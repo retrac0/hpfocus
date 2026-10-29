@@ -260,14 +260,41 @@ tested is in [docs/VALIDATION.md](docs/VALIDATION.md).
   among them, answer `IMPROPER COMMAND`. The fixed disc `tools/setup.sh`
   builds has the ERRORS_ENG, IO and MS options installed; use
   `tools/runbasic-hd.sh`.
-- **Most of HP's demo programs do not run.** The programs on the BASIC
-  demo discs (`software/demos`) load, and several stop early: some want
-  partitions, some stop in BASIC's own subprogram linking.
-  [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) has the state program by
-  program as of August 2026. It was not measured again for the alpha,
-  except that `QIX` no longer halts with `TRAP:00000021` after its three
-  questions: it clears the screen and has drawn nothing after 150 emulated
-  seconds. Programs you type do run; the test suite types and runs one.
+- **The demo discs are refused as HP's images ship** *(measured on the
+  MAME driver, 2026-10-29)*. Mounting `software/demos/BASDEM*.TD0` answers
+  `not a Teledisk image of a Series 500 volume`: the images hold 34 of the
+  35 cylinders the driver's floppy reader insists on (the missing one is
+  past the end of the file system). Decode one and pad it, and it loads:
+  `python3 tools/td0.py --raw BASDEM4.img software/demos/BASDEM4.TD0`,
+  then `truncate -s 286720 BASDEM4.img`, and mount the `.img`.
+- **Graphics needs the diagnostics environment.** BASIC's graphics driver,
+  the `GRAPHICS` option, is on no BASIC 2.0 option disc; it is only in
+  HP's System Functional Test boot set, which `software/hd/diag.img` is
+  built from. That disc lacks the MS option the demos' data files need,
+  and `software/hd/basic.img` lacks graphics, so for the demos build a
+  disc with both: `tools/mkharddisc.py software/hd/demo.img --boot-blocks
+  1000`, then `tools/installbasic.py software/hd/demo.img --basic` the
+  three decoded `500ENV` volumes `--option` `ERRORS_ENG`, `IO`, `MS` and
+  `9845_DISC` from the `500OPT1` disc. No option provides a light pen:
+  `GRAPHICS INPUT IS "LIGHT PEN"` answers `ERROR 700`.
+- **No softkeys.** The keyboard board's softkey codes (0x30-0x33 and
+  0x37-0x3b) are known but not mapped to host keys, so a program that waits
+  on a softkey (`ON KEY`) cannot be answered. And the key mapped as
+  CONTINUE (F2, code 0x1d) behaves as STEP: on a paused program it runs one
+  line. To resume a `PAUSE`, type `CONT` and press Return.
+- **Colour fills are not right yet.** Line drawings come out as they
+  should (`snow_flake`, `house`). In HP's 9845C colour demo, shaded fills
+  (`AREA INTENSITY` between 0 and 1) come out solid blue, and a black fill
+  (`AREA INTENSITY 0,0,0`) leaves the blue behind instead of erasing it.
+- **Many of HP's demo programs do not run.** Measured on the MAME driver
+  with the disc above: `snow_flake` and `house` draw completely. HP's
+  9845C colour demo reads its data and reaches its Space Shuttle page (after deleting the light-pen lines 2340-2350, and with its
+  softkey questions edited out), then stops sending commands to the
+  graphics card right after a window command, so the shuttle is never
+  drawn. [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) has the state program
+  by program as of August 2026: some want partitions, some stop in
+  BASIC's own subprogram linking. Programs you type do run; the test suite
+  types and runs one.
 - **The thermal printer is an option.** Fit it with the machine
   configuration's "Internal printer" switch (MAME's menu, or the cfg
   file); it prints to a page image. With it fitted alpha-0.1's BASIC banner

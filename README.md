@@ -31,7 +31,7 @@ drawn by the emulated 9000/520.*
   six terminal ports, and HP's own C compiler builds and runs programs.
 - **HP BASIC 2.0 on the 9000/520**, on its own screen and keyboard, from
   HP's floppies or from a fixed disc, with graphics and the thermal
-  printer.
+  printer (with the limits below).
 - **HP's factory diagnostics for the 520**: the Test Supervisor, the
   display's self test, the graphics and the printer.
 - **HP-UX 5.01 on the 520**, as far as its copyright banner: the surviving
@@ -102,15 +102,53 @@ there yet.
 - **Root has no password**, and the terminal ports listen on 127.0.0.1
   with no access control. The disc is a real site's 1991 system, accounts
   and mail included: please don't publish what you find there.
-- **The terminals are generic, not HP 262x**, so screen programs such as
-  `vi` need a `TERM` your terminal matches. There is no networking.
 - **In the 520's window**, BASIC wants capitals (Caps Lock), Return is
   EXECUTE and the keypad's Enter is STORE. MAME shows a "not working"
   warning first: tap a key to dismiss it rather than holding one down.
-  Many of HP's BASIC demo programs do not run yet, and the softkeys are
-  not mapped.
-- **No save states**, and no dump of the boot loader ROM exists: the driver
-  does the loader's job itself.
+
+## Known limits and gaps
+
+The machines:
+
+- **Two models.** The 520 and the 540 are emulated; the 530 and the 550
+  are not.
+- **No ROM dumps.** Neither the boot loader ROM nor the 520's character
+  generator has been dumped, so the driver does the loader's job itself
+  and the 520's text is drawn in a stand-in font.
+- **No networking.** The HP-UX 5.30 kernel carries TCP/IP and a LAN
+  driver, but no LAN card is emulated.
+- **Generic terminals**, not HP 262x: screen programs such as `vi` need a
+  `TERM` your terminal matches.
+- **No save states**, and the 520 is still flagged "not working" in MAME.
+
+The 520 and BASIC:
+
+- **The softkeys are not mapped**, so a BASIC program that waits on one
+  cannot be answered from the keyboard.
+- **Graphics needs a special disc.** BASIC's graphics driver exists only
+  in HP's diagnostics boot set, not on the BASIC option discs, so plain
+  BASIC from HP's floppies has no graphics, and no light pen at all.
+- **The demo discs are refused as HP's images ship.** Each is one cylinder
+  short of what the driver's floppy reader expects; decoded to a raw image
+  and padded, they load.
+- **Colour fills are not right yet.** Line drawings come out as they
+  should, but in HP's 9845C colour demo shaded fills come out solid and
+  black fills do not erase. Many of the demo programs stop part way: that
+  one reaches its Space Shuttle and stalls in the graphics driver before
+  drawing it.
+- **What BASIC writes to a flexible disc is not saved.** Keep files on the
+  fixed disc.
+- **HP-UX 5.01 stops at its banner**: the surviving tape lost its
+  userland.
+
+The rest:
+
+- **Two instructions** known only from HP's assembler, `CTCB` and `GMPY`,
+  are not implemented, and the CPU's character-class condition code is
+  never produced. Neither operating system is known to need them.
+- **Linux only so far.** Only Arch Linux has been tried. The scripts are
+  written for macOS too, but nobody has built or run it there; Windows is
+  not supported.
 
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) has the full list, and what to do
 about each.
