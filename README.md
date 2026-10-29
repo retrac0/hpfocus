@@ -74,9 +74,10 @@ skipped, not failed.
   builds; docs/DIAGNOSTICS.md).
 - **HP-UX 5.01** boots on the 520 from the damaged release tape, as far as
   its copyright banner (`tools/runhpux.sh --release 5.01`).
-- **`tests/run_tests.py`**, 56 cases: the ERS factorial on the CPU, both
+- **`tests/run_tests.py`**, 57 cases: the ERS factorial on the CPU, both
   machines' boots, the BASIC behaviour table, the diagnostics, every
-  multiplexer configuration, and some 1,700 instruction-set edge cases
+  multiplexer configuration, the console's echo and interrupt key, and
+  some 1,700 instruction-set edge cases
   built by HP's own assembler and run under HP-UX.
 
 ## What does not work, yet

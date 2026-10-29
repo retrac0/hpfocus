@@ -1237,16 +1237,41 @@ erases with BS and kills the line with ^U, ends a record on NL, CR or
 EOT, turns ^C and ^\ into events and expands LF to CR-LF on output; in
 any other mode (`00 00 00 01 ...`, and csh's `82 ... 1d`) it passes each
 character straight up ("alert 1") and HP-UX echoes and edits itself.
-`src/iop/focusasi.h` models that pipeline -- signal characters, the
-handshake characters, edit mode, stripping, single text terminators,
+The `hp27128` card in the MAME driver
+(`src/devices/bus/hp_cio/hp27128.cpp` in the `mame` submodule) models
+that pipeline, per port, so the 27130A gets it too -- signal characters,
+the handshake characters, edit mode, stripping, single text terminators,
 end on count, the 200-byte limit, alert 1, echo and the output
-separators -- and `src/test/asitest.cpp` drives it with the two measured
-blocks. Before it, the console had no echo at a canonical prompt, BS and
-^U arrived as data, ^C did nothing, output staircased on bare LFs and a
-line reached the host only at Return. Measured over a socket on the
+separators. Without it the console has no echo at a canonical prompt, BS
+and ^U arrive as data, ^C waits in the card for the next Return and
+reaches the shell as text, and a line reaches the host only at Return.
+(The standalone core had the pipeline from alpha-0.1; the MAME port left
+it out at first, on the mistaken reading that HP-UX does all of this in
+software -- true only in csh's alert 1 mode. Measured on 2026-10-29: after
+a multiuser root login on the console window, `echo TY""PED` never
+echoed and ^C did not stop `sleep 100`.) Measured over a socket on the
 single-user disc: 's' echoes at ENTER RUN LEVEL; `ecko^H^Hho bs` runs
 `echo bs`; `sleep 30` then ^C gives the prompt back at once; `cat` with
 `one`, `tw^Ho`, ^D prints `one` and `to` and ends.
+`tests/run_tests.py hpux-console-tty` types echo, a backspace edit and a
+^C during `od` at root's sh on the console.
+
+The line paces the card's output. The firmware takes a write's
+characters only while its buffer -- one 200-byte data block -- has room,
+so a write device data leg stops part way when the line is full and the
+IOP's next poll carries it on. While a leg waits the card neither asks
+for its next order nor announces a completion: the request left standing
+from the CLC would let the driver's list read status with the data half
+moved, and a completion armed by an earlier leg would reach the driver
+as this one's. A card that took every write at once queued whole
+screens ahead of the 9600-baud line: `od -c /bin/csh` ran 64 s in HP-UX
+and its output took 637 s to show, and ^C typed meanwhile was not seen
+until all of it had gone; with the pacing `od` runs 646 s for 645 s of
+output. Holding back the END of the write instead -- taking the data at
+once and withholding EDD until the line drains -- halts HP-UX with
+error 66 in its boot banner: the driver reads transparent status the
+moment the leg's completion interrupt arrives, and an IDL there aborts
+the channel.
 
 Not modelled: double text terminators and prompt sequences (HP-UX does
 not configure them), and the software handshakes' pacing -- a device's

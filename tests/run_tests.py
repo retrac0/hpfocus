@@ -40,7 +40,8 @@ def lua(value):
 	if isinstance(value, (int, float)):
 		return repr(value)
 	if isinstance(value, str):
-		return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+		s = value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+		return '"' + ''.join(f'\\{ord(c):03d}' if ord(c) < 32 or ord(c) == 127 else c for c in s) + '"'
 	if isinstance(value, dict):
 		return '{ ' + ', '.join(
 				(f'[{k}] = {lua(v)}' if isinstance(k, int) else f'{k} = {lua(v)}')
@@ -475,6 +476,26 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
+	# The console card runs the tty's line discipline HP-UX hands it. In
+	# canonical mode -- root's sh on a multiuser console -- the card echoes
+	# what is typed and edits it, and ^C reaches HP-UX as an event; and
+	# because a write waits for the 9600-baud line, it stops output that is
+	# still streaming. Without the line discipline nothing typed echoed and
+	# ^C reached the shell as text after the command finished; without the
+	# pacing ^C showed after minutes of queued output.
+	add('hpux-console-tty', 'hp9k540',
+			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-console-tty', multiuser=True),
+					'-cio2', 'mux'],
+			[*hpux_login(console),
+			 {'post': 'echo TY""PED\n', 'to': console}, {'posted': True},
+			 {'wait': 'echo TY""PED', 'on': console, 'within': 5},
+			 {'post': 'ecko\b\bho E""DIT\n', 'to': console}, {'posted': True},
+			 {'line': 'EDIT', 'on': console, 'within': 5},
+			 {'post': 'od -c /bin/csh\n', 'to': console}, {'posted': True}, {'sleep': 10},
+			 {'post': '\x03', 'to': console}, {'posted': True}, {'sleep': 3},
+			 {'post': 'echo MA""RK\n', 'to': console}, {'posted': True},
+			 {'line': 'MARK', 'on': console, 'within': 10}], 900,
 			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# The instruction-set edge cases (tests/hpux/gen_isa.py): the ERS's
 	# expectations for some 1700 cases, built by HP's own assembler and

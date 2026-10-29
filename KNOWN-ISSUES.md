@@ -167,13 +167,6 @@ tested is in [docs/VALIDATION.md](docs/VALIDATION.md).
   running well below real time, a port can print its banner and `You have
   mail.` and then nothing for half a minute before the `TERM =` prompt.
   It is slow, not stuck.
-- **Long output on a TCP or pty console lags** *(measured on alpha-0.1)*. With `--console tcp` or
-  `--console pty` the console line runs at 9600 baud, but the console card
-  takes everything HP-UX writes at once, so a long listing queues up ahead
-  of the line: `od -c /bin/csh` queued 188 KB in 30 s, and ^C then took
-  45 s to show. Nothing is lost. The window and `--headless` consoles are
-  not affected, and the six terminal ports are paced correctly: use one of
-  them for long output.
 - **A reader who falls far behind is disconnected.** The relay drops a
   connection that is 256 KB behind what its port has printed (a suspended
   terminal under a noisy job). The session carries on; connect again and
