@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Build a fixed disc that boots HP's 9020 System Functional Test environment.
 #
 # The test programs are not BASIC 2.0 programs. 500ENV1-3 are a three-volume
@@ -17,19 +20,30 @@
 #   tools/mkdiagdisc.sh                  build software/hd/diag.img
 #   tools/mkdiagdisc.sh other.img        build somewhere else
 #
-# Then boot it with the test disc in the flexible drive:
+# Then boot it with 2 MB, and once BASIC is ready put the test disc in the
+# flexible drive (HP's procedure: the drive is :CS80,7,1 beside the
+# Winchester):
 #
-#   tools/runbasic-hd.sh software/hd/diag.img -- -mpb3 1m -mpb4 1m \
+#   tools/runbasic-hd.sh software/hd/diag.img -- -ram 2m \
 #       -flop1 "$PWD/software/test/500MFTST.TD0"
 #
-# and, at the BASIC prompt, LOAD "TEST" and RUN.
+# and at the BASIC prompt MASS STORAGE IS ":CS80,7,1", LOAD "TEST" and
+# RUN -- each ended with Return, the 520's EXECUTE key in the window.
+# tools/setup.sh builds software/hd/diag.img with this script, and
+# `tests/run_tests.py diag` runs HP's tests on it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:-software/hd/diag.img}"
+# software/hd is gitignored, so a fresh clone has no such directory until
+# tools/setup.sh's media step has run.
+mkdir -p "$(dirname "$OUT")"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+source tools/lib/focus.sh
+FOCUS_REPO=$(pwd)
+focus_need_media software/test/500ENV1.TD0 software/test/500ENV2.TD0 software/test/500ENV3.TD0 || exit 1
 for v in 500ENV1 500ENV2 500ENV3; do
 	python3 tools/td0.py --raw "$WORK/$v.img" "software/test/$v.TD0" >/dev/null
 done

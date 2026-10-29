@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Extract the FOCUS opcode map from the Instruction Set ERS text layer.
 
 Section 6.2 of the ERS describes each instruction with a line of the form
@@ -16,6 +18,10 @@ from pathlib import Path
 
 PDF = Path(__file__).resolve().parents[1] / "docs/bitsavers/FOCUS_Instruction_Set_ERS_Dec82.pdf"
 FIRST, LAST = 54, 130  # section 6.2, detailed instruction descriptions
+
+if not PDF.exists():
+    sys.exit(f"{PDF.name} is not here: HP's manuals are fetched, not carried.\n"
+             "Run tools/fetch-media.sh --manuals (MEDIA.txt lists them).")
 
 # Boilerplate from the scanned HP drawing frame that wraps every page.
 FRAME = re.compile(

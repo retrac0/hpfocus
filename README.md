@@ -1,5 +1,161 @@
 # hpfocus
 
+An emulator of the **HP 9000 Series 500**, the machines built on HP's FOCUS
+processor, written as a [MAME](https://www.mamedev.org/) driver. FOCUS
+(1982) was the first commercial 32-bit microprocessor: a microcoded,
+segmented, stack-oriented machine with no programmer-visible
+general-purpose registers. Its architecture is the HP 3000's widened to
+32 bits. No other emulation of it exists.
+
+**Status: alpha.** HP-UX 5.30 boots on the emulated 9000/540 and runs
+multiuser, with a root login on the console and on the ports of an
+emulated HP 27140A or 27130A multiplexer, and HP's own C compiler builds
+and runs programs under it. BASIC 2.0 and HP's factory diagnostics run on
+the 9000/520. What is known to be wrong is in
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md); how it is tested is in
+[docs/VALIDATION.md](docs/VALIDATION.md).
+
+The emulator itself is the `hp9k5xx` branch of the `mame/` submodule: the
+FOCUS CPU (`src/devices/cpu/focus/`), an HP CIO card bus with the 27110A,
+27112A, 27128A, 27130A and 27140A (`src/devices/bus/hp_cio/`), and the
+`hp9k520`/`hp9k540` machines (`src/mame/hp/hp9k_5xx.cpp` and the
+`hp9k5xx_*` boards). This repository holds the run scripts, the disc and
+media tools, the regression suite and the documentation.
+
+## Quick start (Linux)
+
+    git clone <this repository> hpfocus && cd hpfocus
+    tools/setup.sh                    # check, fetch MAME, build (long), fetch HP's software, prepare the discs
+    tools/smoketest.sh                # a couple of minutes: PASS or FAIL
+    tools/runhpux.sh --multiuser      # HP-UX 5.30; log in as root, no password
+
+Until the project's MAME fork is published, the submodule's pinned commit
+is on no server, and `tools/setup.sh --mame-source DIR` has to be given a
+clone that has it. To stop HP-UX, type `cd /` and `/etc/stopsys` at a root
+shell, wait for `The system is stopped.`, and close the window.
+
+[INSTALL.md](INSTALL.md) covers the rest: prerequisites for Debian/Ubuntu,
+Fedora, Arch and macOS, logging in, more terminals (`tools/hpuxterm.py 1`
+.. `6`), stopping cleanly, and what persists between runs and how to
+reset it. The first build compiles MAME's core: 20 to 40 minutes on an
+idle 8-core machine, longer on fewer cores.
+
+**HP's software and manuals are not in this repository.** They are
+Hewlett-Packard's, and third-party archives host them:
+[MEDIA.txt](MEDIA.txt) lists each file with its source and SHA-256.
+`tools/setup.sh` downloads the software the emulator boots (46 MB, from
+bitsavers.org) and checks it; `tools/fetch-media.sh --manuals` fetches the
+manuals the documentation cites (230 MB) and extracts their text. The
+520's software (the BASIC, demo and diagnostic floppies and the HP-UX 5.01
+tape) is at the HP Computer Museum, whose downloads sit behind a CAPTCHA:
+you download four items in a browser and `tools/fetch-media.sh --from
+<folder or .zip>` puts them in place ([INSTALL.md](INSTALL.md)). HP-UX
+5.30 on the 540 needs none of that; tests whose media is missing are
+skipped, not failed.
+
+## What works
+
+- **HP-UX 5.30 on the 9000/540**, from a unit save of a real 1991
+  installation. It boots single-user or multiuser, runs `/etc/rc`, and
+  takes logins on the console (a window, a TCP port or a pty) and on six
+  terminal ports you can leave and come back to, on a 27140A, or on a
+  27130A beside the console or carrying it, as on the machine the disc
+  came from. It swaps under load, delivers signals to busy processes,
+  survives a soft reset, compiles and runs C programs, and what it writes
+  is kept on a working copy of the disc.
+- **BASIC 2.0 on the 9000/520**, on its own rendered display with a live
+  keyboard. It boots from HP's floppies or from an installed fixed disc,
+  and runs typed and stored programs (`tools/runbasic.sh`,
+  `tools/runbasic-hd.sh`).
+- **HP's 9020 factory diagnostics** boot and run: HP's Test Supervisor
+  reaches its program menu and its KEYBOARD test passes, the power-up self
+  test of the display passes, the graphics controller draws and the
+  thermal printer prints (`software/hd/diag.img`, which `tools/setup.sh`
+  builds; docs/DIAGNOSTICS.md).
+- **HP-UX 5.01** boots on the 520 from the damaged release tape, as far as
+  its copyright banner (`tools/runhpux.sh --release 5.01`).
+- **`tests/run_tests.py`**, 56 cases: the ERS factorial on the CPU, both
+  machines' boots, the BASIC behaviour table, the diagnostics, every
+  multiplexer configuration, and some 1,700 instruction-set edge cases
+  built by HP's own assembler and run under HP-UX.
+
+## What does not work, yet
+
+- **Closing the window is a power cut to HP-UX.** Stop HP-UX first, with
+  `/etc/stopsys`. Without it your synced files are still kept, but each
+  power cut leaves up to 0.9 MB of swap space marked in use on the disc,
+  and nothing checks the file system at boot. `tools/runhpux.sh --reset`
+  starts again from the pristine disc.
+- **The default 2 MB is small.** HP-UX swaps hard under load: run with
+  `--ram 4` for anything large.
+- **Root has no password, and the terminal ports are open** to every user
+  of your computer (they listen on 127.0.0.1 only). The disc is a real
+  site's 1991 system, with its accounts and mail.
+- **No networking**, and the terminals are generic, not HP 262x: screen
+  programs such as `vi` need a `TERM` your terminal matches.
+- **HP-UX 5.01 has no userland.** The tape lost it, so it stops at its
+  banner.
+- **Two instructions** known only from HP's assembler (`CTCB`, `GMPY`) are
+  not implemented, and an interrupted string move resumes by rewriting
+  its stack operands rather than through `STATUS.P` as the ERS designs.
+- **The 520** is still flagged "not working" in MAME, so its window opens
+  on a warning screen: tap a key to dismiss it, because a key still held
+  when the machine powers on stops the boot. In its window BASIC wants
+  capitals (press Caps Lock); Return is EXECUTE and the keypad's Enter is
+  STORE. Most of HP's BASIC demo programs do not run yet, and what BASIC
+  writes to a flexible disc is not saved.
+- **No save states.** MAME's debugger and the FOCUS disassembler work.
+- **No loader ROM.** No dump of the loader ROM exists, so the driver
+  performs the loader's job itself.
+- **Linux only so far.** The scripts are written for macOS too, but
+  nothing has been built or run there.
+
+The details, and what to do about each, are in
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+
+## Where things are
+
+| | |
+|---|---|
+| [INSTALL.md](INSTALL.md) | build, run, terminals, state, troubleshooting |
+| [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | what the alpha gets wrong |
+| [docs/FOCUS.md](docs/FOCUS.md) | the CPU: architecture and full opcode specification |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | the 520/540 hardware: memory, I/O, cards, boot media |
+| [docs/HPUX.md](docs/HPUX.md) | HP-UX on the emulator: kernel map, debugging tools, how each milestone was reached |
+| [docs/SOFTWARE.md](docs/SOFTWARE.md), [software/README.md](software/README.md) | the software images, where they came from, what is on them |
+| [docs/VALIDATION.md](docs/VALIDATION.md), [tests/](tests/) | the evidence: `tests/run_tests.py` (the regression suite), `tests/dasm_difftest.py`, `tests/hubtest.py`, `tests/sigtest.sh` |
+| `mame/` (branch `hp9k5xx`) | the emulator: the CPU, the CIO cards, the 520/540 driver |
+| `tools/` | run scripts, disc and media tools, disassembler (`tools/focusdis.py`) |
+
+## Licence
+
+| what | licence |
+|---|---|
+| this repository: `tools/`, `tests/`, `docs/opcodes.csv`, and the documentation (this file, `INSTALL.md`, `KNOWN-ISSUES.md`, `MEDIA.txt`, the `.md` files under `docs/` and `software/`) | MIT ([LICENSE-MIT](LICENSE-MIT)) |
+| `tests/harness.lua` | BSD-3-Clause, as its header says (it is written in MAME's own style) |
+| the emulator, in the `mame/` submodule's `hp9k5xx` branch | as each file's header says: `license:BSD-3-Clause`, MAME's preferred licence for drivers. MAME as a whole, and so a built `mame/focus`, is under MAME's own terms (`mame/COPYING`: the GPL, version 2 or later). |
+
+Copyright (c) 2026 Joel Heikkila; the 520's stand-in display font is MAME's
+terminal font, copyright Miodrag Milanovic. Each source file names its own
+licence on its first lines, and that line is what counts where this table
+and a file disagree.
+
+Hewlett-Packard's software and manuals are HP's and nothing here licenses
+them. The repository does not carry them: [MEDIA.txt](MEDIA.txt) points at
+where they are published, and [software/README.md](software/README.md)
+says where each image came from. The same holds for what is quoted or
+transcribed from HP's documents: the few notes in `docs/notes/` the
+project made itself, and the passages cited in the documentation.
+
+---
+
+# Research log
+
+Everything below is the project's working log, kept as it was written.
+Sections are dated, and where one says "the current frontier", read it as
+the frontier at the time. Recipes in it have been brought up to date only
+where they would otherwise fail, and are marked where they were.
+
 ## Introduction
 
 This is an ongoing quest to attempt to emulate the HP 9000 Series Model 520
@@ -667,7 +823,9 @@ So the remaining unknown is not what these instructions are for; it is the
 layout of the semaphore they point at and what the microcode does to the
 running task when the wait blocks. **They are deliberately still
 unimplemented**: a guessed P/V that quietly schedules wrong is worse than
-one that stops.
+one that stops. *(Superseded: UP and DOWN are implemented, and use HP-UX's
+own wait-list format, which is what got multiuser HP-UX past its stall;
+see docs/FOCUS.md and the alpha's commit a26b01c.)*
 
 ## Layout
 
@@ -677,9 +835,10 @@ docs/
   HARDWARE.md          520/540 machine hardware: MPB, I/O, boot media
   SOFTWARE.md          target media, HP-UX versions, boot ordering
   opcodes.csv          full FOCUS opcode map, from ERS Appendix B
-  bitsavers/           11 primary PDFs (~46 MB)
-  hpjournal/           3 HP Journal issues on the Series 500
-  notes/               pdftotext extractions, Appendix B + loader flowchart
+  bitsavers/           HP's manuals: fetched by tools/fetch-media.sh --manuals
+  hpjournal/           3 HP Journal issues on the Series 500: fetched likewise
+  notes/               their text (extracted when they are fetched), the
+                       project's own OCR passes, Appendix B + loader flowchart
 software/
   README.md            provenance and per-image analysis
   97089C.hpi           HP-UX 5.01 tape (damaged; the 520 kernel survives)
@@ -716,10 +875,14 @@ under software/cct/ run:
 
 ```
 $ cd software/cct/
-$ gunzip 7914_unitSave_hpux4.0.bin.gz 
-$ gunzip 7914_unitSave_hpux4.0_tape2.bin.gz
-$ python ../../tools/sdf7914.py 7914_unitSave_hpux4.0.bin 7914_unitSave_hpux4.0_tape2.bin --extract out 
+$ gunzip -k 7914_unitSave_hpux4.0.bin.gz
+$ gunzip -k 7914_unitSave_hpux4.0_tape2.bin.gz
+$ python3 ../../tools/sdf7914.py 7914_unitSave_hpux4.0.bin 7914_unitSave_hpux4.0_tape2.bin --extract out
 ```
+
+*(Updated for the alpha: `-k` keeps the tracked `.gz` files, which plain
+`gunzip` deleted. The assembled volume that tools/runhpux.sh boots,
+`var/pristine/hpux530.bin`, can be listed in the same way with `--list`.)*
 
 ## Plan
 
@@ -750,9 +913,9 @@ emulator. Diagnostics are now each device's `LOG_*` flags (set `VERBOSE` in
 the source and run with `-log`), and MAME's debugger does the rest.
 
 ```sh
-git submodule update --init --depth 1 mame   # then: cd mame && git checkout hp9k5xx
-cd mame && make SUBTARGET=focus SOURCES=src/mame/hp/hp9k_5xx.cpp -j8
-cd .. && tests/run_tests.py
+tools/setup.sh        # mame/ at the pinned hp9k5xx commit, built; HP's media fetched (INSTALL.md)
+tests/run_tests.py    # the regression suite
+tools/smoketest.sh    # or just: does it work here?
 ```
 
 Running it:
@@ -795,8 +958,12 @@ software list, on top of the other two).
 
 ## Documentation
 
-Eleven primary documents are in [docs/bitsavers/](docs/bitsavers/), mirrored
-from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
+The primary documents are HP's manuals on bitsavers.org
+(`pdf/hp/9000_500/`, `9000_cio/` and `disc/`). The repository points at
+them ([MEDIA.txt](MEDIA.txt)) rather than carrying them:
+`tools/fetch-media.sh --manuals` puts them in
+[docs/bitsavers/](docs/bitsavers/) under the names the notes cite. The two
+that matter most:
 
 - **FOCUS Instruction Set ERS** (Dec 1982, 150 sheets) — the CPU reference.
   Registers, addressing, segmentation, interrupts, every instruction, plus
@@ -805,7 +972,8 @@ from `bitsavers.org/pdf/hp/9000_500/`. The two that matter most:
 - **FOCUS I/O ERS** (Dec 1982, 80 sheets) — the IOP, DMA, interrupts, and the
   interval timer.
 
-Both have usable OCR text layers, extracted into [docs/notes/](docs/notes/).
+Both have usable OCR text layers, which the fetch extracts into
+[docs/notes/](docs/notes/).
 
 Because that OCR is poor, the CPU is now specified afresh in
 [docs/FOCUS.md](docs/FOCUS.md)
@@ -843,6 +1011,8 @@ python3 tools/check_opcodes.py
 2. **The HP-UX tape is 77% lost.** The kernel survived; the entire userland
    (`SCOMMANDS`) did not. Full HP-UX needs a better image. BASIC and the
    diagnostics are undamaged, so this is not on the critical path.
+   *(Superseded: the HP-UX 5.30 unit save from the Crisis Computer Tapes
+   is that better image, and it runs multiuser.)*
 3. **Memory Controller ERS is missing** from bitsavers. Less of a hole than
    the references to it imply: the software-visible MPB semantics — slave
    registers, message bits, semaphores, the interrupt lists, all 46 MPB
@@ -856,7 +1026,8 @@ python3 tools/check_opcodes.py
 2. **BASIC 2.0** — first realistic interactive milestone, undamaged media
 3. HP-UX kernel bring-up — complete kernel, but stops at `init`
 4. BASIC demos — graphics and I/O
-5. Full HP-UX — blocked on a better tape
+5. Full HP-UX — blocked on a better tape *(superseded: HP-UX 5.30 from the
+   7914 unit save runs multiuser)*
 
 See [docs/SOFTWARE.md](docs/SOFTWARE.md) for detail.
 

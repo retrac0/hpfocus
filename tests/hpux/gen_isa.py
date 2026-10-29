@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Generate the instruction-set edge-case checks run under HP-UX 5.30.
 
 Every case is one instruction sequence with its operands, the STATUS bits

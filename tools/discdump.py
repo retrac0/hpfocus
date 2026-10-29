@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Recover what can be recovered from a Series 500 disc unit save.
 
 The 7914 unit saves are raw disc images whose filesystem is SDF, HP's own

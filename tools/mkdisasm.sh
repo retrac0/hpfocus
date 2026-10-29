@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # Extract and disassemble the modules worth reading out of the 500ENV1-3
 # boot image into disasm/.
 #
@@ -48,6 +51,9 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$OUT"
+source tools/lib/focus.sh
+FOCUS_REPO=$(pwd)
+focus_need_media software/test/500ENV1.TD0 software/test/500ENV2.TD0 software/test/500ENV3.TD0 || exit 1
 for v in 500ENV1 500ENV2 500ENV3; do
 	python3 tools/td0.py --raw "$WORK/$v.img" "software/test/$v.TD0" >/dev/null
 done

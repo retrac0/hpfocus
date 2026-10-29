@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """List and extract the named segments in an assembled Series 500 boot image.
 
 Feed it the output of tools/bootimage.py. The segment chain it walks is the

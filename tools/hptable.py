@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read HP's own FOCUS instruction table out of the Series 500 toolchain.
 
 `/usr/lib/pascomp`, the HP-UX 5.30 Pascal compiler recovered from the 7914

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Regression tests for the hp9k520 / hp9k540 MAME drivers.
 
 Each case boots MAME headless and unthrottled with an -autoboot_script that
@@ -17,6 +19,7 @@ directory first, because the machine writes to them.
 
 import argparse
 import concurrent.futures
+import gzip
 import os
 import shutil
 import subprocess
@@ -59,20 +62,34 @@ def hd(work, src, name):
 	return str(dst)
 
 
+# The pristine HP-UX 5.30 machine tools/runhpux.sh --prepare assembles from
+# the unit-save tapes (tools/lib/hpux.sh): the disc, and the SCM battery one
+# throwaway boot has initialised. Every case boots its own copy of both.
+PRISTINE = Path(os.environ.get('HPFOCUS_VAR', ROOT / 'var')) / 'pristine'
+PRISTINE_DISC = PRISTINE / 'hpux530.bin'
+SCM_NV = PRISTINE / 'nvram' / 'hp9k540' / 'scm_rtc'
+
+
+def prepare_hpux():
+	if not PRISTINE_DISC.exists() or not SCM_NV.exists():
+		subprocess.run([str(ROOT / 'tools' / 'runhpux.sh'), '--prepare'], check=True,
+				stdout=subprocess.DEVNULL)
+
+
 def hpux_volume(work, name, multiuser=False, card='27140', sc=2):
-	vol = SW / 'cct' / '7914_hpux_volume.bin'
-	if not vol.exists():
-		subprocess.run([str(ROOT / 'tools' / 'runhpux.sh'), '--prepare'], check=True)
-	path = hd(work, vol, name)
-	if multiuser:
-		subprocess.run([sys.executable, str(ROOT / 'tools' / 'hpuxconfig.py'), path,
-				'--card', card, '--sc', str(sc)],
-				check=True, stdout=subprocess.DEVNULL)
+	"""A copy of the pristine disc, set to boot to run level 2 with a login
+	on every port of the given MUX, or to the single-user shell."""
+	prepare_hpux()
+	path = hd(work, PRISTINE_DISC, name)
+	level = ['--runlevel', '2', '--card', card, '--sc', str(sc)] if multiuser else ['--runlevel', 's']
+	subprocess.run([sys.executable, str(ROOT / 'tools' / 'hpuxconfig.py'), path, *level],
+			check=True, stdout=subprocess.DEVNULL)
 	return path
 
 
 def battery(work, system, tag, src):
 	"""Preload a battery-backed part's contents."""
+	prepare_hpux()
 	d = Path(work) / 'nvram' / system
 	d.mkdir(parents=True, exist_ok=True)
 	shutil.copyfile(src, d / tag)
@@ -376,17 +393,21 @@ def cases(work):
 	console = ':cio0:asi:rs232:terminal'
 	add('hpux-single', 'hp9k540',
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-single')],
-			[{'wait': '/etc/rc', 'on': console}], 400,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			[{'wait': 'TERM =', 'on': console}], 400,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	def hdd_list():
 		d = Path(work) / 'roms' / 'hp9k5xx_hdd' / 'hpux530'
 		chd = d / 'hpux530.chd'
 		if not chd.exists():
 			d.mkdir(parents=True, exist_ok=True)
 			vol = Path(work) / 'hpux530-rebuilt.bin'
-			subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkhpuxdisc.py'),
-					str(SW / 'cct' / '7914_unitSave_hpux4.0.bin'),
-					str(SW / 'cct' / '7914_unitSave_hpux4.0_tape2.bin'), str(vol)],
+			tapes = []
+			for t in ('7914_unitSave_hpux4.0.bin', '7914_unitSave_hpux4.0_tape2.bin'):
+				raw = Path(work) / t
+				with gzip.open(SW / 'cct' / (t + '.gz')) as src, open(raw, 'wb') as dst:
+					shutil.copyfileobj(src, dst)
+				tapes.append(str(raw))
+			subprocess.run([sys.executable, str(ROOT / 'tools' / 'mkhpuxdisc.py'), *tapes, str(vol)],
 					check=True, stdout=subprocess.DEVNULL)
 			subprocess.run([str(ROOT / 'mame' / 'chdman'), 'createhd', '-i', str(vol), '-o', str(chd),
 					'-chs', '1168,7,64', '-ss', '256'], check=True,
@@ -406,7 +427,7 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# The instruction-set edge cases (tests/hpux/gen_isa.py): the ERS's
 	# expectations for some 1700 cases, built by HP's own assembler and
 	# run under HP-UX. The sources travel on the disc.
@@ -421,7 +442,7 @@ def cases(work):
 			[*hpux_login(mux0),
 			 {'post': f'clear; sh {HPUX_CARRIER}; cc -o isa {" ".join(isa_files)} && ./isa\n', 'to': mux0},
 			 {'posted': True}, {'wait': ' passed 0 failed', 'on': mux0, 'within': 600}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# ...and with 4 MB, where HP-UX moves 16 KB per disc transfer: long
 	# enough for the mux to interrupt in the middle of one.
 	add('hpux-multi-4m', 'hp9k540',
@@ -430,7 +451,7 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux0}, {'sleep': 5}, {'post': 'root\n', 'to': mux0},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux0, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux0, 'within': 60}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# HP's own C toolchain as the test bench: the sources in tests/hpux
 	# are typed into /tmp, built with cc, as and ld, and run.
 	add('hpux-cc-cpu', 'hp9k540',
@@ -440,15 +461,15 @@ def cases(work):
 			 *hpux_type_files(mux0, HPUX_TESTS, ['cpu.c', 'carry.s', 'dword.c', 'ldst.s', 'run.sh']),
 			 {'post': 'clear; sh run.sh\n', 'to': mux0}, {'posted': True},
 			 {'line': 'hpux cc tests: yes', 'on': mux0, 'within': 400}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# The machine the disc came from: a 27130A at select code 0, its port
 	# 0 /dev/console (c 31 0x000000).
 	mux8con = ':cio0:mux8:port0:terminal'
 	add('hpux-mux8-console', 'hp9k540',
 			lambda: ['-ram', '2m', '-hard', hpux_volume(work, 'hpux-mux8-console'),
 					'-cio0', 'mux8', '-cio0:mux8:port0', 'terminal'],
-			[{'wait': '/etc/rc', 'on': mux8con}], 400,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			[{'wait': 'TERM =', 'on': mux8con}], 400,
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# ...and a getty on one of its ports, the card at select code 2 with
 	# tty0N on port N, the disc's own numbering.
 	mux8 = ':cio2:mux8:port1:terminal'
@@ -458,7 +479,7 @@ def cases(work):
 			[{'wait': 'login:', 'on': mux8}, {'sleep': 5}, {'post': 'root\n', 'to': mux8},
 			 {'wait': 'Welcome to Hewlett-Packard System 9000', 'on': mux8, 'within': 120},
 			 {'wait': 'TERM =', 'on': mux8, 'within': 60}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	# The whole of that machine: one 27130A at select code 0 carrying the
 	# console on port 0 and the terminals on the rest, two of them used.
 	sc0 = [f':cio0:mux8:port{p}:terminal' for p in range(4)]
@@ -472,7 +493,7 @@ def cases(work):
 			 {'wait': 'TERM =', 'on': sc0[1], 'within': 120},
 			 {'post': 'root\n', 'to': sc0[3]}, {'posted': True},
 			 {'wait': 'TERM =', 'on': sc0[3], 'within': 120}], 900,
-			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SW / 'cct' / 'scm.nv'))
+			setup=lambda: battery(work, 'hp9k540', 'scm_rtc', SCM_NV))
 	return c
 
 
@@ -483,9 +504,18 @@ def cases(work):
 def run_case(case, mame, work):
 	cwork = Path(work) / case['name']
 	cwork.mkdir(parents=True, exist_ok=True)
-	if case['setup']:
-		case['setup']()
-	args = case['args']() if callable(case['args']) else case['args']
+	# Hewlett-Packard's media is fetched, not carried (MEDIA.txt), and the
+	# 520's comes by hand: a case whose media is not here is skipped, not
+	# failed.
+	try:
+		if case['setup']:
+			case['setup']()
+		args = case['args']() if callable(case['args']) else case['args']
+	except (FileNotFoundError, subprocess.CalledProcessError) as e:
+		return case['name'], None, f'media not here ({e})'
+	missing = [a for a in args if isinstance(a, str) and a.startswith(str(SW)) and not Path(a).exists()]
+	if missing:
+		return case['name'], None, 'media not here: ' + ', '.join(Path(m).name for m in missing)
 	script = cwork / 'test.lua'
 	# MAME runs the autoboot script again after every soft reset; the
 	# test is already running by then.
@@ -544,17 +574,21 @@ def main():
 		return 0
 
 	print(f'{len(table)} cases, work directory {work}')
-	failed = unexpected = 0
+	failed = unexpected = skipped = 0
 	with concurrent.futures.ThreadPoolExecutor(max_workers=args.j) as pool:
 		for name, ok, why in pool.map(lambda c: run_case(c, args.mame, work), table):
 			known = name in KNOWN_FAILING
-			if ok:
+			if ok is None:
+				skipped += 1
+				print(f'  SKIP  {name}  {why}')
+			elif ok:
 				print(f'  PASS  {name}' + ('  (was known failing)' if known else ''))
 			else:
 				failed += 1
 				unexpected += not known
 				print(f'  FAIL  {name}' + ('  (known)' if known else '') + f'  {why}')
-	print(f'{len(table) - failed} passed, {failed} failed, {unexpected} unexpected')
+	print(f'{len(table) - failed - skipped} passed, {failed} failed, {unexpected} unexpected'
+			+ (f', {skipped} skipped (tools/fetch-media.sh)' if skipped else ''))
 	return 1 if unexpected else 0
 
 

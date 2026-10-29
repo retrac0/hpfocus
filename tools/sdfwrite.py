@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Writer for HP SDF, the Series 500 Structured Directory Format.
 
 The mirror image of tools/sdfread.py: that one takes a shipped volume
@@ -185,6 +187,8 @@ class Volume:
         h = bytearray(self.blksz)
         struct.pack_into(">HH", h, 0x00, 0x0700, 0)       # s_format, corrupt
         h[0x04:0x14] = self.label.encode("ascii").ljust(16)[:16]
+        # s_maxblk is the largest block number (fs(5); 500BT1 is 264
+        # blocks and says 263), and the free map is sized from it.
         struct.pack_into(">6I", h, 0x1c, self.blksz, 1, self.boot_blocks,
                 1 + self.boot_blocks, self.version, self.blocks - 1)
         h[0x34:0x44] = b" " * 16                          # s_passwd: none

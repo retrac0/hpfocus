@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Run a shell command under HP-UX 5.30 on the emulated 540 and bring back
 its output.
 

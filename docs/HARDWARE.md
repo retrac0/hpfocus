@@ -198,6 +198,25 @@ other entry above is a single fixed opcode.
 > the same wrong count sat in the disc path's transfer reports too, where
 > nothing had happened to look at it.
 
+> **A burst request does not get past the DMA Mask.** ERS §2.4: "the
+> interface poll response, IOD 0-7, is AND'ed with the DMA Mask register
+> to determine whether a request by an interface enabled to do DMA exists.
+> If so ... a DMA data transfer is done to the interface and if burst DMA
+> (multiple transfers per poll response) is requested, an entire burst is
+> done"; §3.1: the Burst Request line asks for a burst "during a DMA
+> transfer". The Start DMA commands and `EDMA` set a PA's mask bit and
+> `DDMA` clears it, "to disable DMA for the PA". The 520's internal disc
+> controller holds Burst Request up from the FR1 write that announces a
+> leg, and the BASIC kernel's driver loads every leg as `DDMA`, `WDS`,
+> `WDC`, `WDA`, `SDC` (SUN OS KERNEL +0x884..+0x944) -- the `DDMA` is
+> what keeps the leg from moving while its registers are half loaded. The
+> emulator once let the burst run whatever the mask said: a poll round
+> between `WDC` and `WDA` then sent the controller a command block from
+> wherever the previous leg had stopped, the read that followed returned
+> zeros, and BASIC stored them as program. It showed as the 9020 test
+> driver halting on `RUN` (`TRAP:00000055` or `020`) at some typing times
+> and not others.
+
 **Five more are list-only.** The ERS's command table has a final group headed
 `IOP COMMAND EXECUTION` — opcodes legal only *inside* an ICEI command list,
 where they are its control flow (sheets 38–39, 41–42):
@@ -321,13 +340,12 @@ NiCad battery for at least ten days with the machine off. Power-fail sets `R2`
 bit 1 and answers an I/O poll on SC7; as little as **1 ms** may elapse before
 shutdown, and the bit self-clears if power returns.
 
-> **Observed.** HP-UX 5.30 drives exactly this: it polls a ready bit in `R1`,
-> then sweeps `R12` from `ffff` downward through `fff800` writing `R13` —
-> complemented, that is NVM 0 through 0x7ff, the whole part in order —
-> restoring the configuration the manual says the OS should restore after a
-> battery failure. Answering the `R1` poll (bit 7) is what lets the sweep
-> start; before that the kernel spun on it 200,000 times in three emulated
-> seconds. `R11` answers NVM data alongside `R13` in the running system.
+> **Observed.** HP-UX 5.30 drives exactly this. It reads `R1` before every
+> exchange -- bit 7 tells its driver *which* clock part the board carries
+> (§2.4.1), not that the part is ready -- then sweeps `R12` from `ffff`
+> downward through `fff800` reading `R13`: complemented, that is NVM 0 through
+> 0x7ff, the whole part in order. `R11` answers NVM data alongside `R13`, for
+> the driver's other path.
 
 #### 2.4.1 What the clock and the NVM hold
 
@@ -416,6 +434,19 @@ To avoid bus conflicts the keyboard drives the bus only for `R1`, `R3`, `R9`,
 cannot reach more than 256 of the 2048 NVM bytes, so either the manual or that
 reading is wrong; the emulator latches 16 bits, which is what boots.
 
+The clock is the same digit chip as on the SCM, decoded the same way. BASIC
+and HP-UX 5.01 both read `R1` bit 7 here and, with it set, latch `ffff`,
+`fffe`, `fffd`... and keep four bits -- the sequence of §2.4.1. The emulator
+used to decode this board's clock plainly over six address bits, a byte per
+location (after an early BASIC trace of the byte path), which put those
+reads on cells 63, 62, 61 that nothing wrote: both systems printed CLOCK AND
+DATE NOT SET whatever the battery held. With the digit decode, a battery
+BASIC has initialised and a seeded clock, BASIC boots without the warning and
+`DATE$(TIMEDATE)` reads the seeded date (rolling 28 Feb 2000 into 29 Feb, and
+28 Feb 2100 into 1 Mar), and HP-UX 5.01 drops the warning from its banner.
+BASIC keeps the same NVM conventions as HP-UX: on a blank battery it writes
+check byte 15 and the same checksum.
+
 The battery-fail bit is **not** raised here by a missing battery file, because
 HP's own power-up self test fails on it: *Self test error 1: IO address
 006,0002*, escape `4`, "Battery low condition detected" (520 Service, table
@@ -433,6 +464,49 @@ than half-loading. A save goes through a temporary and a rename, and runs every
 bytes — are still read. `FOCUS_RTCBATTERY` lets the battery advance the clock
 over the time the emulator was **not** running, up to the manuals' ten days,
 and is off by default because it makes a run depend on when it was started.
+It moves a running chip's digits only, never the check byte: a clock the OS
+does not believe stays unbelieved. The battery-fail bit is latched when the
+battery is read and survives the machine reset that follows (it used to be
+cleared there, so it never reached `R2`).
+
+**Setting the clock from the host.** `FOCUS_RTCTIME=now|<ISO 8601>|<epoch>`
+writes what the OS's own set sequence leaves: the digits, the day of week and
+leap status, the chip started, the year and century in the NVM, and check
+byte 240. What the guests then report, measured:
+
+- **HP-UX 5.30 keeps GMT in the chip** and converts with its `TZ` (the
+  shipped image says `PST8PDT`), so seed it with `FOCUS_RTCTIME=now
+  FOCUS_RTCUTC=1`; an ISO date is written to the chip as given, i.e. as GMT.
+  `date` then shows the right moment in Pacific time, as standard time all
+  year for current years (its daylight-saving rules are 1980s ones: a 1987
+  date shows PDT, October 2026 shows PST).
+- HP-UX 5.30 accepts a clock **from 1970 to 2038-01-19 03:14:07 GMT** at
+  boot; a clock set outside that boots without any warning at time 0 (`date`
+  says 31 Dec 1969 in Pacific time). A clock that runs past the 2038 limit
+  while the system is up carries on correctly. 1 January 2000 is crossed
+  correctly.
+- BASIC keeps local time (seed it with `FOCUS_RTCTIME=now` alone) and reads
+  dates in at least 1900–2100; its leap-year arithmetic is right in 2000 and
+  2100.
+- The seed is only believed on a battery the OS has already initialised:
+  a blank NVM fails its checksum and the OS rewrites it, check byte 15
+  included, so **the first boot on a new battery file always says CLOCK AND
+  DATE NOT SET**. Keep the battery file (`FOCUS_SCMNV`, `FOCUS_KBDNV`) and the
+  seed takes from the second boot on. The emulator says so when it seeds a
+  battery HP-UX has not initialised, and when the seeded date is outside
+  the range above.
+
+**What the run scripts do with this.** The emulator's own default is
+`FOCUS_RTCTIME=none`, an unset clock, so that test runs repeat exactly.
+`tools/runhpux.sh` passes `FOCUS_RTCTIME=now FOCUS_RTCUTC=1` for HP-UX 5.30
+unless you set them yourself, and starts every machine from a battery that
+one throwaway boot has already initialised (`var/pristine/hpux530-scm.nv`),
+so the first boot has the date too. It sets the clock at every power-up: a
+date set inside HP-UX lasts until the next boot unless you run with
+`FOCUS_RTCTIME=none`. The 520 scripts (`tools/runbasic.sh`,
+`tools/runbasic-hd.sh`, `tools/runhpux.sh --release 5.01`) do not seed the
+clock, and the BASIC ones keep no battery, so those systems report CLOCK AND
+DATE NOT SET until you pass `FOCUS_KBDNV` and `FOCUS_RTCTIME` yourself.
 
 ### 2.5 Bootstrap protocol *(530/540 Service, sheet 2-30/2-31)*
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Turn the assembled HP-UX 5.30 system disc multiuser, in place.
 
 The volume tools/mkhpuxdisc.py assembles boots to a single-user shell, for
@@ -28,18 +30,46 @@ login on every port of an HP 27140A six-channel multiplexer:
                  major 31, minor `Sc 0N 00`, and keep the disc's own
                  numbering: tty0N is port N.
 
+Since the MVB fix init reads that passwd entry correctly, and the shipped
+disc boots instead to init's "ENTER RUN LEVEL (0-6,s, or S):" prompt,
+because its only initdefault line is commented out. --runlevel picks what
+init does without asking:
+
+  --runlevel 2   (the default) the multiuser edits above, initdefault 2
+  --runlevel s   initdefault s and nothing else: init(1M), "the initdefault
+                 entry can use s to specify that init start in the SINGLE
+                 USER state" -- root's csh on the console, as shipped
+
 Every edit is the same size or shorter than what it replaces, so nothing
 is allocated: a file is rewritten into the extents it already has and its
 length field (i-node +76) updated; a device node has its major and minor
 bytes (i-node +124..127) restamped. Nothing else on the volume moves.
-Idempotent -- running it on a patched disc changes nothing -- and undone
-by deleting the volume, which tools/runhpux.sh rebuilds from the tapes.
 
-    python3 tools/hpuxconfig.py software/cct/7914_hpux_volume.bin [--sc 2]
-    python3 tools/hpuxconfig.py --card 27130 --sc 0 software/cct/7914_hpux_volume.bin
-    python3 tools/hpuxconfig.py --check software/cct/7914_hpux_volume.bin
+The disc is HP-UX's from the first boot on, so the tool runs on a live
+system's volume before every boot and must never undo what that system or
+its user has done. It edits root's passwd entry only while it is still the
+shipped expired one (a password set with passwd(1), or a chsh or chfn,
+is left alone); it turns the gettys on only when the disc is entering run
+level 2 and all six are still `off` as shipped (a port its user turned off
+stays off); it changes nothing at all on a disc already as asked. It also
+puts right the s_maxblk an older tools/mkhpuxdisc.py wrote (see there),
+which would otherwise let HP-UX allocate the FA file's own extent map.
+
+Everything is checked before anything is written, and the new volume is
+written beside the old one and renamed into place, so an image of an
+unexpected shape is refused whole and an interrupted run leaves the old
+disc as it was. Undone by deleting the volume, which tools/runhpux.sh
+assembles again from the tapes.
+
+    python3 tools/hpuxconfig.py <disc> [--runlevel s|2] [--sc 2] [--card 27130]
+    python3 tools/hpuxconfig.py <disc> --check [--runlevel s|2]
+
+--check writes nothing. It shows the disc's state; given --runlevel too,
+it lists what that run level would change and exits 1 if anything would
+(0 if the disc is already so, 2 if the disc cannot be configured).
 """
 import argparse
+import os
 import re
 import struct
 import sys
@@ -47,6 +77,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sdf7914 as sdf  # noqa: E402
+import mkhpuxdisc  # noqa: E402
 
 BLK = sdf.BLK
 FA_REC = sdf.FA_REC
@@ -59,16 +90,34 @@ PASSWD_OLD = b"root:,..:0:1:The Super User:/usr/root:/bin/csh"
 PASSWD_NEW = b"root::0:1:The Super User:/usr/root:/bin/sh"
 
 
+def refuse(msg):
+    """Stop without writing anything: every edit is planned in memory and
+    only Volume.commit touches the disc."""
+    print(f"hpuxconfig: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
 class Volume:
     """An SDF volume open for in-place edits."""
 
     def __init__(self, path):
         self.path = path
-        self.data = bytearray(path.read_bytes())
+        try:
+            self.data = bytearray(path.read_bytes())
+        except OSError as e:
+            refuse(f"{path}: {e.strerror} (tools/mkhpuxdisc.py assembles "
+                   "the disc from the two unit-save tapes)")
+        exmap_at = (mkhpuxdisc.S_FA * BLK + mkhpuxdisc.FA_EXMAP * FA_REC)
+        self.header_ok, self.header_msg = mkhpuxdisc.header_state(
+            self.data[:BLK], self.data[exmap_at:exmap_at + FA_REC])
+        if self.header_ok is None:
+            refuse(f"{path}: {self.header_msg}")
         self.disc = sdf.Disc([(self.data, 0)])
-        cands = sdf.find_fa_root([(self.data, 0)])
+        cands = [c for c in sdf.find_fa_root([(self.data, 0)])
+                 if c[2] == mkhpuxdisc.S_FA]
         if len(cands) != 1:
-            raise SystemExit(f"{path}: {len(cands)} FA-file candidates, expected 1")
+            refuse(f"{path}: no FA file at block {mkhpuxdisc.S_FA:,}; "
+                   "not the HP-UX 5.30 volume this tool knows")
         fa_ino, _root, at = cands[0]
         self.fs = sdf.SDF(self.disc, fa_ino)
         self.fa_block = at
@@ -83,7 +132,7 @@ class Volume:
             if seen + c * BLK > want:
                 return s * BLK + (want - seen)
             seen += c * BLK
-        raise SystemExit(f"i-node {n} is outside the FA file")
+        refuse(f"i-node {n} is outside the FA file")
 
     def lookup(self, path):
         """The i-node dict for an absolute path."""
@@ -93,7 +142,7 @@ class Volume:
                 continue
             ents = dict(self.fs.readdir(ino))
             if name not in ents:
-                raise SystemExit(f"{path}: no such file on the volume")
+                refuse(f"{path}: no such file on the volume")
             ino = self.fs.inode(ents[name])
         return ino
 
@@ -110,8 +159,8 @@ class Volume:
         """Replace a file's content with something no longer than it."""
         old = self.fs.read_file(ino)
         if len(new) > len(old):
-            raise SystemExit(f"{ino['name']}: replacement is longer "
-                             f"({len(new)} > {len(old)}); only shrinks are safe")
+            refuse(f"{ino['name']}: replacement is longer "
+                   f"({len(new)} > {len(old)}); only shrinks are safe")
         blob = new + bytes(len(old) - len(new))     # zero the freed tail
         pos = 0
         for s, c in self.fs.all_extents(ino):
@@ -127,8 +176,8 @@ class Volume:
         rec = self.record_offset(ino["ino"])
         mode = ino["mode"]
         if (mode & 0o170000) != 0o020000:
-            raise SystemExit(f"i-node {ino['ino']}: not a character device "
-                             f"(mode {mode:06o})")
+            refuse(f"i-node {ino['ino']}: not a character device "
+                   f"(mode {mode:06o})")
         self.patch(rec + 124, bytes([major & 0xff, (minor >> 16) & 0xff,
                                      (minor >> 8) & 0xff, minor & 0xff]))
 
@@ -138,48 +187,125 @@ class Volume:
         return r[124], (r[125] << 16) | (r[126] << 8) | r[127]
 
     def commit(self):
+        """Write the edited volume beside the old one, then rename it into
+        place: whatever stops this run, the disc is either the old one or
+        the new one, never half of each."""
         if not self.writes:
             return 0
-        with open(self.path, "r+b") as f:
-            for off, blob in self.writes:
-                f.seek(off)
-                f.write(blob)
+        part = self.path.with_name(self.path.name + ".part")
+        try:
+            with open(part, "wb") as f:
+                f.write(self.data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(part, os.stat(self.path).st_mode & 0o7777)
+            os.replace(part, self.path)
+        except OSError as e:
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            refuse(f"{self.path}: {e.strerror}; the disc is unchanged")
         n = len(self.writes)
         self.writes = []
         return n
 
 
-# ---- the three edits --------------------------------------------------------
+# ---- the edits --------------------------------------------------------------
+
+def root_line(vol):
+    """(i-node, file text, root's line) of /etc/passwd; refuses unless there
+    is exactly one root entry."""
+    ino = vol.lookup("/etc/passwd")
+    text = vol.fs.read_file(ino)
+    roots = [ln for ln in text.split(b"\n") if ln.startswith(b"root:")]
+    if len(roots) != 1:
+        refuse(f"/etc/passwd: {len(roots)} root entries; refusing to guess")
+    return ino, text, roots[0]
+
+
+def passwd_state(line):
+    if line == PASSWD_OLD:
+        return "shipped: an empty password that expires at once"
+    if line == PASSWD_NEW:
+        return "set for multiuser by this tool"
+    if line.split(b":")[1].startswith(b","):
+        return "unknown: an empty password with an aging field"
+    return "the running system's own (left as it is)"
+
 
 def fix_passwd(vol):
-    ino = vol.lookup("/etc/passwd")
-    old = vol.fs.read_file(ino)
-    if PASSWD_NEW in old:
-        return "already fixed"
-    if PASSWD_OLD not in old:
-        raise SystemExit("/etc/passwd: the root line is not the one this "
-                         "tool knows; refusing to guess")
-    vol.write_file(ino, old.replace(PASSWD_OLD, PASSWD_NEW, 1))
-    return "root entry rewritten"
+    ino, old, line = root_line(vol)
+    if line == PASSWD_OLD:
+        vol.write_file(ino, old.replace(PASSWD_OLD, PASSWD_NEW, 1))
+        return "root entry rewritten"
+    # Once HP-UX has run, root's entry is its user's: passwd(1), chsh and
+    # chfn all rewrite it, and refusing here would stop every later boot.
+    # Only an empty password still carrying an aging field -- one login
+    # would stop at, demanding a new password -- is not left alone.
+    if line.split(b":")[1].startswith(b","):
+        refuse("/etc/passwd: root's entry is not the one this tool knows "
+               "and would stop a login at the password-aging prompt: "
+               + line.decode("ascii", "replace"))
+    return "already fixed" if line == PASSWD_NEW else \
+        "root entry is the running system's own; left as it is"
 
 
-def inittab_text(old):
-    new = old.replace(b"#is:2:initdefault:", b"is:2:initdefault:", 1)
+INITDEFAULT = re.compile(rb"^(#?)is:([0-6sS]):initdefault:", re.M)
+
+
+def initdefault(text):
+    """(commented, run level, match) of inittab's one initdefault line."""
+    found = list(INITDEFAULT.finditer(text))
+    if len(found) != 1 or len(re.findall(rb"initdefault", text)) != 1:
+        refuse("/etc/inittab: no single initdefault line this tool knows; "
+               "refusing to guess")
+    m = found[0]
+    return bool(m.group(1)), m.group(2).decode(), m
+
+
+def getty_actions(text):
+    """{port: action} for the tty01..tty06 getty lines that exist."""
+    out = {}
+    for n in range(1, PORTS + 1):
+        m = re.search(rb"^%02d:[^:\n]*:([^:\n]*):/etc/getty tty%02d " % (n, n),
+                      text, re.M)
+        if m:
+            out[n] = m.group(1).strip().decode("ascii", "replace")
+    return out
+
+
+def gettys_on(text):
     for n in range(1, PORTS + 1):
         pat = re.compile(rb"^(%02d:2 :)off    (:/etc/getty tty%02d )[HM]"
                          % (n, n), re.M)
-        new = pat.sub(lambda m: m.group(1) + b"respawn" + m.group(2) + b"H", new)
-    return new
+        text, k = pat.subn(lambda m: m.group(1) + b"respawn" + m.group(2) + b"H",
+                           text)
+        if k != 1:
+            refuse("/etc/inittab: no getty line for tty%02d in the shape "
+                   "this tool knows; refusing to guess" % n)
+    return text
 
 
-def fix_inittab(vol):
+def fix_inittab(vol, level):
     ino = vol.lookup("/etc/inittab")
     old = vol.fs.read_file(ino)
-    new = inittab_text(old)
-    if new == old:
+    commented, cur, m = initdefault(old)
+    if not commented and cur == level:
         return "already fixed"
+    line = b"is:%s:initdefault:" % level.encode()
+    new = old[:m.start()] + line + old[m.end():]
+    did = "initdefault %s" % level
+    # The gettys are turned on as part of making the disc multiuser, and
+    # only while all six are still `off` as shipped; any other mix is the
+    # running system's own and is left as it is.
+    acts = getty_actions(new)
+    if level == "2" and len(acts) == PORTS \
+            and all(a == "off" for a in acts.values()):
+        new = gettys_on(new)
+        did += ", gettys tty01..tty%02d respawn (H)" % PORTS
     vol.write_file(ino, new)
-    return "initdefault 2, gettys tty01..tty%02d respawn (H)" % PORTS
+    return did
 
 
 def device_number(card, sc, tty):
@@ -202,22 +328,45 @@ def fix_devices(vol, sc, card="27140"):
     return ("restamped " + ", ".join(done)) if done else "already fixed"
 
 
+def fix_header(vol):
+    if vol.header_ok:
+        return "already fixed"
+    vol.patch(0x30, struct.pack(">I", mkhpuxdisc.MAXBLK))
+    return "s_maxblk %s -> %s" % (format(mkhpuxdisc.OLD_MAXBLK, ","),
+                                  format(mkhpuxdisc.MAXBLK, ","))
+
+
+def configure(vol, level, sc, card="27140"):
+    """Plan every edit the run level needs; returns the report lines."""
+    out = [("volume header", fix_header(vol))]
+    if level == "2":
+        out.append(("/etc/passwd", fix_passwd(vol)))
+    out.append(("/etc/inittab", fix_inittab(vol, level)))
+    if level == "2":
+        out.append(("/dev/tty0N", fix_devices(vol, sc, card)))
+    return out
+
+
 def check(vol):
-    for f in ("/etc/passwd", "/etc/inittab"):
-        ino = vol.lookup(f)
-        text = vol.fs.read_file(ino).decode("ascii", "replace")
-        print(f"== {f} ({ino['size']} bytes)")
-        for line in text.splitlines():
-            if f == "/etc/passwd" and not line.startswith("root:"):
-                continue
-            if f == "/etc/inittab" and "getty" not in line and "initdefault" not in line:
-                continue
-            print("   " + line)
+    print(f"== volume header: {vol.header_msg}"
+          + ("" if vol.header_ok else " -- would be repaired"))
+    _ino, _text, line = root_line(vol)
+    print(f"== /etc/passwd: root {passwd_state(line)}")
+    print("   " + line.decode("ascii", "replace"))
+    ino = vol.lookup("/etc/inittab")
+    text = vol.fs.read_file(ino)
+    commented, level, _m = initdefault(text)
+    print("== /etc/inittab: " + (
+        "no initdefault (shipped): init asks ENTER RUN LEVEL" if commented else
+        "initdefault %s%s" % (level, {"2": " (multiuser)", "s": " (single user)",
+                                       "S": " (single user)"}.get(level, ""))))
+    for ln in text.decode("ascii", "replace").splitlines():
+        if "getty" in ln or "initdefault" in ln:
+            print("   " + ln)
     print("== /dev")
     for n in range(1, PORTS + 2):
         name = "/dev/tty%02d" % n
-        ino = vol.lookup(name)
-        major, minor = vol.device_of(ino)
+        major, minor = vol.device_of(vol.lookup(name))
         print(f"   {name}  c {major:2d} 0x{minor:06x}")
 
 
@@ -225,22 +374,35 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("volume", type=Path, help="the assembled system disc")
+    ap.add_argument("--runlevel", choices=("2", "s"),
+                    help="what init starts in: 2, multiuser with a login on "
+                         "every MUX port (the default), or s, single user")
     ap.add_argument("--sc", type=int, default=2,
                     help="the select code the multiplexer sits at (default 2)")
     ap.add_argument("--card", choices=("27140", "27130"), default="27140",
                     help="which multiplexer the gettys run on (default 27140)")
     ap.add_argument("--check", action="store_true",
-                    help="show the files and nodes; change nothing")
+                    help="show the disc's state (and, with --runlevel, what "
+                         "would change); write nothing")
     args = ap.parse_args()
+    if not 0 <= args.sc <= 15:
+        ap.error("--sc must be a select code, 0..15")
     vol = Volume(args.volume)
     if args.check:
         check(vol)
-        return 0
-    print("/etc/passwd:  " + fix_passwd(vol))
-    print("/etc/inittab: " + fix_inittab(vol))
-    print("/dev/tty0N:   " + fix_devices(vol, args.sc, args.card))
+        if not args.runlevel:
+            return 0
+        plan = configure(vol, args.runlevel, args.sc, args.card)
+        changes = [(w, r) for w, r in plan if r != "already fixed"
+                   and not r.endswith("left as it is")]
+        print(f"== --runlevel {args.runlevel} would change: "
+              + ("nothing" if not changes else
+                 "; ".join(f"{w}: {r}" for w, r in changes)))
+        return 1 if changes else 0
+    for what, result in configure(vol, args.runlevel or "2", args.sc, args.card):
+        print(f"{what + ':':15s}{result}")
     n = vol.commit()
-    print(f"{n} write(s) to {args.volume}" if n else "volume unchanged")
+    print(f"{n} edit(s) written to {args.volume}" if n else "volume unchanged")
     return 0
 
 

@@ -41,7 +41,7 @@ ISA), and the boot-history notes in the project memory.
 | 128·ch + 16·pa | DRT entry (word 3 = ICEI command-list pointer, and it advances) | I/O ERS 4.1.4 + watching |
 | 920 | doorbell semaphore (the request server parks here; `SMSG` bit 10 + `DISP` rings it) | SEMLOG + disasm 0x190e8 |
 | 928 | software clock lock | write-watch |
-| 932/936 | the software clock, a double: **microseconds since 1900** (2208988800e6 at an unset 1970 RTC); +~1e6/s by the timer handler at TRAP HANDLERS +0xe72 (run 0x22b0a) | write-watch + decode |
+| 932/936 | the software clock, a double: **microseconds since 1900**. It starts at 0 (1 Jan 1900, which `date` shows as February 2036) when the clock chip is unset, and at the chip's time (2208988800e6 is 1 Jan 1970) when it is set; +1e6/s by the timer handler at TRAP HANDLERS +0xe72 (run 0x22b0a) | write-watch + decode; the unset value measured by the alpha's clock work |
 | 1024 + 8·level | per-level interrupt lists, (tail, head) | I/O ERS 4.1.4 |
 
 ## 3. Error numbers ("escapes")
@@ -251,6 +251,17 @@ before                              after
 ```
 
 ### The poll rate is a band with a measured edge at each end
+
+*(Updated for the alpha: the upper edge is gone. It was the serial card's
+model, not the poll: the ASI raised a device interrupt for every event it
+announced and timed its Pause instead of waiting for Resume Subchannel.
+With both modelled, HP-UX boots and runs sessions from 220 to 1000 us, and
+the release matrix runs 300 to 700. The 520's lower edge is gone too: on
+the release build BASIC boots and answers `DISP 3*4` at 50, 100, 150 and
+200 us from the fixed disc, and at 100 from the flexible discs. Which fix
+removed it was not traced. `FOCUS_ASIPAUSE` now defaults to 0, "wait for
+Resume". The table, and the paragraph under it, are the 2026-08-25
+measurement.)*
 
 `FOCUS_IOPPOLL` defaults to **400 us**, in the middle of it:
 
@@ -842,7 +853,20 @@ image starts there; a whole-volume image shifts that by one block.
 
 ## 9. HP-UX RUNS COMMANDS AT THE SHELL (2026-08-28)
 
-    FOCUS_TYPE='\n;ls\n' FOCUS_TYPEAT=24,34 tools/runhpux.sh -str 60 -video none
+    FOCUS_TYPE='\n;ls /\n' FOCUS_TYPEAT=30,40 tools/runhpux.sh --seconds 60
+
+*(Updated for the alpha. The recipe as first written, `FOCUS_TYPE='\n;ls\n'
+FOCUS_TYPEAT=24,34 tools/runhpux.sh -str 60 -video none`, now stops at
+init's `ENTER RUN LEVEL (0-6,s, or S):`. Since the MVB fix (10.3), init
+reads root's passwd entry, so it no longer falls back to single user, and
+the shipped inittab has no initdefault. runhpux.sh now sets initdefault
+`s` on every single-user boot (`tools/hpuxconfig.py --runlevel s`), and
+init runs root's csh: the prompt is `gator#`, the shell asks `TERM =`
+once, and its working directory is /usr/root, hence `ls /`. (On a machine
+that has been booted multiuser, root's shell is sh by then and the prompt
+`unrcad#`; `--scratch` or `--fresh` gives the csh one.) The
+transcript below is the 2026-08-28 one, from the Bourne shell init fell
+back to then.)*
 
 answers `tset`'s terminal-type prompt and then runs `ls` at the root shell:
 
@@ -879,6 +903,12 @@ the previous one is still running is not buffered.
 
 
 ## 9a. How it got here: HP-UX boots to the shell
+
+*(This section is the 2026-08-28 record. Today the same command prints the
+copyright lines, `INIT: SINGLE USER MODE` and /etc/profile's output, and
+waits at csh's `TERM = (hp)`: the clock is set by the script, and init
+reads root's passwd entry since 10.3. Items 6 and 7 were corrected during
+the alpha, as marked.)*
 
 Run `tools/runhpux.sh -str 40 -video none` and the console reads, in order:
 the four copyright lines, `CLOCK AND DATE NOT SET`, init's three lines
@@ -936,10 +966,19 @@ order they were found, each with where it showed and how it was proved:
    the dispatcher refused the task. Two facts about the bit, both forced
    by the kernel's code: the trap fires **in privileged mode too** (the
    stub sets MI and restarts the syscall without ever leaving the kernel;
-   the trap is taken at KERNEL 254's own EXIT), and MI and EM (bit 9) are
-   **carried across EXIT and IXIT** rather than restored from the marker
-   (otherwise the handler's cleared status is undone on the way out and
-   the trap re-fires forever). `focusexec.h step()`, `carry_trace_bits`.
+   the trap is taken at KERNEL 254's own EXIT), and the instruction the
+   trap returns to must run once untrapped. The first fix got that by
+   **carrying the live MI and EM (bit 9) across EXIT and IXIT**, and that
+   part was wrong. *Corrected in the alpha:* EXIT and IXIT **restore MI
+   and EM from the marker**, as the flowcharts say (`STATUS := (S-1)`), and
+   an instruction that loads STATUS from a marker ends with the marker's
+   EM instead of setting it again. HP-UX needs exactly that: its
+   dispatcher delivers a signal to a process that is computing in user
+   code by OR-ing MI into the STATUS word of the marker the task resumes
+   through (TRAP HANDLERS +0x102), and the signal hook withdraws a served
+   request by clearing MI in the trap's marker. With the carry rule,
+   `kill` and ^C never reached a process that made no system calls.
+   `focusexec.h step()`, `status_from_marker`.
 7. **Code segment use counts on trap entry.** ERS 5.2.1 step 3: a trap
    decrements the exited segment's count and increments segment 1's; the
    handler's EXIT reverses it. Ours counted only the EXIT, so every trap
@@ -948,6 +987,10 @@ order they were found, each with where it showed and how it was proved:
    the relocator to refuse it, the compactor to stall and the shell's
    children to die of their first page-in with "Killed". Now counted in
    `take_trap`, `vector_cs1`, `external_interrupt` and the dispatcher entry.
+   *Corrected in the alpha:* those paths skipped both halves whenever
+   either side was segment 0, where HP-UX's dispatcher runs, so the counts
+   of segments 1 and 2 wrapped hundreds of times a boot. Sheet 43 exempts
+   only segment 0's own count; each side is now counted on its own account.
 8. **Byte strings across page boundaries.** MVB resolved its destination
    once and ran on through physical memory. The pager copies a 3 KB swap
    read into a paged data segment with one MVB; the bytes past the first
@@ -989,6 +1032,20 @@ single-user.
 
 ### The doorbell, and why the obvious knob is not the answer
 
+*(Updated for the alpha. The first paragraph's observation no longer holds:
+on the release build an idle HP-UX has `MSG=00000000` (`FOCUS_STATEAT=38`:
+`MSG=00000000 MASK=08800000`), because the bit is consumed by the
+dispatcher's `SMPB 2` below and rung again by every `UP` that readies a
+waiter. What was wrong was the sleep itself: `STOP,B` waited for a new
+message instead of testing the register, so a doorbell rung in the five
+instructions between `SMPB 2` and `STOP,B` left the machine asleep with a
+ready task (fixed in the alpha; FOCUS.md `STOP`). The conclusions stand:
+bit 10 is still never delivered as a message trap, `FOCUS_MSG10TRAP=1` is
+still not the fix (the boot now halts before the banner with `System
+halted due to system error. TRAP:00000054`), and semaphore 920 still has
+exactly one operation, the `DOWN` at 1.220 s, in a 40-second single-user
+boot (`FOCUS_SEMLOG`).)*
+
 Separately, `MSG=0x00200000` — bit 10, the doorbell — stands set through the
 console work, and HP-UX's `MASK=0x08000000` leaves it unmasked.
 `src/cpu/focus/focusexec.h` deliberately excludes bit 10 from message-trap
@@ -1028,8 +1085,14 @@ and a login typed into any of them reaches a root shell:
 
     FOCUS_TAP=2:0 FOCUS_TYPERATE=60 \
     FOCUS_TYPE='@2:0=root\n;@2:0=\n;@2:0=\n;@2:0=who\n' \
-    FOCUS_TYPEAT=50,58,64,70 \
-    tools/runhpux.sh --multiuser -str 80 -video none
+    FOCUS_TYPEAT=100,110,118,126 \
+    tools/runhpux.sh --multiuser --seconds 140
+
+*(Updated for the alpha: the times were 50,58,64,70 with -str 80. The
+logins now come up after the whole of /etc/rc, at about 40 emulated
+seconds (measured on the release build: two of the seven prompts by 36 s,
+all seven by 40); the alpha's regression matrix types from 90. Add
+--scratch to leave your own machine untouched.)*
 
     login: root
     ... /etc/profile's banner, "You have mail." ...
@@ -1039,19 +1102,22 @@ and a login typed into any of them reaches a root shell:
     unrcad# who
     root       tty01        Feb  6 22:29
 
-Interactively: `tools/runhpux.sh --multiuser -cio2:mux:port0 null_modem
--bitb socket.127.0.0.1:4000` and `nc 127.0.0.1 4000`, or
-`-cio2:mux:port0 terminal` for a window. Port N of the card is
-`/dev/tty0(N+1)`; `FOCUS_TAP=all` prints every terminal the machine has,
-and `FOCUS_TAP=bogus` lists them.
+Interactively: `tools/runhpux.sh --multiuser` puts the six ports on
+127.0.0.1:4001-4006 behind a relay that takes any number of connections
+(`tools/hpuxterm.py 1` .. `6`; INSTALL.md section 4), or on ptys with
+`--ports pty`; `-cio2:mux:port0 terminal` gives a port a window. Port N of the card is
+`/dev/tty0(N+1)`.
 
-The gettys do not come up at a fixed moment: on a loaded host the console
-`login:` has been seen anywhere from 65 s to not at all within 170 s, on
-this driver and on the one before it alike. A run that does not reach it
-is a lost measurement, not a result — retry, as `src/test/basictest.sh`
-does for the BASIC prompt.
+*(Updated for the alpha. This paragraph used to say the gettys came up
+"anywhere from 65 s to not at all within 170 s", and to retry. That was
+not host load: it was the multiuser stall, `UP`/`DOWN` building wait lists
+HP-UX's own semaphore routines could not take apart (FOCUS.md 10.19), and
+a disc-write truncation behind it. With both fixed the logins are up by
+about 40 emulated seconds, and the release matrix, which types from 90,
+finds them there in every run; a run that does not reach them is a
+result, and a bug.)*
 
-### 10.5 Addressing terminals
+### 10.5 Terminals: addressing them, and using them from the host
 
 Everything the host says to and hears from this machine goes through one
 registry now (`host_terminal` in the driver). A terminal has a name, and
@@ -1069,7 +1135,123 @@ serial terminal listens to that one anyway, while a 520 talks to its
 screen and is read with `FOCUS_DIMDUMP`. A `FOCUS_TYPE` script opening
 `@<name>=` types at that one, so a single run can drive the console and
 several ports at once — before this there was one destination for the
-whole run. `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they meant.
+whole run. Scripts whose times overlap each keep their own cursor (they
+used to share one, so '@2:0=root\n;@2:1=root\n' half a second apart typed
+'roo' at port 0). `FOCUS_MUXTAP` and `FOCUS_TYPEPORT` still mean what they
+meant.
+
+**What the tap prints.** When stdout is a terminal the tap writes lines:
+CR dropped, LF a newline, and with more than one terminal listened to,
+each line whole and labelled with its terminal:
+
+    console| HP-UX 5.30 (unknown)
+    console| login:
+    2:0    | HP-UX 5.30 (unknown)
+    2:0    | login:
+
+Into a file or a pipe it writes the raw stream it always has -- every byte
+that is not printable ASCII as `.`, the terminals interleaved byte by
+byte -- because that is what the scripts parse (`src/test/hpuxtest.py`
+finds the end of `/etc/rc` by `Nodename: unknown.`, whose `.` is the LF).
+`FOCUS_TAPRAW=0` asks for lines in a file, `FOCUS_TAPRAW=1` for the raw
+stream on a terminal.
+
+#### Using the machine interactively
+
+**The ordinary way is `tools/runhpux.sh`'s own, and INSTALL.md sections 3
+to 5 are the guide to it.** In short:
+
+| what | how |
+|---|---|
+| the console in a window | `tools/runhpux.sh` or `tools/runhpux.sh --multiuser`: the MAME window *is* the 540's console terminal. MAME's own keys start off; Scroll Lock toggles them |
+| tty01 .. tty06 | a `--multiuser` run puts them on 127.0.0.1:4001-4006 behind a relay (`tools/hpuxterm.py hub`) that takes any number of connections: `tools/hpuxterm.py 1` .. `6`, Ctrl-] to leave, come back whenever |
+| the ports on ptys | `--ports pty`; the run prints `cio2:mux6:portN: pseudo terminal /dev/pts/M`; `tools/hpuxterm.py /dev/pts/M` |
+| the console on TCP | `--console tcp`: port 4000 through the same relay, `tools/hpuxterm.py console` |
+| the console on a pty | `--console pty` |
+| other ports | `--port-base N` (the console is N, tty0K is N+K) |
+
+The rest of this section is what is underneath: the MAME slot options
+those flags turn into, for fitting ports by hand. A port or `-bitb` given
+on the command line takes the ports over from the script, which then fits
+none of its own. All of these were run headless during the alpha by a
+script that connects, logs in as root and runs a command; the window path
+was driven through MAME's natural keyboard, which is the path a key
+pressed in the window takes.
+
+**The console, on a pseudo terminal.**
+
+    tools/runhpux.sh --multiuser -video none -cio0:asi:rs232 pty
+
+prints `cio0:asi:rs232: pseudo terminal /dev/pts/N` as it starts; attach
+with `screen /dev/pts/N 9600`, `picocom -b 9600 /dev/pts/N`,
+`minicom -D /dev/pts/N`, or `socat -,rawer,escape=0x1d /dev/pts/N,rawer`
+(^] leaves). Detaching and attaching again is fine: the session goes on.
+
+**The console, on a TCP socket.**
+
+    tools/runhpux.sh --multiuser -video none \
+        -cio0:asi:rs232 null_modem -bitb socket.127.0.0.1:4000
+    socat -,rawer,escape=0x1d TCP:127.0.0.1:4000
+
+MAME's bitbanger socket takes **one** connection per run: when the client
+goes, the port cannot be reached again until the next run. That is why
+`--console tcp` and the script's port numbers go through the relay
+instead (MAME connects out to it, once, and users come and go on the
+other side). By hand, for a TCP port that can be left and come back to,
+put a pty behind socat:
+
+    tools/runhpux.sh --multiuser -video none -cio0:asi:rs232 pty
+    socat TCP-LISTEN:4000,reuseaddr,fork /dev/pts/N,rawer &
+    socat -,rawer,escape=0x1d TCP:127.0.0.1:4000    # as often as you like
+
+Plain `nc` works too -- HP-UX ends a canonical-mode line on LF as well as
+CR -- but run it as `stty raw -echo; nc 127.0.0.1 4000; stty sane`: the
+card echoes, so the local terminal must not. `telnet` is a poor fit: with
+no telnet server at the far end it falls back to local echo and sends
+every line as CR LF, which is two lines here.
+
+**Logins on the multiplexer.** The same attachments on the 27140A's
+ports, `/dev/tty0(N+1)` for port N:
+
+    tools/runhpux.sh --multiuser -video none \
+        -cio2:mux6:port0 pty \
+        -cio2:mux6:port1 null_modem -bitb socket.127.0.0.1:4001
+
+`-cio2:mux6:port0 terminal` gives a port its own MAME window. Log in as
+`root` (no password on this disc) and answer the two `TERM =` prompts.
+
+Two things that look like faults and are not. A port's `login:` is
+printed once, when getty starts; whatever connects later sees a blank
+screen until it presses Return, which gets a fresh prompt. And getty
+flushes the line just after printing `login:` (a control-card flush,
+measured), so a name typed in the first second after the prompt appears
+is discarded -- the real machine does the same.
+
+#### What the console card does itself
+
+HP-UX hands the 27128A the console's line discipline: on every open and
+mode change it writes the card's whole configuration block, and the card
+does the rest (27128A Tech Ref 4-5..4-15, 4-30, 4-41..4-58). For a tty in
+canonical mode (`b2 00 00 00 00 02 08 15 01 76 ...`) the card echoes,
+erases with BS and kills the line with ^U, ends a record on NL, CR or
+EOT, turns ^C and ^\ into events and expands LF to CR-LF on output; in
+any other mode (`00 00 00 01 ...`, and csh's `82 ... 1d`) it passes each
+character straight up ("alert 1") and HP-UX echoes and edits itself.
+`src/iop/focusasi.h` models that pipeline -- signal characters, the
+handshake characters, edit mode, stripping, single text terminators,
+end on count, the 200-byte limit, alert 1, echo and the output
+separators -- and `src/test/asitest.cpp` drives it with the two measured
+blocks. Before it, the console had no echo at a canonical prompt, BS and
+^U arrived as data, ^C did nothing, output staircased on bare LFs and a
+line reached the host only at Return. Measured over a socket on the
+single-user disc: 's' echoes at ENTER RUN LEVEL; `ecko^H^Hho bs` runs
+`echo bs`; `sleep 30` then ^C gives the prompt back at once; `cat` with
+`one`, `tw^Ho`, ^D prints `one` and `to` and ends.
+
+Not modelled: double text terminators and prompt sequences (HP-UX does
+not configure them), and the software handshakes' pacing -- a device's
+X-ON/X-OFF and the ACK to a host ENQ are taken out of the input, but
+output is not held for them, and the card never sends ENQ.
 
 ### 10.1 The card
 
@@ -1117,6 +1299,13 @@ order, and a Pause ran out after a millisecond instead of waiting for
 Resume Subchannel (27130A firmware IMS 13.2.3.3, 13.2.8.9-10). With the
 console and the gettys on one card, HP-UX's overlapping transactions met
 all three at once.
+
+*(Since the alpha merge: `tools/hpuxconfig.py DISC --runlevel s|2` sets the run
+level either way and can be repeated on a disc that has been lived in --
+a root password you set, or a getty you turned off, is left alone --
+`--check` reports what a disc holds, and it also repairs the `s_maxblk`
+an older `mkhpuxdisc.py` wrote. `tools/runhpux.sh` runs it on
+its working copy before each boot, never on the pristine disc.)*
 
 ### 10.3 The defect that kept it single-user: MVB is not resumable
 
@@ -1173,7 +1362,14 @@ console and the six MUX ports all get their `login:`.
 
 ## 11. HP-UX 5.01 ON THE 520: the banner, off the release tape (2026-08-29)
 
-    tools/runhpux.sh --release 5.01 -str 100 -video none | tools/screen.py
+    tools/runhpux.sh --release 5.01 --headless
+
+*(Updated for the alpha: a headless 520 shows nothing without
+FOCUS_DIMDUMP, which the first recipe, `... -str 100 -video none |
+tools/screen.py`, left out. --headless sets it, runs 100 s and renders the
+screen; the old recipe works too now, because runhpux.sh sets
+FOCUS_DIMDUMP for any headless 5.01 run and leaves the rendering to the
+pipe.)*
 
                                               (c) Copyright 1983, 1984, 1985
      Hewlett-Packard Company,  All rights reserved.   (c) Copyright 1979 ...

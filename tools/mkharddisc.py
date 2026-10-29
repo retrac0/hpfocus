@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Make a clean Series 500 fixed-disc image, with or without a boot area.
 
 The 520's internal Winchester is 9.896 MB formatted (530/540 Service, 4849),

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """A cursory structural pass over a focusdis.py listing.
 
 Adds two things a plain listing doesn't have: a label at every address a

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Generate the C++ opcode tables for the MAME FOCUS disassembler.
 
 docs/opcodes.csv is the single source of truth for the opcode map. Keeping a
@@ -8,6 +10,7 @@ C++ table is generated from the CSV instead.
 Rewrites the tables in place in the MAME tree's focusdasm.cpp, between the
 BEGIN/END GENERATED TABLES markers.
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import csv
 from pathlib import Path
 

@@ -1,0 +1,356 @@
+# MEDIA.txt -- where Hewlett-Packard's software and manuals are
+#
+# This repository does not carry them. It carries this list, which says
+# what each file is, where it was downloaded from, and what it must hash
+# to; tools/fetch-media.sh reads the list and fetches the files to the
+# paths below.
+#
+#   tools/fetch-media.sh             the software the emulator boots (46 MB)
+#   tools/fetch-media.sh --manuals   the manuals as well (230 MB), and
+#                                    their text extractions in docs/notes
+#   tools/fetch-media.sh --from DIR  put in place what you downloaded by
+#                                    hand (the museum's files, below)
+#   tools/fetch-media.sh --check     verify what is here, without network
+#   tools/fetch-media.sh --list      this list, readably, with what is here
+#
+# WHOSE THEY ARE. Everything listed is Hewlett-Packard's: HP's software
+# for the HP 9000 Series 500 (HP-UX also carries AT&T and University of
+# California code), HP's manuals and internal specifications, and three
+# issues of the Hewlett-Packard Journal. The copyright is theirs or their
+# successors'. This project holds no licence for any of it, does not
+# redistribute it, and states no terms for it: the files stay where their
+# archives keep them, and fetching them is a download from those archives
+# to your machine. The HP-UX 5.30 unit save is besides a real site's
+# working system from 1991, with that site's accounts, home directories
+# and mail as they were (software/README.md): run it, do not republish
+# what is on it.
+#
+# WHERE THEY COME FROM. Three third-party archives, none of them this
+# project's. Two can be fetched by a script and have a mirror each:
+#
+#   bitsavers.org    the software (bits/HP/Crisis_Computer_Tapes) and the
+#                    manuals (pdf/hp/9000_500, 9000_cio and disc).
+#                    Mirror: bitsavers.trailing-edge.com.
+#   hparchive.com    the three HP Journal issues. Mirror: the Internet
+#                    Archive's Wayback Machine captures of the same URLs.
+#
+# Every URL below was downloaded once on 2026-10-03, primary and mirror
+# alike, and its SHA-256 compared with the copy this project had been
+# working from: all of them matched. A URL is listed only if it served
+# those exact bytes. bitsavers.org refuses the default User-Agent of curl
+# and wget (HTTP 403) and serves one that names its sender;
+# tools/fetch-media.sh sends
+# "hpfocus-fetch-media/<version> (+https://github.com/retrac0/hpfocus)".
+#
+# The third cannot:
+#
+#   hpmuseum.net     the HP Computer Museum: the BASIC, demonstration and
+#                    test floppies and the HP-UX 5.0 tape for the 520. Its
+#                    downloads sit behind a CAPTCHA, so a person fetches
+#                    them in a browser (four items, listed below with their
+#                    pages) and `tools/fetch-media.sh --from <folder or
+#                    .zip>` puts them in place, finding each file by its
+#                    SHA-256 whatever the archive was called or how it was
+#                    laid out. HP-UX 5.30 on the 540 needs none of them;
+#                    BASIC, the diagnostics and HP-UX 5.01 on the 520 do.
+#
+# NOT LISTED HERE. Six files stay in docs/notes: this project's own OCR
+# passes over manuals that have no text layer, and two page images. No
+# command reproduces them byte for byte and no archive holds them.
+#
+# FORMAT. Blank lines and lines starting with # are comments. Fields are
+# separated by single spaces; no path or URL contains one.
+#
+#   file CLASS BYTES SHA256 PATH
+#   <tab>url URL
+#       A file to fetch to PATH (relative to the repository root). CLASS
+#       is software (fetched by default) or manuals (--manuals). The url
+#       lines that follow are tried in order: the first is the primary,
+#       the rest are mirrors.
+#
+#   manual CLASS BYTES SHA256 PATH
+#   <tab>page URL
+#       A file no script can fetch. The page line is where a person
+#       downloads it; tools/fetch-media.sh --from recognises it by SHA256.
+#       CLASS is museum.
+#
+#   text MODE BYTES SHA256 PATH PDF
+#       PATH is the text of PDF as pdftotext gives it: `pdftotext -layout
+#       PDF PATH` for MODE layout, `pdftotext PDF PATH` for MODE plain.
+#       tools/fetch-media.sh regenerates these once it has the manuals.
+#       BYTES and SHA256 are what poppler 26.08.0 writes, which is what
+#       the project's notes were made with; another poppler may differ in
+#       whitespace, so a mismatch here is a warning, not an error.
+
+# ---------------------------------------------------------------- software
+# bitsavers' Crisis Computer Tapes, ccc_20050830/S500: the two tapes of an
+# HP 7914 unit save holding an installed HP-UX 5.30 (the files are named
+# hpux4.0; the boot image says 05.30), which tools/runhpux.sh assembles
+# into the disc the 540 boots, and four more Series 500 images that
+# nothing here boots yet: Microtrak for HP-UX, the unsupported/contrib
+# tape, the HP-UX 5.05 customer update and a BASIC 2.0 disc backup.
+# software/README.md describes each. All gzip, as the archive has them.
+
+file software 80957 078dddcfde27c1fd44e96165fe51f490146d7197f05de2a008dba87d0d8e3bc4 software/cct/45524-10034r1.5b.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/45524-10034r1.5b.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/45524-10034r1.5b.bin.gz
+file software 19561840 07f798188230f37fadc69390622b339b0113f92ba43014f5d6a5cc7f918baf85 software/cct/7914_unitSave_hpux4.0.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/7914_unitSave_hpux4.0.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/7914_unitSave_hpux4.0.bin.gz
+file software 19675325 c0b6806056f801ea3d723d86a3a7461ab3e84b452fecdb58699e61dc0eff6cc4 software/cct/7914_unitSave_hpux4.0_tape2.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/7914_unitSave_hpux4.0_tape2.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/7914_unitSave_hpux4.0_tape2.bin.gz
+file software 3830725 6d96a852c7268bb55ea307ce4e416f8e478d1b020ca33d90776fe2e732d637eb software/cct/97080-19234.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/97080-19234.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/97080-19234.bin.gz
+file software 1027311 6a6116836e93b13b30da4a0c4c4a1ebbe623ab92d9245e9a63f907a4c9bbdab5 software/cct/97089-10038r5.05.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/97089-10038r5.05.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/97089-10038r5.05.bin.gz
+file software 3687593 94ae87db413207581fd702ce8ece90f711d0ac10e413e2c97ffcdfee6b26313f software/cct/dskbkup_bas2.0_500.bin.gz
+	url https://bitsavers.org/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/dskbkup_bas2.0_500.bin.gz
+	url https://bitsavers.trailing-edge.com/bits/HP/Crisis_Computer_Tapes/ccc_20050830/S500/dskbkup_bas2.0_500.bin.gz
+
+# ----------------------------------------------------------------- manuals
+# bitsavers pdf/hp/9000_500: the Series 500 itself -- the FOCUS instruction
+# set and I/O specifications, the 520 and 530/540 service manuals and CE
+# handbooks, the graphics processor, the I/O expander, MODCAL.
+
+file manuals 3980583 df4c65bbaf057bd27a081c88f1c0c8605f1c8b4e2cd4f0f7cfbe7a02680cfc88 docs/bitsavers/09020-90035_HP_9020_CE_Handbook_Jul85.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/09020-90035_HP_9020_CE_Handbook_Jul85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/09020-90035_HP_9020_CE_Handbook_Jul85.pdf
+file manuals 1068024 2e8e6bbd3a9fd2b4463be0885a2c1307a621f930c447fd33cd62ef34cb8e47af docs/bitsavers/09020-90037_9000_500_Hardware_Technical_Data_Jan85.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/09020-90037_9000_500_Hardware_Technical_Data_Jan85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/09020-90037_9000_500_Hardware_Technical_Data_Jan85.pdf
+file manuals 12031410 d5852aeb2a483d80eb9837357bb43b1c8733bf03f9cce56faef4d91165547141 docs/bitsavers/09020-90037_HP_9020_Model_520_Service_Feb85.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/09020-90037_HP_9020_Model_520_Service_Feb85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/09020-90037_HP_9020_Model_520_Service_Feb85.pdf
+file manuals 2320048 f61961d32159d6f3bbaa6956c49121c3fb5414714b636f8eb3e1bf0738c02518 docs/bitsavers/09040-90035_HP_9030_9040_CE_Handbook_Mar85.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/09040-90035_HP_9030_9040_CE_Handbook_Mar85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/09040-90035_HP_9030_9040_CE_Handbook_Mar85.pdf
+file manuals 5915240 3ccab7a4bd673a723aac4d431195b66c5cc25a329f7381cf9bff08c8c90996b4 docs/bitsavers/09040-90038_HP_9030_9040_Models_530_540_Service_Mar85.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/09040-90038_HP_9030_9040_Models_530_540_Service_Mar85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/09040-90038_HP_9030_9040_Models_530_540_Service_Mar85.pdf
+file manuals 2289709 44786e7dbc93582533237dd1922b029eb95d4a1a3f0cdf728e8f103e6f28ef88 docs/bitsavers/97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf
+file manuals 1122272 37524e2e8f2a45cbc1423e428203515c9490f6073cfc50d4e453cc4f857ab952 docs/bitsavers/97098-90020_97098_IO_Expander_Service_Apr83.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/97098-90020_97098_IO_Expander_Service_Apr83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/97098-90020_97098_IO_Expander_Service_Apr83.pdf
+file manuals 623367 be4f8f157ad92d4839618fc1f0c1139d58ff30611e14446914402251ae1c2923 docs/bitsavers/98760-90039_HP_98760_CE_Handbook_Mar84.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/98760-90039_HP_98760_CE_Handbook_Mar84.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/98760-90039_HP_98760_CE_Handbook_Mar84.pdf
+file manuals 4540030 262966cc70ac0308596535e379cc7171680d332e06ba342a98be6dd2d7aa715b docs/bitsavers/FOCUS_IO_ERS_Dec82.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/FOCUS_IO_ERS_Dec82.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/FOCUS_IO_ERS_Dec82.pdf
+file manuals 8506717 aa2c57caa59fcb85ac5bb951f43f626c4074a6156fe50a831eb43980bbd5985d docs/bitsavers/FOCUS_Instruction_Set_ERS_Dec82.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/FOCUS_Instruction_Set_ERS_Dec82.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/FOCUS_Instruction_Set_ERS_Dec82.pdf
+file manuals 4601889 9de91bd76d7b4e235878c109682997352ed4a81137afedf8c594e2ab4f3bc0bd docs/bitsavers/MODCAL_6.3_ERS.pdf
+	url https://bitsavers.org/pdf/hp/9000_500/MODCAL_6.3_ERS.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_500/MODCAL_6.3_ERS.pdf
+
+# bitsavers pdf/hp/9000_cio: the channel I/O cards.
+
+file manuals 2516253 54b596d980122534924c72b71d68af6f87133853778099287422063ec578f28f docs/bitsavers/27110-90005_27110B_CIO_HP-IB_Interface_Reference_Feb88.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27110-90005_27110B_CIO_HP-IB_Interface_Reference_Feb88.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27110-90005_27110B_CIO_HP-IB_Interface_Reference_Feb88.pdf
+file manuals 336290 08c6f4e2b4ca607f7e11213689becfa4f14364ec6d38d4b84fd0540e6578889a docs/bitsavers/27112-60001_27112A_GPIO_Installation_Dec82.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27112-60001_27112A_GPIO_Installation_Dec82.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27112-60001_27112A_GPIO_Installation_Dec82.pdf
+file manuals 3603146 fe09d8468810af16fd9752da409cc474c80986ef639b0c459d49b54d3fe82230 docs/bitsavers/27114-90011-1_27114A_ERS_Nov86.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27114-90011-1_27114A_ERS_Nov86.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27114-90011-1_27114A_ERS_Nov86.pdf
+file manuals 1532312 8df6081114954c2f0e90e36f3ede098c897402131a90f403399d2a68d62e1334 docs/bitsavers/27114A_AFI_IRS_May86.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27114A_AFI_IRS_May86.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27114A_AFI_IRS_May86.pdf
+file manuals 499746 0c808998e34855e2dca1837532d500fb255ee4dc0f4221f56930bb98e768da7f docs/bitsavers/27123-90001_27123A_PSI_SRM_Installation_Sep85.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27123-90001_27123A_PSI_SRM_Installation_Sep85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27123-90001_27123A_PSI_SRM_Installation_Sep85.pdf
+file manuals 160073 461d470e8d40554af883a4d063c79e445b03a701f1f3d96677222a5d20e8670c docs/bitsavers/27128-90001_27128A_Asynchronous_Serial_Interface_Installation_Sep82.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27128-90001_27128A_Asynchronous_Serial_Interface_Installation_Sep82.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27128-90001_27128A_Asynchronous_Serial_Interface_Installation_Sep82.pdf
+file manuals 398874 967e16f90e0c7f37a1f40d339d1e62a67abb2f06fe36c02825caa540d1058e62 docs/bitsavers/27130-90003_27130B_8-Channel_Multiplexer_Installation_Sep85.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27130-90003_27130B_8-Channel_Multiplexer_Installation_Sep85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27130-90003_27130B_8-Channel_Multiplexer_Installation_Sep85.pdf
+file manuals 4612262 a1d7f3d14270209c6b2368c391bd12aefb24a6c87eff80632ebe3f47582b95e1 docs/bitsavers/27130A_Multiplexer_Firmware_IMS_Jul83.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27130A_Multiplexer_Firmware_IMS_Jul83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27130A_Multiplexer_Firmware_IMS_Jul83.pdf
+file manuals 4497089 ef8ffd50f111d079be5c62eccca15e3706d89095a2d26c719ee52b8499ad6cf5 docs/bitsavers/27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.pdf
+file manuals 3991033 43410f5e7f4037c12bc1268e1a4af24381fef71a739b8b7c99558ac37b21cbff docs/bitsavers/27132-90002_27110A_HP-IB_Interface_Tech_Jun83.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90002_27110A_HP-IB_Interface_Tech_Jun83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90002_27110A_HP-IB_Interface_Tech_Jun83.pdf
+file manuals 3169844 eef705c323b11128416a9355797f275c2252e79672e9744c99fc3686d3994264 docs/bitsavers/27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.pdf
+file manuals 2120808 52d187ca8b5f01fccd2b9f8a52a959f649a4c3668ce7ab93bcafcbfc50a16151 docs/bitsavers/27132-90004_27122A_PSI_RJE_Firmware_Reference_Jun83.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90004_27122A_PSI_RJE_Firmware_Reference_Jun83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90004_27122A_PSI_RJE_Firmware_Reference_Jun83.pdf
+file manuals 2748357 937eec9f3f1a20eaa5d746934b62fe47b8de1778c5120a6da546bd961e63ea66 docs/bitsavers/27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.pdf
+file manuals 4679723 2e4a59a73489d60032871d038ebeb273807e528994a357c6aa6244e930d8f840 docs/bitsavers/27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.pdf
+file manuals 4300569 bf4e09ce705d2f422addd3f653deed0c070a18782ff27a61984eecd6042623d0 docs/bitsavers/27132-90007_27130B_8-Channel_Multiplexer_Technical_Reference_Mar85.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27132-90007_27130B_8-Channel_Multiplexer_Technical_Reference_Mar85.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27132-90007_27130B_8-Channel_Multiplexer_Technical_Reference_Mar85.pdf
+file manuals 2253813 0364cbe5222ab5e16d3b3c8cccd2b2c381fe03673a4a4cb997d4ac6b36fcbe24 docs/bitsavers/27140-90007_27140A_Async_6-Channel_Multiplexer_Hardware_Reference_Jun88.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27140-90007_27140A_Async_6-Channel_Multiplexer_Hardware_Reference_Jun88.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27140-90007_27140A_Async_6-Channel_Multiplexer_Hardware_Reference_Jun88.pdf
+file manuals 379041 12ae265905c1645bf4359945cdea38df75165c56dc4f7b3e91f27efa3750dbfb docs/bitsavers/27140A_6-Channel_Modem_Multiplexer_IMS.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27140A_6-Channel_Modem_Multiplexer_IMS.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27140A_6-Channel_Modem_Multiplexer_IMS.pdf
+file manuals 2210655 1deb323ecdad5caf2eefbe132c54a1fcec9daf20394f7ae59cb1b54a6062aa5f docs/bitsavers/27140A_Firmware_ERS_Apr86.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/27140A_Firmware_ERS_Apr86.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/27140A_Firmware_ERS_Apr86.pdf
+file manuals 2865940 6ab1ea6d4a0fd087c7432f983383ba9adda61edf4ed690f9930a88c9f615d280 docs/bitsavers/5959-2259_CIO_LAN_Interface_Controller_Sep88.pdf
+	url https://bitsavers.org/pdf/hp/9000_cio/5959-2259_CIO_LAN_Interface_Controller_Sep88.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/9000_cio/5959-2259_CIO_LAN_Interface_Controller_Sep88.pdf
+
+# bitsavers pdf/hp/disc: the 9130K flexible drive, and the CS/80
+# instruction set manual. The archive calls the latter
+# 5955-3442_cs80-is-pm.pdf; it is kept here under the name this project's
+# documents cite.
+
+file manuals 3659311 6a124c4fe99b9c4a8a47cd22f76d250e3dd62a667fb46c164ac6f53a99708e5a docs/bitsavers/09130-90030_9130K_Service_Jul81.pdf
+	url https://bitsavers.org/pdf/hp/disc/09130-90030_9130K_Service_Jul81.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/09130-90030_9130K_Service_Jul81.pdf
+file manuals 5831105 b100bca9f4354431f010172bdd9b35613b397a97356e9356547c5b8c9766f7ce docs/bitsavers/5955-3442_CS80_Instruction_Set_Programming_Manual.pdf
+	url https://bitsavers.org/pdf/hp/disc/5955-3442_cs80-is-pm.pdf
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/5955-3442_cs80-is-pm.pdf
+
+# bitsavers pdf/hp/disc/cs80describes: CS/80 Describe responses captured
+# from real drives (plain text, 1 KB each). The archive holds 32; these
+# are the five the emulator's drive models were checked against.
+
+file manuals 1068 be9b9b101e7d79f0f357ff264f3322e2d00059f6d9744eb03a0a81063f913f35 docs/bitsavers/cs80describes/7908-0.txt
+	url https://bitsavers.org/pdf/hp/disc/cs80describes/7908-0.txt
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/cs80describes/7908-0.txt
+file manuals 1067 ab14d09fa9ca69339a68b56c1fca7c4921cefdf5c271910d791d0ea6b144bf9e docs/bitsavers/cs80describes/7914-0.txt
+	url https://bitsavers.org/pdf/hp/disc/cs80describes/7914-0.txt
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/cs80describes/7914-0.txt
+file manuals 1061 58c25529ad7bd432dc5c42f94c6ffbfb53a843dfa02705fdd263317ca14d6ca8 docs/bitsavers/cs80describes/7914-1.txt
+	url https://bitsavers.org/pdf/hp/disc/cs80describes/7914-1.txt
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/cs80describes/7914-1.txt
+file manuals 1085 5345b30847a910217aee8cd945896cebcf04dc1efb8165417e42e8c9e9d8519c docs/bitsavers/cs80describes/7935.txt
+	url https://bitsavers.org/pdf/hp/disc/cs80describes/7935.txt
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/cs80describes/7935.txt
+file manuals 1070 722b36f757d103996921a33e78932fcbe980efc8c382c6bb370f9c96ff863b6a docs/bitsavers/cs80describes/9133h-0.txt
+	url https://bitsavers.org/pdf/hp/disc/cs80describes/9133h-0.txt
+	url https://bitsavers.trailing-edge.com/pdf/hp/disc/cs80describes/9133h-0.txt
+
+# hparchive.com: Hewlett-Packard Journal, August 1983 (the chip set),
+# March 1984 (HP-UX on the Series 500) and May 1984 (the machines). The
+# mirrors are Wayback Machine captures; the id_ in the URL asks for the
+# file as it was captured, without the archive's page frame.
+
+file manuals 26703977 ce1073c4962ab778bed57ff55ca283adb0b3fb4537d84c51deb0fab82fcc3396 docs/hpjournal/HPJournal_1983-08.pdf
+	url https://hparchive.com/Journals/HPJ-1983-08.pdf
+	url https://web.archive.org/web/20260803230118id_/http://hparchive.com/Journals/HPJ-1983-08.pdf
+file manuals 58046088 5282a214b9e9e3119837a1b1e64d34ed694697e599f04df82469ebcdd52e5aee docs/hpjournal/HPJournal_1984-03.pdf
+	url https://hparchive.com/Journals/HPJ-1984-03.pdf
+	url https://web.archive.org/web/20251102062010id_/https://hparchive.com/Journals/HPJ-1984-03.pdf
+file manuals 52877127 0fde3d823c96c47dc8e2d7c02c523b0c7b6241cdc8795550221f73e2bb4883b4 docs/hpjournal/HPJournal_1984-05.pdf
+	url https://hparchive.com/Journals/HPJ-1984-05.pdf
+	url https://web.archive.org/web/20251031212857id_/https://hparchive.com/Journals/HPJ-1984-05.pdf
+
+# ------------------------------------------------ from the HP Computer Museum
+# Downloaded by hand, one archive per item, from the item's page (its
+# download link is a CAPTCHA). The exhibit is
+# https://www.hpmuseum.net/exhibit.php?swc=21 . Most of the collection was
+# donated to the museum by Charlie Brett of Fort Collins, Colorado.
+
+# Item 534, HP-UX 5.0 Operating System (1984): the release tape for the 520, as a
+# 9144 cartridge image. Damaged in imaging (software/README.md); the 520's
+# kernel survives, and tools/hpuxboot.py builds a bootable image from it.
+manual museum 16744448 ba1918ad897ba44ddce4603496e2d33b35e1295898cf3c422c7e2b0b80cd2153 software/97089C.hpi
+	page https://www.hpmuseum.net/display_item.php?sw=534
+
+# Item 432, 9020 System BASIC Software (1983): the BASIC Language System 2.0, seven
+# Teledisk floppies. tools/setup.sh builds BASIC's fixed disc from 500BT1,
+# 500BT2 and 500OPT1; src/test/run_difftest.sh disassembles 500BT1 and 500UT3.
+manual museum 277040 12b7649de044ee3bab234af00da93c8600900c7164bfc06c94093d5104d674af software/basic/500BT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 118978 9a29b8afa17c457691563437cf7d7e822fdbfd47340178d6281ab454a6af40c3 software/basic/500BT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 268415 0f5f4b351296715f37e979d193bb6e361259f336973237701a07d5e6f78407bc software/basic/500OPT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 37273 e6c72fb59276e3d9c7512f5038323be4641be7e67ff1a40c7a849e9d90fbb92b software/basic/500OPT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 262818 af2e3bbc8cac7b92ee9e9c086adb871167a6ae9f4ba67271a129ce05dfa29677 software/basic/500UT1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 223828 2aeb6d23e11fd4bc2a24acdad8fa8c7e1ec62380a62dddb8f032ea1f09031064 software/basic/500UT2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+manual museum 256570 3d57b0caf7ead1d8ab016ef05845de3234c67e1f889524005bdb15a4f585b0bd software/basic/500UT3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=432
+
+# Item 467, 9020 Demonstration Software (1982): the BASIC demo suite, seven floppies.
+manual museum 105491 f1b3fa3422c38fc2d6da8a75699862e7d6be26c3b79d84f8801b51c8f7f8cf05 software/demos/BASDEM1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 219786 0b131b00094dc1d8e0e04136114f4e0e42fa5d8543e4d72abec27c6f9c547dc2 software/demos/BASDEM2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 202862 9666ba20b24adead4e98ca73f7f662849a18d5e00f9313004d3bb121e810f82c software/demos/BASDEM3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 202554 5971989c3170e71d0f69dbb503761bbe03453168d0dc10a84bdfd1818e700974 software/demos/BASDEM4.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 103156 ef04ebddacb8812d6e42e3cd4b8aad9e05236b377fc7782f0ea6dfee14eaa60d software/demos/BASDEM5.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 161378 8e2c8bc0d8c0ccba27af87f4ce6afc0442324e5dbaa0e305571abf7dae3be948 software/demos/BASDEM6.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+manual museum 209094 6482a7181bd999b50c116906194283d0162d415439a762f307f1deb12d715559 software/demos/BASDEM7.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=467
+
+# Item 433, 9020 Test Software (1983): the System Functional Tests 3.00, six floppies.
+# tools/mkdiagdisc.sh builds the diagnostics disc from the three 500ENV discs,
+# and the test driver runs off 500MFTST.
+manual museum 141123 ed59f0662f6c13d4c8d5ae5a62544b680e87d815694c2433694cf3b72d6898ca software/test/500EDTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 278088 adf3a820bc319c17d85e59401c7f0d3fde37cbfd3a4f6124327355545eddfeac software/test/500ENV1.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 278614 52757f7d0a3c99eb36d22f54cbbdabdc1fd25001e11fa27db2e7ddaaa3c6d4b8 software/test/500ENV2.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 266684 5c4d0d6df2e4133de0b16edfbc1369934b869e5820ec3c11cbc06616ab3f28ec software/test/500ENV3.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 238822 3a0e3f839f7752c624ab62fcc41a3c4af012b416d4ba7418cbd3afbcb337719d software/test/500MFTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+manual museum 90825 0c4285ad7a34780e2bd0125fb27b8fc1e01a5e39643f00037c3742ae5ae5e7b6 software/test/500MSTST.TD0
+	page https://www.hpmuseum.net/display_item.php?sw=433
+
+# ------------------------------------------------------ text of the manuals
+# docs/notes/<name>.txt, regenerated from the PDFs above.
+
+text layout 344289 7e0c19792a494318372c44d50a4adcaa6a638c39bebce9a8936d41d2d89a67d4 docs/notes/09020-90035_HP_9020_CE_Handbook_Jul85.txt docs/bitsavers/09020-90035_HP_9020_CE_Handbook_Jul85.pdf
+text layout 79956 3535a71d8d5ff7698901e7d03104ef2390c812d4bd62cc1cfcc0b8b36035f6b2 docs/notes/09020-90037_9000_500_Hardware_Technical_Data_Jan85.txt docs/bitsavers/09020-90037_9000_500_Hardware_Technical_Data_Jan85.pdf
+text layout 584162 8f5f00ec219622e8dd0f62fbdb5c337ebb91b7e420c05292612270e36289642f docs/notes/09020-90037_HP_9020_Model_520_Service_Feb85.txt docs/bitsavers/09020-90037_HP_9020_Model_520_Service_Feb85.pdf
+text layout 199824 2a35a6a5c7dc72fcd439289a439ca2ac68f62fd2692803f9a0421fc29a7252a2 docs/notes/09040-90035_HP_9030_9040_CE_Handbook_Mar85.txt docs/bitsavers/09040-90035_HP_9030_9040_CE_Handbook_Mar85.pdf
+text layout 424248 b9254677e67ad0e86f2e57c495df220afca6447c0f7a2462259aab65e25d0cb0 docs/notes/09040-90038_HP_9030_9040_Models_530_540_Service_Mar85.txt docs/bitsavers/09040-90038_HP_9030_9040_Models_530_540_Service_Mar85.pdf
+text plain 118720 0f77d36ae16006813393fdcf0f72fdee807b55a1403b86caf56bf5eb0ea6f112 docs/notes/09130-90030_9130K_Service_Jul81.txt docs/bitsavers/09130-90030_9130K_Service_Jul81.pdf
+text layout 155178 7408a0891ccc4f889986e82eb4fb2d699553755fc5cabb884badc3419e4c2a8b docs/notes/27110-90005_27110B_CIO_HP-IB_Interface_Reference_Feb88.txt docs/bitsavers/27110-90005_27110B_CIO_HP-IB_Interface_Reference_Feb88.pdf
+text layout 13471 b98fc795d348daebaf06c032556be1d1752e0519d2afc723e384a1516010be5b docs/notes/27112-60001_27112A_GPIO_Installation_Dec82.txt docs/bitsavers/27112-60001_27112A_GPIO_Installation_Dec82.pdf
+text layout 138756 6e8e92da5d304670fc2d73216eab2dcd1fd8e9ca8db8777bb75ad7df1e0427e2 docs/notes/27114-90011-1_27114A_ERS_Nov86.txt docs/bitsavers/27114-90011-1_27114A_ERS_Nov86.pdf
+text layout 71457 2943f256b3c07bfeb2504f8f8cc30db3668c92a504681d3d3ed4232673046fee docs/notes/27114A_AFI_IRS_May86.txt docs/bitsavers/27114A_AFI_IRS_May86.pdf
+text layout 31429 1439ebed64581d8d9dfdc783811fc29b941abea5475352f6d024810062281adb docs/notes/27123-90001_27123A_PSI_SRM_Installation_Sep85.txt docs/bitsavers/27123-90001_27123A_PSI_SRM_Installation_Sep85.pdf
+text layout 10689 db9eef23bc4f73a2bb6eda3a989e2de4fd8fdf04cc9933cd6c8a6ec79e1e9eea docs/notes/27128-90001_27128A_Asynchronous_Serial_Interface_Installation_Sep82.txt docs/bitsavers/27128-90001_27128A_Asynchronous_Serial_Interface_Installation_Sep82.pdf
+text layout 21029 434a876ecfe35306af26e743d6516fbe1f0391992f80855e0eb83472aa056c37 docs/notes/27130-90003_27130B_8-Channel_Multiplexer_Installation_Sep85.txt docs/bitsavers/27130-90003_27130B_8-Channel_Multiplexer_Installation_Sep85.pdf
+text layout 394112 cc1040e5a04954a8aaf3e3cee67849d76d2a316be063f07d5fa9f439bf68dac4 docs/notes/27130A_Multiplexer_Firmware_IMS_Jul83.txt docs/bitsavers/27130A_Multiplexer_Firmware_IMS_Jul83.pdf
+text plain 163836 169304026439fcd5d7481fe0992e1e873bd362afde298e6ae52e31d6eaad109a docs/notes/27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.txt docs/bitsavers/27132-90001_27128A_Asynchronous_Serial_Interface_Technical_Reference_Jun83.pdf
+text plain 157392 aaf3e99432dfb8b841e911c2fd4b1d6609b148c99102ef25a64a38a789415205 docs/notes/27132-90002_27110A_HP-IB_Interface_Tech_Jun83.txt docs/bitsavers/27132-90002_27110A_HP-IB_Interface_Tech_Jun83.pdf
+text plain 95410 0f3b361b2d849b393023d660d3d5a44b101b10f263384017cfa5a25ae674244a docs/notes/27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.txt docs/bitsavers/27132-90003_27112A_General_Purpose_IO_Technical_Reference_Dec84.pdf
+text layout 111241 6cbfd98b92655c7362462249d3863c5586494991d1041fde7a1f01208e6aba2f docs/notes/27132-90004_27122A_PSI_RJE_Firmware_Reference_Jun83.txt docs/bitsavers/27132-90004_27122A_PSI_RJE_Firmware_Reference_Jun83.pdf
+text plain 84225 c95b152f7b6ba30e3d54eb9d070788f2ea32a8ee81c1d6d2a9cd7e24dffb2cdc docs/notes/27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.txt docs/bitsavers/27132-90005_PSI_Programmable_Serial_Interface_Hardware_Ref_Dec84.pdf
+text plain 171734 8cba77db49e4c1bb1e4b3ccedceadead2ac06c244433abfa421c35cf2bf297c9 docs/notes/27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.txt docs/bitsavers/27132-90006_27130A_8_Channel_Multiplexer_Technical_Reference_Jun83.pdf
+text layout 456579 ca28f5eaa30b660b2f911c225d7a18b437769ff126953320af5f32f56f10a165 docs/notes/27132-90007_27130B_8-Channel_Multiplexer_Technical_Reference_Mar85.txt docs/bitsavers/27132-90007_27130B_8-Channel_Multiplexer_Technical_Reference_Mar85.pdf
+text layout 312519 8fcf367c800a9cb97c07864d4cf19699aaa1196b3440d6fdba6310af59178633 docs/notes/27140-90007_27140A_Async_6-Channel_Multiplexer_Hardware_Reference_Jun88.txt docs/bitsavers/27140-90007_27140A_Async_6-Channel_Multiplexer_Hardware_Reference_Jun88.pdf
+text layout 17335 dc3e2c266bfffb4072f59a47a456d1d496c7368a3e56cbda4a5374280c669994 docs/notes/27140A_6-Channel_Modem_Multiplexer_IMS.txt docs/bitsavers/27140A_6-Channel_Modem_Multiplexer_IMS.pdf
+text layout 204537 84874754f673b5572d73372b7a5bb3002cc807e027892e90801880fb47c1f6cf docs/notes/27140A_Firmware_ERS_Apr86.txt docs/bitsavers/27140A_Firmware_ERS_Apr86.pdf
+text layout 361747 1b002ee370126ed96b2617b02f56bea4d94a48a003b3766c547f7fa06def2a7f docs/notes/5959-2259_CIO_LAN_Interface_Controller_Sep88.txt docs/bitsavers/5959-2259_CIO_LAN_Interface_Controller_Sep88.pdf
+text layout 103191 ccbee62ac6acaed7bc944a2734fff50763c85e6e7c174055371f16aabc0fa918 docs/notes/97060-90030_97060A_Graphics_Processor_Service_Aug84.txt docs/bitsavers/97060-90030_97060A_Graphics_Processor_Service_Aug84.pdf
+text layout 54224 54d245acdd5f784dcaddb14b6e014e3c41395f2499b3b38400d233d9bcfd1d3a docs/notes/97098-90020_97098_IO_Expander_Service_Apr83.txt docs/bitsavers/97098-90020_97098_IO_Expander_Service_Apr83.pdf
+text layout 32508 b3a7b3dca2471d1a99f115c0a228880ba8528d39c1ce3f452f6ba1a83abcb845 docs/notes/98760-90039_HP_98760_CE_Handbook_Mar84.txt docs/bitsavers/98760-90039_HP_98760_CE_Handbook_Mar84.pdf
+text layout 549600 f999a7045471065155d536459b82d1683c67afe5691d3948256af4d5b885df99 docs/notes/FOCUS_Instruction_Set_ERS_Dec82.txt docs/bitsavers/FOCUS_Instruction_Set_ERS_Dec82.pdf
+text layout 467750 2bfd39fc130af65171988008ad9a48a614e1fd616b57f6ac6a94b5194f6da710 docs/notes/FOCUS_IO_ERS_Dec82.txt docs/bitsavers/FOCUS_IO_ERS_Dec82.pdf
+text layout 203005 57cf4f3ed2aabea1ce12868e4600b83ee95c8ad84ab53f7a389e445f2c600cd4 docs/notes/HPJournal_1983-08.txt docs/hpjournal/HPJournal_1983-08.pdf
+text layout 313308 5f706a08a8896466059b520668863d4f6a37ee043c4f658636cb6de28d68c41c docs/notes/HPJournal_1984-03.txt docs/hpjournal/HPJournal_1984-03.pdf
+text layout 256295 b00c5424976d3c16ce490390b4cf8d9549ee68163aacb5ce7ad27ccd7a6b362f docs/notes/HPJournal_1984-05.txt docs/hpjournal/HPJournal_1984-05.pdf

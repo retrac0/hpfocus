@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """A disassembler for the HP FOCUS machine instruction set.
 
 Table-driven from docs/opcodes.csv, which is the hand transcription of
@@ -18,6 +20,7 @@ and a field written (N:M) is M bits starting at bit N. Instruction layouts
 Usage:
   focusdis.py <image> [--start N] [--count N] [--end N] [--stats]
 """
+from __future__ import annotations  # PEP 604/585 hints on Python 3.8
 import argparse
 import csv
 import struct

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Differential test: MAME's FOCUS disassembler against tools/focusdis.py.
 
 Two independent implementations of the same opcode map, compared

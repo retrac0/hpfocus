@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the Instruction Set ERS: one sheet, one instruction, or the code's
 citations of it.
 
@@ -46,6 +48,10 @@ def chart_mnemonics() -> set:
     return {r["mnemonic"] for r in _csv.DictReader(rows)}
 
 TESS = ROOT / "docs/notes/FOCUS_Instruction_Set_ERS_Dec82.tesseract.txt"
+
+if not PDF.exists():
+    sys.exit(f"{PDF.relative_to(ROOT)} is not here: HP's manuals are fetched, not carried.\n"
+             "Run tools/fetch-media.sh --manuals (MEDIA.txt lists them).")
 
 # Filled on first use; a heading that reads as another chart mnemonic is
 # that instruction, not a misreading of this one.

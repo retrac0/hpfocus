@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
+#
 # FOCUS machine instruction opcode map.
 # Transcribed by hand from Appendix B ("Bit Patterns for the Instructions"),
 # sheet 137 of the Focus Machine Instruction Set ERS, A-1FE1-3020-B, 12/06/82.

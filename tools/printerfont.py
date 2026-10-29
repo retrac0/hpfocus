@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Read the 9020 internal thermal printer's character sets off the CE
 Handbook's picture of its self test.
 

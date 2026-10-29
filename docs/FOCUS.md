@@ -11,10 +11,12 @@ three cross-checked sources:
    and since confirmed opcode-for-opcode by the instruction tables inside
    HP's own recovered toolchain (`/usr/lib/pascomp` and `/bin/as` —
    Appendix B).
-2. **The emulator in [src/cpu/focus/](../src/cpu/focus/)** — an execution
-   core carrying 522 unit assertions, all ten worked examples of ERS
-   Figure 2.1, and a disassembler differentially tested over 550,030 real
-   instructions. Authoritative for the semantics it implements.
+2. **The emulator in [mame/src/devices/cpu/focus/](../mame/src/devices/cpu/focus/)**
+   — the MAME FOCUS core, run by `tests/run_tests.py` (the ERS section 7
+   factorial, HP-UX and BASIC end to end, and some 1,700 instruction-set
+   edge cases built by HP's own assembler under HP-UX), with a
+   disassembler differentially tested over 550,030 real instructions.
+   Authoritative for the semantics it implements.
 3. **The ERS prose** (sections 2–6), used where legible, and always
    cross-read against the other two. Where the prose OCR conflicts with the
    chart, the chart wins; every such conflict is listed in
@@ -207,8 +209,8 @@ bit  13   14   15    16-17   18   19   20-31
 | `C` | Carry out of an arithmetic operation |
 | `O` | Overflow — cleared only by `BOV`, `BNO`, and `SETR` |
 | `T` | User trap enable (integer overflow, divide by zero) |
-| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1. Cleared by the trap itself before its marker is pushed (note 4), set again when an instruction completes |
-| `MI` | Machine-Instruction trap request — trap before each instruction, **in either mode**. HP-UX 5.30 delivers signals with it: the syscall stub sets `MI` (`PSHR 4; OR #0x00200000; SETR 4`) and restarts the interrupted call without leaving the kernel, and the trap taken at the very next instruction is what builds the handler call. `MI` and `EM` are carried across `EXIT` and `IXIT` rather than restored from the marker — the handler's cleared status must survive its own return, or the trap re-fires on the instruction it returned to. Both facts were read off the kernel's code, not the ERS, and are the emulator's rule since 2026-08-28 |
+| `EM` | Enable Machine-instruction trap — microcode-managed; the trap fires only when `EM` and `MI` are both 1. Cleared before the marker is pushed by causes 4, 13, 37, 40, 42 and 43 (note 4), set again when an instruction completes — **except** by an instruction that loads STATUS from a marker (`EXIT`, `IXIT`, `DISP`), which ends with the marker's `EM`. That exception is what lets the instruction a Machine Instruction Trap returns to run once untrapped |
+| `MI` | Machine-Instruction trap request — trap before each instruction, **in either mode**. Saved in markers and restored from them like the rest of STATUS (`STATUS := (S-1)`). HP-UX 5.30 delivers signals with it three ways, all read off its code: the syscall stub sets `MI` live (`PSHR 4; OR #0x00200000; SETR 4`, KERNEL 254) before restarting the interrupted call; the dispatcher, resuming a task with a signal pending, ORs `MI` into the STATUS word of the marker the task returns through (TRAP HANDLERS +0x102); and the signal hook withdraws a served request by clearing `MI` in the trap's own marker (KERNEL 340 +0x3b04). Left set in the marker, it single-steps. (From 2026-08-28 to the alpha the emulator carried `MI`/`EM` across `EXIT`/`IXIT` instead; that dropped every request made through a marker — `kill` of a process looping in user code did nothing) |
 | `RM` | FP rounding mode: `00` nearest-even, `01` toward +∞, `10` toward 0, `11` toward −∞ |
 | `I` | Interrupt enable for Message register interrupts |
 | `M` | Mode: 1 = privileged |
@@ -352,7 +354,10 @@ With `I` set, the word at the direct address is fetched and interpreted as
 a pointer: **self-relative** when the base is P-relative, a **data segment
 pointer** otherwise. For an external data segment pointer, a post-index is
 added to the pointer's *offset field* (checked against that segment's
-bounds), not to the resolved absolute address.
+bounds), not to the resolved absolute address. A *paged* segment's pointer
+is a 31-bit virtual address, and the index is added to all of it (sheets
+16 and 56): past the nineteen offset bits it carries into the segment
+number, and the reference is to the next segment's page table (§6.2).
 
 The ten worked examples of ERS Figure 2.1 *(sheet 19)* exercise every path:
 HP supplied the memory contents of a program, stack, global data and external
@@ -394,9 +399,34 @@ pointers the DST entry's length (per segment in a chain). Traps that the
 evaluation can raise: EDS Pointer Violation, DST Violation, EDS Bounds
 Violation, Data Segment Write Violation, Privileged Mode Data Violation,
 Absent Segment / Page Table / Page, Page Table Violation, Unexpected EDS
-Type. Side effects: every evaluation sets the entry's `R` (referenced) bit;
-modify-class references set `D` (dirty); table updates happen under a
-memory semaphore.
+Type. Side effects (sheet 55): a successful evaluation sets `R`
+(referenced) — in the DST entry of an unpaged segment, in the page table
+entry of a paged one — and a modify-class reference sets `D` (dirty) the
+same way; a failed one writes nothing; table updates happen under a memory
+semaphore. HP-UX consumes the DST `R` bit: its memory manager's aging
+sweep (TRAP HANDLERS `+0x6390`) semaphore-reads each entry and, when
+`(w0 & 0x7ff9a005) == 0x2004` — unpaged, present, use count 0, OS bit 18,
+referenced — stamps the segment's last-use time and writes it back with
+`R` cleared. The emulator left `R` alone for a while on a misreading of
+the CST layout (§6.1).
+
+A task's stack and global data segments are the two it does not reach by
+pointer: SB, SL, S, Q and DB, DL are absolute registers, and nothing done
+through them evaluates anything. Their DST entries are marked `R` and `D`
+when the registers are loaded from them — by `IXIT`'s Task Control Block
+path for both segments, by `XGDS` for a new global segment — since no
+later reference would. The ERS gives the bits' meaning (sheet 32) and not
+the moment; HP-UX fixes the requirement. Its swap-out routine (kernel
+image 0x1dd58 as loaded on a 2 MB 540) tests `D` and, for a clean segment,
+marks the entry absent and frees the memory without writing it out, so a
+stack or global segment that only the task itself had stored into was
+discarded and later read back from a swap slot holding something else.
+
+A doubleword operand is aligned to a word (§2.2.6), so it can straddle a
+page boundary of a paged segment: its second word is then a reference of
+its own — the next page's frame, which may be absent — and is evaluated
+before the instruction pops or writes anything. (Appendix C: CPU 3.3 and
+earlier ran on into the physically next word instead; 4.0 fixed it.)
 
 ### 5.3 Program pointers
 
@@ -430,9 +460,29 @@ Up to 4096 code segments per **Code Segment Table**; three CSTs exist
 (system, sharable, per-user — pointers at the dedicated locations, §7.4).
 A CST entry is four words; word 1 holds `LENGTH−1` (low two bits `11`) and
 word 2 the segment's absolute `LOCATION`, exactly as in a DST entry. Entry
-*N* is at `CST + 16N`. Segment attributes (mode, uncallable) live in the
-entry; their word-0 bit positions have not yet been re-derived from the
-scans.
+*N* is at `CST + 16N`. Word 0 shares the DST entry's layout where the two
+overlap (sheets 27-28):
+
+```
+word 0  |0| USE COUNT |        OS / reserved        |R|M|A|
+         0  1......12  13 ....................... 28 29 30 31
+```
+
+| Field | Meaning |
+|---|---|
+| `A` | Absent — the segment is not in memory; a call or return into it is cause 037 |
+| `M` | Mode — the segment executes privileged |
+| `R` | Referenced — set when the segment is entered (its use count gained); the OS clears it |
+| `USE COUNT` | CPUs executing in the segment; segment 0 has none |
+
+These positions are the ones HP-UX's own tables demonstrate: a loaded user
+program segment's word 0 is `0x00022908`, and the kernel's aging sweep
+tests code segments with the same `(w0 & 0x7ff9a005) == 0x2004` it uses
+for data segments (§5.2). Two misreadings each cost a defect: absence read
+at bit 29 took the loader's `R` for absent and every free entry for
+present (corrected 2026-08-28), and `R` then went unwritten in both tables
+on the belief that it was the CST's absence bit. The uncallable attribute
+is read from the STT entry's bit 1, not from the CST entry.
 
 Each code segment ends with its **Segment Transfer Table**: the word at
 `PL` carries the STT length in `(13:19)`, and entry *n* is the word at
@@ -477,6 +527,17 @@ word 0 mirrors the flag layout (with bit 26 = 1), word 1 is the page frame
 `LOCATION` (low PAGESIZE bits zero). The final address is
 `page LOCATION OR within-page offset` — an OR, since frames are
 page-aligned. Entry for page *n* is at `LOCATION + 8n`.
+
+A paged segment is at most 512 KB, the reach of the pointer's offset
+field, and larger spaces are consecutive DST entries: the evaluation adds
+an index to the whole pointer (`TEMP := PTR + X`), and if that changes the
+segment number it reads the new entry instead — EDS Bounds Violation if
+the sum leaves the table's half of the address space, EDS Pointer
+Violation for segment 0, DST Violation past the table, Unexpected EDS Type
+if the new entry is not paged (sheet 56). HP-UX 5.30 builds a process's
+data space this way, from user segment 11 up, each entry 512 pages of
+1 KB; a program with more than 512 KB of data indexes across the line,
+and the kernel forms transfer addresses across it with `CPTR,B`.
 
 **Chaining**: when an offset runs past `LENGTH`, the walk continues.
 `C`=0: scattered chain — `LINK` names the next DST entry and the spent
@@ -573,6 +634,17 @@ The cause number *is* the STT entry in segment 1. In octal:
 A cause with no parameter of its own passes the external program pointer
 the trap sequence formed: segment 1, the cause's STT entry (sheet 44,
 step 4).
+
+Five more complete the list (sheets 45-49), and each has its own vector:
+`003` Breakpoint; `013` **EDS Bounds Violation** — "outside of the limits
+of an external data segment or a set of linked external data segments",
+where `001` covers only the code, stack and global segments; `014` System
+Error (parameter 0 too many `PSEB`s, 1 a use count decremented below 0 or
+incremented past 4095, 2-7 MPB errors); `015` **EDS Pointer Violation** —
+an external pointer naming data segment 0 or 2048 — which is what a
+pointer word of zero evaluates as (not `030`, Unexpected Pointer Type); and `037`
+Absent Code Segment. `055` is also what running off the end of a code
+segment raises ("P>PL is detected during normal instruction sequencing").
 
 ### 7.3 External interrupts
 
@@ -895,7 +967,7 @@ both, pushes the addressed bit as 0/1. X is left holding the byte offset.
 *CCA.*
 
 **`ZERO` / `DZRO`** — Push Zero / Double Push Zero — `F3:6` / `F3:7`
-Push one / two zero words. *CC unaffected.*
+Push one / two zero words. *CCA* (so always CCE).
 
 **`PSHN`** — Push N Words — `F3:5`
 Push X copies of zero (`b`=0) or of the popped TOS (`b`=1); X counts down
@@ -932,11 +1004,13 @@ operands and writes the single bit. X is left holding the byte offset.
 Drop the top word / the second word / the top two words. *CC unaffected.*
 
 **`DUP`** — Duplicate A — `F3:45` · **`DDUP`** — Double Duplicate — `F3:46`
-Push a copy of the top word / of the top doubleword. *CC unaffected.*
+Push a copy of the top word / of the top doubleword. *CCA / CCA on the
+doubleword.*
 
 **`XCH`** — Exchange A and B — `F3:32` · **`DXCH`** — Double Exchange —
 `F3:16` (swaps doublewords AB and CD) · **`CAB`** — Rotate ABC — `F3:56`
-(C becomes the top: A B C → C A B). *CC unaffected.*
+(C becomes the top: A B C → C A B). *CCA on the new TOS (`DXCH`: on the
+new top doubleword).*
 
 **`ADDS` / `SUBS`** — Add to / Subtract from S — `F5:32` / `F5:33`
 `S ± 4·imm`: allocate or cut back stack space. *CC unaffected.*
@@ -963,7 +1037,12 @@ Inconsistent Registers traps. DST is not saved by traps or interrupts —
 global segment; its DST entry must have `W` set. DB/DL are set from the
 entry, use counts are moved, and the pointer's segment number is exchanged
 with the global segment number in the current Task Control Block, so the
-TOS afterwards names the *old* global segment. Privileged. *CC unaffected.*
+TOS afterwards names the *old* global segment. An absent segment is Absent
+Data Segment (042) with the DST entry number as parameter, before anything
+is changed: HP-UX's system-call exit runs `XGDS` back onto a user segment
+the memory manager may have swapped out meanwhile, and relies on the trap.
+The new segment's entry is marked `R` and `D` (§5.2): the task stores into
+it DB-relative from here on. Privileged. *CC unaffected.*
 
 **`GTSP`** — Get Task Segment Pointers — `F4:12`
 Pop an absolute TCB address into the Current-TCB dedicated location; set
@@ -977,36 +1056,48 @@ word, then the CPU's MPB channel number. Privileged. *CC unaffected.*
 Pop two words, push `B + A` / `B − A` as two's complement. `b`: include
 Carry (`SUB` subtracts `1−C`), for multi-precision chains — and then CC is
 updated **only if the result is nonzero**, so a zero partial doesn't erase
-the class of the lower words. Carry after `SUB` means no borrow, as after
+the class of the lower words. The `b` form is the signed **top** limb of a
+chain whose lower limbs are `LADD`/`LSUB`. Carry after `SUB` means no borrow, as after
 `LSUB`; a doubleword subtract is `LSUB` on the low words, then `SUB,B`.
 Checked under HP-UX by `tests/hpux/carry.s`. *CCA, Carry, Overflow.*
 
 **`ADDI` / `SUBI`** — Add / Subtract Immediate — `F5:4` / `F5:5`
-TOS ± the 8-bit immediate, in place. *CCA.*
+TOS ± the 8-bit immediate, in place. *CCA, Overflow* (Overflow not yet
+produced by the core — see *Overflow* below).
 
 **`MPY`** — Multiply — `F3:22`
 Pop two words, form the 64-bit signed product. `b`=1: push it as a
 doubleword. `b`=0: push the low word only; Overflow set unless the top 33
 bits of the product were all equal. *CCA, Overflow (single form).*
 
-**`MPYI`** — Multiply Immediate — `F5:6` — TOS × imm, in place. *CCA.*
+**`MPYI`** — Multiply Immediate — `F5:6` — TOS × imm, in place. *CCA,
+Overflow* (set when the product does not fit 32 bits, as `MPY`'s single
+form).
 
 **`DIV`** — Divide — `F3:23`
 `(S-2,S-1)` is a **doubleword** dividend, `(S)` the word divisor. Result:
 doubleword quotient in `(S-2,S-1)`, remainder replacing `(S)` — depth
 unchanged. `b`=0: remainder takes the dividend's sign; `b`=1: remainder
-forced non-negative. Always `dividend = quotient·divisor + remainder`.
-Divide by zero raises User Trap (param 2). *CCA on quotient, Overflow.*
+forced non-negative — and the quotient moves with it, one step away from
+zero (−7 `DIV,B` 3 is −3 remainder 2), because always `dividend =
+quotient·divisor + remainder`. −2⁶³ ÷ −1 sets Overflow and leaves the
+dividend as the quotient with remainder 0. Divide by zero is a User Trap
+(cause 031): with `STATUS.T` set it traps with parameter `0x24` (invalid
+argument, 64-bit result) and clears Overflow; with T clear — the HP-UX
+kernel's state — it only sets Overflow and execution continues. *CCA on
+quotient, Overflow.*
 
 **`DIVS`** — Divide, Single-Word Dividend — `F3:33`
 `(S-1) ÷ (S)`: quotient replaces `(S-1)`, remainder `(S)`. Same `b` and
-trap rules as `DIV`. *CCA on quotient, Overflow.*
+trap rules as `DIV`; the divide-by-zero parameter is `0x21` (32-bit
+result), and −2³¹ ÷ −1 sets Overflow. *CCA on quotient, Overflow.*
 
 **`DIVI`** — Divide Immediate — `F5:7` — TOS ÷ imm, quotient only, in
-place. *CCA.*
-
-**`NEG`** — Negate — `F3:24` — Two's complement the TOS in place. *CCA,
+place; an immediate of 0 is a divide by zero (parameter `0x21`). *CCA,
 Overflow.*
+
+**`NEG`** — Negate — `F3:24` — Two's complement the TOS in place; −2³¹
+negates to itself and sets Overflow. *CCA, Overflow.*
 
 **`CMP`** — Compare — `F3:17`
 Set CCC from `(S-1)` (op1) versus `(S)` (op2). `b`=1 pops both; `b`=0 pops
@@ -1035,11 +1126,14 @@ multi-precision building block. `b` chains the carry in: `LADD,B` adds
 Carry, `LSUB,B` subtracts 1−Carry, so after `LSUB` Carry set means *no*
 borrow (as `DLAD`/`DLSB`). BASIC's software double multiply depends on
 `LADD,B`. *CCG if the result is nonzero; CCE if zero and `b` clear,
-else CC unchanged; Carry.*
+else CC unchanged; Carry.* HP-UX's
+decimal-to-binary conversion (`atof`, and the C compiler's floating
+constants) is built from `LMPY`/`LADD`/`LADD,B`: drop the chained carry
+and `1.0` prints as `9.999993116074e-01`.
 
 **`LMPY`** — Logical Multiply — `F3:62`
-Unsigned 32×32 → full 64-bit product pushed as a doubleword. *CC
-unaffected.*
+Unsigned 32×32 → full 64-bit product pushed as a doubleword. *CCG if the
+product is nonzero, else CCE.*
 
 **`LCMP`** — Logical Compare — `F3:57`
 Pop two; CCC on the **unsigned** comparison of `(S-1)` vs `(S)`. *CCC.*
@@ -1051,21 +1145,41 @@ Add +1 / −1 to the word at E, in memory. *CCA on the new value.*
 Add +4 / −4 to the word at E — pointer stepping without touching the
 stack. *CCA on the new value.*
 
+***Overflow.*** The ERS makes `STATUS.O` sticky — "cleared only by the
+Branch on Overflow, Branch on No Overflow, and Set Registers instructions"
+(sheet 12) — and the integer-overflow User Trap (031) "occurs whenever both
+the overflow and trap bits are set", clearing Overflow, with parameter
+`0x0t` (t the result type: 1 for 32 bits, 4 for `DIV`'s doubleword, 0 for
+`ISC`'s halfword). The core takes the trap at the end of any instruction
+that leaves both bits set. BASIC depends on it: its DOUBLE arithmetic runs
+with T set, and the trap is how `DISP 2147483647+1` becomes *ERROR 23:
+DOUBLE overflow* rather than a wrapped −2147483648. HP-UX runs user code
+with T set too, but its handler ignores integer overflow; its kernel runs
+with T clear. What the core does **not** model is the stickiness: `ADD`,
+`SUB`, `MPY`, `ASL`, `ISC` and `FIXD`/`FIXS` *assign* Overflow (so a later
+operation that does not overflow clears it, which matters only with T
+clear), and `ADDI`, `SUBI`, `DIVI`, `ADAX`, `ADXA`, `ADXI`, `SBXI`,
+`INCM`, `DECM`, `INCF` and `DECF` never set it (`MPYI` does, since the
+alpha). At every `BOV`/`BNO`
+executed in HP-UX boots and compile sessions a sticky flag would have read
+the same.
+
 ### 10.6 The X register
 
-**`LDX`** — Load Index — `F6:26`, I X base — `X :=` word at E. *CC
-unaffected.*
+**`LDX`** — Load Index — `F6:26`, I X base — `X :=` word at E. *CCA.*
 **`LDXI` / `LDXN`** — Load X (Negative) Immediate — `F5:12` / `F5:13` —
-`X := ±imm`.
+`X := ±imm`. *CCA.*
 **`LDXA`** — Load X onto Stack — `F3:44` — push X. *CCA.*
-**`STAX`** — Store A in X — `F3:43` — pop TOS into X. `b` variants exist
-per the chart. *CC unaffected.*
-**`XAX`** — Exchange X and A — `F3:35` — swap TOS and X. *CC unaffected.*
-**`ADAX`** — Add A to X — `F3:36` — `X += (S)` (operand handling per `b`).
-*CC unaffected.*
-**`ADXA`** — Add X to A — `F3:37` — TOS `+= X` in place. *CCA.*
+**`STAX`** — Store A in X — `F3:43` — copy TOS into X, popping it when `b`
+is set. *CCA on the new X.*
+**`XAX`** — Exchange X and A — `F3:35` — swap TOS and X. *CCA on the new
+TOS.*
+**`ADAX`** — Add A to X — `F3:36` — `X += (S)`, popping it when `b` is set.
+*CCA, Overflow on the new X* (Overflow not yet produced).
+**`ADXA`** — Add X to A — `F3:37` — TOS `+= X` in place. *CCA, Overflow*
+(Overflow not yet produced).
 **`ADXI` / `SBXI`** — Add / Subtract Immediate to X — `F5:26` / `F5:27` —
-`X ±= imm`. *CC unaffected.*
+`X ±= imm`. *CCA, Overflow on X* (Overflow not yet produced).
 
 ### 10.7 Logical operations, shifts, bit fields
 
@@ -1079,12 +1193,15 @@ TOS op imm (zero-extended), in place. *CCA.*
 **`LSL` / `LSR`** — Logical Shift Left / Right — `F2:2` / `F2:3`
 **`ASL` / `ASR`** — Arithmetic Shift Left / Right — `F2:6` / `F2:7`
 **`CSL` / `CSR`** — Circular Shift Left / Right — `F2:4` / `F2:5`
-TOS shifted in place. Count = low 6 bits of `operand (+ X if b)`. `ASR`
-copies the sign in; `ASL` shifts like `LSL` but sets Overflow if the sign
-bit changes. Circular shifts rotate. *CCA (+ Overflow for `ASL`).*
+TOS shifted in place. Count = low 6 bits of `operand (+ X if b)`; a count
+of 32 or more shifts everything out (the rotates take it mod 32). `ASR`
+does **not** copy the sign in: a negative TOS is negated, the magnitude
+shifted right filling with zeros, and the result negated back, so it
+divides by 2ⁿ rounding toward zero (−1 `ASR` 1 is 0, not −1; `EXF` is the
+sign-extending tool). `ASL` shifts like `LSL` but sets Overflow if the
+sign bit changes. Circular shifts rotate. *CCA (+ Overflow for `ASL`).*
 
-**`LSXL`** — Logical Shift X Left — `F2:10` — `X <<= count`. *CC
-unaffected.*
+**`LSXL`** — Logical Shift X Left — `F2:10` — `X <<= count`. *CCA on X.*
 
 **`EXF`** — Extract Field — `F6:0`
 Pop a word; push the field of width `32−K` starting at bit `J`,
@@ -1183,7 +1300,10 @@ chaining rule as `ADD`/`SUB`. *CCG/CCE + Carry.*
 `b`=0: pop a 3-word decimal float; treating its 17 digits as an integer
 (exponent forced to 16), push the binary-double equivalent. *CCA, IR.*
 `b`=1: pop the exponent word; push binary doubles A and B with
-`A/B = 10^(exponent−16)`, for the scale step. *CCG.* Traps Exponent Size
+`A/B = 10^(exponent−16)`, for the scale step. *CCG.* (The sheet's 17
+digits and 16 do not survive BASIC: the mantissa field is twenty digits
+and the offset 19 — see the comment on the decimal conversion group in
+`focus_alu.cpp`.) Traps Exponent Size
 outside −308 < e < 308. Appendix E of the ERS gives the full conversion
 routine built from these.
 
@@ -1338,24 +1458,35 @@ pointer** (1) or a **local program pointer** (0) — a PB-relative byte
 offset bounds-checked against the code segment, the form a compiled-in
 constant table takes. `(30:2)` (`SDEC`) is how many of the three operand
 words to pop at completion. `b` is the direction: 0 forward, 1 backward
-(count treated as negative). All are interruptible: X holds the running
-element count, and the count word on the stack is continuously updated to
-the remainder, so the instruction resumes cleanly. On completion X holds
-the elements processed and `(S)` the count not processed.
+(count treated as negative). On completion X holds the elements processed
+and `(S)` the count not processed.
 
-Resuming cleanly means more than the count. The loop in every one of these
-sheets begins `X := 0`, and HP's compiled code never clears X before an
-`MVB` or `SCU`, so the hardware cannot tell a re-executed instruction from
-a fresh one: the **pointer words on the stack must be advanced too**, past
-the bytes already moved, when the instruction is interrupted by a trap.
-The emulator learned this from HP-UX's exec loader (HPUX.md 10.3): a 1 KB
-block copy into a paged data segment trapped 040 at the page boundary, the
-count came back reduced but the pointers did not, and the re-executed copy
-put the remainder at the original target, leaving the first 0x138 bytes of
-every page the pager mapped on a fault as zeros -- init's C library lost
-its character-class table and `getpwnam("root")` failed. `MVB` and `TRAN`
-(which translates in place) now write the advanced pointers back; the scan
-and compare instructions restart from the beginning harmlessly.
+All are interruptible, and the mechanism is the **Instruction Pending
+bit**, `STATUS.P` (sheet 11: "set to 1 by an instruction if it gets
+interrupted ... cleared when the instruction is finally completed"). A move
+that faults part way — the source or target running into an absent page —
+leaves X = the bytes done and sets P; the trap's marker saves both with the
+rest of STATUS, the handler's `EXIT` restores them, and the re-executed
+instruction, seeing P, goes on from X. The stack is never rewritten, so an
+interrupted move ends exactly as an uninterrupted one: X the whole count,
+`(S)` reduced by it, and any pointer an `SDEC` below 3 leaves on the stack
+the one the program pushed. The loop on every sheet begins `X := 0` and
+HP's compiled code never clears X before an `MVB`, so without P a restart
+could not be told from a first execution. `MVB` and `TRAN` (which
+translates in place, so must not put a byte through the table twice) are
+pending this way; the scan and compare instructions change nothing and
+simply restart from the beginning.
+
+The emulator came to this in two steps, both from HP-UX's exec loader
+(HPUX.md 10.3): a 1 KB block copy into a paged data segment trapped 040 at
+the page boundary, and with only the count word updated the re-executed
+copy put the remainder at the original target, leaving the first 0x138
+bytes of every page the pager mapped on a fault as zeros — init's C library
+lost its character-class table. Rewriting the count AND both pointer words
+moved the right bytes, but left X short and the kept pointers changed; P is
+what the machine does instead. (The MAME core still resumes the second
+way, by rewriting the stack, which HP-UX and BASIC never tell apart:
+KNOWN-ISSUES.md.)
 
 A data segment pointer is only physically contiguous within one page of a
 paged segment, or within one segment of a chain: the walk is a logical
@@ -1394,7 +1525,9 @@ target byte, with X and the count telling where.
 
 **`TRAN`** — Translate — `F2:56`
 The "source" is a 256-byte table; each byte of the target string indexes
-it and is replaced by the entry, in place. *CC unaffected.*
+it and is replaced by the entry, in place. The table is data like any
+other: in a paged segment it can straddle a page boundary, and an entry
+past the first page's run is read from its own page. *CC unaffected.*
 
 ### 10.14 String descriptors
 
@@ -1416,6 +1549,15 @@ checked against SL), copy via the `MVB` machinery, and leave `NWORDS` plus
 a descriptor (`FIRST=1`, `LEN=−1`) for it. X is destroyed. *CC
 unaffected.*
 
+`SLD`, `SAS` and `SCON` all end by executing an `MVB` on three parameters
+they stack in place of their descriptors, so a fault in that move cannot
+send them back to their beginning. From the move on they are pending
+(`STATUS.P`, §10.13; "the original content of X is destroyed early in the
+instruction" on all three sheets): re-executed with P set, `SLD` and
+`SCON` finish the forward move, and `SAS` finishes it in the direction its
+condition code records. (Not yet in the MAME core, whose re-executed
+`SLD`/`SAS`/`SCON` start again; neither system pages the data they move.)
+
 **`SAS`** — String Assign — `F2:30`
 Assign the source substring into a target string variable, updating the
 target's current length; target parameters come from a second descriptor
@@ -1425,7 +1567,10 @@ directly below the source's address on the stack). *CC unaffected.*
 **`SCON`** — String Concatenate — `F2:27`
 Extend the string temp below the source descriptor by the source
 substring, growing the temp in place (Stack Overflow checked); the temp's
-descriptor and MAXLEN are updated. With `SLD` this evaluates arbitrary
+descriptor and MAXLEN are updated. The target must lie between `Q` and
+`S-4` words — below the source descriptor (sheet 111; one OCR of the page
+reads `S-14`, which refused every short temp and halted BASIC's
+`"A"&"B"`). With `SLD` this evaluates arbitrary
 string expressions on the stack. *CC unaffected.*
 
 ### 10.15 Pointers, semaphores, lists
@@ -1445,9 +1590,13 @@ field can't hold the result. *CC unaffected.*
 **`CPTR`** — Convert Pointer — `F4:70`
 `(S)` signed byte delta, `(S-1)` data segment pointer: pop both, push the
 pointer advanced by delta (same format), and leave the delta in X. For an
-EDS pointer, `b`=1 performs a full evaluation (for paged segments);
-otherwise the delta folds into the offset field. Pointer Conversion Trap
-on overflow of the pointer format. *CC unaffected.*
+EDS pointer with `b`=1 the ERS performs a full evaluation; the emulator
+forms the pointer the evaluation ends on without touching the tables'
+`R` bits or reporting absence: the delta goes into the offset field, and
+for a paged segment a sum that leaves the field carries into the segment
+number (§6.2). Without `b` the delta is added to bits 2–31. Pointer
+Conversion Trap when the format cannot hold the result — for an unpaged
+segment, any sum outside the nineteen offset bits. *CC unaffected.*
 
 **`VPTR`** — Validate Pointer — `F4:71`
 Non-trapping probe: `(S)` pointer (popped), `(S-1)` required modes (WRITE
@@ -1492,8 +1641,8 @@ post-indexed by X when `b` is set. All privileged.
 
 **`PLBA` / `PLHA` / `PLDA`** — Load Byte / Halfword / Word from Absolute
 Address — `F4:47 / 51 / 64`
-Replace the TOS address with the byte (zero-extended) / halfword / word it
-addresses. *CCA.*
+Replace the TOS address with the byte (zero-extended) / halfword
+(sign-extended, sheet 62) / word it addresses. *CCA.*
 
 **`PSBA` / `PSHA` / `PSTA`** — Store Byte / Halfword / Word into Absolute
 Address — `F4:50 / 52 / 65`
@@ -1561,23 +1710,56 @@ Privileged. *CC unaffected.*
 
 **`PSDB` / `PSEB`** — Pseudo Interrupt Disable / Enable — `F4:15` / `F4:17`
 Increment / decrement the dispatcher-disable count at `(QI−4)`. `PSEB` on
-a zero count raises Inconsistent Registers. While the count is nonzero,
-`DISP` defers (below) instead of dispatching. Privileged. *CC unaffected.*
+a zero count raises System Error (cause 014, parameter 0, "too many PSEB
+instructions"). While the count is nonzero, `DISP` defers (below) instead
+of dispatching. When `PSEB` takes the count to zero with a deferred `DISP`
+flagged at `(QI)(0:1)`, it carries it out (ERS sheet 99) according to the
+**DISP FLAG**: set, the dispatcher itself is running, and it is aborted
+and restarted from its frame at QI (`(QI) := 0`; Q, SB, SL back to the
+ICS's); clear, `DISP` is executed — from a task that enters the
+dispatcher, on the ICS it merely leaves the request for `IXIT`. HP-UX
+depends on both: its dispatcher restarts itself with `DISP; PSEB` when the
+task it picked has a segment swapped out, and its wake-all routine (CORE
+SYSTEM file 0x1446c) is `PSDB … DISP … SMSG,B; PSEB; EXIT`, written to
+lose the processor at the `PSEB`. Privileged. *CCL*, or as set by `DISP`.
+
+**The DISP FLAG** is microcode state, not a register: "the dispatcher is
+what runs". Every entry to the dispatcher sets it (`DISP`, `IXIT` cases 7
+and 8, `PSEB`'s restart, and `IXIT` case 5's return to it); its `IXIT` to
+a task (case 1) clears it; an interrupt or message trap taken over the
+running dispatcher moves it into the top bit of the marker it pushes, and
+that marker's `IXIT` gives it back — restarting the dispatcher instead of
+resuming it (case 8) when the service routine asked for a dispatch.
 
 **`DISP`** — Dispatch — `F4:16`
 The only way into the dispatcher. If already on the ICS or
-pseudo-disabled, just set the deferred flag `(QI)(0:1)` and *CCG*/*CCL*;
-otherwise save the current process (marker; `S−SB` at `(SB−1)`), mount the
-ICS (`Q := QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the
-stack-base word from the global-segment pointer at `(Q+1)`, reload PB/PL
-from the CSN in `(Q−1)`, and enter the dispatcher with *CCE*. Privileged.
+pseudo-disabled, just set the deferred flag `(QI)(0:1)`; otherwise save
+the current process (marker; `S−SB` at `(SB−1)`), mount the ICS (`Q :=
+QI`, `SL := SLI`, `SB := QI − 64 bytes`), set DB/DL and the stack-base
+word from the global-segment pointer at `(Q+1)`, reload PB/PL and STATUS
+from `(Q−1)`, and set the DISP FLAG. Privileged. The ERS gives the
+indicators as *CCE* (set before the marker is pushed) when the dispatcher
+is entered and *CCG* when the request is deferred; the emulator leaves CC
+alone on entry and sets *CCL* on deferral. Neither OS tests CC after a
+`DISP` (no conditional branch follows any of the 48 in HP-UX 5.30 or the
+57 in BASIC), so this is recorded rather than changed.
 
 **`IXIT`** — Interrupt Exit — `F4:74`
 Exit from trap handlers, interrupt service, and the dispatcher (all run on
 the ICS). Depending on `(Q)`, `(QI)` and the deferred-dispatch flag it:
 returns to the interrupted process (restoring DST and state from the TCB),
 returns to an interrupted handler or interrupted dispatcher, or (re)starts
-the dispatcher. Assumes the marker at Q with the global-segment pointer,
+the dispatcher. With the DISP FLAG set it is the dispatcher's exit to the
+task named by CTCBP (case 1), and MASK is left as the dispatcher has it;
+the other exits restore MASK from `(Q+2)`. A task's saved S may lie in the
+overflow area above its SL (an interrupt's marker on a nearly full stack):
+it is resumed, and Stack Overflow is reported before its next
+instruction; only S beyond the stack segment itself is Inconsistent
+Registers. The DST entries of the stack and global data segments the task
+is resumed on are marked `R` and `D` (§5.2). Returning a task to a code segment that was swapped out while
+it waited raises Absent Code Segment in the task's own context, at its
+resume point (inferred from what HP-UX's handler accepts; the Appendix C
+flowchart is not available). Assumes the marker at Q with the global-segment pointer,
 previous mask, and device number at `(Q+1..Q+3)` (§7.3). Privileged. *CC
 unaffected.* Appendix C bug: on CPU ≤ 4.0, interrupts must be disabled
 around `IXIT`.
@@ -1596,6 +1778,12 @@ debug pad 5 (drives the self-test LED). *CC unaffected.*
 and replaced from the popped TOS, `STATUS.I` set, and the CPU waits for
 any unmasked MSG bit, then restores MASK and STATUS and continues. Either
 way `S−SB` is stored at `(SB−1)` when SB ≠ 0. Privileged. *CC unaffected.*
+The wait tests the register, not an edge: an unmasked bit already standing
+when `STOP,B` executes ends it at once (HP-UX's idle sequence leaves five
+instructions between consuming the doorbell and the `STOP,B`, and an
+interrupt routine's `UP` can ring it in any of them). The emulator does
+not restore MASK and STATUS at the wake, and treats `b`=0 like `b`=1; both
+systems' idle loops are validated that way.
 
 **`NOP`** — No Operation — `F3:0`. *CC unaffected.*
 
@@ -1615,8 +1803,8 @@ Instruction on execution.
 **`UP` / `DOWN`** — Semaphore Up / Down — `F4:20` / `F4:21`
 The semaphore signal/wait pair — the blocking counterpart to the
 `SEML`/`PSLA` atomic exchange (§10.15). Privileged. The assembler gives
-them the operand class of `PSHN` and `SRM`, so `b` is meaningful: set, the
-pointer is popped.
+them the operand class of `PSHN` and `SRM`, so `b` is meaningful: it
+selects how the operand names the semaphore. Both forms pop it.
 
 The semantics below are not read from any HP document. They are recovered
 from the BASIC kernel's *software* implementation of the same structure
@@ -1624,14 +1812,19 @@ from the BASIC kernel's *software* implementation of the same structure
 dispatcher that consumes its lists), which fixes every convention the
 microcode has to share with the OS around it.
 
-The operand is a pointer to a two-word semaphore: word 0 the wait-list
-head, doubling as the multiprocessor lock (−1 while held), word 1 the
-count. As with the other privileged instructions the pointer may be a
-tagged data segment pointer or a raw absolute address — an absolute reads
-as an external pointer with segment number zero, which is invalid as an
-EDS reference and so is free to carry that meaning. Both HP-UX kernels
-feed both forms; both their call sites use the same `{0, 1}` layout, an
-unlocked one-unit mutex.
+The operand names a two-word semaphore: word 0 the wait-list head,
+doubling as the multiprocessor lock (−1 while held), word 1 the count.
+The plain form takes a **data segment pointer** — HP-UX's unit semaphores
+arrive as `0x00780008` and `0x00780028`, external pointers to segment 15,
+whose blocks have counts initialised to 1. The `,B` form takes an
+**absolute address** — the kernel's first `DOWN,B` of the boot names
+`0x00ffe6f8`, up among the TCBs, which read as a pointer would be segment
+31 at offset half a megabyte. Reading every operand one way or the other
+was wrong in both directions: as pointers the boot panicked on its first
+`DOWN,B`, as addresses two tasks parked on untouched words. Both forms pop
+the operand (no site deletes anything after them; leaving it was a
+one-word stack leak per operation that overflowed the mount task's
+stack).
 
 The wait list is the one both kernels' software semaphore keeps (HP-UX
 CORE SYSTEM +0x5068..+0x5498, SUN OS KERNEL 0x4a76..0x4b52): a **circular**
@@ -1655,7 +1848,10 @@ enters it. The TCB stays spliced into the dispatcher's priority chain — the
 the head. The last one simply empties the list; otherwise it is `LDEL`ed
 and its forward link becomes the head. Its state word is set back to 1,
 and the MSG doorbell bit the dispatcher's idle mask always leaves enabled
-is raised, so a processor sitting in `STOP` returns to find it.
+is raised, so a processor sitting in `STOP` returns to find it. `UP` does
+not itself dispatch: the kernel's software routines end with a priority
+test and `DISP`, and giving the instruction the same ending stalled 3 of
+10 multiuser boots.
 
 A single waiter's node is circular: it points at itself. An earlier model
 pushed waiters on the head of a nil-terminated list and woke them by
@@ -1967,8 +2163,9 @@ Software probes the CPU revision via `RCS` location 6 (`YYYYMMDD` hex).
   unit-save tapes) — HP's own instruction tables, read by
   [tools/astable.py](../tools/astable.py) and
   [tools/hptable.py](../tools/hptable.py).
-- [src/cpu/focus/](../src/cpu/focus/) and [src/test/](../src/test/) — the
-  executable form of this specification and its evidence.
+- [mame/src/devices/cpu/focus/](../mame/src/devices/cpu/focus/) and
+  [tests/](../tests/) — the executable form of this specification and its
+  evidence.
 - *HP Journal*, Aug 1983 / Mar 1984 / May 1984 — the chip set, HP-UX on
   the Series 500, and the machine design story;
   [hpjournal/](hpjournal/).

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Joel Heikkila
 """Assemble a Series 500 boot image from its volumes.
 
 A bootable disc is not a filesystem. It carries a 48-byte SDF volume header,
