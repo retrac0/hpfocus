@@ -126,10 +126,13 @@ hpux_prime_battery() {
 	[ -f "$PRISTINE_NV" ] && return 0
 	[ -x "$FOCUS_BIN" ] || return 0
 	[ -f "$PRISTINE_DISC" ] || return 0
-	local log=$PRISTINE_DIR/prime.log work=$VAR/tmp/prime
+	local log=$PRISTINE_DIR/prime.log work
 	echo "initialising the pristine battery (one 3-second throwaway boot)..."
-	rm -rf "$work"
-	mkdir -p "$work/nvram" || hpux_die "cannot create $work"
+	mkdir -p "$VAR/tmp" || hpux_die "cannot create $VAR/tmp"
+	# A directory of its own, so two preparations at once cannot delete
+	# each other's copy.
+	work=$(mktemp -d "$VAR/tmp/prime.XXXXXX") || hpux_die "cannot create a directory in $VAR/tmp"
+	mkdir -p "$work/nvram"
 	hpux_copy "$PRISTINE_DISC" "$work/disc.hd"
 	( cd "$FOCUS_REPO/mame" && \
 	  SDL_VIDEODRIVER=dummy "$FOCUS_BIN" hp9k540 -nothrottle -video none \

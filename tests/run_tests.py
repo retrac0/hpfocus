@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,8 +71,21 @@ PRISTINE_DISC = PRISTINE / 'hpux530.bin'
 SCM_NV = PRISTINE / 'nvram' / 'hp9k540' / 'scm_rtc'
 
 
+TAPES = [SW / 'cct' / t for t in ('7914_unitSave_hpux4.0.bin.gz', '7914_unitSave_hpux4.0_tape2.bin.gz')]
+_prepare_lock = threading.Lock()
+
+
 def prepare_hpux():
-	if not PRISTINE_DISC.exists() or not SCM_NV.exists():
+	"""Make the pristine machine once, whichever case gets here first:
+	cases run in parallel, and two preparations at once would each delete
+	the other's work. Without the tapes it is media that is not here; a
+	preparation that fails with them is a failure."""
+	with _prepare_lock:
+		if PRISTINE_DISC.exists() and SCM_NV.exists():
+			return
+		missing = [t for t in TAPES if not t.exists()]
+		if missing and not PRISTINE_DISC.exists():
+			raise FileNotFoundError(', '.join(t.name for t in missing))
 		subprocess.run([str(ROOT / 'tools' / 'runhpux.sh'), '--prepare'], check=True,
 				stdout=subprocess.DEVNULL)
 
@@ -511,8 +525,10 @@ def run_case(case, mame, work):
 		if case['setup']:
 			case['setup']()
 		args = case['args']() if callable(case['args']) else case['args']
-	except (FileNotFoundError, subprocess.CalledProcessError) as e:
+	except FileNotFoundError as e:
 		return case['name'], None, f'media not here ({e})'
+	except subprocess.CalledProcessError as e:
+		return case['name'], False, f'setup failed: {e}'
 	missing = [a for a in args if isinstance(a, str) and a.startswith(str(SW)) and not Path(a).exists()]
 	if missing:
 		return case['name'], None, 'media not here: ' + ', '.join(Path(m).name for m in missing)
@@ -558,6 +574,8 @@ def main():
 	ap.add_argument('--mame', default=str(ROOT / 'mame' / 'focus'))
 	ap.add_argument('--work', default=None)
 	ap.add_argument('-j', type=int, default=max(1, (os.cpu_count() or 2) - 1))
+	ap.add_argument('--strict', action='store_true',
+			help='a case skipped for want of media counts as a failure')
 	args = ap.parse_args()
 	# MAME runs from its own directory, so a relative path would not.
 	args.mame = str(Path(args.mame).resolve())
@@ -589,7 +607,7 @@ def main():
 				print(f'  FAIL  {name}' + ('  (known)' if known else '') + f'  {why}')
 	print(f'{len(table) - failed - skipped} passed, {failed} failed, {unexpected} unexpected'
 			+ (f', {skipped} skipped (tools/fetch-media.sh)' if skipped else ''))
-	return 1 if unexpected else 0
+	return 1 if unexpected or (args.strict and skipped) else 0
 
 
 if __name__ == '__main__':

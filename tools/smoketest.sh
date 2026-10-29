@@ -48,10 +48,10 @@ WORK=$(mktemp -d "$VAR/smoke.XXXXXX")
 [ "$KEEP" = 1 ] || trap 'rm -rf "$WORK"' EXIT
 
 status=0
-python3 tests/run_tests.py --mame "$BIN" --work "$WORK" isa-factorial hpux-multi || status=1
+python3 tests/run_tests.py --strict --mame "$BIN" --work "$WORK" isa-factorial hpux-multi || status=1
 if [ "$TWICE" = 1 ]; then
 	echo "second boot, on the disc and battery the first one left:"
-	python3 tests/run_tests.py --mame "$BIN" --work "$WORK" hpux-multi || status=1
+	python3 tests/run_tests.py --strict --mame "$BIN" --work "$WORK" hpux-multi || status=1
 fi
 [ "$KEEP" = 1 ] && echo "kept: $WORK"
 [ "$status" = 0 ] && echo "smoke test: PASS" || echo "smoke test: FAIL"
