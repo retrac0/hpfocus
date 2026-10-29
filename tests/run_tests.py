@@ -173,15 +173,7 @@ BASIC_TABLE = [
 	('run-sub', ['10 CALL Xyz', STORE, '20 END', STORE, '30 SUB Xyz', STORE,
 			'40 DISP 6*7', STORE, '50 SUBEND', STORE, 'RUN\n'], '42'),
 ]
-# The 27130A with the console on it: the card model keeps one transaction
-# at a time, and HP-UX overlaps them once the console and a getty share
-# the card -- e.g. the console's write-configuration CLC lands between a
-# getty's read-card-information CLC and its SWI. Where the overlap falls
-# moves with timing: port 1 never opens, or prints login: and never
-# answers. The firmware IMS (chapter 10, 13.2.5) has a request block per
-# request and an RTS queue; setting the open request aside fixes the
-# overwrite but then completions collapse and the whole card stops.
-KNOWN_FAILING = {'hpux-mux8-sc0'}
+KNOWN_FAILING = set()
 
 
 def factorial_case():
@@ -539,6 +531,8 @@ def main():
 	args = ap.parse_args()
 	# MAME runs from its own directory, so a relative path would not.
 	args.mame = str(Path(args.mame).resolve())
+	if args.work:
+		args.work = str(Path(args.work).resolve())
 
 	work = args.work or tempfile.mkdtemp(prefix='hp9k5xx-tests-')
 	table = cases(work)
