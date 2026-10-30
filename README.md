@@ -24,7 +24,9 @@ rough edges: see [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 *A wireframe Space Shuttle from the `/graphics` directory of the HP-UX disc,
 a 1984 graphics demo.*
 
-![HP's BASIC demonstration programs on the emulated 520: a fractal curve filling a Koch snowflake, and a house in 3-D wireframe](docs/images/demos.png)
+![HP's BASIC demonstration program snow_flake on the emulated 520: a fractal curve filling a Koch snowflake](docs/images/snow_flake.png)
+
+![HP's BASIC demonstration program house on the emulated 520: a house in 3-D wireframe](docs/images/house.png)
 
 *Two of HP's 1982 BASIC graphics demonstrations, `snow_flake` and `house`,
 drawn by the emulated 9000/520.*
