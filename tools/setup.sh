@@ -63,7 +63,7 @@ ROOT=$(pwd)
 
 # The MAME commit, if this is not a git checkout to read the gitlink from.
 # Keep it equal to the gitlink: `git ls-tree HEAD mame`.
-MAME_PIN_FALLBACK=396ae9ff3be43223a761febc5998f329836c3f87
+MAME_PIN_FALLBACK=b66f5ec6cbe2224ea2f0367335a9b84127faa8fa
 
 CHECK_ONLY=0
 BUILD=1
