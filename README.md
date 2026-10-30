@@ -43,6 +43,74 @@ drawn by the emulated 9000/520.*
 emulator's below. The emulator's printer font was read dot by dot off the
 handbook's picture.*
 
+HP-UX 5.30 coming up on the 540: everything its console printed from
+power-on to the login prompt, captured from `tools/runhpux.sh --multiuser`
+on a scratch copy of the disc.
+
+    (c) Copyright 1983, 1984, 1985, 1986, 1987 Hewlett-Packard Company
+    (c) Copyright 1979 The Regents of the University of Colorado, a body corporate
+    (c) Copyright 1979, 1980, 1983 The Regents of the University of California
+    (c) Copyright 1980, 1984 AT&T Technologies. All Rights Reserved.
+
+                        RESTRICTED RIGHTS LEGEND
+
+              Use,  duplication,  or disclosure by the Government  is
+              subject to restrictions as set forth in subdivision (b)
+              (3)  (ii)  of the Rights in Technical Data and Computer
+              Software clause at 52.227-7013.
+
+                        HEWLETT-PACKARD COMPANY
+                            3000 Hanover St.
+                          Palo Alto, CA  94303
+
+    /etc/rc
+    Thu Oct 29 20:00:24 PST 2026
+    (c) Copyright 1983, 1984, 1985, 1986 Hewlett-Packard Co.
+    (c) Copyright 1979 The Regents of the University of Colorado, a body corporate
+    (c) Copyright 1979, 1980, 1983 The Regents of the University of California
+    (c) Copyright 1980, 1984 AT&T Technologies.  All Rights Reserved.
+
+                           RESTRICTED RIGHTS LEGEND
+
+    Use, duplication, or disclosure by the Government is subject to restrictions
+    as set forth in subdivision (b) (3) (ii) of the Rights in Technical Data and
+    Computer Software clause at 52.227-7013.
+
+                           HEWLETT-PACKARD COMPANY
+                              3000 Hanover St.
+                            Palo Alto, CA  94303
+
+
+
+
+    logout
+    unknown: adm logged out on Thu Oct 29 23:00:32 EST 2026
+    system accounting started
+    volumes mounted
+    cron started
+    talkdemon started
+    line printer scheduler started
+    preserving editor files (if any)
+    removing lpd lock file (if any)
+    cleaning up uucp
+    NOTE:  Files in /tmp:
+    total 2
+    -rw-rw-rw-   1 root     root          10 Oct 29 20:00 sh60
+    System:   HP-UX
+    Release:  05.21
+    Version:  B
+    Machine:
+    Identity: unknown
+    Nodename: unknown
+
+    HP-UX 5.30 (unknown)
+
+    login:
+
+*The dates are the host's, which MAME gives the machine at power-on. The
+rest is that 1991 system's own: its `revision` command reports release
+05.21, and the `logout` lines come from its accounting startup.*
+
 ## Digital archaeology
 
 Digital archaeology results: very little survives for this machine! There's
