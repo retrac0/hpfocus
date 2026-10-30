@@ -22,9 +22,7 @@ rough edges: see [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 ![A wireframe Space Shuttle in colour with its parts labelled, on the emulated 520's display](docs/images/shuttle.png)
 
 *A wireframe Space Shuttle from the `/graphics` directory of the HP-UX disc,
-a 1984 graphics demo. Its own program needs HP-UX and a graphics terminal, so
-here its points, colours and labels are drawn through HP BASIC on the
-emulated 9000/520.*
+a 1984 graphics demo.*
 
 ![HP's BASIC demonstration programs on the emulated 520: a fractal curve filling a Koch snowflake, and a house in 3-D wireframe](docs/images/demos.png)
 
