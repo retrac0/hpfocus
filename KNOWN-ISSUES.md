@@ -282,16 +282,19 @@ tested is in [docs/VALIDATION.md](docs/VALIDATION.md).
   on a softkey (`ON KEY`) cannot be answered. And the key mapped as
   CONTINUE (F2, code 0x1d) behaves as STEP: on a paused program it runs one
   line. To resume a `PAUSE`, type `CONT` and press Return.
-- **Colour fills are not right yet.** Line drawings come out as they
-  should (`snow_flake`, `house`). In HP's 9845C colour demo, shaded fills
-  (`AREA INTENSITY` between 0 and 1) come out solid blue, and a black fill
-  (`AREA INTENSITY 0,0,0`) leaves the blue behind instead of erasing it.
-- **Many of HP's demo programs do not run.** Measured on the MAME driver
-  with the disc above: `snow_flake` and `house` draw completely. HP's
-  9845C colour demo reads its data and reaches its Space Shuttle page (after deleting the light-pen lines 2340-2350, and with its
-  softkey questions edited out), then stops sending commands to the
-  graphics card right after a window command, so the shuttle is never
-  drawn. [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) has the state program
+- **Shaded fills come out solid.** `AREA INTENSITY` and `AREA COLOR` pick
+  the right hue and a black fill erases, but nothing dithers: `AREA
+  INTENSITY .5,0,0` fills with full red.
+- **Many of HP's demo programs do not run to the end.** Measured on the
+  MAME driver with the disc above (2026-10-30): `snow_flake` kept drawing
+  for the 1,500 emulated seconds it was given. `house` draws and erases
+  its first few views of the house, then the machine goes idle for good:
+  the last thing the graphics card receives is a `0x1ad` vector list, and
+  the driver never comes back from waiting on it. HP's 9845C colour demo
+  reads its data and reaches its Space Shuttle page (after deleting the
+  light-pen lines 2340-2350, and with its softkey questions edited out),
+  draws the stars, the Earth and part of the shuttle, and stops.
+  [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) has the state program
   by program as of August 2026: some want partitions, some stop in
   BASIC's own subprogram linking. Programs you type do run; the test suite
   types and runs one.

@@ -19,7 +19,14 @@ FOCUS is known to exist.
 **Status: alpha.** It runs real HP software and is tested, and it still has
 rough edges: see [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
-![HP's BASIC demonstration programs on the emulated 520: a Koch snowflake, and a house in 3-D wireframe](docs/images/demos.png)
+![A wireframe Space Shuttle in colour with its parts labelled, on the emulated 520's display](docs/images/shuttle.png)
+
+*A wireframe Space Shuttle from the `/graphics` directory of the HP-UX disc,
+a 1984 graphics demo. Its own program needs HP-UX and a graphics terminal, so
+here its points, colours and labels are drawn through HP BASIC on the
+emulated 9000/520.*
+
+![HP's BASIC demonstration programs on the emulated 520: a fractal curve filling a Koch snowflake, and a house in 3-D wireframe](docs/images/demos.png)
 
 *Two of HP's 1982 BASIC graphics demonstrations, `snow_flake` and `house`,
 drawn by the emulated 9000/520.*
@@ -199,11 +206,11 @@ The 520 and BASIC:
 - **The demo discs are refused as HP's images ship.** Each is one cylinder
   short of what the driver's floppy reader expects; decoded to a raw image
   and padded, they load.
-- **Colour fills are not right yet.** Line drawings come out as they
-  should, but in HP's 9845C colour demo shaded fills come out solid and
-  black fills do not erase. Many of the demo programs stop part way: that
-  one reaches its Space Shuttle and stalls in the graphics driver before
-  drawing it.
+- **Shaded fills come out solid.** The hue is right, but `AREA INTENSITY
+  .5,0,0` fills with full red.
+- **Many of the demo programs stop part way.** `house` freezes after its
+  first few views of the house, and HP's 9845C colour demo stops partway
+  through drawing its Space Shuttle.
 - **What BASIC writes to a flexible disc is not saved.** Keep files on the
   fixed disc.
 - **HP-UX 5.01 stops at its banner**: the surviving tape lost its
